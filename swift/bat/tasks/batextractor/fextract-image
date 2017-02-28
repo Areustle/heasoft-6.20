@@ -1,0 +1,178 @@
+#!/usr/bin/perl
+
+# $Id: fextract-image,v 1.1 2006/04/24 18:31:10 craigm Exp $
+#
+# $Log: fextract-image,v $
+# Revision 1.1  2006/04/24 18:31:10  craigm
+# Add new task fextract-image, based on fextract-events; it works, although it could be optimized --CM
+#
+# Revision 1.2  2006/04/22 03:56:13  craigm
+# Add 'cleanup' option to clean up scratch files --CM
+#
+# Revision 1.1  2006/04/22 03:20:46  craigm
+# Initial commit; this is a fast version of 'extractor' for event filtering; the idea is to replace the ultra-lame extractor with an ultra-fast version that does the same thing --CM
+#
+# Revision 1.6  2006/04/07 20:52:48  craigm
+# Add a CVS id and log variable --CM
+#
+#
+
+use HEACORE::HEAINIT;
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+eval {
+    $status = headas_main(\&fextract_events);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub fextract_events {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    my $taskname = "fextract-events";
+    my $version = "1.0";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($version);
+
+    eval {
+	$status = &fextract_events_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+sub fextract_events_work {
+
+    # --------------- parameters
+    ($status = PILGetString('filename', $filename)) == 0 || die "error getting 'filename' parameter";
+    ($status = PILGetString('imgfile', $imgfile)) == 0 || die "error getting 'imgfile' parameter";
+    
+    ($status = PILGetString('regionfile', $regionfile)) == 0 || die "error getting 'regionfile' parameter";
+    ($status = PILGetString('timefile', $timefile)) == 0 || die "error getting 'timefile' parameter";
+    ($status = PILGetString('xcolf', $xcolf)) == 0 || die "error getting 'xcolf' parameter";
+    ($status = PILGetString('ycolf', $ycolf)) == 0 || die "error getting 'ycolf' parameter";
+    ($status = PILGetString('tcol', $tcol)) == 0 || die "error getting 'tcol' parameter";
+    ($status = PILGetString('events', $events)) == 0 || die "error getting 'events' parameter";
+    ($status = PILGetString('gti', $gti)) == 0 || die "error getting 'gti' parameter";
+    ($status = PILGetInt('xint', $xint)) == 0 || die "error getting 'xint' parameter";
+    ($status = PILGetInt('yint', $yint)) == 0 || die "error getting 'yint' parameter";
+    ($status = PILGetBool('copyall', $copyall)) == 0 || die "error getting 'copyall' parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting 'clobber' parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting 'cleanup' parameter";
+
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    if ($chatter >= 5) { $verbose = 1; }
+
+    if ($imgfile =~ m/NONE/i) {
+	die "ERROR: 'imgfile' must not be NONE";
+    }
+
+    $o = $imgfile;
+
+    # Search for the copyall parameter for ftmerge.
+    # Unfortunately this is a new parameter, so we have to 
+    # dynamically include it.
+    $copyall_present = 0;
+    @plist = `plist ftmerge`;
+    foreach $p (@plist) {
+	if ($p =~ m/copyall/) { $copyall_present = 1; }
+    }
+
+    # Collect the events.  However, if there is only one event file,
+    # then there is no need do do any collection.
+    $tmpevents = "$o"."-sel.evt";
+    $cmd = "fextract-events filename='$filename' eventsout='$tmpevents' ".
+	"regionfile='$regionfile' timefile='$timefile' ".
+	"xcolf='$xcolf' ycolf='$ycolf' tcol='$tcol' events='$events' ".
+	"gti='$gti' copyall=NO cleanup=YES ";
+    print "$cmd\n" if ($verbose);
+    unlink($tmpevents);
+    system($cmd);
+    die "ERROR: could not create $tmpevents" if (! -f $tmpevents );
+    push @scratchfiles, $tmpevents;
+
+    # Create output image file
+    $binexpr = "[bin $xcolf = $xint, $ycolf = $yint ]";
+    $cmd = "ftcopy infile='$tmpevents$binexpr' outfile='$imgfile' ";
+    $cmd .= ($clobber)?"clobber=YES ":"clobber=NO ";
+    if ($copyall_present) { $cmd .= "copyall=NO "; }
+    print "$cmd\n" if ($verbose);
+    system($cmd);
+    die "ERROR: could not create $imgfile" if (! -f $imgfile );
+
+    $cmd = "ftappend infile='$tmpevents"."[$gti]' outfile='$imgfile' ";
+    print "$cmd\n" if ($verbose);
+    system($cmd);
+
+    $hfile = "$o"."-head.txt";
+    open(FILE,">$hfile") or die "ERROR: could not open header file $hfile";
+    push @scratchfiles, $hfile;
+    print FILE "CONTENT = 'IMAGE'\n";
+    print FILE "WCSNAMEP = 'PHYSICAL'\n";
+    print FILE "WCSTY1P = 'PHYSICAL'\n";
+    print FILE "WCSTY2P = 'PHYSICAL'\n";
+    print FILE "CTYPE1P = '$xcolf'\n";
+    print FILE "CTYPE2P = '$ycolf'\n";
+    print FILE "CROTA2  = 0.000000000000000E+00\n";
+    print FILE "CRPIX1P  = 1.000000000000000E+00\n";
+    print FILE "CRPIX2P  = 1.000000000000000E+00\n";
+    print FILE "CRVAL1P  = 1.000000000000000E+00\n";
+    print FILE "CRVAL2P  = 1.000000000000000E+00\n";
+    print FILE sprintf("CDELT1P  = %e\n",$xint+0.0);
+    print FILE sprintf("CDELT2P  = %e\n",$yint+0.0);
+    print FILE "-CUNIT1\n";
+    print FILE "-CUNIT2\n";
+    print FILE "HDUCLAS1 = 'IMAGE'\n";
+    print FILE "-MFORM*\n";
+    print FILE "-MTYPE*\n";
+    print FILE "MFORM1 = '$xcolf, $ycolf'\n";
+    $mtype = substr($xcolf,0,3);
+    print FILE "MTYPE1 = '$mtype'\n";
+    close(FILE);
+    
+    $cmd = "fthedit infile='$imgfile' '@"."$hfile'";
+    print "$cmd\n" if ($verbose);
+    system($cmd);
+
+    return $status;
+}
+
+

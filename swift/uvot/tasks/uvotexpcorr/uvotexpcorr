@@ -1,0 +1,253 @@
+#! /usr/bin/perl
+#
+# Swift exposure correction tool
+#
+# M.Tripicco - June 2005
+#
+# v1.2 now handles Image/Event mode properly
+#      when window sizes differ
+#
+
+$SIG{INT} = \&sigtrap;
+$SIG{TERM} = \&sigtrap;
+$SIG{KILL} = \&sigtrap;
+
+$sign = '[-+]?';
+$digits = '\d+';
+$decimal = '\.?';
+$more_digits = '\d*';
+$exponent = '(?:[eE][-+]\d+)?';
+$number = "$sign$digits$decimal$more_digits$exponent";
+
+use HEACORE::HEAINIT;
+exit headas_main(\&uvotexpcorr);
+
+sub uvotexpcorr{
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Astro::FITS::CFITSIO qw(:constants :longnames);
+  use Task qw(:codes);
+
+  my $tool = bless({
+                    tool => 'uvotexpcorr',
+                    code => 0,
+		   }, "Task");
+  my $tname = 'uvotexpcorr';
+  my $tvers = '1.2';
+  my $status = 0;
+
+  set_toolname($tname);
+  set_toolversion($tvers);
+
+  $comment = "Total exposure, corrected for aspect error";
+
+  ($status = PILGetString('sequence', $sequence)) == 0 ||
+    &bailout("error getting sequence parameter");
+  ($status = PILGetString('dataloc', $dataloc)) == 0 ||
+    &bailout("error getting dataloc parameter");
+  ($status = PILGetInt('chatter', $chatter)) == 0 ||
+    &bailout("error getting chatter parameter");
+  ($status = PILGetReal('threshold', $threshold)) == 0 ||
+    &bailout("error getting threshold parameter");
+  ($status = PILGetBool('allowcorr', $allowcorr)) == 0 ||
+    &bailout("error getting correct parameter");
+
+  if ($chatter > 0) {print "\n**** Running $tname v$tvers ****\n"}
+
+  if (-d $dataloc) {
+    if (-d "$dataloc/$sequence/log") {$dataloc .= "/$sequence"}
+  }else{
+    &bailout("Couldn't find $dataloc");
+  }
+
+  if (! -e "$dataloc/log/sw${sequence}uir.html"){
+    if (! -e "$dataloc/log/sw${sequence}uir.html.gz"){
+      &bailout("$dataloc/log/sw${sequence}uir.html[.gz] not found");
+    }
+  }
+
+  opendir(DATADIR, "$dataloc/uvot/image")
+    or &bailout("Error opening $dataloc/uvot/image");
+  @allfiles = grep { /^sw.*_(sk|rw)\.img$/ } readdir DATADIR;
+  rewinddir DATADIR;
+  push(@allfiles,grep { /^sw.*_(sk|rw)\.img.gz$/ } readdir DATADIR);
+  closedir DATADIR;
+  foreach $file (@allfiles){
+    if ($file =~ /\.gz$/){
+      if ($chatter >= 1) {print "\nUNZIPPING FILE $file..."}
+      system("gunzip $dataloc/uvot/image/$file") == 0
+	or &bailout("problem unzipping $file");
+      if ($chatter >= 1) {print "done\n"};
+      $tmpfile = "$dataloc/uvot/image/".substr($file,0,length($file)-3);
+    }else {$tmpfile = "$dataloc/uvot/image/$file"}
+    $fits = Astro::FITS::CFITSIO::open_file($tmpfile, READWRITE, $status);
+    if ($status) {&bailout("problem opening FITS file $tmpfile")}
+    $numhdus = 0;
+    $fits->get_num_hdus($numhdus, $status);
+    if ($status) {&bailout("Unable to get number of HDUs")}
+    for ($hdu=1; $hdu <= $numhdus; $hdu++){
+      $fits->movabs_hdu($hdu, $hdutype, $status);
+      if ($status) {&bailout("problem moving to HDU $hdu")}
+      $header = $fits->read_header;
+      if ($header->{XTENSION} !~ /IMAGE/){next}
+      ($extname = $header->{EXTNAME}) =~ /'?[a-z][0-9a-z](\d*)\D{1}'?/;
+      $extnum = $1;
+      if ($extname =~ /I'$/){$fromim = "yes"}else{$fromim = "no"}
+      $expotime = $header->{EXPOSURE};
+      $prediction = read_exprep($extnum,$fromim);
+      $fits->flush_buffer(0, $status); #seems to be necessary after HD_parstamp!
+      if ($status){&bailout("Error flushing FITS buffer")}
+      @result = `ftstat $tmpfile\[$extname\] |grep sum:`;
+      ($dum, $actual) = split /:/, $result[0];
+      chomp($actual);
+      $actual = $actual/$expotime;
+      $ratio = $actual/$prediction;
+      if ($ratio <= $threshold){
+	$newexp = $expotime * $ratio;
+	if ($chatter >= 1){
+	  print "\n$file $extname (HDU $hdu)\n";
+	  print " predicted rate: $prediction\n actual rate: $actual\n ratio: $ratio\n";
+	  print " tabulated exposure time $expotime\n";
+	  if ($header->{COMMENTS}{EXPOSURE} =~ /$comment/){
+	    print " (EXPOSURE keyword previously corrected)\n"}
+	}
+	if ($chatter >= 1) {
+	  print " BELOW THRESHOLD ($threshold)\n";
+	  print " NEW EXPOSURE TIME = $newexp s\n";
+	}
+	if ($allowcorr and $fromim eq "yes"){
+	  $fits->update_key(42, 'EXPOSURE', $newexp, $comment, $status);
+	  if ($status){&bailout("Error updating EXPOSURE keyword")}else{
+	    if ($chatter >= 1){print " EXPOSURE keyword successfully corrected\n"}
+	  }
+	  HDpar_stamp($fits, 0, $status); # 0 means operate on CHDU
+	  if ($status){&bailout("Error writing parameter history block")}
+	}
+	elsif ($allowcorr and $fromim eq "no") {
+	  if ($chatter >= 1) {
+	    print " EXPOSURE keyword NOT corrected because image not from image-mode data\n";
+	  }
+	}
+	elsif (not $allowcorr){
+	  if ($chatter >= 1) {print " EXPOSURE keyword NOT corrected because allowcorr=no\n"}
+	}else {print "This should never happen!\n"}
+      }else{ #EXPOSURE is OK
+	if ($header->{COMMENTS}{EXPOSURE} =~ /$comment/ and $chatter >= 1){
+	  print "\n$file $extname (HDU $hdu)\n";
+	  print " predicted rate: $prediction\n actual rate: $actual\n ratio: $ratio\n";
+	  print " tabulated exposure time $expotime\n";
+	  print " (EXPOSURE keyword previously corrected)\n";
+	}
+	elsif ($chatter >= 3){
+	  print "\n$file $extname (HDU $hdu)\n";
+	  print " predicted rate: $prediction\n actual rate: $actual\n ratio: $ratio\n";
+	  print " tabulated exposure time $expotime\n";
+	}
+      }
+    }
+    $fits->close_file($status);
+    if ($allowcorr and $fromim == "yes") {system("ftchecksum $tmpfile update=yes chatter=0")}
+    if ($file =~ /\.gz$/){
+      if ($chatter >= 1) {print "\nREZIPPING FILE $tmpfile..."}
+      system("gzip $tmpfile") == 0
+	or &bailout("problem rezipping $tmpfile");
+      if ($chatter >= 1) {print "done\n\n"};
+    }
+  }
+
+  return $status;
+}
+
+sub sigtrap{
+  my $signame = shift;
+  &bailout("\n!Trapped a $signame signal!");
+}
+
+sub bailout{
+  my $errmsg = @_[0];
+  die "$0: $errmsg\nBailing out";
+}
+
+sub read_exprep{
+  my $expnam = $_[0];
+  my $fromim = $_[1];
+
+  if (-e "$dataloc/log/sw${sequence}uir.html.gz"){
+    open(LOG, "gunzip -c $dataloc/log/sw${sequence}uir.html.gz |") or
+      &bailout("problem opening log $dataloc/log/sw${sequence}uir.html.gz");
+  }else{
+    open(LOG, "$dataloc/log/sw${sequence}uir.html") or
+      &bailout("problem opening log $dataloc/log/sw${sequence}uir.html");
+  }
+
+  $win_size_corr = 1.0;
+
+  while (<LOG>) {
+    if ($_ =~ /\<TR\>\<TD\>${expnam}\<\/TD\>/) {
+#      $_ =~ /<TD>($number) s<\/TD><TD>($number)\/s<\/TD><TD>($number)\%<\/TD>/;
+      my $regexp = "<TD>${expnam}<\/TD><TD>.*?<\/TD><TD>(.*?)<\/TD><TD>.*?<\/TD><TD>.*?<\/TD>";
+      $regexp .= "<TD>(.*?)<\/TD><TD>(.*?)<\/TD><TD>.*?<\/TD><TD>($number) s<\/TD>";
+      $regexp .= "<TD>($number)\/s<\/TD><TD>($number)\%<\/TD>";
+      $_ =~ /$regexp/;
+      my $mode = $1;
+      my $evwin = $2;
+      my $imwin = $3;
+      my $duration = $4;
+      my $countrate = $5;
+      my $dataloss = $6;
+#      print "fromim |$fromim| mode |$mode| evwin |$evwin| imwin |$imwin|\n";
+      if ($mode eq "Image/Event" && $fromim eq "yes"){
+	#image/event windows can have different sizes in Image/Event mode so
+	# images made from this mode should have predicted rate modified
+	if ($evwin =~ /($number) x ($number)/){
+	  $evsidea = $1;
+	  $evsideb = $2;
+	}else{ $evsidea = 1.0 ; $evsideb = 1.0 }
+	$ev_area = $evsidea * $evsideb;
+	if ($imwin =~ /($number) x ($number)/){
+	  $imsidea = $1;
+	  $imsideb = $2;
+	}else{ $imsidea = 1.0 ; $imsideb = 1.0 }
+	$im_area = $imsidea * $imsideb;
+	if ($ev_area > $im_area){
+	  $win_size_corr = ($im_area)/($ev_area);
+	}
+	if ($chatter >= 4){
+	  print "\nEvent win size $evsidea x $evsideb, Image win size $imsidea x $imsideb, corr = $win_size_corr";
+	}
+      }
+      if ($mode eq "Image/Event" && $fromim eq "no"){
+	# moot since we don't correct Event extensions but we
+	#  do report on them we may as well do the calculation
+	if ($evwin =~ /($number) x ($number)/){
+	  $evsidea = $1;
+	  $evsideb = $2;
+	}else{ $evsidea = 1.0 ; $evsideb = 1.0 }
+	$ev_area = $evsidea * $evsideb;
+	if ($imwin =~ /($number) x ($number)/){
+	  $imsidea = $1;
+	  $imsideb = $2;
+	}else{ $imsidea = 1.0 ; $imsideb = 1.0 }
+	$im_area = $imsidea * $imsideb;
+	if ($im_area > $ev_area){
+	  $win_size_corr = ($ev_area)/($im_area);
+	}
+	if ($chatter >= 4){
+	  print "\nEvent win size $evsidea x $evsideb, Image win size $imsidea x $imsideb, corr = $win_size_corr";
+	}
+      }
+      if ($chatter >= 4){
+	print "\nUVOT log for $expnam: mode $mode, duration $duration s, rate $countrate/s, loss $dataloss%";
+      }
+      if ($dataloss == -0.1){$dataloss = 0}
+      $rate_predict = $countrate * $win_size_corr * (1 - $dataloss/100.) ;
+      last;
+    }
+  }
+  if (not eof(LOG)) {while(<LOG>){}}
+  close(LOG) or &bailout("problem closing log file");
+  if (! defined $rate_predict){
+    if ($chatter >= 3){ print "Could not find $expnam in log file\n" ; return -1}
+  }
+  return $rate_predict;
+}

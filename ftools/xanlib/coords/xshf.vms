@@ -1,0 +1,132 @@
+*- xshf.vms - shf key for VMS character time
+      integer*4 function xshf(time,status)
+* History :
+*  5 April 1989 : original
+*  26 April 1989 : import arbitrary time
+* Author :
+*  Andy Pollock (EXOSAT::ANDY)
+
+      include '($ssdef)'
+      include '[-.inc]status.codes'
+
+* Import :
+*  time - character time representation
+      character*(*) time
+* Status :
+      integer status
+* Local constant :
+      integer npar
+      parameter (npar=10)
+* Local variables :
+*  t - standard VMS time
+      character*23 t
+      integer time_address(2)
+      integer day,day0,sec
+      character*80 s
+      integer ls
+      real x
+      character*80 value
+      integer lval
+      integer i
+* External references :
+      logical*4 isydoy
+      logical*4 isxdattim
+      character*23 now
+      character*23 xctime
+      integer*4 lenact
+* System references :
+      integer lib$date_time
+      integer sys$bintim
+      integer lib$day
+* Local data :
+      character*80 parameters(npar)
+      data parameters/'NOW',
+     &                'TODAY',
+     &                'YESTERDAY',
+     &                'LAST_WEEK',
+     &                'LAST_MONTH',
+     &                'LAST_YEAR',
+     &                '_DAYS_AGO',
+     &                '_WEEKS_AGO',
+     &                '_MONTHS_AGO',
+     &                '_YEARS_AGO'/
+*-
+      if(status.ne.ok__)return
+
+      s=time
+
+      if(isydoy(s))then
+         call timsk(s,xshf)
+         return
+      else if(isxdattim(s))then
+         call timxk(s,xshf)
+         return
+      endif
+
+      ls=lenact(s)
+      call upc(s)
+      i=index(s,'_')
+      if(i.ge.1)then
+         value=s(1:i-1)
+         if(value.ne.'LAST')then
+            lval=i-1
+            read(value,*)x
+            s=s(i:ls)
+         else
+            lval=0
+         endif
+      else
+         lval=0
+      endif
+      call gmatch(parameters,npar,s,i,status)
+      if(status.eq.ok__)then
+         t=now(status)
+      else
+         status=ok__
+         t=xctime(s,status)
+      endif
+      status=sys$bintim(t,time_address)
+      status=lib$day(day,time_address,sec)
+      if(s.eq.'TODAY')then
+         sec=0
+      else if(s.eq.'YESTERDAY')then
+         day=day-1
+         sec=0
+      else if(s.eq.'LAST_WEEK')then
+         day=day-7
+         sec=0
+      else if(s.eq.'LAST_MONTH')then
+         day=day-31
+         sec=0
+      else if(s.eq.'LAST_YEAR')then
+         day=day-365
+         sec=0
+      else if(s.eq.'_DAYS_AGO')then
+         day=day-nint(x)
+         sec=0
+      else if(s.eq.'_WEEKS_AGO')then
+         day=day-nint(x)*7
+         sec=0
+      else if(s.eq.'_MONTHS_AGO')then
+         day=day-nint(x)*31
+         sec=0
+      else if(s.eq.'_YEARS_AGO')then
+         day=day-nint(x)*365
+         sec=0
+      endif
+      t='01-JAN-1980 00:00:00.00'
+      status=sys$bintim(t,time_address)
+      status=lib$day(day0,time_address)
+*
+* Fix when day is out of range
+*
+      if (iabs(day-day0) .gt. 20000) then
+	xshf = 0
+	status = -1
+      else
+	xshf=(day-day0)*86400+(sec/100)
+      end if
+      
+      if(status.eq.ss$_normal)status=ok__
+
+      end

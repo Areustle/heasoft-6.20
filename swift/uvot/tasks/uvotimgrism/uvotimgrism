@@ -1,0 +1,2219 @@
+#! perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotimgrism/uvotimgrism,v $
+# $Revision: 1.48 $
+# $Date: 2010/03/11 21:35:28 $
+#
+#	uvotimgrism
+#
+#	extract and evaluate first order grism
+#
+#
+# $Log: uvotimgrism,v $
+# Revision 1.48  2010/03/11 21:35:28  rwiegand
+# Bug fix: background counts were reversed along X-axis.  Save zeroth order
+# position in FITS coordinates for use in plotting.
+#
+# Revision 1.47  2009/08/31 17:23:15  rwiegand
+# Maintain center of source region when source width or background regions
+# change.
+#
+# Revision 1.46  2009/03/31 14:26:43  rwiegand
+# Implemented interpolation of grating equation as a function of detector
+# position.
+#
+# Revision 1.45  2008/10/14 15:59:32  rwiegand
+# Moved extraction region labels again.
+#
+# Revision 1.44  2008/10/14 15:01:50  rwiegand
+# Corrected physical coordinates (WCSP).  Updated region file label positions.
+#
+# Revision 1.43  2008/04/08 20:40:49  rwiegand
+# Instead of applying zeroth order translation product, depend on correct
+# WCS S keywords and distortion given by [AB]P_*.
+#
+# Revision 1.42  2008/03/28 15:30:50  rwiegand
+# Take binning from BINX.
+#
+# Revision 1.41  2007/12/03 19:56:24  rwiegand
+# By default, lookup grism extraction angle based on WHEELPOS.
+#
+# Revision 1.40  2007/10/25 13:48:12  rwiegand
+# Load WINDOWD[XY] keywords.
+#
+# Revision 1.39  2007/10/11 21:04:38  rwiegand
+# Allow badpixfile=NONE which creates a fake quality map with no bad pixels.
+#
+# Revision 1.38  2006/03/30 16:02:44  rwiegand
+# Changed the initial guess at the dispersion when solving the grating
+# equation.
+#
+# Revision 1.37  2006/03/16 14:40:34  rwiegand
+# Updated variable names to explicitly give their coordinate system.  Report
+# details of relationships between various coordinate systems and how they
+# affect CALDB processing.  Changed units of sourcex/y to input FITS image
+# coordinates.  Generate a region file showing extraction locations in the
+# input image.
+#
+# Revision 1.36  2006/03/13 15:09:35  rwiegand
+# Changed units of sourcex/sourcey to input image FITS pixels.  Report
+# information to help user follow processing.
+#
+# Revision 1.35  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.34  2005/09/16 12:05:21  rwiegand
+# Added four columns (three background related and total counts) to the
+# CALSPEC extension.  Updated CALDB queries.  Allow user to qualify CALDB
+# queries.
+#
+# Revision 1.33  2005/08/05 12:26:57  rwiegand
+# Filter wheel position now part of flux calibration extension.
+#
+# Revision 1.32  2005/05/23 15:17:38  rwiegand
+# Record zeroth order position in pixels to ZERODET[XY] keywords.
+#
+# Revision 1.31  2005/05/20 20:57:00  rwiegand
+# The grating equation calibration format changed so WAV_UNIT and DSP_UNIT
+# are keywords instead of columns.  Record calibration files retrieved
+# from CALDB in output.  Made CALDB the default for calibration files.
+#
+# Revision 1.30  2005/04/12 15:31:07  rwiegand
+# Do not propagate HDU ID keycards (EXT*, HDU*) to output (was resulting in
+# multiple EXTNAMEs.
+#
+# Revision 1.29  2004/11/05 15:40:44  rwiegand
+# Added parameters for greater user control of background regions.  Combined
+# parameters for U and UV grisms into a single set.
+#
+# Revision 1.28  2004/11/03 20:43:21  rwiegand
+# If a wavelength is outside the calibrated range, generate a warning and
+# write NULLs to the flux columns.
+#
+# Revision 1.27  2004/10/20 22:21:40  rwiegand
+# Replaced imagexform call with a set of new attitude tool calls.
+#
+# Revision 1.26  2004/10/14 20:53:08  rwiegand
+# Display a warning if the grism and bad pixel map binning are not the same.
+#
+# Revision 1.25  2004/10/13 22:31:42  rwiegand
+# Added WCS keywords to extracted region.  Updated convention for detector
+# pixel and world coordinates.
+#
+# Revision 1.24  2004/10/12 22:42:09  rwiegand
+# Corrected calculation of dLambda for bin.  Propagate keyword types from
+# input to output instead of individual keywords.  Account for binning when
+# converting between wavelengths and offsets.
+#
+# Revision 1.23  2004/10/05 20:28:37  rwiegand
+# Updated format of grism calibration.  Now grism equation and zeroth order
+# position are a function of position on the detector.
+#
+# Revision 1.22  2004/09/17 18:48:19  rwiegand
+# Changed sourcex/y parameters to give 0th order position in DET world
+# coordinates [mm].  Use Task::FITS to load WCS.
+#
+# Revision 1.21  2004/09/17 13:11:13  rwiegand
+# Updated calibration extension names to SPECRESP<filter>.
+#
+# Revision 1.20  2004/07/09 16:18:43  rwiegand
+# Implemented CALDB support.
+#
+# Revision 1.19  2004/05/28 15:47:39  rwiegand
+# Transfer MJDREF, MJDREFI, MJDREFF cards to output.
+#
+# Revision 1.18  2004/05/12 17:12:38  rwiegand
+# Intra-tool parameter consistency effort.
+#
+# Revision 1.17  2004/04/02 22:43:43  rwiegand
+# Split wave scale table in two: SPECTRUM for Xspec, CALSPEC holding net counts
+# and flux information.  Rounded extracted numbers to arrive at counts for
+# each bin.  Calculate Poissonian error numbers.
+#
+# Revision 1.16  2004/03/04 16:08:14  rwiegand
+# Promoted storeHeaderKeywords to the super-class.
+#
+# Revision 1.15  2004/03/03 19:25:26  rwiegand
+# Updated CHANTYPE keyword to PI [to match output of uvotrmfgen].
+#
+# Revision 1.14  2004/03/01 22:58:04  rwiegand
+# Shifted values in output scale to account for zeroth order extraction.
+# Simplified calculations of net counts/error and flux/error.
+#
+# Revision 1.13  2004/03/01 16:08:05  rwiegand
+# Updated flux units.  Corrected net error calculation.  When total counts are
+# 0, set total error to 1 / column pixels.  Calculate RA_OBJ,DEC_OBJ values
+# from input ra,dec [or sourcex,sourcey].
+#
+# Revision 1.12  2004/02/27 16:35:25  rwiegand
+# Tool now makes use of bad pixel map to determine quality of channels in
+# output.  Updated formats for flux conversion and grating equation calibration
+# files.  Create total (source+background) and background output files
+# that are Xspec compatible.
+#
+# Revision 1.11  2003/08/28 18:41:52  miket
+# global name change from uvotgrism to uvotimgrism
+#
+# Revision 1.10  2003/07/07 15:58:46  rwiegand
+# Read sky WCS rotation keyword.
+#
+# Revision 1.9  2003/07/01 18:54:29  rwiegand
+# Implemented loading of grating equation from calibration file.
+#
+# Revision 1.8  2003/06/30 17:50:09  rwiegand
+# Allow user to specify source using RA and DEC.
+#
+# Revision 1.7  2003/06/27 20:33:00  rwiegand
+# Recombined extracted region and wave scale into a single output file.
+# Modified to include 0th order in extracted region.  Updated wavelength
+# equation constants.  Updated unit test to run with UVOT test data.
+#
+# Revision 1.6  2003/06/11 21:10:03  miket
+# global name change ugrism to uvotgrism
+#
+# Revision 1.5  2003/05/14 18:06:24  rwiegand
+# *** empty log message ***
+#
+# Revision 1.4  2003/05/14 13:33:27  rwiegand
+# Implemented flux calibration.  Added unit test and help file.
+#
+# Revision 1.3  2003/04/18 21:19:45  rwiegand
+# Switched from determining background by fitting Gaussians to a linear
+# average over pixels adjacent to the extracted region.
+#
+# Revision 1.2  2003/04/10 19:37:22  rwiegand
+# Added ugrism parameters for processing a single image or all extensions of
+# the input file.  Write wavelength scale and extracted image to separate files.
+# Changed backexc parameter to be a number of pixels.
+#
+# Revision 1.1  2003/04/10 14:01:01  rwiegand
+# Added ugrism driver.
+#
+
+use strict;
+
+package UVOT::Grism;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use POSIX;
+use FileHandle;
+use File::Basename;
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use SimpleFITS;
+use Math;
+use Math::Polynomial;
+use Math::Spline;
+
+
+use constant UVGRISM  => 'UGRISM';
+use constant VGRISM   => 'VGRISM';
+
+use constant cm_per_angstrom => 1e-8;
+use constant h_erg_s => 6.6260755e-27;
+use constant c_cm_per_s => 2.99792458e10;
+
+# degree of grism equation
+use constant POLY_DEGREE => 10;
+
+use constant NULL_FLUX => -1;
+
+use constant MAX_HALF_ZEROTH_WIDTH => 40;
+		# half the maximum width of zeroth order in _unbinned_ pixels
+
+
+
+# main
+{
+	my $tool = UVOT::Grism->new(version => '1.6');
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			validateEnvironment
+			initialize
+			loadGrismHeader
+			setExtractionAngle
+			loadBadPixelHeader
+			loadTeldefHeader
+			findPhysicalPosition
+			reportZerothOrderPosition
+			loadGratingEquationCalibration
+			determineDispersionLimits
+			loadFluxCalibration
+			transformBadPixelMap
+			performExtraction
+			buildWavelengthScale
+			writeResults
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+}
+
+
+
+sub round ($)
+{
+	my ($x) = @_;
+	my $y = POSIX::floor($x + 0.5);
+	return $y;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file badpixfile=file outfile=file backfile=file
+				wavefile=file areafile=file teldeffile=file
+				ra=real dec=real sourcex=real sourcey=real
+				ang=real wavemin=real wavemax=real
+				srcwid=int bkgwid1=int bkgoff1=int bkgwid2=int bkgoff2=int 
+				nsigma=real inreg=string
+				cleanup=bool clobber=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+
+	# parameter validation
+	my $args = $self->args;
+
+	if ($self->isValid) {
+
+		$self->{srcwidth} = $args->{srcwid};
+		$self->{extwidth} = $args->{bkgwid1} + $args->{bkgoff1}
+					+ $args->{srcwid} + $args->{bkgwid2} + $args->{bkgoff2};
+
+		$self->{srclower} = $args->{bkgwid1} + $args->{bkgoff1};
+		$self->{srcupper} = $self->{srclower} + $args->{srcwid};
+
+		$self->{bkglower} = $args->{bkgwid1};
+		$self->{bkgupper} = $self->{srcupper} + $args->{bkgoff2};
+
+		$self->{srcbkg1} = $self->{srcwidth}/2 + $args->{bkgwid1} + $args->{bkgoff1};
+		$self->{srcbkg2} = $self->{srcwidth}/2 + $args->{bkgwid2} + $args->{bkgoff2};
+
+		$self->report('regions:'
+			. "\n\tsource [$self->{srclower}, $self->{srcupper})"
+			. "\n\tlower background [0, $self->{bkglower})"
+			. "\n\tupper background [$self->{bkgupper}, $self->{extwidth})");
+	}
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile backfile)) {
+			my $path = $args->{$key};
+			if (-e $path) {
+				$self->error(BAD_OUTPUT,
+					"$path exists and clobber not set");
+			}
+		}
+	}
+
+
+	if ($self->isValid) {
+
+		$self->{lambdamin} = $args->{wavemin};
+		$self->{lambdamax} = $args->{wavemax};
+	}
+
+	my ($outname, $outdir) = File::Basename::fileparse($args->{outfile});
+	my $extre = qr(\.[^\.]*$);
+
+	foreach my $tag (qw(in)) {          # outreg not implemented yet
+		my $regpar = $tag . 'reg';
+		my $filepar = $tag . 'file';
+		if ($args->{$regpar} =~ /^DEFAULT$/i) {
+			my ($name, $dir, $ext) =
+				File::Basename::fileparse($args->{$filepar}, $extre);
+			$self->{$regpar} = File::Spec->catfile($outdir, "$name.reg");
+		}
+		elsif ($args->{$regpar} !~ /^NONE$/i) {
+			$self->{$regpar} = $args->{$regpar};
+		}
+
+		if ($self->{$regpar}) {
+			$self->verbose("$regpar is $self->{$regpar}");
+		}
+		else {
+			$self->verbose("no$regpar");
+		}
+	}
+}
+
+
+sub loadGrismHeader
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $path = $args->{infile};
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT,
+			"unable to open $path: $status");
+	}
+	else {
+		my $header = $fits->read_header;
+
+		$self->{grismHeader} = { };
+		$self->{grismCards} = [ ];
+		$self->{fullHeader} = $header;
+
+		$self->storeHeaderKeywords($header,
+				path => $path,
+				keys => [ qw(TELESCOP INSTRUME FILTER
+						DATE-OBS DATE-END TSTART TSTOP EXPOSURE
+						NAXIS NAXIS1 NAXIS2 FILTER WHEELPOS
+						WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY BINX BINY) ],
+				hash => $self->{grismHeader},
+				);
+
+		if (my $detnam = $header->{DETNAM}) {
+			$self->{grismHeader}{DETNAM} = $detnam;
+		}
+
+		if ($self->{grismHeader}{NAXIS} != 2) {
+			$self->error(BAD_INPUT,
+				"invalid number of grism axes $header->{NAXIS}");
+		}
+
+		$self->{wcsDET} = $self->getWCS($header);
+		$self->{wcsSKY} = $self->getWCS($header, suffix => 'S');
+		if (not $self->{wcsDET} or not $self->{wcsSKY}) {
+			$self->error(BAD_INPUT,
+				"unable to retrieve DET/SKY WCS information");
+		}
+
+		$self->storeHeaderCards($fits,
+				path => $path,
+				types => [ TYP_COMM_KEY, TYP_CONT_KEY,
+                    TYP_USER_KEY, TYP_REFSYS_KEY ],
+				array => $self->{grismCards},
+				);
+
+		$fits->close_file($status);
+
+		$self->{WHEELPOS} = $header->{WHEELPOS};
+
+		# determine the input filter
+		#	error if not UV or V grism
+		my $header = $self->{grismHeader};
+		my $filter = $header->{FILTER} || '';
+
+		if ($filter eq UVGRISM or $filter eq VGRISM) {
+			$self->{FILTER} = $filter;
+			$self->report("FILTER is $filter");
+			if ($filter eq UVGRISM) {
+				$self->{precal} = 'U';
+			}
+			else {
+				$self->{precal} = 'V';
+			}
+		}
+		else {
+			$self->error(BAD_INPUT,
+				"FILTER keyword value [$filter] does not indicate grism image");
+		}
+
+		$self->{BINNING} = $self->{grismHeader}{BINX};
+	}
+
+}
+
+
+sub setExtractionAngle
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $angle = $args->{ang};
+	if ($angle < 0) {
+		# see email from Wayne Landsman 2007 Dec 03
+		if ($self->{WHEELPOS} == 160) {
+			$angle = 144.5;
+		}
+		elsif ($self->{WHEELPOS} == 200) {
+			$angle = 151.4;
+		}
+		elsif ($self->{WHEELPOS} == 955) {
+			$angle = 140.5;
+		}
+		elsif ($self->{WHEELPOS} == 1000) {
+			$angle = 148.1;
+		}
+		else {
+			# about the middle
+			$angle = 146;
+			$self->warning("unexpected WHEELPOS $self->{WHEELPOS} roughly estimating extraction angle");
+		}
+		$self->{angle} = $angle;
+	}
+	else {
+		$self->{angle} = $angle;
+	}
+
+	$self->{cosangle} = cos(Math::toRadians($self->{angle}));
+	$self->{sinangle} = sin(Math::toRadians($self->{angle}));
+
+	$self->report(sprintf('using extraction angle %.2f', $self->{angle}))
+		if $self->chatter;
+}
+
+
+# copied from uvotexpmap
+sub fakeQualityFile
+{
+	my ($self, $hdu) = @_;
+
+	my $width = $hdu->{WINDOWDX} / $hdu->{BINX};
+	my $height = $hdu->{WINDOWDY} / $hdu->{BINY};
+
+	my $qfile = $self->temporary('quality');
+
+	my $headfile = $self->temporary('head');
+	my $fh = FileHandle->new($headfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $headfile [$!]");
+		return;
+	}
+	foreach my $key (qw(EXTNAME TELESCOP INSTRUME FILTER
+			DATE-OBS DATE-END TSTART TSTOP EXPOSURE
+			RA_PNT DEC_PNT PA_PNT
+			WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY BINX BINY)) {
+		$fh->print("$key = $hdu->{$key}\n");
+	}
+
+	my $crval1 = $hdu->{WINDOWX0} + $hdu->{BINX}/2 - 0.5;
+	my $crval2 = $hdu->{WINDOWY0} + $hdu->{BINY}/2 - 0.5;
+	$fh->print("
+CTYPE1 = RAWX
+CTYPE2 = RAWY
+CRPIX1 = 1.0
+CRPIX2 = 1.0
+CRVAL1 = $crval1
+CRVAL2 = $crval2
+CDELT1 = $hdu->{BINX}
+CDELT2 = $hdu->{BINY}
+CUNIT1 = pixel
+CUNIT2 = pixel
+");
+
+	$fh->close;
+
+	my $command = $self->buildCommand('ftimgcreate',
+			bitpix => 16,
+			naxes => "$width,$height",
+			datafile => 'NONE',
+			outfile => $qfile,
+			headfile => $headfile,
+			);
+	$self->shell($command);
+
+	return $qfile;
+}
+
+
+sub loadBadPixelHeader
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $path = $args->{badpixfile};
+	if ($path =~ /^NONE$/i) {
+		$path = $self->fakeQualityFile($self->{grismHeader});
+		return if not $self->isValid;
+	}
+
+	$self->{badpixfile} = $path;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT,
+			"unable to open $path: $status");
+	}
+	else {
+		my $header = $fits->read_header;
+
+		$self->{badpixHeader} = { };
+
+		$self->storeHeaderKeywords($header,
+				path => $path,
+				keys => [ qw(NAXIS NAXIS1 NAXIS2) ],
+				hash => $self->{badpixHeader},
+				);
+
+		if ($self->{badpixHeader}{NAXIS} != 2) {
+			$self->error(BAD_INPUT,
+				"invalid number of bad pixel map axes $header->{NAXIS}");
+		}
+
+		$self->storeHeaderKeywords($header,
+				path => $path,
+				keys => [ qw(CRPIX1 CRPIX2 CDELT1 CDELT2) ],
+				hash => $self->{badpixHeader},
+				);
+
+		$fits->close_file($status);
+
+		$self->{halfzeroth} = round(MAX_HALF_ZEROTH_WIDTH / $self->{BINNING});
+	}
+}
+
+
+sub loadTeldefHeader
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{teldeffile};
+
+	my $path = 'none';
+	if ($arg =~ /^CALDB/i) {
+		my $header = $self->{grismHeader};
+
+        my $expression = "FILTER.eq.$header->{FILTER}";
+		if (my $detnam = $header->{DETNAM}) {
+			$expression .= ".and.DETNAM.eq.$detnam";
+		}
+		elsif (my $wheelpos = $header->{WHEELPOS}) {
+			$expression .= ".and.WHEELPOS.eq.$wheelpos";
+		}
+		$path = $self->queryCALDB('TELDEF',
+				header => $header,
+				expression => $expression,
+				qualifiers => $arg,
+				asString => 1,
+				);
+		$self->parameterNote(teldeffile => $path)
+			if $path;
+	}
+	else {
+		$path = $arg;
+	}
+
+	if (not $self->isValid or not $path) {
+		$self->error(BAD_INPUT, "unable to load TELDEF $arg");
+		return;
+	}
+
+	$self->{teldefpath} = $path;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT,
+			"unable to open $path: $status");
+	}
+	else {
+		my $header = $fits->read_header;
+
+		$self->{teldefHeader} = { };
+
+		$self->storeHeaderKeywords($header,
+				path => $path,
+				keys => [ qw(DET_XSIZ DET_YSIZ DET_XSCL DET_YSCL) ],
+				hash => $self->{teldefHeader},
+				);
+
+		$fits->close_file($status);
+	}
+}
+
+
+sub findPhysicalPosition
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my ($detx_center, $dety_center) = $self->worldToPix($self->{wcsDET}, 0, 0);
+
+	$self->{wcsPHYS} = { 
+		TYPE => Task::FITS::LINEAR,
+		CRPIX1 => $detx_center,
+		CRPIX2 => $dety_center,
+		CRVAL1 => 1100.5, # ($teldef->{DET_XSIZ} + 1) / 2
+		CRVAL2 => 1100.5,
+		CDELT1 => 1,
+		CDELT2 => 1,
+		CTYPE1 => 'PHYSX',
+		CTYPE2 => 'PHYSY',
+		CROTA2 => 0,
+	};
+
+	if ($args->{ra} < 0) {
+
+		my $xpix = $args->{sourcex};
+		my $ypix = $args->{sourcey};
+
+		$self->{zerox_fits} = $xpix;
+		$self->{zeroy_fits} = $ypix;
+
+		($self->{inx_phys}, $self->{iny_phys}) = $self->pixToWorld(
+				$self->{wcsPHYS}, $xpix, $ypix);
+
+		($self->{zerox_deg}, $self->{zeroy_deg}) =
+				$self->imageToSky($self->{wcsSKY}, $xpix, $ypix);
+
+		return if not $self->isValid;
+	}
+	else {
+		$self->{zerox_deg} = $self->{ra} = $args->{ra};
+		$self->{zeroy_deg} = $self->{dec} = $args->{dec};
+
+		# convert RA, DEC to pixels
+		my ($xpix, $ypix) = $self->skyToDetector($self->{wcsSKY},
+				$self->{ra}, $self->{dec});
+		return if not $self->isValid;
+
+		$self->{zerox_fits} = $xpix;
+		$self->{zeroy_fits} = $ypix;
+
+		($self->{inx_phys}, $self->{iny_phys}) = $self->pixToWorld(
+				$self->{wcsPHYS}, $xpix, $ypix);
+
+		$self->report("input position given as RA $self->{ra}, DEC $self->{dec} [deg]"
+				. sprintf("\n\t=> corresponds to distorted %.2f, %.2f [FITS pix]",
+						$self->{inx_dist}, $self->{iny_dist})
+				. sprintf("\n\t=> corresponds to image %.2f, %.2f [FITS pix]",
+						$xpix, $ypix)
+				. sprintf("\n\t=> and %.2f, %.2f [PHYS pix]",
+						$self->{inx_phys}, $self->{iny_phys})
+				);
+
+		my $header = $self->{grismHeader};
+		if ($xpix < 1 or $xpix > $header->{NAXIS1}
+				or $ypix < 1 or $ypix > $header->{NAXIS2}) {
+			$self->warning("RA $self->{ra}, DEC $self->{dec} off image");
+		}
+	}
+}
+
+
+sub skyToDetector
+{
+	my ($self, $wcs, $ra, $dec) = @_;
+
+	my $args = $self->args;
+
+	my $skyfile = $self->temporary('sky', ext => '.txt');
+	$self->shell("echo $ra $dec > $skyfile");
+
+	my $xyfile = $self->temporary('xy', ext => '.txt');
+	my $command = $self->buildCommand('uvotapplywcs',
+			infile => $skyfile,
+			outfile => $xyfile,
+			wcsfile => $args->{infile},
+			operation => 'WORLD_TO_PIX',
+			format => '%.6f %.6f => %.3f %.3f',
+			from => 'S',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my $fh = FileHandle->new($xyfile);
+	my @lines = <$fh>;
+	undef($fh);
+	if (@lines != 1) {
+		my $count = @lines;
+		$self->error(BAD_EXECUTE,
+				"skyToDetector did not yield one record [$count]");
+		return;
+	}
+
+	my $reReal = qr(-?\d+\.\d+);
+
+	my ($xdist, $ydist);
+	if ($lines[0] =~ /^($reReal) ($reReal) => ($reReal) ($reReal)$/) {
+		my $ra1 = $1;
+		my $dec1 = $2;
+		$xdist = $3;
+		$ydist = $4;
+		if (abs($ra - $ra1) > 1e-5 or abs($dec - $dec1) > 1e-5) {
+			die('RA/DEC mismatch');
+		}
+	}
+	else {
+		$self->error(BAD_OUTPUT,
+				"skyToDetector: bad output format [$lines[0]]");
+		return;
+	}
+
+	$self->{inx_dist} = $xdist;
+	$self->{iny_dist} = $ydist;
+
+	my ($xpix, $ypix);
+
+	my $k = $self->{fullHeader};
+	if ($k->{AP_ORDER} and $k->{BP_ORDER}) {
+		my $dx = $xdist - $wcs->{CRPIX1};
+		my $dy = $ydist - $wcs->{CRPIX2};
+
+		my $dxNew = $dx;
+		my $dyNew = $dy;
+		my $order = Math::max($k->{AP_ORDER}, $k->{BP_ORDER});
+
+		for (my $i = 0; $i < $order; ++$i) {
+			for (my $j = 0; $j < $order; ++$j) {
+				if ($i + $j > 0 and $i + $j <= $order) {
+					my $dxidyj = $dx ** $i * $dy ** $j;
+					my $aij = $k->{join('_', 'AP', $i, $j)} || 0;
+					if ($aij != 0) {
+						$dxNew += $aij * $dxidyj;
+					}
+					my $bij = $k->{join('_', 'BP', $i, $j)} || 0;
+					if ($bij != 0) {
+						$dyNew += $bij * $dxidyj;
+					}
+				}
+			}
+		}
+
+		$xpix = $dxNew + $wcs->{CRPIX1};
+		$ypix = $dyNew + $wcs->{CRPIX2};
+	}
+	else {
+		$self->warning("no distortion polynomial [AB]P_*");
+		$xpix = $xdist;
+		$ypix = $ydist;
+	}
+
+	return ($xpix, $ypix);
+}
+
+
+sub imageToSky
+{
+	my ($self, $wcs, $xfits, $yfits) = @_;
+
+	my ($xdist, $ydist);
+
+	my $k = $self->{fullHeader};
+	if ($k->{A_ORDER} and $k->{B_ORDER}) {
+		my $dx = $xfits - $wcs->{CRPIX1};
+		my $dy = $yfits - $wcs->{CRPIX2};
+
+		my $dxNew = $dx;
+		my $dyNew = $dy;
+		my $order = Math::max($k->{A_ORDER}, $k->{B_ORDER});
+
+		for (my $i = 0; $i < $order; ++$i) {
+			for (my $j = 0; $j < $order; ++$j) {
+				if ($i + $j > 0 and $i + $j <= $order) {
+					my $dxidyj = $dx ** $i * $dy ** $j;
+					my $aij = $k->{join('_', 'A', $i, $j)} || 0;
+					if ($aij != 0) {
+						$dxNew += $aij * $dxidyj;
+					}
+					my $bij = $k->{join('_', 'B', $i, $j)} || 0;
+					if ($bij != 0) {
+						$dyNew += $bij * $dxidyj;
+					}
+				}
+			}
+		}
+
+		$xdist = $dxNew + $wcs->{CRPIX1};
+		$ydist = $dyNew + $wcs->{CRPIX2};
+	}
+	else {
+		$self->warning("no distortion polynomial [AB]_*");
+		$xdist = $xfits;
+		$ydist = $yfits;
+	}
+
+	my $xyfile = $self->temporary('xy', ext => '.txt');
+	$self->shell("echo $xdist $ydist > $xyfile");
+
+	my $skyfile = $self->temporary('sky', ext => '.txt');
+
+	my $command = $self->buildCommand('uvotapplywcs',
+			infile => $xyfile,
+			outfile => $skyfile,
+			wcsfile => $self->args->{infile},
+			operation => 'PIX_TO_WORLD',
+			format => '%.3f %.3f => %.3f %.3f',
+			to => 'S',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my $fh = FileHandle->new($skyfile);
+	my @lines = <$fh>;
+	undef($fh);
+	if (@lines != 1) {
+		my $count = @lines;
+		$self->error(BAD_EXECUTE,
+				"imageToSky did not yield one record [$count]");
+		return;
+	}
+
+	my $reReal = qr(-?\d+\.\d+);
+
+	my ($ra, $dec);
+
+	if ($lines[0] =~ /^($reReal) ($reReal) => ($reReal) ($reReal)$/) {
+		my $x1 = $1;
+		my $y1 = $2;
+		$ra = $3;
+		$dec = $4;
+		if (abs($x1 - $xdist) > 1e-3 or abs($y1 - $ydist) > 1e-3) {
+			die('x/y mismatch');
+		}
+	}
+	else {
+		$self->error(BAD_OUTPUT,
+				"imageToSky: bad output format [$lines[0]]");
+		return;
+	}
+
+	return ($ra, $dec);
+}
+
+
+sub loadFluxCalibration
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{areafile};
+
+	my $path = 'none';
+	if ($arg =~ /^CALDB/i) {
+		$path = $self->queryCALDB('SPECRESP',
+				header => $self->{grismHeader},
+				expression => "WHEELPOS.eq.$self->{WHEELPOS}",
+				qualifiers => $arg,
+				asString => 1, withExt => 1,
+				);
+		$self->parameterNote(areafile => $path)
+			if $path;
+	}
+	else {
+		$path = $arg . '[SPECRESP' . "$self->{FILTER}$self->{WHEELPOS}]";
+	}
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT,
+			"unable to open $path: $status");
+	}
+	else {
+		$self->{fluxcal} = $self->loadFluxExtension($fits);
+
+		$fits->close_file($status);
+	}
+}
+
+
+sub loadFluxExtension
+{
+	my ($self, $fits) = @_;
+
+	my $status = 0;
+
+	my $header = $fits->read_header;
+
+	my @columns = (
+		{ name => 'WAVE_MIN' },
+		{ name => 'WAVE_MAX' },
+		{ name => 'SPECRESP' },
+	);
+
+	my $count = -1;
+	$fits->get_num_rows($count, $status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+			"unable to determine number of rows in flux calibration table");
+	}
+
+	my %keys;
+
+	foreach my $col (@columns) {
+
+		$col->{data} = [ ];
+
+		my $index = -1;
+		my $null = -1;
+		my $nulls = -1;
+
+		if ($fits->get_colnum(0, $col->{name}, $index, $status)) {
+			$self->error(BAD_INPUT,
+				"unable to locate flux calibration column $col->{name}");
+		}
+		elsif ($fits->read_col_dbl($index, 1, 1, $count, $null,
+				$col->{data}, $nulls, $status)) {
+			$self->error(BAD_INPUT,
+				"unable to load flux calibration column $col->{name}");
+		}
+
+		if ($col->{name} eq 'WAVE_MIN' or $col->{name} eq 'WAVE_MAX') {
+			my $tunitn = "TUNIT$index";
+			$self->storeHeaderKeywords($header,
+					keys => [ $tunitn ], hash => \%keys);
+			$keys{$col->{name}} = $keys{$tunitn};
+		}
+	}
+
+	if (not defined($keys{WAVE_MIN}) or not defined($keys{WAVE_MAX})) {
+		$self->error(BAD_INPUT, 'missing WAVE_MIN or WAVE_MAX units');
+	}
+	elsif ($keys{WAVE_MIN} ne $keys{WAVE_MAX}) {
+		$self->error(BAD_INPUT, 'different WAVE_MIN and WAVE_MAX units');
+	}
+	else {
+		my $scale;
+		my $unit = $keys{WAVE_MIN};
+		if ($unit eq 'angstrom') {
+			$scale = 1;
+		}
+		else {
+			$self->error(BAD_INPUT,
+				"unrecognized flux wavelength unit '$unit'");
+		}
+	}
+
+	# convert from parallel arrays to array of keyed structs
+	my @table;
+	for (my $i = 0; $i < $count; ++$i) {
+		my %record;
+		foreach my $col (@columns) {
+			$record{$col->{name}} = $col->{data}[$i];
+		}
+		push(@table, \%record);
+	}
+
+	return \@table;
+}
+
+
+sub reportZerothOrderPosition
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $xfits = $self->{zerox_fits};
+	my $yfits = $self->{zeroy_fits};
+
+	my ($xphys, $yphys) = $self->pixToWorld($self->{wcsPHYS}, $xfits, $yfits);
+	$self->{zerox_phys} = $xphys;
+	$self->{zeroy_phys} = $yphys;
+
+	my ($xmm, $ymm) = $self->pixToWorld($self->{wcsDET}, $xfits, $yfits);
+	$self->{zerox_mm} = $xmm;
+	$self->{zeroy_mm} = $ymm;
+
+	my $xdeg = $self->{zerox_deg};
+	my $ydeg = $self->{zeroy_deg};
+
+	$self->report(
+			sprintf("zeroth order at %.2f, %.2f [input FITS pix]",
+					$xfits, $yfits)
+			. sprintf("\n\t=> corresponds to %.2f, %.2f [PHYS pix]",
+					$xphys, $yphys)
+			. sprintf("\n\t=> and %.4f, %.4f [mm]", $xmm, $ymm)
+			. sprintf("\n\t=> and %.6f, %.6f [SKY deg]", $xdeg, $ydeg)
+			);
+}
+
+
+sub determineDispersionLimits
+{
+	my ($self) = @_;
+
+	my $x0 = $self->{zerox_phys};
+	my $y0 = $self->{zeroy_phys};
+
+	foreach my $tag (qw(min max)) {
+
+		my $lambda = $self->{'lambda' . $tag};
+		my $dispkey = 'disp' . $tag;
+
+		my $p = [ $x0, $y0 ];
+
+		for (my $i = 0; $i < 5; ++$i) {
+
+			$self->determineGratingEquation(@$p);
+
+			my $offset = $self->lambdaToZerothOrderOffset($lambda);
+
+			my $q = $self->physicalPosition($offset * $self->{BINNING});
+
+			my $delta = Math::hypot($p->[0] - $q->[0], $p->[1] - $q->[1]);
+			my $lambda = $self->zerothOrderOffsetToLambda($offset);
+			$self->verbose(sprintf("corrected position is %.1f, %.1f => %.1f A",
+					@$q, $lambda));
+			$self->{$dispkey} = $offset;
+			$p = $q;
+
+			last if ($delta < 0.1);
+		}
+	}
+
+	$self->{dispmin} = POSIX::ceil($self->{dispmin});
+	$self->{dispmax} = POSIX::floor($self->{dispmax});
+}
+
+
+sub loadGratingEquationCalibration
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{wavefile};
+
+	my $path = '';
+	if ($arg =~ /^CALDB/i) {
+		$path = $self->queryCALDB('GRISMEQ',
+				header => $self->{grismHeader},
+				qualifiers => $arg,
+				asString => 1, withExt => 1,
+				);
+		$self->parameterNote(wavefile => $path)
+			if $path;
+	}
+	else {
+		my $extname = $self->{precal} . 'GRISMEQ';
+		$path = $arg . "[$extname]";
+	}
+
+	my @table;
+	my $dspunit = '';
+	my $wavunit = '';
+	my $status = SimpleFITS->readonly($path)
+			->loadtable(\@table)
+			->readkey(DSP_UNIT => $dspunit)
+			->readkey(WAV_UNIT => $wavunit)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to open $path [$status]");
+	}
+	else {
+		$self->storeGratingEquation(\@table, $dspunit, $wavunit);
+	}
+}
+
+
+sub storeGratingEquation
+{
+	my ($self, $table, $dspunit, $wavunit) = @_;
+
+	# collect the records with the proper clocking
+	my @grismEq;
+	$self->{GRISMEQs} = \@grismEq;
+	foreach my $e (@$table) {
+		if ($e->{CLOCKING} == $self->{WHEELPOS}) {
+			push(@grismEq, $e);
+		}
+	}
+
+	if (not @grismEq) {
+		$self->error(BAD_INPUT,
+			"no grism equation calibration for WHEELPOS $self->{WHEELPOS}");
+	}
+
+# validate/convert grating equation units
+
+	if ($dspunit !~ /pixel/) {
+		$self->error(BAD_INPUT,
+				"grating equation dispersion in $dspunit [use pixels]");
+	}
+
+	my $wavscale = 1;
+	if ($wavunit eq 'nm') {
+		$wavscale = 10;
+	}
+	elsif ($wavunit eq 'um') {
+		$wavscale = 1e4;
+	}
+	elsif ($wavunit ne 'A' and $wavunit !~ /angstrom/) {
+		$self->error(BAD_INPUT,
+				"grating equation wavelength in $wavunit [use A|angstrom|nm|um]");
+	}
+
+
+	my $degree = -1;
+	foreach my $e (@grismEq) {
+		my $coeff = $e->{COEFF};
+		if ($degree < 0) {
+			$degree = @$coeff;
+		}
+		elsif ($degree != @$coeff) {
+			my $other = @$coeff;
+			$self->error(BAD_INPUT,
+					"inconsistent polynomial degrees [$degree !=$other]");
+			last;
+		}
+		foreach my $x (@$coeff) {
+			$x *= $wavscale;
+		}
+	}
+}
+
+
+
+sub determineGratingEquation
+{
+	my ($self, $detx, $dety) = @_;
+
+	my ($lowerLeft, $lowerRight, $upperLeft, $upperRight);
+
+	foreach my $e (@{ $self->{GRISMEQs} }) {
+
+		$e->{DISTANCE} = Math::hypot($e->{DETX} - $detx, $e->{DETY} - $dety);
+
+		if ($e->{DETX} < $detx) {
+			if ($e->{DETY} < $dety) {
+				if (not $lowerLeft
+						or $e->{DISTANCE} < $lowerLeft->{DISTANCE}) {
+					$lowerLeft = $e;
+				}
+			}
+			else {
+				if (not $upperLeft
+						or $e->{DISTANCE} < $upperLeft->{DISTANCE}) {
+					$upperLeft = $e;
+				}
+			}
+		}
+		else {
+			if ($e->{DETY} < $dety) {
+				if (not $lowerRight
+						or $e->{DISTANCE} < $lowerRight->{DISTANCE}) {
+					$lowerRight = $e;
+				}
+			}
+			else {
+				if (not $upperRight
+						or $e->{DISTANCE} < $upperRight->{DISTANCE}) {
+					$upperRight = $e;
+				}
+			}
+		}
+	}
+
+	# if all surrounding points are found, perform inverse distance
+	# interpolation otherwise, just use the closest
+
+	if ($lowerLeft and $lowerRight and $upperLeft and $upperRight) {
+		my $degree = scalar(@{ $lowerLeft->{COEFF} });
+		my @coeff;
+		for (my $i = 0; $i < $degree; ++$i) {
+			my $totWeight = 0;
+			my $totCoeff = 0;
+			foreach my $e ($lowerLeft, $lowerRight, $upperLeft, $upperRight) {
+				# if this point is within epsilon of the position, treat it
+				# as the exact coefficient
+use constant COEFF_EPSILON => 1e-3;
+				if ($e->{DISTANCE} < COEFF_EPSILON) {
+					$totWeight = 1;
+					$totCoeff = $e->{COEFF}[$i];
+					last;
+				}
+				else {
+					my $weight = 1 / $e->{DISTANCE};
+					$totWeight += $weight;
+					$totCoeff += $e->{COEFF}[$i] * $weight;
+				}
+			}
+
+			my $coeff = $totCoeff / $totWeight;
+			push(@coeff, $coeff);
+		}
+
+		$self->{dispersionToLambda} = Math::Polynomial->new(@coeff);
+	}
+	else {
+		my $closest = undef;
+		foreach my $e ($lowerLeft, $lowerRight, $upperLeft, $upperRight) {
+			next if not defined($e);
+			if (not defined($closest)
+					or $e->{DISTANCE} < $closest->{DISTANCE}) {
+				$closest = $e;
+			}
+		}
+		$self->{dispersionToLambda} = Math::Polynomial->new(@{ $closest->{COEFF} });
+	}
+}
+
+
+
+sub zerothOrderOffsetToLambda
+{
+	my ($self, $offset) = @_;
+	my $dispersion = $offset * $self->{BINNING};
+	my $lambda = $self->{dispersionToLambda}->value($dispersion);
+	return $lambda;
+}
+
+
+sub lambdaToZerothOrderOffset
+{
+	my ($self, $lambda) = @_;
+
+	# temporarily modify the dispersion equation to solve for lambda
+	my $coeff0 = $self->{dispersionToLambda}[0] - $lambda;
+
+	local($self->{dispersionToLambda}[0]) = $coeff0;
+
+	# make a better guess?
+	my $dispersion = $self->{dispersionToLambda}->findRoot(guess => 1000);
+
+	my $offset = $dispersion / $self->{BINNING};
+	my $str = sprintf("lambda %.2f => dispersion %.2f [offset %.2f]",
+			$lambda, $dispersion, $offset);
+	$self->report($str);
+
+	return $offset;
+}
+
+
+sub findExtractionPoint
+{
+	my ($self, $x0, $y0, $dx, $dy) = @_;
+
+	my $x1 = $x0 + $dx * $self->{cosangle} - $dy * $self->{sinangle};
+	my $y1 = $y0 + $dx * $self->{sinangle} + $dy * $self->{cosangle};
+
+	return [ $x1, $y1 ];
+}
+
+
+sub findExtractionBox
+{
+	my ($self, $x0, $y0, $offx, $offy, $width, $height, $text) = @_;
+	my $center = $self->findExtractionPoint($x0, $y0,
+			$offx + $width/2, $offy + $height/2);
+	my $offset = $text eq 'rectext' ? 0 : ($ENV{UVOTIMGRISM_OFFSET} || 30);
+	return { cx => $center->[0], cy => $center->[1],
+			width => $width, height => $height, angle => $self->{angle},
+			text => $text, offset => $offset };
+}
+
+
+sub putBoxRegion
+{
+	my ($self, $fh, $box) = @_;
+	$fh->printf("image; box(%.2f, %.2f, %.2f, %.2f, %.2f)\n",
+			$box->{cx}, $box->{cy}, $box->{width}, $box->{height},
+			$box->{angle});
+
+	my $lx = $box->{cx};
+	my $ly = $box->{cy};
+	if (my $offset = $box->{offset}) {
+		my $radians = Math::toRadians($box->{angle});
+		my $offset = $ENV{UVOTIMGRISM_OFFSET} || 30;
+		$lx += ($box->{width} + $offset) * cos($radians) / 2;
+		$ly += ($box->{width} + $offset) * sin($radians) / 2;
+	}
+
+	$fh->printf("image; text(%.2f, %.2f) # text={%s}\n",
+			$lx, $ly, $box->{text});
+}
+
+
+sub performExtraction
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $extheight = $self->{extwidth};
+	my $extlength = $self->{dispmax} + $self->{halfzeroth};
+
+	my $angle = Math::degreesToRadians($self->{angle});
+	$self->{cosangle} = cos($angle);
+	$self->{sinangle} = sin($angle);
+
+	# determine the (LL?) corner of the first extracted pixel [1,1]
+	my $ext0 = $self->findExtractionPoint(
+			$self->{zerox_fits}, $self->{zeroy_fits},
+			-$self->{halfzeroth}, -$self->{srcbkg1});
+	my ($extx0, $exty0) = @$ext0;
+
+	foreach my $type (qw(grism badpix)) {
+
+		my $infile = $type eq 'grism' ? $args->{infile} : $self->{badpixfile};
+
+		my $extpath = 'ext' . $type . 'path';
+		$self->{$extpath} = $self->temporary($type, ext => '.ext');
+
+		my $command = $self->buildCommand('rectext', 
+				infile     => $infile,
+				outfile    => $self->{$extpath},
+
+				angle      => $self->{angle},
+				width      => $extlength,
+				height     => $extheight,
+				x0         => $extx0,
+				y0         => $exty0,
+
+				chatter    => $args->{chatter},
+				history    => $args->{history},
+				clobber    => $args->{clobber},
+				);
+
+		$self->shell($command);
+
+		# ensure output image was created
+		if (not -e $self->{$extpath}) {
+			$self->error(BAD_OUTPUT,
+				"rectext output [$type] is missing");
+		}
+
+		# add WCS
+		if ($self->isValid) {
+			my $keypath = $self->temporary($type, ext => '.keys');
+			my $cdelt = $self->{BINNING} * $self->{teldefHeader}{DET_XSCL};
+			my @keycards = (
+				# the dispersion system is measured from the zeroth order
+				'CTYPE1 = DSPX / Along-dispersion axis',
+				'CTYPE2 = DSPY / Cross-dispersion axis',
+				'CUNIT1 = mm / WCS axis units',
+				'CUNIT2 = mm / WCS axis units',
+				'CRPIX1 = ' . $self->{halfzeroth} . ' / WCS reference position',
+				'CRPIX2 = ' . ($extheight / 2) . '/ WCS reference position',
+				'CRVAL1 = 0 / WCS reference value',
+				'CRVAL2 = 0 / WCS reference value',
+				'CDELT1 = ' . $cdelt . ' / WCS coordinate increment',
+				'CDELT2 = ' . $cdelt . ' / WCS coordinate increment',
+
+				# the DET system
+				'CTYPE1P = DETX / Detector X position',
+				'CTYPE2P = DETY / Detector Y position',
+				'CUNIT1P = pixel / WCS axis units',
+				'CUNIT2P = pixel / WCS axis units',
+				'CRPIX1P = ' . $self->{halfzeroth} . ' / WCS reference position',
+				'CRPIX2P = ' . ($extheight / 2) . ' / WCS reference position',
+				'CRVAL1P = ' . $self->{zerox_phys} . ' / WCS reference value',
+				'CRVAL2P = ' . $self->{zeroy_phys} . ' / WCS reference value',
+				'CDELT1P = ' . $self->{BINNING} . ' / WCS coordinate increment',
+				'CDELT2P = ' . $self->{BINNING} . ' / WCS coordinate increment',
+				'PC1_1P = ' . cos($angle),
+				'PC1_2P = ' . -sin($angle),
+				'PC2_1P = ' . sin($angle),
+				'PC2_2P = ' . cos($angle),
+			);
+
+			my $fh = FileHandle->new($keypath, 'w');
+			foreach my $k (@keycards) {
+				$fh->print("$k\n");
+			}
+			$fh->close;
+			my $command = $self->buildCommand('fthedit',
+					infile => $self->{$extpath},
+					keyword => '@' . $keypath,
+					);
+			$self->shell($command);
+		}
+
+		$self->loadExtractedRegion($self->{$extpath}, $type)
+			if $self->isValid;
+	}
+
+	if ($self->{inreg}) {
+		my $fh = FileHandle->new($self->{inreg}, 'w');
+		if (not $fh) {
+			$self->warning("unable to create $self->{inreg} [$!]");
+		}
+		else {
+			# determine the corners of each region
+			my $extreg = $self->findExtractionBox(
+					$extx0, $exty0,
+					0, 0,
+					$extlength, $extheight, 'rectext');
+
+			my $grismx0 = $self->{zerox_fits};
+			my $grismy0 = $self->{zeroy_fits};
+
+			my $grismlength = $self->{dispmax} - $self->{dispmin};
+
+			my $startx = $extlength - $self->{halfzeroth} - $grismlength;
+			my $b1reg = $self->findExtractionBox(
+					$grismx0, $grismy0,
+					$startx, -$self->{srcbkg1},
+					$grismlength, $args->{bkgwid1}, 'bkg1');
+
+			my $srcreg = $self->findExtractionBox(
+					$grismx0, $grismy0,
+					$startx, -$self->{srcwidth} / 2,
+					$grismlength, $self->{srcwidth}, 'src');
+
+			my $b2reg = $self->findExtractionBox(
+					$grismx0, $grismy0,
+					$startx, ($self->{srcbkg2} - $args->{bkgwid2}),
+					$grismlength, $args->{bkgwid2}, 'bkg2');
+
+			my $color = $ENV{UVOTIMGRISM_COLOR} || 'green';
+			my $font = $ENV{UVOTIMGRISM_FONT} || 'arial 12 normal';
+			$fh->print("# grism extraction region file
+global color=$color edit=1 move=0 delete=1 font={$font}
+image; point($self->{zerox_fits}, $self->{zeroy_fits}) # point=cross text={zeroth order center}
+");
+			$self->putBoxRegion($fh, $extreg);
+			$self->putBoxRegion($fh, $b1reg);
+			$self->putBoxRegion($fh, $b2reg);
+			$self->putBoxRegion($fh, $srcreg);
+# image; line($d1reg->{x0}, $d1reg->{y0}, $d1reg->{x1}, $d1reg->{y1}) # text={disp2 text}
+# image; line($d2reg->{x0}, $d2reg->{y0}, $d2reg->{x1}, $d2reg->{y1}) # text={disp2 text}
+
+			$fh->close;
+		}
+	}
+}
+
+
+sub loadExtractedRegion
+{
+	my ($self, $path, $type) = @_;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+
+	if (not $fits) {
+		$self->error(BAD_INPUT,
+			"unable to open $path [$status]");
+		return;
+	}
+
+	my $header = $fits->read_header;
+
+	$self->storeHeaderKeywords($header,
+			keys => [ qw(NAXIS NAXIS1 NAXIS2) ],
+			hash => $self->{'ext' . $type . 'Header'},
+			);
+
+	if (not $self->isValid) {
+		return;
+	}
+
+	my $imagetype = undef;
+	my $naxis = 0;
+	my @dims = (0) x 10;
+	if ($fits->get_img_parm($imagetype, $naxis, \@dims, $status)) {
+		$self->error(BAD_INPUT,
+			"unable to get image parameters [$status]");
+	}
+
+	if ($naxis != 2) {
+		$self->error(BAD_INPUT,
+			"invalid number of extracted axes $naxis");
+	}
+
+	my @pixels;
+	my %extregion = (
+		type => $type,
+		width => $dims[0],
+		height => $dims[1],
+		pixels => \@pixels,
+	);
+
+	my $count = $dims[0] * $dims[1];
+	my $nulls = 0;
+
+	if ($fits->read_pix(TFLOAT, [ 1, 1 ], $count, -1,
+			$extregion{pixels}, $nulls, $status)) {
+		$self->error(BAD_INPUT,
+			"unable to read image [$status]");
+	}
+
+	foreach my $row (@pixels) {
+		foreach my $x (@$row) {
+			$x = round($x);
+		}
+	}
+
+	$self->{'ext' . $type} = \%extregion;
+
+	{
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+}
+
+
+sub transformBadPixelMap
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $badpix = $self->{badpixHeader};
+	my $grism = $self->{wcsDET};
+
+	# from_off[xy] is the offset of the WCS of bottom left corner of the
+	# 0,0 quality pixel from the bottom left corner of the TELDEF RAW pixel
+	my $from_offx = 0.5 + (0.5 - $badpix->{CRPIX1}) * $badpix->{CDELT1}
+					+ $badpix->{CRVAL1};
+	my $from_offy = 0.5 + (0.5 - $badpix->{CRPIX2}) * $badpix->{CDELT2}
+					+ $badpix->{CRVAL2};
+
+	# calculate the WCS of the bottom left corner of the 0,0 grism pixel
+	my $detwcsx = (0.5 - $grism->{CRPIX1}) * $grism->{CDELT1}
+					+ $grism->{CRVAL1};
+	my $detwcsy = (0.5 - $grism->{CRPIX2}) * $grism->{CDELT2}
+					+ $grism->{CRVAL2};
+
+	my $teldef = $self->{teldefHeader};
+
+	# to_off[xy] are to clip the DET output below and to the left of the
+	# input grism image
+	my $to_offx = -($detwcsx / $teldef->{DET_XSCL} + $teldef->{DET_XSIZ} / 2);
+	my $to_offy = -($detwcsy / $teldef->{DET_YSCL} + $teldef->{DET_YSIZ} / 2);
+
+	$self->{detbadpix} = $self->temporary('badpix', ext => '.det');
+
+	# double check that grism binning and badpix binning match
+	my $bingrism = $grism->{CDELT1} / $teldef->{DET_XSCL};
+	if ($bingrism != $badpix->{CDELT1}) {
+		$self->warning(sprintf("grism binning %.3f does not match "
+				. "bad pixel map binning [%.3f]",
+				$bingrism, $badpix->{CDELT1}));
+	}
+
+	my $raw2det = $self->temporary('raw2det', ext => '.xform');
+	if ($self->isValid) {
+		my $command = $self->buildCommand('getxform',
+				from => 'RAW',
+				to => 'DET',
+				teldef => $self->{teldefpath},
+				outfile => $raw2det,
+				image => 'yes',
+				);
+
+		$self->shell($command);
+	}
+
+	my $combxform = $self->temporary('r2dsub', ext => '.xform');
+	if ($self->isValid) {
+		my $bin = $badpix->{CDELT1};
+		my $unbin = 1 / $bin;
+		my $command = $self->buildCommand('combinexform',
+				command => "trans($from_offx, $from_offy)"
+							. " scale($bin, $bin)"
+							. " file($raw2det)"
+							. " trans($to_offx, $to_offy)"
+							. " scale($unbin, $unbin)",
+				outfile => $combxform,
+				);
+
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('imagetrans',
+
+				infile => $self->{badpixfile},
+				outfile => $self->{detbadpix},
+				transform => $combxform,
+
+				dimenx => $self->{grismHeader}{NAXIS1},
+				dimeny => $self->{grismHeader}{NAXIS2},
+				);
+
+		$self->shell($command);
+	}
+
+	# add WCS keywords
+	my $detwcs = $self->temporary('detfull', ext => '.wcs');
+	if ($self->isValid) {
+		my $command = $self->buildCommand('getwcs',
+
+				coord => 'DET',
+				teldef => $self->{teldefpath},
+				outfile => $detwcs,
+				);
+
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('transform_wcs',
+
+				infile => $detwcs,
+				outfile => $self->{detbadpix},
+				transform => $combxform,
+				);
+
+		$self->shell($command);
+	}
+
+}
+
+
+# removes outliers and returns description of remaining pixels
+sub removeOutliers
+{
+	my ($self, $pix, $r0, $r1, $c) = @_;
+
+	my $nSigma = $self->args->{nsigma};
+
+	my @data;
+	for (my $j = $r0; $j < $r1; ++$j) {
+		$data[$j - $r0] = $pix->[$j][$c];
+	}
+
+# print "removeOutliers: @data\n";
+	my $mean;
+	my $sigma;
+	my $zapped = 0;
+	my $cent0;
+
+	my $iteration = 0;
+	for (my $outliers = 1; $outliers; ) {
+
+++$iteration;
+		$outliers = 0;
+
+		# determine mean
+		my $sum = 0;
+		my $count = 0;
+		foreach my $i (@data) {
+			if (defined($i)) {
+				++$count;
+				$sum += $i;
+			}
+		}
+		my $total = $sum;
+		$mean = $total / $count;
+
+		# determine standard deviation
+		$sum = 0;
+		foreach my $i (@data) {
+			if (defined($i)) {
+				$sum += ($i - $mean) ** 2;
+			}
+		}
+		$sigma = sqrt($sum / ($count - 1));
+# print "iteration $iteration: total $total, mean $mean, sigma $sigma\n";
+
+		# remove outliers
+		foreach my $i (@data) {
+
+			if (defined($i)) {
+				if (abs($i - $mean) > $nSigma * $sigma) {
+					$i = undef;
+					++$outliers;
+					++$zapped;
+				}
+			}
+		}
+
+		if (not $outliers) {
+			# determine average distance from $r0
+			$sum = 0;
+			my $j = 0;
+			foreach my $i (@data) {
+				if (defined($i)) {
+					$sum += $j;
+				}
+				++$j;
+			}
+
+			$cent0 = $sum / $count;
+		}
+	}
+
+	my %facts = (
+		center => $cent0 + $r0,
+		mean => $mean,
+		sigma => $sigma,
+		zapped => $zapped,
+	);
+
+	return \%facts;
+}
+
+
+sub factorial
+{
+	my ($x) = @_;
+	my $y = 1;
+	foreach my $i (2 .. int($x)) {
+		$y *= $i;
+	}
+	return $y;
+}
+
+
+sub poissonError
+{
+	my ($mu) = @_;
+
+# print "poissonError($mu)\n";
+	if ($mu > 3) {
+		return sqrt($mu);
+	}
+
+	my $variance = 0;
+	my $last = 0;
+
+	foreach my $k (0 .. 4 * $mu) {
+		next if $k == $mu;
+		my $P_x_mu = $mu ** $k * exp(-$mu) / factorial($k);
+		my $delta = ($k - $mu) ** 2 * $P_x_mu;
+		$variance += $delta;
+# print "\tk $k: P(x,mu) $P_x_mu, delta $delta, sum $variance\n";
+		last if ($delta < $last and $delta < 1e-6 / $mu);
+		$last = $delta;
+	}
+
+	my $error = $variance > 1 ? sqrt($variance) : 1;
+	return $error;
+}
+
+
+sub getCalibratedFlux
+{
+	my ($self, $lambda, $dispersion) = @_;
+
+	my $use = undef;
+	my $exposure = $self->{grismHeader}{EXPOSURE};
+
+	foreach my $i (@{ $self->{fluxcal} }) {
+		if (($lambda >= $i->{WAVE_MIN}) and ($lambda <= $i->{WAVE_MAX})) {
+			$use = $i;
+			last;
+		}
+	}
+
+	my $fluxcal = 0;
+
+	if (not defined($use)) {
+		$self->warning(sprintf('unable to calibrate flux for lambda %.2f A',
+				$lambda));
+		return undef;
+	}
+	else {
+
+		my $lambdaBin = ($use->{WAVE_MAX} + $use->{WAVE_MIN}) / 2;
+
+		my $dLambda = $self->zerothOrderOffsetToLambda($dispersion + 0.5)
+				- $self->zerothOrderOffsetToLambda($dispersion - 0.5);
+		my $lambdaDelta = cm_per_angstrom * $dLambda;
+
+		my $hc_Aldlt = h_erg_s * c_cm_per_s
+				/ ($use->{SPECRESP} * $lambdaBin * $lambdaDelta * $exposure);
+
+		$fluxcal = $hc_Aldlt;
+	}
+
+	return $fluxcal;
+}
+
+
+
+sub physicalPosition
+{
+	my ($self, $dispersion) = @_;
+
+	my $phys_x = $self->{zerox_phys} + $self->{cosangle} * $dispersion;
+	my $phys_y = $self->{zeroy_phys} + $self->{sinangle} * $dispersion;
+
+	return [ $phys_x, $phys_y ];
+}
+
+
+
+sub buildWavelengthScale
+{
+	my ($self) = @_;
+
+	# for each column in the extracted region
+	#	divide into an upper background region, source region
+	#		and lower background region
+	#	remove outliers from upper and lower background regions
+	#	determine the corresponding
+	#		wavelength, background, net counts, error
+
+	my @scale;
+
+	my $extgrism = $self->{extgrism};
+	my $grismpixels = $extgrism->{pixels};
+	my $height = $extgrism->{height};
+	my $shift = $self->{halfzeroth};
+
+	my $badpixels = $self->{extbadpix}{pixels};
+
+	# the upper background region is rows [$upper, $height)
+	# the lower background region is rows [0, $lower)
+	my $upper = $self->{bkgupper};
+	my $lower = $self->{bkglower};
+
+	for (my $d = $self->{dispmin}; $d < $self->{dispmax}; ++$d) {
+
+		my $i = $d + $shift;
+
+		my $l = $self->removeOutliers($grismpixels, 0, $lower, $i);
+		my $u = $self->removeOutliers($grismpixels, $upper, $height, $i);
+
+		my $phys = $self->physicalPosition($d * $self->{BINNING});
+
+		$self->determineGratingEquation(@$phys);
+		my $lambda = $self->zerothOrderOffsetToLambda($d);
+# printf("dispersion $d => %.1f, %.1f PHYS => %.1f A\n", $phys->[0], $phys->[1], $lambda);
+
+		my $fluxcal = $self->getCalibratedFlux($lambda, $d);
+
+		my $total = 0;
+		# estimated background counts in source region
+		my $back_mean = ($u->{mean} + $l->{mean}) / 2;
+		my $back = round($self->{srcwidth} * $back_mean);
+
+		my $quality = 0;
+
+		for (my $j = $self->{srclower}; $j < $self->{srcupper}; ++$j) {
+
+			$total += $grismpixels->[$j][$i];
+
+			if ($badpixels->[$j][$i] > 0) {
+				$quality = 1;
+			}
+		}
+
+		my $net = $total - $back;
+
+		my $total_err = poissonError($total);
+		my $back_err = poissonError($back);
+
+		my $net_err = sqrt($total_err ** 2 + $back_err ** 2);
+
+		my $flux;
+		my $flux_err;
+		if (defined($fluxcal)) {
+			$flux = $net * $fluxcal;
+			$flux_err = $fluxcal * $net_err;
+		}
+		else {
+			$flux = NULL_FLUX;
+			$flux_err = NULL_FLUX;
+		}
+
+
+		my %info = (
+			CHANNEL => $self->{dispmax} - $d - 1,
+
+			LAMBDA => $lambda,
+
+			TOTAL => $total,
+			TOTAL_ERR => $total_err,
+
+			BACK => $back,
+			BACK_ERR => $back_err,
+
+			BACK_MEAN => $back_mean,
+			BUPPER => $u->{mean},
+			BLOWER => $l->{mean},
+			GROSS => $total,
+
+			QUALITY => $quality,
+
+			NET => $net,
+			NET_ERR => $net_err,
+
+			FLUX => $flux,
+			FLUX_ERR => $flux_err,
+		);
+
+		push(@scale, \%info);
+	}
+
+	$self->{scale} = \@scale;
+}
+
+
+sub putScaleKeywords
+{
+	my ($self, $fits, $extname) = @_;
+
+	my $args = $self->args;
+
+	my $clas2 = $self->{puttingTotal} ? 'TOTAL' : 'BACKGROUND';
+	my $clas2comment = $self->{puttingTotal}
+			? 'Gross PHA Spectrum (source + background)'
+			: 'Background PHA Spectrum';
+	my $channels = @{ $self->{scale} };
+	my $backfile = 'NONE';
+	if ($self->{puttingTotal}) {
+		my $slash = rindex($args->{backfile}, '/');
+		my $from = $slash == -1 ? 0 : $slash + 1;
+		$backfile = substr($args->{backfile}, $from);
+	}
+
+	my @xspec = (
+		HDUCLASS => [ 'OGIP', 'Format conforms to OGIP standard' ],
+		HDUCLAS1 => [ 'SPECTRUM', 'PHA dataset (OGIP memo OGIP-92-007)' ],
+		HDUVERS1 => [ '1.1.0', 'Version of format (OGIP memo OGIP-92-007a)' ],
+		HDUCLAS2 => [ $clas2, $clas2comment ],
+		HDUCLAS3 => [ 'COUNT', 'PHA data stored as counts (not count/s)' ],
+
+		CHANTYPE => [ 'PI', 'Type of channel PHA/PI' ],
+		TLMIN1   => [ 0, 'Lowest legal channel number' ],
+		TLMAX1   => [ $channels - 1, 'Highest legal channel number' ],
+		POISSERR => [ 'F', 'Poissonian errors not applicable', { type => 'log' } ],
+		GROUPING => [ 0, 'No grouping of the data has been defined' ],
+		DETCHANS => [ $channels, 'Total number of detector channels available' ],
+
+		AREASCAL => [ 1, 'Area scaling factor' ],
+		BACKSCAL => [ 1, 'Background scaling factor' ],
+		CORRSCAL => [ 1, 'Correlation scaling factor' ],
+		BACKFILE => [ $backfile, 'Background FITS file' ],
+		CORRFILE => [ 'NONE', 'Correlation FITS file' ],
+
+		RESPFILE => [ 'NONE', 'Redistribution matrix' ],
+		ANCRFILE => [ 'NONE', 'Ancillary response' ],
+		XFLT0001 => [ 'NONE', 'XSPEC selection filter description' ],
+		CPIX1    => [ '(0,' . ($channels-1) . ')', 'Channel binning of the CHANNEL column' ],
+		PHAVERSN => [ '1992a', 'OGIP memo number for file format' ],
+	);
+
+	my @general = (
+		ORIGIN   => [ 'NASA/GSFC', 'Origin of FITS file' ],
+		CREATOR  => [ "$self->{tool} $self->{version}", 'Program that produced this file' ],
+
+		RA_OBJ   => [ $self->{zerox_deg}, 'Right ascension of target', { decimals => 8 } ],
+		DEC_OBJ  => [ $self->{zeroy_deg}, 'Declination of target', { decimals => 8 } ],
+		ZERODETX => [ $self->{zerox_phys}, 'Zeroth order position [DETX pixel]',
+						{ decimals => 6 } ],
+		ZERODETY => [ $self->{zeroy_phys}, 'Zeroth order position [DETY pixel]',
+						{ decimals => 6 } ],
+		ZEROIMGX => [ $self->{zerox_fits}, 'Zeroth order position [FITS pixel]',
+						{ decimals => 6 } ],
+		ZEROIMGY => [ $self->{zeroy_fits}, 'Zeroth order position [FITS pixel]',
+						{ decimals => 6 } ],
+	);
+
+	my @keywords;
+	if ($extname eq 'SPECTRUM') {
+		@keywords = @xspec;
+	}
+
+	push(@keywords, @general);
+
+	my $status = 0;
+
+	foreach my $card (@{ $self->{grismCards} }) {
+		$fits->write_record($card, $status);
+	}
+
+	$self->putKeywords($fits, @keywords);
+
+	$fits->write_date($status);
+
+	$self->putParameterHistory($fits);
+
+	$fits->write_chksum($status);
+
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				'unable to write keywords to wavelength scale');
+	}
+}
+
+
+sub putScale
+{
+	my ($self, $fits, $extname) = @_;
+
+	my $status = 0;
+
+	my $naxis2 = scalar(@{ $self->{scale} });
+
+	# create table
+	if ($fits->create_tbl(BINARY_TBL, $naxis2, 0, [ ], [ ], [ ],
+			$extname, $status)) {
+		$self->error(BAD_OUTPUT,
+			"unable to create $extname table in output [$status]");
+		return;
+	}
+
+	my @spectrum = (
+		{ name => 'CHANNEL',
+			form => 'I',
+		},
+		{ name => 'COUNTS',
+			form => 'I',
+			units => 'counts',
+		},
+		{ name => 'STAT_ERR',
+			form => 'E',
+			units => 'counts',
+			display => 'F6.3',
+		},
+		{ name => 'QUALITY',
+			form => 'I',
+		},
+	);
+
+	my @netflux = (
+		{ name => 'LAMBDA',
+			form => 'E',
+			units => 'angstrom',
+			comment => 'Wavelength',
+		},
+		{ name => 'NET',
+			form => 'I',
+			units => 'counts',
+		},
+		{ name => 'NET_ERR',
+			form => 'E',
+			units => 'counts',
+			display => 'F6.3',
+		},
+		{ name => 'FLUX',
+			form => 'E',
+			units => 'erg/s/cm^2/A',
+			null => NULL_FLUX,
+		},
+		{ name => 'FLUX_ERR',
+			form => 'E',
+			units => 'erg/s/cm^2/A',
+			null => NULL_FLUX,
+		},
+		{ name => 'QUALITY',
+			form => 'I',
+		},
+		{ name => 'BACK_MEAN',
+			form => 'E',
+			comment => 'Mean background per pixel in source region',
+			display => 'F6.3',
+		},
+		{ name => 'BUPPER',
+			form => 'E',
+			comment => 'Mean background per pixel in upper region',
+			display => 'F6.3',
+		},
+		{ name => 'BLOWER',
+			form => 'E',
+			comment => 'Mean background per pixel in lower region',
+			display => 'F6.3',
+		},
+		{ name => 'GROSS',
+			form => 'I',
+			comment => 'Total counts',
+		},
+	);
+
+	my $scale;
+
+	my @columns;
+	if ($extname eq 'SPECTRUM') {
+		$scale = [ reverse(@{ $self->{scale} }) ];
+		@columns = @spectrum;
+	}
+	else {
+		$scale = $self->{scale};
+		@columns = @netflux;
+	}
+
+	# point COUNTS, COUNT_ERR columns at appropriate data
+	my %trans;
+	$trans{COUNTS} = $self->{puttingTotal} ? 'TOTAL' : 'BACK';
+	$trans{STAT_ERR} = $trans{COUNTS} . '_ERR';
+
+	foreach my $c (@columns) {
+		my $key = $trans{$c->{name}} || $c->{name};
+		my @data = map { $_->{$key} } @{ $scale };
+		$self->writeColumn($fits, $c, \@data);
+	}
+
+	$self->putScaleKeywords($fits, $extname)
+		if $self->isValid;
+}
+
+
+sub writeResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{outfile} = $self->temporary('tmpone');
+	$self->{backfile} = $self->temporary('tmptwo');
+
+	foreach my $key (qw(outfile backfile)) {
+
+		my $path = $self->{$key};
+
+		my $status = 0;
+		my $fits = Astro::FITS::CFITSIO::create_file($path, $status);
+
+		if ($status) {
+			$self->error(BAD_OUTPUT,
+				"unable to create $path: $status");
+		}
+
+		if ($self->isValid) {
+			$fits->create_img(BYTE_IMG, 0, [ ], $status);
+			if ($status) {
+				$self->error(BAD_OUTPUT,
+					"unable to place empty primary $path: $status");
+			}
+		}
+
+		$self->{puttingTotal} = $key eq 'outfile';
+
+		$self->putScale($fits, 'SPECTRUM')
+			if $self->isValid;
+
+		$self->putScale($fits, 'CALSPEC')
+			if $self->isValid and $self->{puttingTotal};
+
+		if ($fits) {
+			if ($self->isValid) {
+				$fits->close_file($status);
+			}
+			else {
+				$fits->delete_file($status);
+			}
+		}
+
+		if ($self->isValid and $self->{puttingTotal}) {
+			# append extracted region
+			my $extpath = $self->{extgrismpath};
+			$self->shell(qq(ftappend "$extpath\[col #EXTNAME='IMAGE']" $path));
+			$self->updateChecksums($path);
+		}
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		foreach my $key (qw(outfile backfile)) {
+			rename($self->{$key}, $args->{$key})
+				or $self->error(BAD_OUTPUT,
+					"unable to rename $self->{$key} to $args->{$key} [$!]");
+		}
+	}
+}
+
+

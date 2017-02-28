@@ -1,0 +1,521 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotgcn/uvotskyfield,v $
+# $Revision: 1.9 $
+# $Date: 2006/02/16 15:49:15 $
+#
+#	testfield
+#		build a test field from a source list
+#
+#
+# $Log: uvotskyfield,v $
+# Revision 1.9  2006/02/16 15:49:15  rwiegand
+# There was a second empty initialize method which was preventing the
+# alarm signal handler from being installed.
+#
+# Revision 1.8  2005/11/04 19:44:54  rwiegand
+# Added scale parameter.
+#
+# Revision 1.7  2005/11/02 15:19:31  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.6  2005/10/31 14:07:05  rwiegand
+# Renamed catalog partition parameter to catspec.
+#
+# Revision 1.5  2005/10/12 13:30:58  rwiegand
+# Moved UVOT::CatalogLoader to StarID::CatalogLoader.
+#
+# Revision 1.4  2005/02/01 16:11:44  rwiegand
+# Changed some parameters to PIL file type to avoid trouble with trailing
+# spaces.  Ignore case when checking for special value CALDB.
+#
+# Revision 1.3  2004/11/04 21:28:22  rwiegand
+# Catch alarm signal.
+#
+# Revision 1.2  2004/07/09 16:17:43  rwiegand
+# No longer necessary to catch ALRM signal since the signal is now sent to
+# the correct children instead of the process group.
+#
+# Revision 1.1  2004/06/17 21:44:48  rwiegand
+# UVOT GRB Coordinates Network (GCN) tools.
+#
+# Revision 1.8  2004/01/30 23:16:50  wiegand
+# Made PSF FWHM a parameter
+#
+# Revision 1.7  2004/01/30 22:59:39  wiegand
+# Consistently use RATE instead of COUNTS and sigma instead of fwhm.
+#
+# Revision 1.6  2003/12/18 20:14:20  wiegand
+# Allow user to specify a GRB via parameters.
+#
+# Revision 1.5  2003/12/18 19:57:02  wiegand
+# Added background and eccentric sources
+#
+# Revision 1.4  2003/12/11 18:46:13  wiegand
+# Had to convert some keys to upper case and source positions to radians
+# for compatibility with UVOT::Convert.
+#
+# Revision 1.3  2003/11/07 16:13:58  wiegand
+# Corrected conversion from magnitude to counts
+#
+# Revision 1.2  2003/11/06 19:17:44  wiegand
+# Implemented generateImage.  Save image with real valued pixels.
+#
+# Revision 1.1  2003/11/05 23:46:43  wiegand
+# Initial revision
+#
+
+use strict;
+
+package UVOT::SkyField;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use HEACORE::HEAINIT;
+
+use Math;
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+use StarID::CatalogLoader;
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+		options => [ qw(
+			outfile=file catspec=file teldeffile=file
+			ra=real dec=real arcmin=real fwhm=real zero=real
+			exposure=real scale=real
+			clobber=bool cleanup=bool history=bool chatter=int
+			) ],
+		get => 1,
+		);
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->getWCS
+		if $self->isValid;
+
+	$self->getObjects
+		if $self->isValid;
+
+	$self->convertMagnitudesToCounts
+		if $self->isValid;
+
+	$self->placeSources
+		if $self->isValid;
+
+	$self->writeImage
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{clobber} ne 'yes') {
+		my $path = $args->{outfile};
+		if (-e $path) {
+			$self->error(BAD_OUTPUT,
+				"$path already exists and clobber not set");
+		}
+	}
+
+	$SIG{ALRM} = sub {
+		die('ok: trapped alarm');
+	};
+}
+
+
+
+sub getWCS
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		my $path = $self->getParameter('teldeffile');
+		my $status = 0;
+		my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to open TELDEF file [$status]");
+		}
+		else {
+			my $header = $fits->read_header;
+			$self->storeHeaderKeywords($header, keys => [ qw(SKY_XSIZ) ]);
+			$fits->close_file($status);
+		}
+	}
+
+	my $wcs0 = $self->temporary('getwcs');
+	my $scalexform = $self->temporary('scalexform');
+	my $wcsfile = $self->temporary('scalewcs');
+
+	{
+		my $command = $self->buildCommand('getwcs',
+				teldef => $self->getParameter('teldeffile'),
+				coord => 'SKY',
+				segment => 0,
+				ra => $self->getParameter('ra'),
+				dec => $self->getParameter('dec'),
+				outfile => $wcs0,
+				);
+
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+
+		my $skycenter = ($self->{SKY_XSIZ} + 1) / 2;;
+		my $command = $self->buildCommand('combinexform',
+				command => "trans(-$skycenter, -$skycenter) scale($args->{scale}, $args->{scale})",
+				outfile => $scalexform,
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('transform_wcs',
+				infile => $wcs0,
+				transform => $scalexform,
+				outfile => $wcsfile,
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $status = 0;
+		my $fits = Astro::FITS::CFITSIO::open_file($wcsfile, READONLY, $status);
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to open WCS file [$status]");
+		}
+		else {
+			my $header = $fits->read_header;
+			my %wcs;
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(CTYPE1 CTYPE2 CRPIX1 CRPIX2 CRVAL1 CRVAL2
+								CDELT1 CDELT2 CUNIT1 CUNIT2 ) ],
+					hash => \%wcs,
+					);
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(CROTA2) ],
+					hash => \%wcs,
+					optional => 1,
+					);
+			$fits->close_file($status);
+
+			$wcs{CROTA2} ||= 0;
+
+			my $type1 = substr($wcs{CTYPE1}, -4);
+			my $type2 = substr($wcs{CTYPE2}, -4);
+			if ($type1 eq $type2) {
+				$wcs{TYPE} = $type1;
+			}
+			else {
+				$self->error(BAD_INPUT,
+					"CTYPE mismatch $wcs{CTYPE1}/$wcs{CTYPE2}");
+			}
+			$self->{wcs} = \%wcs;
+		}
+	}
+
+}
+
+
+sub getObjects
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{bounds} = StarID::Source->new(
+			ID => 'hi bob',
+			RA => $args->{ra},
+			DEC => $args->{dec},
+			radius => $args->{arcmin} / 60 / sqrt(2),
+			degrees => 1,
+			);
+
+	my $loader = StarID::CatalogLoader->new(
+			task => $self,
+			catspec => $args->{catspec},
+			bounds => $self->{bounds},
+			chatter => $self->chatter,
+			);
+
+	$loader->execute;
+
+	if (not $loader->isValid) {
+		$self->error(BAD_INPUT, "unable to load catalog");
+	}
+	else {
+
+		my $catalog = $loader->getCatalog;
+		$self->{catalog} = $catalog;
+
+		my $count = $catalog->size;
+		$self->report("loaded $count sources");
+	}
+
+}
+
+
+sub convertMagnitudesToCounts
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $exposure = $args->{exposure};
+
+	$self->{catalog}->apply(sub {
+			my ($source) = @_;
+			if ($source->{MAG} eq 'NULL') {
+				$source->{COUNTS} = 0;
+				$self->report("$source->{ID} has unknown mag, using 0 counts")
+					if $self->chatter(3);
+			}
+			else {
+				my $rate = 10 ** (($args->{zero} - $source->{MAG}) / 2.5);
+				$source->{COUNTS} = $rate * $exposure;
+			}
+		});
+}
+
+
+sub rd2xy
+{
+	my ($self, $ra, $dec) = @_;
+
+	my $wcs = $self->{wcs};
+
+	my $xpix;
+	my $ypix;
+	my $status = 0;
+	Astro::FITS::CFITSIO::fits_world_to_pix(
+			$ra, $dec,
+			$wcs->{CRVAL1}, $wcs->{CRVAL2},
+			$wcs->{CRPIX1}, $wcs->{CRPIX2},
+			$wcs->{CDELT1}, $wcs->{CDELT2},
+			$wcs->{CROTA2}, $wcs->{TYPE},
+			$xpix, $ypix, $status,
+			);
+
+	if ($status) {
+		$self->error(BAD_TASK,
+				"unable to convert object RA=$ra/DEC=$dec to pixel coords");
+	}
+	else {
+		$self->report("RA=$ra,DEC=$dec => xpix=$xpix,ypix=$ypix")
+			if $self->chatter(4);
+	}
+
+	return ($xpix, $ypix, $status);
+}
+
+
+sub arcminToPixels
+{
+	my ($self, $arcmin) = @_;
+
+	my $bounds = $self->{bounds};
+	my $halfdeg = $arcmin / 60 / 2;
+
+	# twice distance between center and (left) edge
+	my ($x1, $y1) = $self->rd2xy($bounds->{RA}, $bounds->{DEC});
+	my ($x2, $y2) = $self->rd2xy($bounds->{RA} + $halfdeg, $bounds->{DEC});
+
+	my $pixels = int(2 * ($x1 - $x2));
+
+#	$self->{FOCALLEN} = 3943.2; # mm
+#	$self->{DET_XSCL} = 0.0096; # mm
+#	my $pixels = $arcmin / 60 * Math::PI / 180
+# 			* $self->{FOCALLEN} / $self->{DET_XSCL};
+
+	return $pixels;
+}
+
+
+sub placeSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $width = $self->{width} = $self->arcminToPixels($args->{arcmin});
+	my $height = $width;
+	$self->report("image size is $width");
+
+	my $pixshift = ($width + 1) / 2;
+	$self->report("pixel shift is $pixshift");
+	my $wcs = $self->{wcs};
+	$wcs->{CRPIX1} = $pixshift;
+	$wcs->{CRPIX2} = $pixshift;
+
+	my %pixels;
+
+	my $add = sub {
+		my ($x, $y, $z) = @_;
+		return if $x < 0 or $x >= $width or $y < 0  or $y >= $height;
+		my $key = $x + $y * $width;
+		if (exists($pixels{$key})) {
+			$pixels{$key} += $z;
+		}
+		else {
+			$pixels{$key} = $z;
+		}
+	};
+
+	my $sigma = $args->{fwhm} * $args->{scale} / sqrt(8 * log(2));
+	my $twosigma2 = 2 * $sigma * $sigma;
+
+	$self->{catalog}->apply(sub {
+
+			my ($s) = @_;
+
+			# determine how far out source extends
+
+			my $absconst = 1e-4;
+			return if $s->{COUNTS} < $absconst;
+			my $abslimit = int(sqrt(-$sigma ** 2 * log($absconst / $s->{COUNTS})));
+
+			my $rlimit = $abslimit;
+
+			my $ra = Math::toDegrees($s->ra);
+			my $dec = Math::toDegrees($s->dec);
+
+			my ($cx, $cy, $status) = $self->rd2xy($ra, $dec);
+
+			my $x0 = int($cx + 0.5);
+			my $y0 = int($cy + 0.5);
+
+			$self->report("source $s->{ID}: cx=$cx cy=$cy rlimit=$rlimit mag=$s->{MAG}")
+				if $self->chatter(3);
+
+			my $peak = $s->{COUNTS} / (Math::PI * $twosigma2);
+
+			# place counts as 2D Gaussian
+			for (my $dy = -$rlimit; $dy <= $rlimit; ++$dy) {
+				for (my $dx = -$rlimit; $dx <= $rlimit; ++$dx) {
+
+					my $xpix = $x0 + $dx;
+					my $ypix = $y0 + $dy;
+
+					my $r2 = ($xpix - $cx) ** 2 + ($ypix - $cy) ** 2;
+
+					my $z = $peak * exp(-$r2 / $twosigma2);
+
+					$add->($xpix, $ypix, $z);
+				}
+			}
+		});
+
+	$self->{pixels} = \%pixels;
+
+	$self->report("placed sources");
+}
+
+
+sub writeImage
+{
+	my ($self) = @_;
+	
+	my $args = $self->args;
+
+	my $path = $args->{outfile};
+	if (-e $path) {
+		unlink($path)
+			or $self->warning("unable to unlink $path [$!]");
+	}
+	
+	my $pixels = $self->{pixels};
+	
+	my $tmpdata = $self->temporary('sparse', ext => '.list');
+	my $tmphead = $self->temporary('sparse', ext => '.keys');
+
+	my $fh = FileHandle->new($tmpdata, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+				"unable to create temporary file $tmpdata [$!]");
+		return;
+	}
+
+	my $width = $self->{width};
+	my $height = $width;
+
+	for (my $y = 0; $y < $height; ++$y) {
+		for (my $x = 0; $x < $width; ++$x) {
+			my $key = $x + $y * $width;
+			my $value = exists($pixels->{$key}) ? $pixels->{$key} : 0;
+			$fh->print($value . "\n");
+		}
+	}
+
+	$fh->close;
+
+	my $wcs = $self->{wcs};
+
+	$fh = FileHandle->new($tmphead, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+				"unable to create temporary file $tmphead [$!]");
+		return;
+	}
+
+	my %wcs = %{ $self->{wcs} };
+
+	my $datestr = '';
+	my $timeref = 0;
+	my $status = 0;
+	Astro::FITS::CFITSIO::fits_get_system_time($datestr, $timeref, $status);
+
+	$fh->print(qq(
+DATE    = $datestr / File creation date
+CREATOR = $self->{tool} $self->{version} / File creation software
+
+CTYPE1  = $wcs{CTYPE1}
+CTYPE2  = $wcs{CTYPE2}
+CUNIT1  = $wcs{CUNIT1}
+CUNIT2  = $wcs{CUNIT2}
+CRPIX1  = $wcs{CRPIX1}
+CRPIX2  = $wcs{CRPIX2}
+CRVAL1  = $wcs{CRVAL1}
+CRVAL2  = $wcs{CRVAL2}
+CDELT1  = $wcs{CDELT1}
+CDELT2  = $wcs{CDELT2}
+CROTA2  = $wcs{CROTA2}
+));
+	$fh->close;
+
+	my $command = $self->buildCommand('ftimgcreate',
+			bitpix => -32,
+			naxes => "$width,$height",
+			outfile => $path,
+			datafile => $tmpdata,
+			headfile => $tmphead,
+			clobber => 'yes',
+			);
+
+	$self->shell($command);
+}
+
+
+
+# main
+{
+	my $task = UVOT::SkyField->new;
+
+	$task->run;
+
+	exit($task->{code});
+}
+

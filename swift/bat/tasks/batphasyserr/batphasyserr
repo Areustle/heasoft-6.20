@@ -1,0 +1,268 @@
+#!/usr/bin/perl
+#
+# File: batphasyserr
+#
+#
+#
+use HEACORE::HEAINIT;
+
+my $taskname = "batphasyserr";
+my $taskvers = "1.6";
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+eval {
+    $status = headas_main(\&batphasyserr);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub batphasyserr {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batphasyserr_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batphasyserr_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+    use POSIX;
+
+
+# updatekeywds - read auxfile created by batmaskwtevt utility into memory
+#              - and open spectrum file to be updated
+#
+# $filename1 - auxfile file to read
+# $filename2 - spectrum file to modify
+# @time      - upon output, array reference to TIME data
+# @pcodefr   - upon output, array reference to PCODEFR data
+# @mskwtsqf  - upon output, array refernece to MSKWTSQF data
+# @header    - upon output, hash reference to header keywords
+#
+# RETURNS: nothing
+#
+# EXCEPTIONS: none
+#
+#    my ($auxtime,$auxpcodefr,$auxmskwtsqf);
+#    my ($fits_aux, $fits_spec, $dir, $fptr);
+
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('syserrfile', $syserrfile)) == 0 || die "error getting syserrfile parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    if ($chatter >= 2) {
+	print "$taskname $taskvers\n";
+	print "--------------------------------------------------------\n";
+	print "           Spectrum file: $infile\n";
+	print "   Systematic error file: $syserrfile\n";
+    }
+    
+
+    #  Verify that two files exist 
+    die "ERROR: Spectrum file $infile does not exist" if (! -r $infile);
+    $fits = SimpleFITS->open("+<$infile")->move(2);
+    $dateobs = $fits->readkey("DATE-OBS");
+    $status = $fits->status();
+    die "ERROR: could not read the DATE-OBS keyword from $infile (error $status)" if ($status);
+    
+    if ("$dateobs" =~ m/^(\d\d\d\d)-(\d\d)-(\d\d)/) {
+	$yyyy = $1; $mm = $2; $dd = $3;
+    } else {
+	die "ERROR: could not parse DATE-OBS from $infile";
+    }
+
+    # Query the CALDB for the systematic error file
+    if ($syserrfile eq "CALDB") {
+	$cmd = "quzcif mission=Swift instrument=BAT detector=- filter=- codename=SYS_ERR ".
+	  "date='$yyyy-$mm-$dd' time='00:00:00' expr='-' retrieve='NO' ";
+	if ($chatter >= 5) { print "$cmd\n"; }
+	$syserrfile = `$cmd`;
+	chomp($syserrfile);
+	if ("$syserrfile" =~ m/^(\S*) /) {
+	    $syserrfile = "$1";
+	}
+	if ($chatter >= 5) { print "Found CALDB file: $syserrfile\n"; }
+    }
+
+    # Defend against possible remote-CALDB
+    if ("$syserrfile" !~ m/^(http|ftp):/i and not -r "$syserrfile") {
+      die "ERROR: could not locate CALDB file $syserrfile";
+    }
+
+    $fsys = SimpleFITS->open("<$syserrfile")->move("SYS_ERR");
+    $status = $fsys->status();
+    die "ERROR: could not open $syserrfile" if ($status);
+    
+    @semin = $fsys->readcol("E_MIN");
+    @semax = $fsys->readcol("E_MAX");
+    @syserr= $fsys->readcol("SYS_ERR");
+    $status = $fsys->status();
+    $fsys->close();
+    die "ERROR: could not read E_MIN/E_MAX/SYS_ERR columns from $syserrfile" if ($status);
+
+    # Make a look-up table of systematic error vectors, spaced on a 10 eV grid
+
+    $smin = 1.0E308;
+    $smax = 0;
+    foreach $i (0 .. $#semin) {
+	$imin = POSIX::floor($semin[$i]*100);
+	$imax = POSIX::floor($semax[$i]*100);
+
+	# Treat the integral bins specially
+	if ($i == 0)       { $imin = $imax; }
+	if ($i == $#semin) { $imax = $imin; }
+
+	if ($imin < $smin) { $smin = $imin; }
+	if ($imax > $smax) { $smax = $imax; }
+	foreach $j ($imin .. $imax) {
+	    $syshash{$j} = $syserr[$i];
+	}
+    }
+
+    $efits = SimpleFITS->open("<$infile")->move("EBOUNDS");
+    $status = $efits->status();
+    die "ERROR: input spectrum does not have an EBOUNDS extension" if ($status);
+    
+    @emin = $efits->readcol("E_MIN");
+    @emax = $efits->readcol("E_MAX");
+    $status = $efits->status();
+    die "ERROR: could not read E_MIN/E_MAX columns from EBOUNDS extension" if ($status);
+
+    # Back to the spectrum
+    $efits->close();
+
+    # Check for type I / type II spectral file format
+    $phatype = 1;
+    $hduclas3 = $fits->readkey("HDUCLAS3");
+    $fits->setstatus(0);
+    $hduclas4 = $fits->readkey("HDUCLAS4");
+    $fits->setstatus(0);
+    if ( $chatter >= 5 ) { print "  (HDUCLAS3=$hduclas3 HDUCLAS4=$hduclas4)\n"; }
+    # Note this change because of lame OGIP spectral format documentation
+    # originally said HDUCLAS3 == 'TYPE:II', later revised (May 2009) to 
+    # say HDUCLAS4 == 'TYPE:II'
+    if ("$hduclas3" =~ m/TYPE:II/ || "$hduclas4" =~ m/TYPE:II/ ) {
+	$phatype = 2;
+    }
+    if ( $chatter >= 5 ) { print "  (found type $phatype spectral file)\n"; }
+
+
+    # Average the systematic error vector over each of the spectrum's bins
+    foreach $i (0 .. $#emin) {
+	$imin = POSIX::floor($emin[$i]*100);
+	$imax = POSIX::floor($emax[$i]*100);
+
+	if ($imin < $smin) { $imin = $smin; }
+	if ($imax < $smin) { $imax = $smin; }
+	if ($imin > $smax) { $imin = $smax; }
+	if ($imax > $smax) { $imax = $smax; }
+
+	$sys = 0.0;
+	$n   = 0;
+	foreach $j ($imin .. $imax) {
+	    $sys += $syshash{$j};
+	    $n ++;
+	}
+	$phasys[$i] = $sys / $n;
+	if ($chatter >= 5) { print "$i $imin $imax $sys $n $phasys[$i]\n"; }
+    }
+
+    $makecol = 0;
+    if ($fits->colnum("SYS_ERR") < 0) { $makecol = 1; }
+
+    if ($phatype == 1) {
+	if ($makecol) {
+	    $fits->insertcol({TTYPE=>["SYS_ERR","Fractional systematic error"],
+			      TFORM=>"D"});
+	}
+	if ($status == 0) {
+	    $status = $fits
+		->writecol("SYS_ERR", {}, \@phasys)
+		->status();
+	}
+    } else {
+	$n = $#emin + 1;
+	$ttype = "$n"."D";
+	if ($makecol) {
+	    $status = $fits
+		->insertcol({TTYPE=>["SYS_ERR","Fractional systematic error"],
+			     TFORM=>"$ttype"})
+		->status();
+	}
+	if ($status == 0) {
+	    foreach $i (1 .. $fits->nrows()) {
+		$fits->writecol("SYS_ERR", {rows=>$i}, \@phasys);
+	    }
+	}
+    }
+    
+    die "ERROR: Could not write systematic error vector" if ($status);
+
+    # Remove the systematic error keyword, which conflicts
+    $fits->delkey("SYS_ERR")->setstatus(0);
+
+    # ===== 
+    # Write history keywords
+    HDpar_stamp($fits->handle(), 0, $status);
+
+    $fits->close();
+
+    $status = $fits->status;
+    $fits->setstatus(0)->close();
+    if ($chatter >= 2) {
+	print "--------------------------------------------------------\n";
+	print "  File modified in place: $infile\n";
+	print "--------------------------------------------------------\n";
+    }
+
+    return $status;
+}
+
+
+

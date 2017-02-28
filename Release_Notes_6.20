@@ -1,0 +1,702 @@
+********************************************************************************
+                         RELEASE NOTES FOR HEASOFT 6.20
+                                 January 18, 2017
+********************************************************************************
+
+The HEASoft 6.20 release is primarily driven by updates to XSPEC, NuSTARDAS,
+XRTDAS, and the Hitomi software, but also includes updates to other packages
+which have been revised to mirror the current development versions in use at
+the HEASARC.
+
+As before, configuration-related changes thoughout the package means that
+users who already have HEASoft v6.x.x installed will need to completely
+replace their software installation; there is no clean way to simply
+overlay this new release or to update an existing installation.
+
+********************************************************************************
+                                    CFITSIO
+********************************************************************************
+
+Version 3.41:
+
+- The change made in version 3.40 to include strings.h caused problems on
+  Windows (and other) platforms, so this change was backed out. The reason
+  for including it was to define the strcasecmp and strcasencmp functions,
+  so as an alternative, new equivalent functions called fits_strcasecmp and
+  fits_strncasecmp have been added to CFITSIO.as a substitute. All the
+  previous calls to the str[n]casecmp functions have been changed to now
+  call fits_str[n]casecmp. In addition, the previously defined ngp_strcasecmp
+  function (in grparser.c) has been removed and the calls to it have been
+  changed to fits_strcasecmp.
+     
+- The speed.c utility program was changed to correctly call 
+  the gettimeofday function with a NULL second arguement. 
+
+Version 3.40:
+
+- fixed a bug when writing long string keywords with the CONTINUE convention
+  which caused the CONTINUE'd strings to only be 16 characters long, instead
+  of using up all the available space in the 80-character header record.
+
+- fixed a missing 'defined' keyword in fitsio.h.
+
+- replaced all calls to strtok (which is not threadsafe) with a new ffstrtok
+  function which internally calls the threadsafe strtok_r function.  One 
+  byproduct of this change is that <strings.h> must also be included
+  in several of the C source code files.
+
+- modified the ffphbn function in putkey.c to support TFORM specifiers that
+  use lowercase 'p' (instead of uppercase) when referring to a variable-length
+  array column.
+
+- modified the lexical parser in eval.y and eval_y.c to support bit array 
+  columns (with TFORMn = 'X') with greater than 256 elements. Fix to bitcmp 
+  function:  The internal 'stream' array is now
+  allocated dynamically rather than statically fixed at size 256.
+  This was failing when users attempted a row filtering of a bitcol
+  that was wider than 256X. In bitlgte, bitand, and bitor functions, replaced 
+  static stream[256] array allocation with dynamic allocation.  
+
+- modified the ffiter function in putcol.c to fix a problem which could
+  cause the iterator function to incorrectly deal with null values.  This
+  only affected TLONG type columns in cases where sizeof(long) = 8, as well
+  as for TLONGLONG type columns.
+
+- Fix made to uncompress2mem function in zcomprss.c for case where output
+  uncompressed file expands to over the 2^32 (4Gb) limit.  It now
+  checks for this case at the start, and implements a 4Gb paging
+  system through the output buffer.  The problem was specifically
+  caused by the d_stream.avail_out member being of 4-byte type uInt,
+  and thus unable to handle any memory position values above 4Gb. 
+
+- fixed a bug in fpackutil.c when using the -i2f (integer to float) option
+  in fpack to compress an integer image that is scaled with non-default values
+  for BSCALE and BZERO. This required an additional call to ffrhdu to reset
+  the internal structures that describe the input FITS file.
+
+- modified fits_uncompress_table in imcompress.c to silently ignore the
+  ZTILELEN keyword value if it larger than the number of rows in the table
+  
+- Tweak strcasecmp/strncasecmp ifdefs to exclude 64-bit MINGW
+  environment, as it does not lack those functions. (eval_l.c,
+  fitsio2.h)
+
+- CMakeLists.txt: Set M_LIB to "" for MINGW build environment (in
+  addition to MSVC).
+
+- Makefile.in: Add *.dSYM (non-XCode gcc leftovers on Macs) to
+  clean list.  Install libs by name rather than using a wildcard.
+
+- configure: Fix rpath token usage for XCode vs. non-XCode gcc on Macs.
+
+********************************************************************************
+                                    HEASP
+********************************************************************************
+
+- Added interpolateAndMultiply to multiply rmf by a vector
+  of factors on energy binning different from the response.
+
+- Fixed bug in writeMatrix which caused an empty ORDER column
+  to be written if there was no ORDER information.
+
+- Added overloads of SPstring2Real and SPstring2Integer to convert
+  vectors of strings.
+
+- Added handy utility routine to parse ranges in a string.
+
+- Added routines to return a vector of strings containing
+  all the keywords from the primary or extension header.
+
+- Added support for the LOELIMIT and HIELIMIT keywords in the table
+  model file. These are stored as LowEnergyLimit and HighEnergyLimit
+  in the object and assumed to specify the model value to be used
+  when the energy is below/above those tabulated.
+
+********************************************************************************
+                                   ATTITUDE
+********************************************************************************
+
+- prefilter: Add 'timeadj' parameter to address Swift's clock drift.
+  This parameter can be used to adjust times used for calculations.
+  TIME_ADJ = TIME + offset where the value of offset depends on the value
+  of the timeadj parameter. The default setting (timeadj=DEFAULT) allows
+  mission-specific determination of offset.  timeadj=CONST:<value> sets
+  offset to value. timeadj=KEY:<value> sets offset to the value of a keyword
+  from the attitude file.  timeadj=LEAPS sets offset to the opposite of the
+  number of leap seconds since missepoch to start.
+
+  For the Swift mission, DEFAULT is treated as KEY:UTCFINIT (if that keyword
+  is present), or LEAPS if it is not. For all other missions, DEFAULT is
+  treated as LEAPS. Note that LEAPS is consistent with past behavior.
+
+********************************************************************************
+                                   CALTOOLS
+********************************************************************************
+
+- genrsp: Set resp_file and chan_file to 'none' when inrfil is not 'none'.
+  Fixes a bug in which genrsp reported 'Failed to open response energy
+  relation file' because resp_file was neither specified nor set to 'none'
+  and was just an empty string.
+
+********************************************************************************
+                                    FUTILS
+********************************************************************************
+
+- fverify: Added checks and warnings for 'P' format variable length columns
+  when either the row length or heap offset is detected to be greater than the
+  max signed 4-byte int.  CFITSIO allows these values up to max unsigned int,
+  which is more lenient than the FITS standard.  Also updated to allow for
+  longer input file names.
+
+********************************************************************************
+                                      FV
+********************************************************************************
+
+- Allow a build of FV in the Cygwin environment for MS Windows. The POW
+  display device is partially inoperative, but the ds9 device may be used
+  instead.
+
+********************************************************************************
+                                    HEAGEN
+********************************************************************************
+
+- arftable:
+
+  * Behavior change: Converts energy units of output file to be the same
+    as those of the input RMF file if they are different.
+  * New parameter:  writeevtfile (boolean): if set to yes, a file will
+    be written listing the subset of photons that reach the focal plane
+    unblocked by any object in the optical path.  Objects are specified
+    by the parameters objecttype, imimagefile, objectheights, objectradii,
+    imagerotangles, xoffsets, and yoffsets.
+  * Bug-fix: The raytracing photon history file is now read and processed
+    in chunks of 1000000 rows, rather than all at once, in order to
+    mitigate memory problems resulting from large files.
+
+- barycorr:
+
+  * Fix HDU position handling: HDU position was not properly being updated,
+    with the effect that TSTART/TSTOP/etc. in the final time-related HDU
+    were not being corrected.
+
+- xrtraytrace:
+
+  * Behavior change: Accounts for a rotation between the reference frame
+    of the Telescope Definition File (TDF) and the telescope physical
+    coordinate system.  This angle is given by the TELFPROT keyword in
+    the TDF MIRROR extension.
+
+- swco.dat: Update to include 2017.0 leap second.
+
+********************************************************************************
+                                    HEASARC
+********************************************************************************
+
+- extractor: Correctly handle the case of a vector column in the event
+  file before the X and Y columns.  Ignore trailing blanks in values
+  when comparing for duplicate keywords.
+
+********************************************************************************
+                                    HEATOOLS
+********************************************************************************
+
+- ftdiff: Fix case of TBIT columns where an incorrect col_repeat value
+  caused ftdiff to miss cases where bits differed.
+
+- ftverify: Added checks and warnings for 'P' format variable length columns
+  when either the row length or heap offset is detected to be greater than the
+  max signed 4-byte int.  CFITSIO allows these values up to max unsigned int,
+  which is more lenient than the FITS standard.  Also updated to allow for
+  longer input file names.
+
+********************************************************************************
+                                     XSPEC
+********************************************************************************
+
+Xspec v12.9.1:
+
+New features:
+
+- New Models:
+
+  carbatm          - NS non-magnetic C atmosphere 
+  clumin           - calculates luminosity
+  hatm             - NS non-magnetic H atmosphere 
+  ismabs           - High-resolution ISM absorption
+  rfxconv          - reflection from ionized disk
+  slimbh           - slim accretion disk
+  snapec           - galaxy cluster spectrum using SN yields
+  (b)(v)(v)tapec   - apec model with different temperatures for continuum
+                     and emission lines
+  tbfeo            - tbabs model with O and Fe only variable
+  tbgas            - tbabs model with no grains
+  tbpcf            - tbabs model with partial covering
+  tbrel            - tbabs model that allows negative columns
+  vashift          - velocity shift an additive component
+  vmshift          - velocity shift a multiplicative component
+  voigt            - emission line with a Voigt profile
+  xilconv          - reflection from ionized disk
+  xscat            - dust scattering out of the beam 
+
+- Updated Models:
+
+  - apec models updated to AtomDB 3.0.7
+  - nei models updated to AtomDB 3.0.4 eigen files
+  - The apec code now has the ability to add new line shapes for broadening
+    although at present only a single Gaussian line shape is operational.
+  - A new xset option APECMINFLUX can be used to specify a minimum line flux
+    below which lines are not broadened. Also the maximum flux in any line
+    in the apec model is saved as apecmaxlineflux and this can be recovered
+    using tcloutr modkeyval apecmaxlineflux. At the moment both this and
+    APECMINFLUX do not include the 1e14 normalization factor and any time
+    dilation correction.
+  - the code for the various CEI models was rationalized and there is a new
+    C++ routine calcMultiTempPlasma which can be used by other models. The old
+    Fortran sumdem routine remains as a wrapper for old models.
+  - tbabs model code has been updated. The old version is available by using
+    xset TBABSVERSION 1.
+  - updated nsmaxg model with new tabulated model files.
+  - increased the speed for accessing values from table models.
+  - modified table model code to support new keywords LOELIMIT and HIELIMIT to
+    specify model values to be taken below and above the tabulated energies.
+
+- Plotting:
+
+  - added low and high energy limits to setplot id so lines are only shown
+    for the specified energy range.
+  - added setplot (no)contimage to turn on (off) the background image in
+    contour plots.
+  - the keV to Angstrom conversion value stored in Numerics.h has been updated
+    to that from CODATA 2014.
+
+- Fitting:
+
+  - Added parallelization to chain walker calculations and to the goodness
+    simulations.
+  - The 'error' command can now process parameters from more than 1 model
+    in a single call.
+  - In the various cstat statistics any correction file spectrum is now taken
+    account. This does implicitly assume that the correction file has Poisson
+    statistics.
+  - the Tcl script lrt.tcl now uses the fakeit nowrite option so intermediate
+    faked files are not written out. Also, now works for multiple data groups.
+
+- Input/Output:
+
+  - increased the precision of the reported output from the 'tclout'
+    command options.
+  - increased the allowed flux (counts) to beyond the 4-byte limit when
+    running 'fakeit' with counting statistics selected.
+  - new tclout option fileinfo writes the value of the keyword given as the
+    fileinfo argument. e.g. tclout fileinfo detnam returns the value of the
+    detnam keyword in the spectrum extension.
+
+- Xspec.init file:
+
+  - added PARALLEL to set default parallelization options
+  - added NEI_VERSION to set default version for NEI models
+  - added CONTOUR_IMAGE to set default for adding image to contour plots
+  - changed default cross-sections from bcmc to vern
+
+- The manual has now been rewritten in LaTeX. The appendix on statistics
+  has been expanded. Cross-referencing has been improved.
+
+All bug fixes to v12.9.0 released as patches are included in v12.9.1.
+In addition the following problems have been corrected:
+
+- A previous revision to the 'goodness' command removed the requirement
+  that the fit must be in a valid state at the start, however it was 
+  incorrectly marking the fit as being in a valid state at the end.
+
+- When re-reading a previously loaded table model file, was not
+  correctly recognizing whether or not parameter error values existed.
+
+- A spectrum's displayed net count rate variance needs to be updated
+  when the fit weighting method gets changed.
+
+******************
+
+PyXspec Change Log (v2.0):
+
+New Features:
+
+(*) = previously available as XSPEC patches.
+
+- Now compatible with Python 3.x.  (No longer compatible with Python
+  versions prior to 2.5.)
+  
+- Added `Xset.save()` and `restore()` functions for saving and 
+  recovering the state of a PyXspec session. 
+   
+- New adjustable attributes for the `Chain` class: `walkers` and 
+  `algorithm`.*
+
+- `AllModels.tclLoad()` method added to provide a lower-level 
+  alternative to the `lmod()` local model loading scheme.*
+  
+- `Xset.allowPrompting` attribute provides option for turning on/off 
+  XSPEC prompting.  This can be useful in iPython environments where 
+  certain contexts can lead to infinite prompting loops.
+  
+- PyXspec manuals have been converted from Doxygen-generated to
+  Sphinx-generated HTML and PDF.
+
+Fixes:
+
+- Was previously unable to unlink a linked parameter in a Python-coded
+  local model.*
+
+********************************************************************************
+                                     XSTAR
+********************************************************************************
+
+Version 2.39 - updates since v2.31 (HEASOFT 6.19) include:
+
+- Changes to turn on printing in the rstepxx and fstepxx routines.
+  Also, increase size of temporary arrays in those routines to match nnnl.
+
+- Changes to correct for incorrect dimension in PARAM file which led
+  to bad numerical results for Cu and Zn.  Changes to add printing of
+  element by element heating and cooling rates.
+
+- Fixed error in pprint which prevented correct filling of xout_abund1.fits.
+
+- Fixes to atomic data to account for direct excitation of fine
+  structure levels of He-like ions.
+
+- Strip out fictitious fe xxiv collisional ionization to 1s2s level
+  of fexxv.
+
+- Fix to ucalc.f which calculates detailed balance for data type
+  95 (Bryans collisional excitation) without numerical errors.
+
+- Changes to include updates to ucalc to include calculation of
+  type 97 rates (inner shell collisional ionization; currently
+  no data of this type is included).
+
+- Local version of getlun and associated routines to properly
+  keep track of opened and freed logical units.
+
+- Repair extra data records for type 76 data, 2 photon decays, and
+  changes which prevent printing of type 76 data along with lines.
+
+- Fixes to He-like atomic data to correct for some missing rates
+  affecting levels created when mapping from ls to lsj levels.
+
+- Change to ucalc and calling routines to not call linopac for lines
+  when opacity*delta(r) is less than 1.e-8.  This saves execution time.
+
+- New feature:  no fits files will be saved if  lwrite < 0.
+
+********************************************************************************
+                                    HITOMI
+********************************************************************************
+
+Patch Hitomi V005a released Jan 18, 2017
+
+Mission Applications:
+
+- aharfgen , ahsxtarfgen , hxirspeffimg
+  New parameter: polydeg (string): polynomial order for the fitting. 
+  For the HXI, the DEFAULT value sets the polynomial order to 5.  For 
+  the SXI and SXS, the DEFAULT value sets the polynomial order to an 
+  internal test for the best polynomial order.  Other allowed values 
+  are 1 to 5 for the HXI and 1 to 10 for the SXI and SXS.
+   
+- ahsxtarfgen
+  Behavior change: the default behavior is changed since the 
+  polynomial order to provide a stable fit solution is tested internally
+  with a minimization technique. The parameter value polydeg determines 
+  whether or not the routine should use the default behavior.
+
+- xrtraytrace 
+  Bug-fix: correct the behavior of decreasing area with increasing 
+  number of input photons for large region.  This affects the raytracing 
+  output when run with flat or beta model in conjunction with very 
+  large regions (~above 12 arcmin) and number of events larger than
+  200000 on axis.     
+
+SXI
+
+- sxipi 
+  Bug-fix : in a debug statement array out of range for window mode data 
+  when reading CTI from CALDB giving seg fault. No effect on the actual
+  calculation but just on the print statements
+
+SXS 
+
+- mxstime
+  Bug-fix : fine gti overlapping are checked using the pulselength and 
+  compare the afterglow length.  For files where the start of the mxs is 
+  outside of the start of file the code was not using the correct 
+  pulselength from the last row. This is only affected if the afterglow 
+  flag is set to yes.
+
+
+
+Hitomi V005 - Major changes introduced in this version:
+
+General Applications:
+
+- ahgtigen:
+
+  * Bug-fix: Handling of the parameters cpkeyword and upkeyword was
+    corrected. If upkeyword=yes, timing keywords are updated in all
+    output GTI files, whereas previously, this update happened only for
+    files resulting from a merging of GTI. If cpkeyword=all, keyword
+    copying is now delegated solely to the maketime task, whereas
+    previously, the copying was done a second time redundantly by ahgtigen.
+
+- ahpipeline:
+
+  * Behavior change: MKF and EHK GTI are now copied to the end of
+    unfiltered event files.
+  * Behavior change: Updates timing keywords in the MKF and EHK GTI for
+    all instruments and copies other keywords from unfiltered event file.
+  * Behavior change: The EHK file is now replaced with the EHK2 file
+    (which includes columns based on SXS antico rates) if the latter
+    is successfully created.
+  * Behavior change: For SXS screening, the PIXEALL2 label has been
+    changed to PIXELALL3.
+  * Parameter change: r2tol, bisectolshift, bsectolwidth (SXS gain
+    fitting parameters): default values changed from 0.01, 0.1, and 0.2,
+    respectively, to 0.001, 0.001, and 0.001.
+  * Bug-fix: For SXS, the PIXEL column was omitted from lost fake GTI
+    extensions; now included.
+  * Behavior change: Moved proximity flagging from the first run of
+    sxsflagpix to the second run of sxsflagpix.
+  * Behavior change: For SXS, Perseus observation stop date and time have
+    been changed from 2016-03-08T00:38:00 to 2016-03-04T00:41:00.
+
+
+Mission Applications:
+
+- aharfgen
+  * Parameter change: auxtransfile:  If set to CALDB, a CALDB query is
+    done.  Previously, the string CALDB was not detected and was passed
+    unmodified to the called tasks.
+  * Parameter change: regmode:  Now should be set to RADEC to indicate
+    that the regionfile is in world coordinates, for consistency with
+    coordinate terminology in other tools.  Previously, the value SKY
+    was used incorrectly to indicate world coordinates.
+
+- ahbackscal
+  * NEW TOOL: Corrects the BACKSCAL keyword in a spectrum file that has
+    been extracted using xselect.
+
+- ahcalcl32ti
+  * Behavior change: TZEROn keyword is now written for L32TI column to
+    make it effectively unsigned.
+
+- ahfilter
+  * Bug-fix: Under certain conditions, the output EHK file was incorrectly
+    deleted at the end of processing like a temporary file.  This happened
+    when the output EHK file path contained more than one dot and the
+    infileroot parameter was a non-empty string.  The parsing of file
+    names has been corrected to avoid this outcome.
+
+- ahgainfit
+  * Parameter change: r2tol (convergence criterion for R^2): default value
+    changed from 0.01 to 0.001.
+  * Parameter change: bisectolshift (tolerance of shift to stop bisection
+    method): default value changed from 0.1 to 0.001.
+  * Parameter change: bisectolwidth (tolerance of width to stop bisection
+    method): default value changed from 0.2 to 0.001.
+
+- ahmktim
+  * Bug-fix: Corrected a double-free failure which sometimes occured when
+    task was built with gcc 5.4 with optimization.
+
+- ahnxbgen
+  * Bug-fix: Incorrect Perl function call get_column_number() has been
+    corrected to get_column_num().
+  * Bug-fix: One case-sensitive test of regmode parameter is now case-
+    insensitive.
+
+- ahsxtarfgen
+  * Behavior change: Writes PSF fraction inside detector area and/or
+    inside region to the screen.
+  * New parameter: auxtransfile:  Auxiliary transmission file, containing
+    transmission as a function of energy to be applied to final ARF.
+  * Parameter change: skyregfile:  Wording of the parameter prompt was
+    changed to make clear that this region file is in world coordinates
+    (RADEC), not Cartesian SKY coordinates.
+  * Bug-fix: In applying the contamination CALDB file, now reinitializes
+    the sum of weights and weighted sum to zero for each fine energy bin.
+    Previously, this reinitialization was not done, so that incorrect
+    transmission values for contamination were used in the ARF.
+
+- hxirspeffimg
+  * Parameter change: auxtransfile:  If set to CALDB, a CALDB query is
+    done.  Previously, the string CALDB was not detected and was treated
+    as a normal filename.
+
+- sxsnxbgen
+  * New parameter: picol:  Name of PI column to read from input event file.
+
+
+HXI/SGD Applications:
+
+- sgdarfgen
+  * Behavior change: Checks SGDID parameter vs. INSTRUME keyword in input
+    file, and includes SGDID as part of output file name.
+
+- sgdevtid
+  * Behavior change: Uses underscore instead of blank in fluorescence
+    material names; e.g., 'CdTe btm' is now 'CdTe_btm'.
+  * Bug-fix: Throws error if the program attempts to find a fluorescence
+    line for a material that is absent from the CALDB file.  Previously,
+    such fluorescence lines were silently omitted in event reconstruction.
+
+
+SXI Applications:
+
+- sxiflagpix
+  * Bug-fix: Program was segfaulting when the parameter echoflag was
+    'no' and the parameter echomap was 'yes'.  This bug was corrected
+    by ignoring echomap when echoflag is 'no'.
+
+- sxipi
+  * Bug-fix: Some CALDB files can have blocks of lines with the same
+    timestamp.  Previously, CALDB files containing more than one such
+    block were being read incorrectly.  The bug was fixed by correcting
+    the flow of control in nested loops that process each group of equal
+    times within each file.
+
+
+SXS Applications: 
+
+- sxsextend
+  * NEW TOOL: Reruns tasks sxspha2pi, sxsperseus (if necessary), and
+    ahscreen in order to produce SXS event files in extended energy mode.  `
+
+- sxsanticolc
+  * Behavior change: Sets TUNIT keywords for output RATE and ERROR columns.
+    Previously, these keywords were omitted.
+
+- sxsflagpix
+  * Behavior change: If MXS GTI times do not overlap with the time range
+    of the input file.  prints log message and skips MXS flagging.
+    Previously in this case, the task threw an error.
+
+- sxsgain
+  * Parameter change: r2tol (convergence criterion for R^2): default value
+    changed from 0.01 to 0.001.
+  * Parameter change: bisectolshift (tolerance of shift to stop bisection
+    method): default value changed from 0.1 to 0.001.
+  * Parameter change: bisectolwidth (tolerance of width to stop bisection
+    method): default value changed from 0.2 to 0.001.
+  * Behavior change: Instead of using theoretical average when determining
+    the temperature from the fitted shift, now uses the tabulated profile
+    average.
+
+- sxsperseus
+  * Behavior change:  For extended energy mode, reads columns EPIE and
+    EPI2E rather than EPI and EPI2, and writes columns EPIEPER and
+    EPI2EPER rather than EPIPER and EPI2PER.
+  * Bug-fix: Now checks whether PI or PIE column already exists before
+    inserting it into the output file.
+  * Parameter change:  binwidth (PI bin width for extended energy range):
+    Default value changed from 0.5 eV to 1.0 eV.
+
+- sxspha2pi
+  * Behavior change: In extended energy mode, automatically adds "E" to
+    column name in ADDEPICOL parameter to form the name of the output
+    column for energy with secondary correction.
+  * Behavior change: Now writes PIOFFST and PIWIDTH keywords (PI energy
+    offset and bin width) in non-extended-energy mode.  (Similar keywords
+    PIEOFFST and PIEWIDTH were already written for extended energy mode.)
+  * Bug-fix: Skips events with PIXEL=NULL to guard against a segfault. 
+    Normally, this condition is never encountered because the PROC_STATUS
+    column should indicate a bad event, but PROC_STATUS has not been
+    updated in teh pre-pipeline for this condition.
+
+- sxspixgti
+  * Behavior change: Updates timing keywords if upkeyword=yes (upkeyword
+    is also passed to the called task ahgtigen, as before).
+
+- sxsregext
+  * New parameter: extended (boolean):  extended=yes causes the PIE column
+    to be read from the event file rather than the PI column.
+  * Behavior change:  Substitutes USER=sxsregext for USER=[user name] in
+    output header to facilitate unit testing.
+  * Parameter change:  regmode: WCS coordinates for the regionfile are now
+    indicated by regmode=RADEC rather than regmode=SKY.
+
+
+Libraries:
+  
+- ahgain
+  * Bug-fix: Memory leak eliminated in deallocation of fit results structure.
+
+- rmflib
+  * Behavior change: CHANNEL column in EBOUNDS RMF extension changed from I type to J.
+
+********************************************************************************
+                                    NUSTAR
+********************************************************************************
+
+NuSTARDAS v1.7.0 software patch:
+
+- nucalcsaa: Adjust the behavior of nucalcsaa so that fselect is no
+  longer run even when saamode='NONE' & tentacle=no. This resolves
+  the known issues where nupipeline was crashing when the 01 and 02
+  event files were empty (mostly when looking at the Sun).
+
+- nupipeline: (1) nupipeline now selects an appropriate TLE file
+  from the auxil directory instead of simply exiting with an error
+  message.  (2) Corrected a bug in the input parser that occurred
+  when parameter 'statusexpr' was not set to 'DEFAULT'.
+
+- nuscreen: Correction of a bug when input parameter 'statusexpr'
+  is not set to DEFAULT.
+
+NuSTARDAS v1.7.1 software patch:
+
+- nufilter: added the parameter 'timeadj=DEFAULT when running the
+  multi-mission FTOOL prefilter.
+
+********************************************************************************
+                                     SWIFT
+********************************************************************************
+
+XRTDAS Build 33:
+
+- xrtpipeline: Disabled the option to call the xrttam module (removal
+  of the input parameters  applytamcorr, tamfile, tamrefx1, tamrefy1,
+  tamrefx2, tamrefy2, attcorrout)
+
+- xrtwtcorr: Bug fixed in the bias adjustment calculation.
+
+- xrtscreen: Fixed some keywords duplication in output GTI files.
+
+- xrtfilter: Modified the call to the multi-mission FTOOL prefilter.
+
+- xrtgrblc: Update of the clean-up of temporary files.
+
+- xrtgrblcspec: Adjust some output formatting to mimic behavior prior to
+  a recent increase in output precision from Xspec.
+
+********************************************************************************
+                                    XTE
+********************************************************************************
+
+- GUIs xdf and xsut have been relocated to live with the rest of the XTE
+  software instead of the "FV/GUIs" package.
+
+********************************************************************************
+                                    MISC.
+********************************************************************************
+
+- tai-utc.dat, leapsec.fits: Added 2017-01-01 leap second.
+
+- PLT: Fix for problem in contour plot when the label to set the cross
+  can fail if the first position given is of the form #e... where #
+  is a single integer. The issue arises because GTPEEK returns only
+  the first two characters of the token while ISNUM checks for a
+  token being a number by testing that the first and last characters
+  are integers. There are a number of other places that GTPEEK is
+  followed by ISNUM so these could generate similar problems. It
+  would be better to have a complete solution to these however the
+  obvious fix of changing GTPEEK to return the entire token causes
+  a failure when using text surrounded by double quotes.

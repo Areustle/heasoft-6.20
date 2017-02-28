@@ -1,0 +1,180 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batoccultmap/ut_batoccultmap_contour,v $
+# $Revision: 1.3 $
+# $Date: 2007/08/10 07:44:49 $
+#
+#	ut_batoccultmap
+#		validate batoccultmap task (detecting,refining imaged srcs)
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "batoccultmap";
+$ut_taskname   = "ut_batoccultmap_contour";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	my %task = (
+		    infile        => "$input/batoccultmap.img",
+		    outfile       => "$output/batoccultmap.occimg",
+		    atmdepth      => "5.0",
+		    saofile       => "$input/batoccultmap.sao",
+		    occultation   => "fraction",
+		    method        => "position",
+		    gtifile       => "INFILE",
+		    multfiles     => "$output/batoccultmap_mult.img",
+		    divfiles      => "$output/batoccultmap_div.img",
+		    timesegtol    => 0.0,
+		    rearth        => 6378.1,
+		    rmoon         => 16.0,
+		    rsun          => 16.5,
+		    algorithm     => "CONTOUR",
+		    constraints   => "EARTH,MOON,SUN",
+		    chatter       => 0,
+		    clobber       => "Yes",
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("infile", "saofile");
+	
+	my %template = (
+			outfile  => "$input/batoccultmap_contour.occimg.template",
+			multfiles => "$input/batoccultmap_mult_contour.img.template",
+			divfiles => "$input/batoccultmap_div_contour.img.template",
+			);
+
+	# Make copies of the input file to be use for the corrections
+	unlink("$task{multfiles}");
+	unlink("$task{divfiles}");
+	if (-f "$task{infile}") {
+	    system("cp -p $task{infile} $task{multfiles}");
+	    system("cp -p $task{infile} $task{divfiles}");
+	}
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f "$task{$key}") {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	unlink("$task->outfile");
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	# Check template files are present
+	foreach my $key (keys %template) {
+	    if (not -f $template{$key}) {
+		$self->fatal(BAD_INPUT,
+			     "invalid template $key file: $template{$key}");
+		return -1;
+	    }
+
+	    $command = qq(ftverify infile=$task{$key} outfile=STDOUT heasarc=yes);
+	    $self->doCommand($command);
+
+	    $command = "ftdiff $template{$key} $task{$key} tolerance=$tolerance hdumaxdiff=25 exclude=CREATOR,OCCVER,OCCFILE";
+	    $result = $self->doCommand($command);
+	    if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+		$ndiffs = $1;
+		print "   -->  FTDIFF reports $ndiffs differences\n";
+		if ($ndiffs ne 0) {
+		    $lines = $result->{output};
+		    print "$lines\n" if $self->chatter(5);
+		    $self->error(BAD_OUTPUT, "error because of bad compare");
+		}
+		
+	    }
+	}
+	
+}
+

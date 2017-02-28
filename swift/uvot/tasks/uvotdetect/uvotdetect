@@ -1,0 +1,1910 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotdetect/uvotdetect,v $
+# $Revision: 1.66 $
+# $Date: 2013/06/25 15:58:20 $
+#
+#	uvotdetect
+#		detect sources in an image by running SExtractor
+#
+#
+# $Log: uvotdetect,v $
+# Revision 1.66  2013/06/25 15:58:20  rwiegand
+# Restored the type of the (now calculated) RATE, RATE_ERR columns to E (32
+# bit float).
+#
+# Revision 1.65  2013/04/05 18:13:07  rwiegand
+# When passing count image to SExtractor (expopt=EVENTS), need to convert fluxes
+# coming out of SExtractor to rates.  Also use externally calculated background.
+#
+# Revision 1.64  2013/03/30 13:22:10  rwiegand
+# Added expopt=EVENTS for detecting sources in low count images.  This option
+# provides an image with discretized counts to SExtractor.
+#
+# Revision 1.63  2010/12/08 16:19:43  rwiegand
+# Updated parameters passed to uvotlss for LSS correction.
+#
+# Revision 1.62  2010/12/08 14:41:10  rwiegand
+# Motivated by requirement for uvotdetect to support LSS correction, modified
+# photometry module so that each correction uses the generic names for the
+# input (UNCORR_RATE) and output (CORR_RATE).
+#
+# Revision 1.61  2010/07/26 04:42:33  rwiegand
+# Allow passing a quality flag file.
+#
+# Revision 1.60  2010/06/25 21:48:17  rwiegand
+# Implemented detector sensitivity correction.  Added parameters for each
+# of the calibration files.
+#
+# Revision 1.59  2010/04/02 13:33:16  rwiegand
+# Added column: POS_ERR / 90% confidence interval (radius).
+#
+# Revision 1.58  2009/07/07 20:35:31  rwiegand
+# Was taking position errors from inappropriate SExtractor outputs.
+#
+# Revision 1.57  2009/03/31 14:25:33  rwiegand
+# Remove quotation marks from string keyword values.
+#
+# Revision 1.56  2008/10/17 13:48:20  rwiegand
+# Take RATE_ERR from FLUXERR_ISOCOR instead of estimating from RATE.
+#
+# Revision 1.55  2008/10/15 14:40:06  rwiegand
+# Updated pixel position column type and comments of ellipse axes columns.
+#
+# Revision 1.54  2008/09/15 20:46:51  rwiegand
+# Corrected column filtering for non-sky images.
+#
+# Revision 1.53  2008/07/02 20:08:30  rwiegand
+# Updated column names to be distinct from those used by SExtractor.
+#
+# Revision 1.52  2008/07/02 19:32:45  rwiegand
+# Use SExtractor *WIN* parameters for world and image positions and errors.
+# Added exclude parameter to allow user control of which columns are propagated
+# to the output.
+#
+# Revision 1.51  2008/04/22 20:50:13  rwiegand
+# Activated support for deriving sky positions for sources in raw images.
+#
+# Revision 1.50  2008/04/02 14:54:52  rwiegand
+# Support processing raw and detector images.
+#
+# Revision 1.49  2007/10/09 15:29:13  rwiegand
+# Added another exposure map flag FULL which causes the entire image
+# to be used to estimate the background.
+#
+# Revision 1.48  2007/07/25 21:34:24  rwiegand
+# Propagate columns added to the SExtractor *.param file to the output.
+#
+# Revision 1.48  2007/07/25 21:07:02  rwiegand
+# Propagate columns added to the SExtractor *.param file to the output.
+#
+# Revision 1.47  2007/07/09 14:50:57  rwiegand
+# Renamed UVOT sextractor executable to uvotsex.
+#
+# Revision 1.46  2007/05/30 15:21:34  rwiegand
+# Calibration of sources was not subtracting off background.
+#
+# Revision 1.45  2007/05/25 15:13:25  rwiegand
+# Calculate a total rate.  Implemented calibration of sources.
+#
+# Revision 1.44  2007/05/18 17:23:02  rwiegand
+# Updated column filtering expression to account for a change in parsing.
+#
+# Revision 1.43  2007/05/15 19:07:40  rwiegand
+# Integrated Scott Koch's changes for using an exposure map.  Made it possible
+# to access the old behavior since I think it is needed for summed images.
+#
+# Revision 1.42  2006/08/22 15:05:43  rwiegand
+# Ensure that a positive sigma is passed to SExtractor.
+#
+# Revision 1.41  2006/05/24 17:36:34  rwiegand
+# Switched from using f*arith to pixel filtering for preparing rate image
+# and estimating background.  Exclude nulls when estimating background (this
+# is significant for genie images missing packets).
+#
+# Revision 1.40  2006/03/03 20:13:57  rwiegand
+# Was incorrectly treating EXPOSURE as 1 when passing exposure map which
+# was resulting in overestimated rate errors.  Include SExtractor GAIN
+# parameter in templates and set to EXPOSURE time.
+#
+# Revision 1.39  2006/02/27 22:40:07  rwiegand
+# Pass SExtractor PHOT_APERTURES parameter to derive aperture photometry.
+# Currently passing two apertures of 10 and 24 pixel diameters for unbinned
+# images which corresponds to ~2.5" and 6" radius.
+#
+# Revision 1.38  2006/02/17 14:12:31  rwiegand
+# Corrected background subtraction in SExtractor BACK_MEAN_SIGMA extension.
+# This removed the need for the uvotdetect minsigma kludge.
+#
+# Revision 1.37  2005/11/02 13:29:41  rwiegand
+# Added detected parameter which indicates the number of sources detected.
+#
+# Revision 1.36  2005/10/31 14:10:16  rwiegand
+# When plotting sources, draw yellow circles around sources with flagged
+# detections to indicate they are questionable.
+#
+# Revision 1.35  2005/10/17 21:40:45  rwiegand
+# Plot sources with sextraction flags too.
+#
+# Revision 1.34  2005/10/17 12:34:20  rwiegand
+# Source table module relocated.
+#
+# Revision 1.33  2005/09/12 13:22:46  rwiegand
+# Do not propagate SExtractor ORIGIN keycard.
+#
+# Revision 1.32  2005/09/07 18:30:03  rwiegand
+# Formatted derived binning string.
+#
+# Revision 1.31  2005/08/29 12:00:43  rwiegand
+# Handle case where sigma clipping results in 0 mean/sigma.
+#
+# Revision 1.30  2005/08/26 00:19:18  rwiegand
+# Corrected test for ftstat convergence.
+#
+# Revision 1.29  2005/08/05 12:31:26  rwiegand
+# Added parameter for fraction of zeros in background before externally
+# calculating mean and sigma for SExtractor.
+#
+# Revision 1.28  2005/06/14 21:15:41  rwiegand
+# Implemented Wayne Landsman's rule (90% zeros in middle half) rule for
+# deciding whether to pass background to SExtractor.
+#
+# Revision 1.27  2005/06/13 15:40:55  rwiegand
+# Added another background type to calculate the mean and sigma of non-zero
+# pixels inside SExtractor instead of externally.
+#
+# Revision 1.26  2005/06/10 20:53:41  rwiegand
+# Pass externally calculated background mean and variance to SExtractor.
+# Stripped down 1x1 configuration file- remainder to follow.
+#
+# Revision 1.25  2005/05/24 20:01:56  rwiegand
+# Use a generic approximation for flux errors since SExtractor is not
+# providing what we expect.
+#
+# Revision 1.24  2005/03/04 19:43:09  rwiegand
+# ds9 understands name.fits[ext] but not name.fits+ext, so ensure in
+# former form.
+#
+# Revision 1.23  2005/02/15 19:56:24  rwiegand
+# Added an option to plot the detected sources (using ds9).
+#
+# Revision 1.22  2005/02/14 19:32:40  rwiegand
+# Base SExtractor configuration on image binning.
+#
+# Revision 1.21  2005/02/09 18:47:12  rwiegand
+# Was failing to store binning value which resulted in the convolution
+# filter being flat (a non-decaying Gaussian).  Allow user more leeway with
+# sexfile parameter.
+#
+# Revision 1.20  2004/12/29 21:30:53  rwiegand
+# Allow the user to provide a SExtractor configuration file.
+#
+# Revision 1.19  2004/12/09 21:24:36  rwiegand
+# Accept more alternatives for exposure duration.  Convert source position
+# error from degrees to arcsec.
+#
+# Revision 1.18  2004/12/07 22:29:03  rwiegand
+# Pass rate image to SExtractor.  Compute background rate per arcsec^2.
+# Renamed weightfile parameter to expfile.
+#
+# Revision 1.17  2004/11/03 20:35:19  rwiegand
+# Store detection major and minor axes in arcsec.
+#
+# Revision 1.16  2004/11/02 19:45:43  rwiegand
+# Style changes.
+#
+# Revision 1.15  2004/11/01 21:59:46  rwiegand
+# Added SExtractor BACKGROUND column.  Reordered and renamed output columns.
+#
+# Revision 1.14  2004/11/01 18:42:19  rwiegand
+# Added BACKGROUND rate to set of output columns.
+#
+# Revision 1.13  2004/08/03 20:30:51  rwiegand
+# Tweaks to column data, names and comments.
+#
+# Revision 1.12  2004/07/29 13:16:38  rwiegand
+# Updated source list column names.
+#
+# Revision 1.11  2004/07/09 15:58:20  rwiegand
+# Made check for file name NONE case insensitive.  Fixed WEIGHT_THRESH value.
+#
+# Revision 1.10  2004/06/17 21:36:52  rwiegand
+# Updated to use new HEAdas perl task support.  Use SExtractor instead of
+# ximage for source detection.  Added exposure map and detection threshold
+# parameters.
+#
+# Revision 1.9  2004/05/12 16:03:50  rwiegand
+# Intra-tool parameter consistency renaming effort.
+#
+# Revision 1.8  2004/03/10 19:42:46  rwiegand
+# Reworked how input parameter is used.  Now only a single image extension is
+# processed.  Using ximage's support for writing FITS source list instead
+# of parsing text output and building table here.
+#
+# Revision 1.7  2004/03/04 16:05:19  rwiegand
+# Modifying HOME was evil.  Ran into a problem with tunneling X traffic.
+#
+# Revision 1.6  2003/11/24 22:09:12  rwiegand
+# Support images larger than ximage's default limit.  Clean up ximage
+# temporary files.
+#
+# Revision 1.5  2003/09/30 14:00:15  rwiegand
+# Support processing multiple input HDUs.  Write source lists to FITS tables.
+#
+# Revision 1.4  2003/06/11 21:04:16  miket
+# global name change from udetect to uvotdetect
+#
+# Revision 1.3  2002/06/24 20:10:37  rwiegand
+# Allow colon delimited path for PFILES environment variable.
+#
+# Revision 1.2  2002/06/24 16:54:53  rwiegand
+# Made corrections during development of test driver.
+#
+# Revision 1.1  2002/06/24 13:54:37  rwiegand
+# Initial version of udetect submitted to HEAdas.
+#
+
+use strict;
+
+package UVOT::Detect;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+
+use StarID::SourceTable;
+use Astro::Convert;
+use SimpleFITS;
+use UVOT::Calibration;
+use UVOT::Source;
+
+
+use constant FWHM_pix => 3.6;
+# use constant FWHM_pix => 2.5;
+use constant UNBINNED_PIXEL_deg => 1.39444e-4;
+use constant EXTNAME => 'SOURCES';
+
+use constant MAG_NULL => StarID::SourceTable::MAG_NULL;
+
+
+{
+	my $task = UVOT::Detect->new(
+			version => '3.1',
+			);
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->selectHDU
+		if $self->isValid;
+
+	$self->processHDU
+		if $self->isValid;
+
+	$self->updateSkyPositions
+		if $self->isValid;
+
+	$self->makeRegionFile
+		if $self->isValid;
+
+	$self->finalize;
+
+	$self->plotSources
+		if $self->isValid and $self->args->{plotsrcFlag};
+}
+
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment;
+	return if not $self->isValid;
+
+	$self->pilOptions(
+			options => [ qw(infile=file outfile=file
+				sexfile=file expfile=file threshold=real plotsrc=boolean
+				sexargs=string zerobkg=real expopt=string calibrate=boolean
+				zerofile=file coinfile=file sensfile=file lssfile=file
+				attfile=file regfile=file exclude=string
+				clobber=bool history=bool cleanup=bool chatter=int
+				) ],
+			noget => [ qw(expfile threshold) ],
+			);
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+
+		my $path = $args->{outfile};
+
+		if (-e $path) {
+			$self->error(BAD_OUTPUT,
+				"$path exists and clobber not set");
+		}
+	}
+
+	if ($self->isValid and $args->{sexfile} =~ /^DEFAULT$/) {
+		$self->getParameter('expfile');
+		$self->getParameter('threshold');
+	}
+
+	if (not defined $args->{expfile}) {
+		$args->{expfile} = 'NONE';
+	}
+
+	$self->{FWHM} = FWHM_pix;
+	$self->{apertures} = [ ];
+
+	if (uc($args->{expfile}) ne 'NONE') {
+		if ($args->{expfile} =~ /^FLAG:(.+)/i) {
+			$self->{HAVE_FLAGFILE} = 1;
+			$self->{FLAGFILE} = $1;
+		}
+		else {
+			$self->{HAVE_EXPFILE} = 1;
+		}
+	}
+
+
+	$self->setDetected(-1);
+}
+
+
+sub selectHDU
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $path = $args->{infile};
+
+	my $inspec = $self->parseInputURL($path);
+	if (not $inspec) {
+		$self->error(BAD_INPUT,
+				"unable to parse input name $path");
+	}
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to open $path [$status]");
+	}
+	else {
+		$self->{ifptr} = $fits;
+	}
+
+	my $numhdus = 0;
+	if ($self->isValid and $fits->get_num_hdus($numhdus, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to get HDU info for $path [$status]");
+	}
+	else {
+		$inspec->{numhdus} = $numhdus;
+	}
+
+	if (length($inspec->{extspec}) > 0) {
+		# user specified extension, ensure an image
+		my $hdutype = 0;
+
+		if ($fits->get_hdu_type($hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to get $path HDU type");
+		}
+		elsif ($hdutype != IMAGE_HDU) {
+			$self->error(BAD_INPUT,
+					"specified HDU is not an image");
+		}
+
+		# $self->{infile} = $path;
+		$self->{infile} = $inspec->{filebase} . "[$inspec->{extspec}]";
+		$self->{inhdu} = $inspec->{extspec};
+	}
+	else {
+		# try to determine correct extension by finding 2d image
+		my $chosen = undef;
+		my @images;
+		my $hdutype = 0;
+		my $naxis;
+		my $bitpix;
+		my @naxes;
+
+		for (my $hdu = 1; $hdu <= $inspec->{numhdus}; ++$hdu) {
+			if ($fits->movabs_hdu($hdu, $hdutype, $status)) {
+				$self->error(BAD_INPUT,
+						"unable to move to $path HDU $hdu [$status]");
+			}
+			elsif ($hdutype != IMAGE_HDU) {
+				# ignore
+			}
+			elsif ($fits->get_img_parm($bitpix, $naxis, \@naxes, $status)) {
+				$self->error(BAD_INPUT,
+						"unable to get HDU $hdu image parameters [$status]");
+			}
+			elsif ($naxis != 2 or $naxes[0] < 1 or $naxes[1] < 1) {
+				# ignore
+			}
+			else {
+				push(@images, $hdu);
+			}
+		}
+
+		if (@images > 1) {
+			my $list = join(', ', @images);
+			$self->error(BAD_INPUT,
+					"multiple image extensions in $path [$list]");
+		}
+		elsif (@images == 0) {
+			$self->error(BAD_INPUT,
+					"no usable image extensions in $path");
+		}
+		else {
+			$chosen = $images[0];
+			$self->report("selected HDU $chosen [1-based]")
+				if $self->chatter(3);
+			$self->{inhdu} = $chosen - 1;
+			$self->{infile} = $path . "[$self->{inhdu}]";
+		}
+
+		if ($self->isValid and $fits->movabs_hdu($chosen, $hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to position at input HDU $chosen [$status]");
+		}
+	}
+
+	if (uc($args->{expopt}) eq 'ALPHA') {
+		$self->{EXPOMAP_ALPHA} = 1;
+	}
+	elsif ($args->{expopt} =~ /^EVENTS(:.*)?/i) {
+		$self->{HAVE_EVENTS} = 1;
+
+		my $opt = $1 ? substr($1, 1) : '';
+
+		my @subpars = split(/\s*,\s*/, $opt);
+		foreach my $par (@subpars) {
+			my ($key, $value) = split('=', $par, 2);
+			if (uc($key) eq 'SCALE') {
+				$self->{EVENTS_SCALE} = $value;
+			}
+			elsif (uc($key) eq 'DIRECT') {
+				$self->{EVENTS_DIRECT} = 1;
+			}
+			elsif (uc($key) eq 'EXPOSURE') {
+				$self->{EVENTS_SCALE_EXP} = 1;
+			}
+			else {
+				$self->warning("unknown EVENTS option '$par'");
+			}
+		}
+	}
+	else {
+		$self->{EXPOMAP_BETA} = 1;
+	}
+
+	if ($self->isValid and $self->{HAVE_EXPFILE}) {
+
+		my $arg = $args->{expfile};
+		my $spec = $self->parseInputURL($arg);
+		$self->{expfile} = $self->temporary('exp', ext => '.img');
+		my $expinput;
+		if (not $spec) {
+			$self->error(BAD_INPUT,
+					"unable to parse input name $arg");
+		}
+		elsif (length($spec->{extspec}) > 0) {
+			$expinput = $arg;
+		}
+		else {
+			# assume same as infile extension
+			$expinput = $arg . "[$self->{inhdu}]";
+		}
+
+		if ($expinput) {
+			my $command = $self->buildCommand('ftcopy',
+					infile => $expinput,
+					outfile => $self->{expfile},
+					copyall => 'no',
+					);
+			$self->shell($command);
+		}
+	}
+
+	if ($self->isValid and $self->{HAVE_FLAGFILE}) {
+
+		my $arg = $self->{FLAGFILE};
+		my $spec = $self->parseInputURL($arg);
+		if (not $spec) {
+			$self->error(BAD_INPUT,
+					"unable to parse flagfile '$arg'");
+		}
+		elsif (length($spec->{extspec}) > 0) {
+			$self->{FLAGEXT} = $arg;
+		}
+		else {
+			# assume same as determined infile extension
+			$self->{FLAGEXT} = $arg . "[$self->{inhdu}]";
+		}
+	}
+
+}
+
+
+sub isSkyWCS
+{
+	my ($wcs) = @_;
+
+	my $unit = $wcs->{CUNIT1};
+	return 1 if $unit =~ /^degs?$/;
+	return 1 if $unit =~ /^degrees?$/;
+
+	my $type = $wcs->{CTYPE1};
+	return 1 if $type eq 'RA---TAN';
+	return 1 if $type eq 'DEC--TAN';
+
+	return 0;
+}
+
+
+sub processHDU
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $fits = $self->{ifptr};
+	$self->{cards} = [ ];
+	$self->storeHeaderCards($fits,
+			types => [ TYP_HDUID_KEY, TYP_COMM_KEY, TYP_CONT_KEY,
+					TYP_USER_KEY, TYP_REFSYS_KEY ],
+			array => $self->{cards},
+			exclude => [ qw(EXTNAME DATE CREATOR ORIGIN) ],
+			);
+
+	my ($header, $status) = $fits->read_header;
+	Task::FITS::cleanHeaderStrings($header);
+	$self->{HEADER} = $header;
+
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to read $self->{infile} header [$status]");
+	}
+	else {
+
+		foreach my $key (qw(NAXIS1 NAXIS2
+				WINDOWX0 WINDOWY0 BINX BINY
+				RA_PNT DEC_PNT)) {
+			if (not exists($header->{$key})) {
+				$self->warning("header missing $key");
+			}
+			$self->{$key} = $header->{$key};
+		}
+
+		my $wcs = $self->getWCS($header);
+		my $degPerPixel;
+		if ($wcs->{CTYPE1} =~ /^RAW/) {
+			$self->{isRAW} = 1;
+			$degPerPixel = UNBINNED_PIXEL_deg * ($header->{BINX} || 1);
+			$self->report('processing as RAW image')
+				if $self->chatter(3);
+		}
+		elsif ($wcs->{CTYPE1} =~ /^DET/) {
+			$self->{isDET} = 1;
+			$degPerPixel = UNBINNED_PIXEL_deg * ($header->{BINX} || 1);
+			$self->report('processing as DET image')
+				if $self->chatter(3);
+		}
+		else {
+			$self->{isSKY} = 1;
+			$degPerPixel = sqrt(($wcs->{CDELT1}**2 + $wcs->{CDELT2}**2) / 2);
+		}
+
+		$self->{arcsecPerPixel} = 3600 * $degPerPixel;
+
+		{
+			my $binning = $degPerPixel / UNBINNED_PIXEL_deg;
+			if ($binning <= 1.5) {
+				$self->{BINNING} = 1; 
+			}
+			elsif ($binning <= 3) {
+				$self->{BINNING} = 2; 
+			}
+			elsif ($binning <= 6) {
+				$self->{BINNING} = 4; 
+			}
+			else {
+				$self->{BINNING} = 8; 
+			}
+			my $binstr = sprintf('%.3f', $binning);
+			$self->report("derived binning $self->{BINNING} [was $binstr]")
+		}
+
+
+# Date: Thu, 5 Aug 2004 10:03:24 -0400 
+# Here's the order of usefulness to calculate the exposure:
+# EXPOSURE
+# LIVETIME
+# ONTIME
+# TELAPSE
+# TSTART+TSTOP
+
+		# put this in a library.
+		if ($header->{EXPOSURE}) {
+			$self->{EXPOSURE} = $header->{EXPOSURE};
+		}
+		elsif ($header->{LIVETIME}) {
+			$self->{EXPOSURE} = $header->{LIVETIME};
+		}
+		elsif ($header->{ONTIME}) {
+			$self->{EXPOSURE} = $header->{ONTIME};
+		}
+		elsif ($header->{TELAPSE}) {
+			$self->{EXPOSURE} = $header->{TELAPSE};
+		}
+		elsif ($header->{TSTART} and $header->{TSTOP}) {
+			$self->{EXPOSURE} = $header->{TSTOP} - $header->{TSTART};
+		}
+		elsif (not $self->{HAVE_EXPFILE}) {
+			$self->{EXPOSURE} = 100;
+			$self->warning("assuming exposure $self->{EXPOSURE} s");
+		}
+	}
+
+	$self->prepareDetectionImage
+		if $self->isValid;
+
+	$self->runSourceExtractor
+		if $self->isValid;
+
+	$self->normalizeResults
+		if $self->isValid;
+
+	$self->calibrateResults
+		if $self->isValid;
+}
+
+
+sub prepareDetectionImage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{seximage} = $self->temporary('sex', ext => '.img');
+	$self->{statinput} = $self->temporary('stat', ext => '.img');
+
+	if ($self->{EXPOSURE} < 1) {
+		my $e = 100;
+		$self->warning("replacing EXPOSURE $self->{EXPOSURE} with $e [s]");
+		$self->{EXPOSURE} = $e;
+	}
+
+	$self->{GAIN} = $self->{EXPOSURE};
+
+	# by default, just divide by exposure...
+	$self->{nullcommand} = $self->buildCommand('ftcopy',
+			infile => $self->{infile} . "[pixr1 X/$self->{EXPOSURE}]",
+			outfile => $self->{statinput},
+			copyall => 'no',
+			);
+
+	if ($self->{HAVE_EVENTS}) {
+		$self->report('discretizing events');
+		$self->{GAIN} = 1;
+
+		# not that the expr is unused if EVENTS:DIRECT is specified
+		my $expr = 'round(x)';
+		if ($self->{EVENTS_SCALE}) {
+			my $scale = sprintf('%.1f', $self->{EVENTS_SCALE});
+			$expr = "round(x*$scale)/$scale";
+		}
+
+		if ($self->{EVENTS_SCALE_EXP}) {
+			$expr .= sprintf('/%.1f', $self->{EXPOSURE});
+		}
+
+		my $filter = $self->{EVENTS_DIRECT} ? '' : "[pixr1 $expr]";
+
+		my $command = $self->buildCommand('ftcopy',
+				infile => $self->{infile} . $filter,
+				outfile => $self->{seximage},
+				copyall => 'no',
+				);
+		$self->shell($command);
+	}
+	elsif ($self->{HAVE_FLAGFILE}) {
+		$self->report("zeroing pixels flagged in $self->{FLAGEXT}");
+
+		my $command = $self->buildCommand('ftpixcalc',
+				expr => '(B==0)?A:0',
+				outfile => $self->{seximage},
+				a => $self->{infile} . "[pixr1 DEFNULL(X, 0)/$self->{EXPOSURE}]",
+				b => $self->{FLAGEXT},
+				c => 'NONE',
+				bitpix => -32,
+				);
+		$self->shell($command);
+
+		$self->{nullcommand} = $self->buildCommand('ftpixcalc',
+				expr => "(B==0) ? (A/$self->{EXPOSURE}) : 0",
+				outfile => $self->{statinput},
+				a => $self->{infile},
+				b => $self->{FLAGEXT},
+				c => 'NONE',
+				bitpix => -32,
+				);
+	}
+	elsif (not $self->{HAVE_EXPFILE}) {
+
+		$self->warning("no exposure map provided\n"
+				. "\t... count rates may be underestimated");
+
+		my $command;
+		if ($self->{FLAGEXT}) {
+			$command = $self->buildCommand('ftpixcalc',
+					expr => '(B==0) ? A : 0',
+					outfile => $self->{seximage},
+					a => $self->{infile} . "[pixr1 DEFNULL(X, 0)/$self->{EXPOSURE}]",
+					b => $self->{FLAGEXT},
+					c => 'NONE',
+					bitpix => -32,
+					);
+		}
+		else {
+			$command = $self->buildCommand('ftcopy',
+					infile => $self->{infile} . "[pixr1 DEFNULL(X, 0)/$self->{EXPOSURE}]",
+					outfile => $self->{seximage},
+					copyall => 'no',
+					);
+		}
+
+		$self->shell($command);
+	}
+	else {
+
+		my $expr;
+		if ($self->{EXPOMAP_ALPHA}) {
+			$expr = '(DEFNULL(A,-1)>=0&&DEFNULL(B,0)>1) ? (float)A/B : 0';
+		}
+		else {
+			$expr = '(DEFNULL(A,-1)>=0&&DEFNULL(B,0)>1&&B>'
+					. $self->{EXPOSURE} . '-0.5) ? (float)A/B : -1';
+		}
+
+		my $command = $self->buildCommand('ftpixcalc',
+				expr => $expr,
+				outfile => $self->{seximage},
+				a => $self->{infile},
+				b => $self->{expfile},
+				c => 'NONE',
+				bitpix => -32,
+				);
+
+		$self->shell($command);
+
+		if ($self->{EXPOMAP_ALPHA}) {
+			$expr = '(A>=0&&B>1) ? (float)A/B : 0';
+		}
+		else {
+			$expr = '(B>0) ? (float)A/B : -1';
+		}
+		$self->{nullcommand} = $self->buildCommand('ftpixcalc',
+				expr => $expr,
+				outfile => $self->{statinput},
+				a => $self->{infile},
+				b => $self->{expfile},
+				c => 'NONE',
+				bitpix => -32,
+				);
+	}
+
+}
+
+
+sub estimateBackground
+{
+	my ($self, $path) = @_;
+
+	my $args = $self->args;
+	if ($args->{zerobkg} >= 1) {
+		# no need to determine background because we are always going to
+		# let SExtractor do its own thing
+		return;
+	}
+
+	my $override = 0;
+
+	if ($args->{zerobkg} <= 0) {
+		# no need to count 0s/NULLs since always going to estimate background
+		$override = 1;
+	}
+
+	# execute command to create image that includes NULLs which will be
+	# used for estimating background
+	if ($self->{HAVE_EVENTS}) {
+		$self->{statinput} = $path;
+		$override = 1;
+	}
+	else {
+		$self->shell($self->{nullcommand});
+		return if not $self->isValid;
+	}
+
+	my $width = int($self->{NAXIS1} / 2);
+	my $height = int($self->{NAXIS2} / 2);
+	my $middle = $self->temporary('middle', ext => '.img');
+	if (uc($args->{expopt}) eq 'FULL') {
+		$middle = $self->{statinput};
+	}
+	else {
+		my $x0 = int($self->{NAXIS1} / 4);
+		my $x1 = $x0 + $width - 1;
+		my $y0 = int($self->{NAXIS2} / 4);
+		my $y1 = $y0 + $height - 1;
+		my $spec = "[$x0:$x1,$y0:$y1]";
+		my $command = $self->buildCommand('ftcopy',
+				infile => $self->{statinput} . $spec,
+				outfile => $middle,
+				copyall => 'no',
+				);
+		$self->shell($command);
+	}
+
+	# determine how many 0 or NULL pixels are in $middle
+	if (not $override) {
+		my $special = $self->{EXPOMAP_ALPHA} ? 0 : -1;
+		my $mask = $middle . "[PIX x==$special ? #NULL : x]";
+		my $stats = $self->findImageStats($mask);
+		my $percent = sprintf('%.1f', 100 * $stats->{null} / ($width * $height));
+		$self->report("found $percent % nulls in background");
+		$override = $percent > 100 * $args->{zerobkg};
+	}
+
+	$self->{overrideBackground} = $override;
+	if ($self->{overrideBackground}) {
+		my $stats = $self->findImageStats($middle, clip => 6);
+		if ($stats->{mean} > 0 and $stats->{sigma} > 0) {
+			$self->{MEAN} = $stats->{mean};
+			$self->{SIGMA} = $stats->{sigma};
+		}
+		else {
+			$stats = $self->findImageStats($middle);
+			if ($stats->{mean} > 0 and $stats->{sigma} > 0) {
+				$self->{MEAN} = $stats->{mean};
+				$self->{SIGMA} = $stats->{sigma};
+			}
+			else {
+				$self->{MEAN} = $stats->{mean};
+				$self->{SIGMA} = 1 / sqrt($self->{EXPOSURE});
+			}
+		}
+
+		my $formatted = sprintf('mean=%.3g, sigma=%.3g',
+				$self->{MEAN}, $self->{SIGMA});
+		$self->report("estimated background $formatted");
+	}
+
+}
+
+
+sub findImageStats
+{
+	my ($self, $path, %args) = @_;
+
+	my %stats = map { $_ => undef } qw(mean sigma max sum null good);
+
+	for (my $done = undef; not $done and $self->isValid; ) {
+
+		my @clip;
+		if ($args{clip}) {
+			@clip = (clip => 'yes', nsigma => $args{clip});
+		}
+		my $command = $self->buildCommand('ftstat',
+				infile => $path,
+				centroid => 'no',
+				@clip,
+				);
+		my $result = $self->shell($command);
+
+		foreach my $line (@{ $result->{lines} }) {
+			if ($line =~ /^\s*([^:]+):\s+(\S+)/) {
+				my $tag = $1;
+				my $value = $2;
+
+				my $stored;
+				foreach my $key (keys(%stats)) {
+					if ($tag =~ /$key/i) {
+						$stats{$key} = $value;
+						$stored = 1;
+					}
+				}
+
+				$stats{$tag} = $value if not $stored;
+			}
+		}
+
+		if ($args{clip}) {
+			if ($stats{cnvrgd} =~ /^Y/i) {
+				$done = 1;
+			}
+			else {
+				$args{clip} += 2;
+				$done = $args{clip} > 10;
+			}
+		}
+		else {
+			$done = 1;
+		}
+	}
+
+	foreach my $key (keys(%stats)) {
+		if (not exists($stats{$key})) {
+			$self->warning("did not find image $key");
+		}
+	}
+
+	return \%stats;
+}
+
+
+sub createFilterFile
+{
+	my ($self) = @_;
+
+	my $convfile = $self->temporary('uvotdetect', ext => '.conv');
+	my $fh = FileHandle->new($convfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+				"unable to create filter file $convfile [$!]");
+		return;
+	}
+	else {
+		# indicate this is a convolution file that needs normalization
+		$fh->print("CONV NORM\n");
+		$fh->print("# uvotdetect created Gaussian filter\n");
+		$fh->print("# with FWHM $self->{FWHM}, BINNING $self->{BINNING}\n");
+		my $s = 4;
+		for (my $y = -$s; $y <= $s; ++$y) {
+			for (my $x = -$s; $x <= $s; ++$x) {
+				my $d = $self->{BINNING} * sqrt($y * $y + $x * $x);
+				my $z = exp(-$d / $self->{FWHM});
+				$fh->printf('%f ', $z);
+			}
+			$fh->print("\n");
+		}
+		$fh->close;
+	}
+
+	return $convfile;
+}
+
+
+sub runSourceExtractor
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# create sex, param, conv files
+	my $template;
+	my $usersex = 0;
+
+	if ($args->{sexfile} =~ /^DEFAULT$/i) {
+		my $binning = $self->{BINNING} . 'x' . $self->{BINNING};
+		$template = "$ENV{HEADAS}/refdata/uvotdetect.$binning.sex";
+
+		$self->estimateBackground($self->{seximage});
+	}
+	else {
+		$usersex = 1;
+		$template = $args->{sexfile};
+	}
+
+	# slurp template
+	my @template;
+	my $fh = FileHandle->new($template);
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+				"unable to load template $template [$!]");
+		return;
+	}
+	else {
+		@template = <$fh>;
+		$fh->close;
+	}
+
+	my $sources = $self->{sourcefile} = $self->temporary('sextractor');
+
+	my @force = qw(CATALOG_NAME CATALOG_TYPE);
+	my %force = (
+		CATALOG_NAME     => $sources,
+		CATALOG_TYPE     => 'FITS_1.0',
+	);
+
+	if (not $usersex) {
+		push(@force, qw(DETECT_THRESH GAIN WEIGHT_TYPE WEIGHT_IMAGE));
+
+		my %background;
+		if ($self->{overrideBackground}) {
+			push(@force, qw(BACK_TYPE BACK_VALUE));
+			$force{BACK_TYPE} = 'MEAN_SIGMA';
+			$force{BACK_VALUE} = "$self->{MEAN},$self->{SIGMA}";
+		}
+		else {
+			$force{BACK_TYPE} = 'AUTO';
+		}
+
+		my %default = (
+			%force,
+			THRESH_TYPE    => 'RELATIVE',
+			DETECT_THRESH  => $args->{threshold},
+			ANALYSIS_THRESH  => $args->{threshold},
+			WEIGHT_TYPE    => ($self->{HAVE_EXPFILE} ? 'MAP_WEIGHT' : 'NONE'),
+			WEIGHT_IMAGE   => $self->{expfile},
+			GAIN           => $self->{GAIN},
+		);
+
+		%force = %default;
+	}
+	return if not $self->isValid;
+
+	my %written;
+
+	# write update
+	my $sexfile = $self->temporary('uvotdetect', ext => '.sex');
+	$fh = FileHandle->new($sexfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+				"unable to create SExtractor config file $sexfile [$!]");
+		return;
+	}
+	else {
+		foreach my $line (@template) {
+			my ($key, $rest) = split(/\s/, $line, 2);
+			my $value = undef;
+			if ($force{$key}) {
+				$written{$key} = 1;
+				$value = $force{$key};
+				if ($usersex and $force{$key}) {
+					$self->warning("ignoring user .sex $key");
+				}
+			}
+
+			if (defined($value)) {
+				$fh->print("$key\t$value\n");
+			}
+			else {
+				$fh->print($line);
+			}
+
+			if ($key =~ /^PHOT_APERTURES$/i) {
+				if ($rest =~ /^\s*([^#]+)/) {
+					my @aperture;
+					my @field = split(/,/, $1);
+					foreach my $f (@field) {
+						if ($f =~ /(\d+\.\d*|\d*\.\d+|\d+)/) {
+							push(@aperture, $1);
+						}
+					}
+					$self->{apertures} = \@aperture;
+				}
+				else {
+					$self->warning("unable to parse $line");
+				}
+			}
+		}
+
+		foreach my $key (@force) {
+			if (not $written{$key}) {
+				$fh->print("$key\t$force{$key}\n");
+			}
+		}
+
+		$fh->close;
+	}
+
+	if ($self->isValid) {
+		# run SExtractor
+		my $command = "uvotsex -c $sexfile $self->{seximage}";
+		if (uc($args->{sexargs}) ne 'NONE') {
+			$command .= ' ' . $args->{sexargs};
+		}
+
+		$self->shell($command);
+
+		if (not -r $sources) {
+			$self->error(BAD_OUTPUT,
+					"SExtractor output $sources missing");
+		}
+	}
+}
+
+
+sub normalizeResults
+{
+	my ($self) = @_;
+
+	my $alpha = $self->temporary('alpha');
+
+	my $aspp2 = $self->{arcsecPerPixel} ** 2;
+	my $exposure = sprintf('%.2f', $self->{EXPOSURE});
+	my $extname = EXTNAME;
+
+	# scale background by 5" aperture
+	my $area = 3.14159 * 5 * 5;
+
+	my $background = 'BACKGROUND';
+
+	# if HAVE_EVENTS, scale rates by 1 / $exposure
+	my $gain = '*1';
+	if ($self->{HAVE_EVENTS}) {
+		$gain = sprintf('*%.6f', 1 / $self->{EXPOSURE});
+
+		if ($self->{MEAN} > 0) {
+			$background = sprintf('%.6f', $self->{MEAN});
+		}
+	}
+
+	my $renaming = '[col '
+			. 'REFID==NUMBER;'
+			. 'RA==ALPHAWIN_J2000;'
+			. 'DEC==DELTAWIN_J2000;'
+			. 'RA_ERR(E)=(3600*sqrt(ERRX2WIN_WORLD));' # convert deg^2 => arcsec
+			. 'DEC_ERR(E)=(3600*sqrt(ERRY2WIN_WORLD));'
+			. "RATE(E)=FLUX_ISOCOR$gain;"
+			. "RATE_ERR(E)=FLUXERR_ISOCOR$gain;"
+			# convert background from rate/pixel to rate/arcsec^2
+			. "RATE_BKG(E)=$background$gain/$aspp2;"
+			. "RAW_BKG_RATE(E)=$area*RATE_BKG$gain;"
+			. "RAW_BKG_RATE_ERR(E)=sqrt($area*RATE_BKG$gain/$exposure);"
+			. "RAW_TOT_RATE(E)=RATE+$area*RATE_BKG;"
+			. "RAW_TOT_RATE_ERR(E)=sqrt(RATE/$exposure+$area*RATE_BKG/$exposure);"
+			. 'UX_IMAGE(E)=XWIN_IMAGE*1;'
+			. 'UY_IMAGE(E)=YWIN_IMAGE*1;'
+			. 'UA_IMAGE==AWIN_IMAGE;'
+			. 'UB_IMAGE==BWIN_IMAGE;'
+			. 'UTHETA_IMAGE==THETAWIN_IMAGE;'
+			. 'MAG(E)=-1;'
+			. 'UX_ERR(E)=sqrt(ERRX2WIN_IMAGE);'
+			. 'UY_ERR(E)=sqrt(ERRY2WIN_IMAGE);'
+			# see email from Stephen 2010 Mar 26 @3pm for calculation of POS_ERR
+			. 'POS_ERR(E)=sqrt(0.42*0.42+1.64485*1.64485*(RA_ERR*RA_ERR+DEC_ERR*DEC_ERR));'
+			. 'THRESHOLD;'
+			. 'FLAGS;'
+			;
+
+	if ($self->{isSKY}) {
+		$renaming .=
+			'PROF_MAJOR(E)=(3600*AWIN_WORLD);'   # convert deg => arcsec
+			. 'PROF_MINOR(E)=(3600*BWIN_WORLD);'
+			. 'PROF_THETA==THETAWIN_WORLD;'
+			;
+	}
+	else {
+		$renaming .=
+			"PROF_MAJOR(E)=(UA_IMAGE*$self->{arcsecPerPixel});"   # convert pixel => arcsec
+			. "PROF_MINOR(E)=(UB_IMAGE*$self->{arcsecPerPixel});"
+			. 'PROF_THETA(E)=(UTHETA_IMAGE*1);'
+			. 'RA=-999;DEC=-999;'
+			. 'RA_ERR=-1;DEC_ERR=-1;'
+			. 'QUALITY=-1;'
+			;
+	}
+
+	for (my $i = 0; $i < @{ $self->{apertures} }; ++$i) {
+		my $i1 = $i + 1;
+		$renaming .=
+			"RATE_APER$i1(E)=FLUX_APER[$i1];"
+			. "RATE_APER${i1}_ERR(E)=FLUXERR_APER[$i1];"
+			;
+	}
+
+	$renaming = $renaming
+			. "#EXTNAME='$extname';"
+			. "]";
+
+	{
+		my $command = $self->buildCommand('ftcopy',
+				infile => "$self->{sourcefile}$renaming",
+				outfile => $alpha,
+				);
+
+		$self->shell($command);
+		return if not $self->isValid;
+	}
+
+	my $status = 0;
+	my $ifptr = Astro::FITS::CFITSIO::open_file($alpha, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to open $alpha [$status]");
+	}
+
+	my $sfptr = Astro::FITS::CFITSIO::open_file($self->{sourcefile}, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to open $self->{sourcefile} [$status]");
+	}
+
+	my $normfile = $self->{normfile} = $self->temporary('norm');
+
+	my $ofptr = Astro::FITS::CFITSIO::create_file($normfile, $status);
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to create $normfile [$status]");
+	}
+	else {
+		$self->writeSourceTable($ifptr, $ofptr, $sfptr);
+		$self->putTaskKeywords($ofptr);
+	}
+
+	foreach my $fits ($ifptr, $ofptr, $sfptr) {
+		next if not $fits;
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+}
+
+
+sub getSpec
+{
+	my ($self, $colname) = @_;
+
+	my $spec;
+
+	if ($colname =~ /^RATE_APER(\d+)$/) {
+		my $which = $1;
+		my $diameter = $self->{apertures}[$which-1];
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => sprintf("Source rate %.1f pixel diameter aperture", $diameter),
+        	units => 'count/s',
+        	null => MAG_NULL,
+        	display => 'F8.4',
+    	};
+	}
+	elsif ($colname =~ /^(RATE_APER\d+)_ERR$/) {
+		my $ratecol = $1;
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => "Error in $ratecol",
+        	units => 'count/s',
+        	null => MAG_NULL,
+        	display => 'F6.4',
+    	};  
+	}
+	elsif ($colname =~ /^RAW_(TOT|BKG)_RATE$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => 'Estimated total rate',
+        	units => 'count/s',
+        	null => MAG_NULL,
+        	display => 'F8.4',
+    	};
+	}
+	elsif ($colname =~ /^(RAW_(TOT|BKG)_RATE)_ERR$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => "Error in $1",
+        	units => 'count/s',
+        	null => MAG_NULL,
+        	display => 'F8.4',
+    	};
+	}
+	elsif ($colname =~ /^U[XY]_IMAGE$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => 'Detection position',
+        	units => 'pixel',
+        	null => MAG_NULL,
+        	display => 'F8.3',
+    	};
+	}
+	elsif ($colname =~ /^U[AB]_IMAGE$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => 'Detection semi-axis',
+        	units => 'pixel',
+        	null => MAG_NULL,
+        	display => 'F8.3',
+    	};
+	}
+	elsif ($colname =~ /^(U[XY])_ERR$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => "Error in ${1}_IMAGE",
+        	units => 'pixel',
+        	null => MAG_NULL,
+        	display => 'F8.3',
+    	};
+	}
+	elsif ($colname =~ /^UTHETA_IMAGE$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => 'Angle of detection ellipse',
+        	units => 'deg',
+        	null => -999,
+        	display => 'F8.3',
+    	};
+	}
+	elsif ($colname =~ /^POS_ERR$/) {
+		$spec = { name => $colname,
+        	form => 'E',
+        	comment => '90% confidence interval (radius)',
+        	units => 'arcsec',
+        	null => MAG_NULL,
+        	display => 'F8.4',
+    	};
+	}
+	else {
+		$spec = StarID::SourceTable::getSpec($self, $colname);
+	}
+
+	return $spec;
+}
+
+
+sub writeSourceTable
+{
+	my ($self, $ifptr, $ofptr, $sfptr) = @_;
+
+	my $status = 0;
+	my $rows = 0;
+
+	my $extname = EXTNAME;
+
+	if ($ifptr->copy_hdu($ofptr, 0, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to copy primary HDU to output");
+	}
+
+	elsif ($sfptr->movnam_hdu(BINARY_TBL, 'OBJECTS', 0, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to move to OBJECTS extension [$status]");
+	}
+
+	elsif ($ifptr->movnam_hdu(BINARY_TBL, $extname, 0, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to move to $extname extension [$status]");
+	}
+
+	elsif ($ifptr->get_num_rows($rows, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to determine number of rows [$status]");
+	}
+
+	elsif ($ofptr->create_tbl(BINARY_TBL, $rows, 0, 0, 0, 0, $extname, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to create $extname table [$status]");
+	}
+
+	return if not $self->isValid;
+
+	my @columns = qw(RA DEC RA_ERR DEC_ERR REFID
+			RATE RATE_ERR RATE_BKG MAG
+			RAW_TOT_RATE RAW_TOT_RATE_ERR RAW_BKG_RATE RAW_BKG_RATE_ERR
+			UX_IMAGE UX_ERR UY_IMAGE UY_ERR POS_ERR
+			UA_IMAGE UB_IMAGE UTHETA_IMAGE
+			PROF_MAJOR PROF_MINOR PROF_THETA
+			THRESHOLD FLAGS
+	);
+
+	for (my $i = 0; $i < @{ $self->{apertures} }; ++$i) {
+		my $i1 = $i + 1;
+		push(@columns, "RATE_APER$i1");
+		push(@columns, "RATE_APER${i1}_ERR");
+	}
+
+	my $outdex = 0;
+
+	foreach my $c (@columns) {
+
+		++$outdex;
+		my $index = -1;
+
+		if ($ifptr->get_colnum(CASEINSEN, $c, $index, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to get $c index [$status]");
+		}
+		elsif ($ifptr->copy_col($ofptr, $index, $outdex, 1, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to copy $c column to output [$status]");
+		}
+
+		last if not $self->isValid;
+
+		my $spec = $self->getSpec($c);
+		if ($spec) {
+			$ofptr->modify_comment("TTYPE$outdex", $spec->{comment}, $status)
+				if $spec->{comment};
+			$ofptr->update_key_str("TDISP$outdex", $spec->{display}, undef, $status)
+				if $spec->{display};
+			$ofptr->update_key_str("TUNIT$outdex", $spec->{units}, undef, $status)
+				if $spec->{units};
+		}
+	}
+
+	if ($self->isValid) {
+		my $status = 0;
+		my $exclude = $self->args->{exclude};
+		my @exclude;
+		if ($exclude eq 'NONE') {
+			# ok, they want to keep everything
+		}
+		elsif ($exclude eq 'DEFAULT') {
+			# by default, get rid of the columns which have been renamed
+			# or have other things derived from them
+			@exclude = qw(NUMBER
+				ALPHAWIN_J2000 DELTAWIN_J2000 ERRX2WIN_WORLD ERRY2WIN_WORLD
+				FLUX_ISOCOR FLUXERR_ISOCOR FLUX_APER FLUXERR_APER BACKGROUND
+				XWIN_IMAGE YWIN_IMAGE ERRX2WIN_IMAGE ERRY2WIN_IMAGE
+				AWIN_WORLD BWIN_WORLD THETAWIN_WORLD THRESHOLD FLAGS
+				AWIN_IMAGE BWIN_IMAGE THETAWIN_IMAGE
+				);
+		}
+		else {
+			@exclude = split(',', $exclude);
+		}
+		$self->transferMissingColumns($sfptr, $ofptr, \@exclude);
+	}
+
+	$self->setDetected($rows);
+
+	$self->report("wrote $rows sources")
+		if $self->isValid;
+}
+
+
+sub getColumnNames
+{
+	my ($fptr, $colref) = @_;
+	my $numcol = 0;
+	my $status = 0;
+	$fptr->get_num_cols($numcol, $status);
+	for (my $i = 1; $i <= $numcol; ++$i) {
+		my $colname = '';
+		my $comment = '';
+		$fptr->read_key_str("TTYPE$i", $colname, $comment, $status);
+		push(@$colref, uc($colname));
+	}
+	return $status;
+}
+
+sub transferMissingColumns
+{
+	my ($self, $ifptr, $ofptr, $exclude) = @_;
+	my @incol;
+	my @outcol;
+	my $status = getColumnNames($ifptr, \@incol);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to load input columns [$status]");
+	}
+	$status = getColumnNames($ofptr, \@outcol);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to load output columns [$status]");
+	}
+	my %outcol = map { $_ => 1 } @outcol;
+	my %exclude = map { $_ => 1 } @$exclude;
+
+	my $index = 0;
+	my $outdex = @outcol;
+	foreach my $incol (@incol) {
+		++$index;
+		if (not $exclude{$incol} and not $outcol{$incol}) {
+			$outcol{$incol} = 1;
+			++$outdex;
+			$ifptr->copy_col($ofptr, $index, $outdex, 1, $status);
+			$self->report("transferring input column $index=$incol to output column $outdex")
+				if $self->chatter(2);
+			if ($status) {
+				$self->error(BAD_OUTPUT,
+						"unable to transfer $incol to output [$status]");
+			}
+		}
+	}
+}
+
+
+sub putTaskKeywords
+{
+	my ($self, $fits) = @_;
+
+	my $status = 0;
+
+	my @keywords = (
+		CREATOR  => [ "$self->{tool} $self->{version}", 'File creation software' ],
+	);
+
+	$self->putKeywords($fits, @keywords);
+
+	foreach my $hdu (qw(1 2)) {
+		$fits->movabs_hdu($hdu, ANY_HDU, $status);
+		foreach my $card (@{ $self->{cards} }) {
+			$fits->write_record($card, $status);
+		}
+		$fits->write_date($status);
+		if ($status) {
+			$self->error(BAD_OUTPUT, "unable to update header records");
+		}
+	}
+
+	$self->putParameterHistory($fits);
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		my $path = $args->{outfile};
+		my $tmpfile = $self->{calfile} || $self->{normfile};
+		$self->updateChecksums($tmpfile, 1, 2);
+		rename($tmpfile, $path)
+			or $self->error(BAD_OUTPUT,
+					"unable to rename $tmpfile to $path [$!]");
+	}
+
+	if (my $fits = $self->{ifptr}) {
+		my $path = $args->{infile};
+		my $status = 0;
+		if ($fits->close_file($status)) {
+			$self->warning("unable to close $path [$status]");
+		}
+	}
+}
+
+
+sub updateSkyPositions
+{
+	my ($self) = @_;
+
+	if (not $self->{isRAW}) {
+		return;
+	}
+
+	my $args = $self->args;
+	if (uc($args->{attfile}) eq 'NONE') {
+		$self->warning("unable to update RA/DEC for RAW image without attfile");
+		return;
+	}
+
+	my $teldef = $self->queryCALDB('TELDEF',
+			header => $self->{HEADER},
+			asString => 1,
+			);
+
+	my $converter = Astro::Convert->new(task => $self);
+	if (not $self->{SOURCES}) {
+		$self->loadSources;
+		return if not $self->isValid;
+	}
+
+	foreach my $o (@{ $self->{SOURCES} }) {
+		$o->{fromPix1} = ($o->{UX_IMAGE} - 0.5) * $self->{BINX} + 0.5
+				+ $self->{WINDOWX0};
+		$o->{fromPix2} = ($o->{UY_IMAGE} - 0.5) * $self->{BINX} + 0.5
+				+ $self->{WINDOWY0};
+	}
+
+	my $skytime;
+	if ($self->{HEADER}{EXTNAME} =~ /I$/) {
+		$skytime = $self->{HEADER}{TSTART};
+	}
+	else {
+		$skytime = ($self->{HEADER}{TSTART} + $self->{HEADER}{TSTOP}) / 2;
+	}
+
+	$converter->convertRawToSky(
+			objects => $self->{SOURCES},
+			teldef => $teldef,
+			misstime => $skytime,
+			attfile => $args->{attfile},
+			ra => $self->{RA_PNT},
+			dec => $self->{DEC_PNT},
+			toWorld => 1,
+			);
+
+	my @ra = map { $_->{toWorld1} } @{ $self->{SOURCES} };
+	my @dec = map { $_->{toWorld2} } @{ $self->{SOURCES} };
+
+	my $status = SimpleFITS->readwrite($self->{normfile})
+			->move(EXTNAME)
+			->writecol('RA', { }, \@ra)
+			->writecol('DEC', { }, \@dec)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to update RA/DEC columns [$status]");
+	}
+}
+
+
+sub loadSources
+{
+	my ($self) = @_;
+
+	my @table;
+	my $status = SimpleFITS->readonly($self->{normfile})
+			->move('SOURCES')
+			->loadtable(\@table)
+			->close
+			->status;
+
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to load $self->{normfile} [$status]");
+	}
+	else {
+		$self->{SOURCES} = \@table;
+	}
+}
+
+
+sub makeRegionFile
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (uc($args->{regfile}) eq 'NONE' and not $args->{plotsrcFlag}) {
+		# no need to create region file
+		return;
+	}
+
+	if (not $self->{SOURCES}) {
+		$self->loadSources;
+		return if not $self->isValid;
+	}
+
+	my $regfile = $args->{regfile};
+	if (uc($regfile) eq 'NONE') {
+		$regfile = $self->temporary('detect', ext => '.reg', release => 1);
+	}
+	$self->{regfile} = $regfile;
+
+	if ($self->isValid) {
+		my $fh = FileHandle->new($regfile, 'w');
+		if (not $fh) {
+			$self->error(BAD_OUTPUT, "unable to create $regfile [$!]");
+		}
+		else {
+			$fh->print("global color=white\n");
+			my $aspp = $self->{arcsecPerPixel};
+			foreach my $s (@{ $self->{SOURCES} }) {
+				my $major = $s->{UA_IMAGE} / $aspp + 8 / $self->{BINNING};
+				my $minor = $major * $s->{UB_IMAGE} / $s->{UA_IMAGE};
+				# SExtractor and region files measure THETA from +X
+				my $theta = $s->{UTHETA_IMAGE};
+				my $color = $s->{FLAGS} ? 'yellow' : 'green';
+				$fh->print("image; ellipse($s->{UX_IMAGE}, $s->{UY_IMAGE},"
+						. " $major, $minor, $theta) # color=$color\n");
+			}
+			$fh->close;
+		}
+	}
+}
+
+
+sub plotSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $command = "ds9 -log -zmax -cmap b -zoom .5"
+			. " $self->{infile} -region $self->{regfile}";
+
+	if (uc($args->{regfile}) eq 'NONE') {
+		# want display, but not to keep region file
+		my $cleanfile = $self->temporary('clean', ext => '.tcl', release => 1);
+		my $fh = FileHandle->new($cleanfile, 'w');
+		$fh->print("file delete $self->{regfile}\nfile delete $cleanfile\n");
+		$fh->close;
+		$command .= " -source $cleanfile";
+	}
+
+	$self->report("starting viewer");
+	system($command . ' &');
+}
+
+
+sub setDetected
+{
+	my ($self, $count) = @_;
+	$self->{detected} = $count || 0;
+require HEACORE::PIL;
+	HEACORE::PIL::PILPutInt(detected => $self->{detected});
+}
+
+
+sub calibrateResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	return if not $args->{calibrateFlag};
+
+	$self->{calfile} = $self->{normfile};
+	$self->{COL_RATE} = 'RATE';
+	$self->{COL_RATE_ERR} = 'RATE_ERR';
+
+	if (uc($args->{coinfile}) ne 'NONE') {
+		$self->applyCoincidenceLoss;
+		return if not $self->isValid;
+	}
+
+	if (uc($args->{lssfile}) ne 'NONE') {
+		$self->applyLargeScaleSensitivity;
+		return if not $self->isValid;
+	}
+
+	if (uc($args->{sensfile}) ne 'NONE') {
+		$self->applyDetectorSensitivity;
+		return if not $self->isValid;
+	}
+
+	if (uc($args->{zerofile}) ne 'NONE') {
+		$self->applyColorTable;
+		return if not $self->isValid;
+	}
+}
+
+
+sub applyCoincidenceLoss
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $command = $self->buildCommand('uvotcoincidence',
+			infile => $self->{calfile},
+			coinfile => $args->{coinfile},
+			ratecol => 'RAW_TOT_RATE',
+			errcol => 'RAW_TOT_RATE_ERR',
+			prefix => 'TOT_',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	$command = $self->buildCommand('uvotcoincidence',
+			infile => $self->{calfile},
+			coinfile => $args->{coinfile},
+			ratecol => 'RAW_BKG_RATE',
+			errcol => 'RAW_BKG_RATE_ERR',
+			prefix => 'BKG_',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my $calfile = $self->temporary('coi', ext => '.fits');
+	my $col = '[col *;COI_RATE(E)=TOT_COI_RATE-BKG_COI_RATE;'
+			. 'COI_RATE_ERR(E)=RATE_ERR*(COI_RATE/RATE);'
+			. 'CORR_RATE(E)=COI_RATE;'
+			. 'CORR_RATE_ERR(E)=COI_RATE_ERR;'
+			. ']';
+	$command = $self->buildCommand('ftcopy',
+			infile => $self->{calfile} . $col,
+			outfile => $calfile,
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	$self->{calfile} = $calfile;
+
+	$self->{COL_RATE} = 'CORR_RATE';
+	$self->{COL_RATE_ERR} = 'CORR_RATE_ERR';
+}
+
+
+sub applyLargeScaleSensitivity
+{
+	my ($self) = @_;
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	my $command = $self->buildCommand('uvotlss',
+			infile => $self->{calfile},
+			input => 'TABLE',
+			lssfile => $args->{lssfile},
+			ratecol => $self->{COL_RATE},
+			errcol => $self->{COL_RATE_ERR},
+			wcsfile => $self->{infile},
+			);
+	$self->shell($command);
+
+	my $calfile = $self->temporary('lss', ext => '.fits');
+	my $col = '[col *;'
+			. 'CORR_RATE(E)=LSS_RATE;'
+			. 'CORR_RATE_ERR(E)=LSS_RATE_ERR;'
+			. ']';
+	$command = $self->buildCommand('ftcopy',
+			infile => $self->{calfile} . $col,
+			outfile => $calfile,
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	$self->{calfile} = $calfile;
+}
+
+
+
+sub applyDetectorSensitivity
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my %cal;
+	UVOT::Calibration::loadDetectorSensitivity($self, \%cal,
+			PAR => $args->{sensfile},
+			PAR_NOTE => 'sensfile',
+			HEADER => $self->{HEADER},
+			);
+	return if not $self->isValid;
+
+	# determine correction at exposure time
+	my %tmp;
+	foreach my $key (qw(TSTART TSTOP FILTER)) {
+		$tmp{$key} = $self->{HEADER}{$key};
+	}
+
+	# initialize LSS rate/err for completeness
+	$tmp{LSS_RATE} = 0;
+	$tmp{LSS_RATE_ERR} = 0;
+
+	UVOT::Source::applyDetectorSensitivityCorrection($self, \%cal, \%tmp);
+
+	my $factor = $tmp{SENSCORR_FACTOR};
+	my $facstr = sprintf('%.6f', $factor);
+	$self->verbose("applying detector sensitivity factor $facstr");
+
+	my $calfile = $self->temporary('detsens', ext => '.fits');
+	my $col = "[col *;SENSCORR_RATE(E)=$factor*CORR_RATE;"
+			. "SENSCORR_RATE_ERR(E)=$factor*CORR_RATE_ERR;"
+			. 'CORR_RATE(E)=SENSCORR_RATE;'
+			. 'CORR_RATE_ERR(E)=SENSCORR_RATE_ERR;'
+			. ']';
+	my $command = $self->buildCommand('ftcopy',
+			infile => $self->{calfile} . $col,
+			outfile => $calfile,
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	$self->{calfile} = $calfile;
+}
+
+
+sub applyColorTable
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $command = $self->buildCommand('uvotflux',
+			infile => $self->{calfile},
+			zerofile => $args->{zerofile},
+			filter => 'DEFAULT',
+			ratecol => 'CORR_RATE',
+			errcol => 'CORR_RATE_ERR',
+			);
+	$self->shell($command);
+}
+

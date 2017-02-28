@@ -1,0 +1,214 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotgcn/ut-uvotgcn,v $
+# $Revision: 1.13 $
+# $Date: 2008/10/15 15:09:53 $
+#
+#		uvotgcn test case
+#
+#
+# $Log: ut-uvotgcn,v $
+# Revision 1.13  2008/10/15 15:09:53  rwiegand
+# Ignore SWXATT when comparing results since temporary file name.
+#
+# Revision 1.12  2008/05/19 19:37:06  rwiegand
+# Adjusted output comparison to use reltol of 1e-6 to handle discrepancy
+# on Solaris.
+#
+# Revision 1.11  2006/11/13 22:01:12  rwiegand
+# Ignore difference in DTELDEF when comparing results to templates.
+#
+# Revision 1.10  2005/10/31 19:23:36  rwiegand
+# Updated for streamlined parameter interface.
+#
+# Revision 1.9  2005/03/21 18:33:53  rwiegand
+# Pass new alignfile parameter.  Ignore DATASUM keyword.
+#
+# Revision 1.8  2005/02/08 21:52:06  rwiegand
+# Was failing to pass target position to uvotpict sub-task.
+#
+# Revision 1.7  2004/10/15 21:57:18  rwiegand
+# Added CALDB test mode.
+#
+# Revision 1.6  2004/09/09 18:48:21  rwiegand
+# Added another (tighter) constraint on RA and DEC columns.
+#
+# Revision 1.5  2004/08/12 16:26:04  rwiegand
+# Fixed copying of input files to working (output) directory.
+#
+# Revision 1.4  2004/08/09 15:15:01  rwiegand
+# Copy input templates to working directory.
+#
+# Revision 1.3  2004/07/09 16:17:43  rwiegand
+# No longer necessary to catch ALRM signal since the signal is now sent to
+# the correct children instead of the process group.
+#
+# Revision 1.2  2004/06/25 15:39:30  rwiegand
+# Provide signal handler for alarm.  Actually compare outputs against templates.
+#
+# Revision 1.1  2004/06/17 21:44:48  rwiegand
+# UVOT GRB Coordinates Network (GCN) tools.
+#
+
+use strict;
+
+package Test::GCN;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::GCN->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotgcn
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	$self->report("validating set up")
+		if $self->chatter;
+
+	my $args = $self->args;
+
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runUvotgcn
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @task = (
+
+		# inputs
+		packetfile => "$output/ufc.fits",
+		batfile    => "$output/bat.txt",
+		xrtfile    => "$output/xrt.txt",
+		catspec    => "$input/PARTITION",
+
+		archive    => $output,
+
+		# outputs
+		skyfile    => "$output/uvot_sky_srclist.fits",
+		sourcesfile=> "$output/uvot_sources_srclist.fits",
+		catalogfile=> "$output/uvot_catalog_srclist.fits",
+		fieldfile  => "$output/uvot_field_srclist.ps",
+		signalfile => "$output/uvot_done_srclist",
+
+		cleanup    => 'yes',
+		clobber    => 'yes',
+		chatter    => 3,
+	);
+
+	my %task = @task;
+
+	# copy input templates
+	foreach my $key (qw(packetfile batfile xrtfile)) {
+		my $dest = $task{$key};
+		my $name = substr($dest, rindex($dest, '/') + 1);
+		my $text = qx(cp $input/$name $dest; chmod +w $dest);
+	}
+
+	# build command line
+	my $command = $self->buildCommand('uvotgcn', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @files = (
+		[ sky => 'uvot_sky_srclist.fits' ],
+		[ sources => 'uvot_sources_srclist.fits' ],
+		[ catalog => 'uvot_catalog_srclist.fits' ],
+		[ field => 'uvot_field_srclist.ps' ],
+	);
+
+	foreach my $pair (@files) {
+		my ($which, $name) = @$pair;
+
+		my $template = "$input/$name";
+		my $result = "$output/$name";
+
+		if (not -f $template) {
+			$self->error(BAD_OUTPUT, "missing template $template");
+		}
+		elsif (not -f $result) {
+			$self->error(BAD_OUTPUT, "missing output $result");
+		}
+		elsif ($name =~ /\.ps$/) {
+			$self->warning("cannot compare $template and $result");
+		}
+		else {
+			my $command = $self->buildCommand('ftdiff',
+				infile1 => $template,
+				infile2 => $result,
+				tolerance => 0.1,
+				exclude => 'DATE,DATASUM,FILE,DTELDEF,SWXATT',
+				);
+			$self->shell($command);
+
+			my $cols = '[col RA;DEC]';
+			$command = $self->buildCommand('ftdiff',
+				infile1 => $template . $cols,
+				infile2 => $result . $cols,
+				reltol => 1e-6,
+				exclude => 'DATE,DATASUM,DTELDEF,SWXATT',
+				);
+			$self->shell($command)
+				if $which ne 'sky';
+		}
+	}
+}
+

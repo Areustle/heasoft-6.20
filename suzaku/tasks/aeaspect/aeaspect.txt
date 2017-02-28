@@ -1,0 +1,636 @@
+AEASPECT (May 2007)            ftools.suzaku            AEASPECT (May 2007)
+
+NAME
+    aeaspect -- calculate mean satellite Euler angles for Suzaku (Astro-E2)
+
+USAGE
+    aeaspect attitude filelist
+
+DESCRIPTION
+
+    Similar to the 'aspect' task, this tool calculates the mean Euler angles
+    and corresponding pointing direction for a given attitude file,
+    designed and tuned for Suzaku.  The 'aeaspect' task also has a
+    capability to update the following FITS header keywords:
+
+OBS_MODE= 'POINTING'           / observation mode (e.g. POINTING/SLEW)
+OBS_ID  = '100037050'          / Observation Identifier
+OBSERVER= 'Suzaku SWG'         / Principal Investigator
+OBS_REM = '        '           / remark on observation
+NOM_PNT = '(0,0)   '           / AimPointInDETXY:XIS=(0,0),HXD=(-3.5,0)[arcmin]
+OBJECT  = 'GC_BGD3 '           / name of observed object
+RA_OBJ  =             266.5900 / planned target R.A.(deg)
+DEC_OBJ =             -28.6510 / planned target DEC.(deg)
+RA_NOM  =             266.5899 / nominal satellite pointing direction R.A.(deg)
+DEC_NOM =             -28.6514 / nominal satellite pointing direction DEC.(deg)
+PA_NOM  =             -95.1189 / nominal position angle from north to DETY(deg)
+MEAN_EA1=     -93.410106347902 / mean of the 1st ZYZ-Euler angle (deg)
+MEAN_EA2=     118.651370124916 / mean of the 2nd ZYZ-Euler angle (deg)
+MEAN_EA3=    -174.881077222727 / mean of the 3rd ZYZ-Euler angle (deg)
+ATT_FILE=    'ae100037050.att' / name of the satellite attitude file
+DATE-OBS= '2005-10-01T06:22:41'/ start date of observations (UT)
+DATE-END= '2005-10-01T07:35:22'/ end date of observations (UT)
+ [XRS]
+TELDEF  = 'ae_xrs_teldef_20050622.fits' / name of the telescope definition file
+RA_PNT  =             266.5899 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6514 / average optical axis location DEC.(deg)
+ [HXD]
+TELDEF  = 'ae_hxd_teldef_20050908.fits' / name of the telescope definition file
+RA_PNT  =             266.5840 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.5933 / average optical axis location DEC.(deg)
+ [XIS0]
+TELDEF  = 'ae_xi0_teldef_20051009.fits' / name of the telescope definition file
+RA_PNT  =             266.5953 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6678 / average optical axis location DEC.(deg)
+ [XIS1]
+TELDEF  = 'ae_xi1_teldef_20051009.fits' / name of the telescope definition file
+RA_PNT  =             266.5949 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6496 / average optical axis location DEC.(deg)
+ [XIS2]
+TELDEF  = 'ae_xi2_teldef_20051009.fits' / name of the telescope definition file
+RA_PNT  =             266.5801 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6451 / average optical axis location DEC.(deg)
+ [XIS3]
+TELDEF  = 'ae_xi3_teldef_20051009.fits' / name of the telescope definition file
+RA_PNT  =             266.5813 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6469 / average optical axis location DEC.(deg)
+
+    The resultant `mean' attitude is not always the actual mean (or average)
+    of each temporal value, but the representative attitude of the satellite
+    calculated from certain algorithms.  In the calculation, the Euler angles
+    are separated into the pointing direction (RA, DEC) and the position angle
+    ROLL between y-axis and the north direction.  In averaging, (RA, DEC) is
+    farther converted into 3-dimensional vector (X, Y, Z) and does averaging
+    for each X, Y, Z element.  ROLL is converted into 2-dimensional vector
+    (x, y).
+
+    There are two algorithms to calculate the `mean' Euler angles.
+    The 1st one is calculating the median, and this value will be the
+    resultant `mean' when the parameter adopt_median=yes.  The Euler angles
+    are sampled with the sample_sec=60.0 sec by default, and each sampled
+    value is converted into 3-dim vector (X, Y, Z) and 2-dim vector (x, y).
+    The X, Y, Z, x, y are sorted individually.  When the sampled number N
+    is an odd number, (N+1)/2-th value is adopted as representative.
+    When N is an even number, an average of N/2-th and (N/2+1)-th values
+    is adopted.  Using those representative values, Xm, Ym, Zm, xm, ym,
+    the Euler angles are reconstructed.
+
+    The second algorithm is to calculate a simple average of X, Y, Z, x, y
+    when adopt_median=no, but when at any of sampled time, the angular
+    distance is larger than offset_tolerance=2.0 arcmin, or the roll angle
+    difference is larger than roll_tolerance=1.0 deg, the average is
+    recalculated splitting the time interval into num_split=4, by default.
+    By calculating the standard deviation of the angular distance, the most
+    stable time interval is selected.
+
+    After calculating the `mean' Euler angles, the nominal pointing direction
+    (RA_NOM, DEC_NOM) and the nominal position (roll) angle PA_NOM are
+    calculated using the Euler angle and the satellite alignment information
+    in the XRS teldef file.  The (RA_NOM, DEC_NOM) direction corresponds to
+    the center of the FOC coordinates and the PA_NOM repesents the y-axis angle
+    from the north when the `mean' Euler angles are chosen.  The RA_NOM,
+    DEC_NOM, PA_NOM have the same value for all sensors (XRS, HXD, XISn),
+    and written to the FITS header of the event files specified by the
+    filelist parameter. These values are also written to the HK files.
+    The RA_PNT, DEC_PNT corresponds to the optical axis of each sensor,
+    where the effective area of the XRT (for XRS, XIS) or the collimator
+    (for HXD) is maximum. The (RA_PNT, DEC_PNT) values are different among
+    sensors and the common instrument HK does not have this keywords.
+    This task also writes the MEAN_EA1, MEAN_EA2, MEAN_EA3 keywords which
+    corresponds to the `mean' Euler angles, and the ATT_FILE and TELDEF
+    keywords corresponding to the attitude file and the teldef file used for
+    the calculation.  The OBJECT, OBSERVER, RA_OBJ, DEC_OBJ keywords are copied
+    from the attitude file.  These header keywords manipulation can be
+    controlled with the update_obj, update_nom, update_pnt, update_ea keywords,
+    which are all "yes" by default.
+
+
+PARAMETERS
+
+attitude [file name]
+    Input attitude file
+
+filelist [file name]
+    File name or @filelist to modify FITS keywords
+
+(leapfile = CALDB;$ENV{LHEA_DATA}/leapsec.fits) [file name]
+    Name of the leap second file. The default value is set to
+    indicate that aeaspect will search for the file in CALDB first
+    and then in the LHEA_DATA directory if necessary (the actual path
+    for the HEADAS installation in use will be shown).
+
+(xrs_teldef = CALDB) [file name]
+    Location of XRS teldef file.  CALDB version is used, if available.
+
+(hxd_teldef = CALDB) [file name]
+    Location of HXD teldef file.  CALDB version is used, if available.
+
+(xis0_teldef = CALDB) [file name]
+    Location of XIS0 teldef file.  CALDB version is used, if available.
+
+(xis1_teldef = CALDB) [file name]
+    Location of XIS1 teldef file.  CALDB version is used, if available.
+
+(xis2_teldef = CALDB) [file name]
+    Location of XIS2 teldef file.  CALDB version is used, if available.
+
+(xis3_teldef = CALDB) [file name]
+    Location of XIS3 teldef file.  CALDB version is used, if available.
+
+(sample_sec = 60.0) [real]
+    Sampling time in second (s).
+
+(offset_tolerance = 2.0) [real]
+    Offset angle tolerance (arcmin), needed only when adopt_median=no.
+
+(roll_tolerance = 1.0) [real]
+    Roll angle tolerance (degree), needed only when adopt_median=no.
+
+(num_split = 4) [integer]
+    Number of splitting time intervals, needed only when adopt_median=no.
+
+(adopt_median = yes) [boolean]
+    Adopt median instead of average?
+
+(update_obs = yes) [boolean]
+    Update OBS_MODE/OBS_ID/OBSERVER/OBS_REM/NOM_PNT keywords?
+
+(update_obj = yes) [boolean]
+    Update OBJECT/RA_OBJ/DEC_OBJ keywords?
+
+(update_nom = yes) [boolean]
+    Update RA_NOM/DEC_NOM/PA_NOM keywords?
+
+(update_pnt = yes) [boolean]
+    Update RA_PNT/DEC_PNT keywords?
+
+(update_ea = yes) [boolean]
+    Update MEAN_EA1/MEAN_EA2/MEAN_EA3 keywords?
+
+(update_date = yes) [boolean]
+    Update DATE-OBS/DATE-END keywords? TIME-OBS and TIME-END
+    keywords are deleted if they exist.
+
+(date_obs = "none") [string]
+    String value or keyword name for DATE-OBS
+
+(date_end = "none") [string]
+    String value or keyword name for DATE-OBS
+
+(anl_verbose = 0) [integer]
+    ANL verbose level (-1:full, 0:minimum)
+
+(anl_profile = no) [boolean]
+    Enable ANL module profiling?
+
+(num_event = -1) [integer]
+    Number of events (-1=all, 0=exit)
+
+(event_freq = 10000) [integer]
+    Event number printout frequency
+
+(chatter = 2) [integer]
+    Message chatter level (0:min,2:norm,5:max)
+
+
+EXAMPLES
+
+1.    Compute the mean Euler angles using the attitude file 
+ae100037050.att and modifying all keywords in the list of files
+given in the file called "filelist" with the date and the end
+of observation speficied by keywords found in the attitude file. 
+
+       
+with 
+	%cat filelist 
+test-results/ae100037050.att
+test-results/ae100037050.hk
+test-results/ae100037050.orb
+test-results/ae100037050.tim
+test-results/ae100037050hxd_0.hk
+test-results/ae100037050hxd_0_wam.fff
+test-results/ae100037050hxd_0_wel.fff
+test-results/ae100037050xi0_0.hk
+test-results/ae100037050xi0_0_3x3n000.fff
+test-results/ae100037050xi0_0_5x5n000.fff
+test-results/ae100037050xi0_0_dun000.fff
+test-results/ae100037050xi1_0.hk
+test-results/ae100037050xi1_0_3x3n001.fff
+test-results/ae100037050xi1_0_5x5n001.fff
+test-results/ae100037050xi1_0_dun001.fff
+test-results/ae100037050xi2_0.hk
+test-results/ae100037050xi2_0_3x3n000.fff
+test-results/ae100037050xi2_0_5x5n000.fff
+test-results/ae100037050xi2_0_dun000.fff
+test-results/ae100037050xi3_0.hk
+test-results/ae100037050xi3_0_3x3n000.fff
+test-results/ae100037050xi3_0_5x5n000.fff
+test-results/ae100037050xi3_0_dun000.fff
+test-results/ae100037050xrs_0_all.hk
+test-results/ae100037050xrs_0_dump.hk
+
+
+     % aeaspect attitude=test-results/ae100037050.att \
+       filelist=@filelist date_obs=MNV_END date_end=MNV_NEXT
+aeaspect version 2006-07-02
+Written by Y.ISHISAKI (TMU)
+Built on ANL HEADAS converter 1.71 for ANL version 1.71
+input attitude file [test-results/ae100037050.att] :  
+file name or @filelist to modify FITS keywords [@filelist] :  
+location of leap-seconds file [CALDB] :  
+location of XRS teldef file [CALDB] :  
+location of HXD teldef file [CALDB] :  
+location of XIS0 teldef file [CALDB] :  
+location of XIS1 teldef file [CALDB] :  
+location of XIS2 teldef file [CALDB] :  
+location of XIS3 teldef file [CALDB] :  
+
+aeaspect: *** show parameter ***
+
+            ATTITUDE   'test-results/ae100037050.att'
+       MOD_FILE_LIST   '@filelist'
+            LEAPFILE   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/gen/bcf/leapsec_010905.fits' (CALDB)
+          XRS_TELDEF   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/xrs/bcf/ae_xrs_teldef_20050622.fits.gz' (CALDB)
+          XRS_TELDEF   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/hxd/bcf/ae_hxd_teldef_20060516.fits.gz' (CALDB)
+         XIS0_TELDEF   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/xis/bcf/ae_xi0_teldef_20060125.fits.gz' (CALDB)
+         XIS1_TELDEF   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/xis/bcf/ae_xi1_teldef_20060125.fits.gz' (CALDB)
+         XIS2_TELDEF   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/xis/bcf/ae_xi2_teldef_20060125.fits.gz' (CALDB)
+         XIS3_TELDEF   '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/xis/bcf/ae_xi3_teldef_20060125.fits.gz' (CALDB)
+          SAMPLE_SEC   60.000 (s)
+    OFFSET_TOLERANCE   2.000000 (arcmin)
+      ROLL_TOLERANCE   1.000000 (degree)
+        ADOPT_MEDIAN   YES
+          UPDATE_OBS   YES
+          UPDATE_OBJ   YES
+          UPDATE_NOM   YES
+          UPDATE_PNT   YES
+           UPDATE_EA   YES
+         UPDATE_DATE   YES
+            DATE_OBS   'MNV_END'
+            DATE_END   'MNV_NEXT'
+
+atMissionTime: reading leapsec file '/usr/local/astroe/com/calibration/caldb/2006-07-01/data/gen/bcf/leapsec_010905.fits' ...
+01: 1972-01-01 00:00:00.000   +0.0 sec
+02: 1972-07-01 00:00:00.000   +1.0 sec
+03: 1973-01-01 00:00:00.000   +1.0 sec
+04: 1974-01-01 00:00:00.000   +1.0 sec
+05: 1975-01-01 00:00:00.000   +1.0 sec
+06: 1976-01-01 00:00:00.000   +1.0 sec
+07: 1977-01-01 00:00:00.000   +1.0 sec
+08: 1978-01-01 00:00:00.000   +1.0 sec
+09: 1979-01-01 00:00:00.000   +1.0 sec
+10: 1980-01-01 00:00:00.000   +1.0 sec
+11: 1981-07-01 00:00:00.000   +1.0 sec
+12: 1982-07-01 00:00:00.000   +1.0 sec
+13: 1983-07-01 00:00:00.000   +1.0 sec
+14: 1985-07-01 00:00:00.000   +1.0 sec
+15: 1988-01-01 00:00:00.000   +1.0 sec
+16: 1990-01-01 00:00:00.000   +1.0 sec
+17: 1991-01-01 00:00:00.000   +1.0 sec
+18: 1992-07-01 00:00:00.000   +1.0 sec
+19: 1993-07-01 00:00:00.000   +1.0 sec
+20: 1994-07-01 00:00:00.000   +1.0 sec
+21: 1996-01-01 00:00:00.000   +1.0 sec
+22: 1997-07-01 00:00:00.000   +1.0 sec
+23: 1999-01-01 00:00:00.000   +1.0 sec
+24: 2006-01-01 00:00:00.000   +1.0 sec
+atMissionTime: 24 lines were read
+
+aeaspect: date_obs='MNV_END ' found in attitude header, t=181462961.0
+aeaspect: date_end='MNV_NEXT' found in attitude header, t=181467322.0
+
+aste_aspect version 1.7
+
+aspecting attitude: test-results/ae100037050.att
+  TELESCOP='UNKNOWN', OBJECT='GC_BGD3', (RA,DEC)=(266.5900, -28.6510)
+
+using teldef file: /usr/local/astroe/com/calibration/caldb/2006-07-01/data/suzaku/xrs/bcf/ae_xrs_teldef_20050622.fits.gz
+  TELESCOP='SUZAKU', INSTRUME='XRS'
+
+attitude  START STOP dT: 181462964.272009 181467318.271343      4353.999334
+  START in yyyy-mm-dd hh:mm:ss (MJD): 2005-10-01 06:22:44 (53644.26579019)
+  STOP  in yyyy-mm-dd hh:mm:ss (MJD): 2005-10-01 07:35:18 (53644.31618370)
+
+aspecting START STOP dT: 181462961.000000 181467322.000000      4361.000000
+  START in yyyy-mm-dd hh:mm:ss (MJD): 2005-10-01 06:22:41 (53644.26575231)
+  STOP  in yyyy-mm-dd hh:mm:ss (MJD): 2005-10-01 07:35:22 (53644.31622685)
+
+averaging attitude in 60 sec sampling, 73 points
+
+  Sample Time : 60.0 s   Number of Accept / Sample : 73 / 73
+  TIME START STOP TELAPSE (s) : 181462961.0 181467322.0      4361.0
+  START DATE TIME in UTC (MJD): 2005-10-01 06:22:41 (53644.26575231)
+  STOP  DATE TIME in UTC (MJD): 2005-10-01 07:35:22 (53644.31622685)
+
+  Mean [MEDIAN]  Euler angles :  266.590073  118.651407  185.118793
+
+                                    RA          DEC      SUN ANGLE
+
+  Mean Sun position     (deg) :  187.464565   -3.225327
+  Mean aberration    (arcsec) :   -4.557956   -1.744271
+
+  Mean satellite X-axis (deg) :  256.007842   60.933134   82.631083
+  Mean satellite Y-axis (deg) :  174.130678   -4.490635   13.363298
+  Mean satellite Z-axis (deg) :  266.590073  -28.651407   78.914579
+
+                   RA(deg)     DEC(deg)    ROLL(deg) OFFSET(arcmin)
+
+  Median          266.590073  -28.651407  264.881207
+  Average         266.589895  -28.651368  264.881076
+  Minimum         266.587951  -28.655192  264.879639
+  Maximum         266.591479  -28.649927  264.882308    0.253062
+  Sigma (RMS)       0.000985    0.000684    0.000737    0.066850
+
+aeaspect: keywords to be updated are ...
+
+OBS_MODE= 'POINTING'           / observation mode (e.g. POINTING/SLEW)
+OBS_ID  = '100037050'          / Observation Identifier
+OBSERVER= 'Suzaku SWG'         / Principal Investigator
+OBS_REM = '        '           / remark on observation
+NOM_PNT = '(0,0)   '           / AimPointInDETXY:XIS=(0,0),HXD=(-3.5,0)[arcmin]
+OBJECT  = 'GC_BGD3 '           / name of observed object
+RA_OBJ  =             266.5900 / planned target R.A.(deg)
+DEC_OBJ =             -28.6510 / planned target DEC.(deg)
+RA_NOM  =             266.5901 / nominal satellite pointing direction R.A.(deg)
+DEC_NOM =             -28.6514 / nominal satellite pointing direction DEC.(deg)
+PA_NOM  =             264.8812 / nominal position angle from north to DETY(deg)
+MEAN_EA1=     266.590073120327 / mean of the 1st ZYZ-Euler angle (deg)
+MEAN_EA2=     118.651407053459 / mean of the 2nd ZYZ-Euler angle (deg)
+MEAN_EA3=     185.118792652151 / mean of the 3rd ZYZ-Euler angle (deg)
+ATT_FILE=    'ae100037050.att' / name of the satellite attitude file
+DATE-OBS= '2005-10-01T06:22:41'/ start date of observations (UT)
+DATE-END= '2005-10-01T07:35:22'/ end date of observations (UT)
+ [XRS]
+TELDEF  = 'ae_xrs_teldef_20050622.fits.gz' / name of the telescope definition file
+RA_PNT  =             266.5901 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6514 / average optical axis location DEC.(deg)
+ [HXD]
+TELDEF  = 'ae_hxd_teldef_20060516.fits.gz' / name of the telescope definition file
+RA_PNT  =             266.5841 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.5933 / average optical axis location DEC.(deg)
+ [XIS0]
+TELDEF  = 'ae_xi0_teldef_20060125.fits.gz' / name of the telescope definition file
+RA_PNT  =             266.5897 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6738 / average optical axis location DEC.(deg)
+ [XIS1]
+TELDEF  = 'ae_xi1_teldef_20060125.fits.gz' / name of the telescope definition file
+RA_PNT  =             266.5964 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6646 / average optical axis location DEC.(deg)
+ [XIS2]
+TELDEF  = 'ae_xi2_teldef_20060125.fits.gz' / name of the telescope definition file
+RA_PNT  =             266.5754 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6476 / average optical axis location DEC.(deg)
+ [XIS3]
+TELDEF  = 'ae_xi3_teldef_20060125.fits.gz' / name of the telescope definition file
+RA_PNT  =             266.5796 / average optical axis location R.A.(deg)
+DEC_PNT =             -28.6525 / average optical axis location DEC.(deg)
+
+ [ 1] Processing 'test-results/ae100037050.att'
+      +1: TELESCOP='SUZAKU', INSTRUME=''
+ [ 2] Processing 'test-results/ae100037050.hk'
+      +1: TELESCOP='SUZAKU', INSTRUME=''
+      +2: TELESCOP='SUZAKU', INSTRUME=''
+      +3: TELESCOP='SUZAKU', INSTRUME=''
+      +4: TELESCOP='SUZAKU', INSTRUME=''
+      +5: TELESCOP='SUZAKU', INSTRUME=''
+      +6: TELESCOP='SUZAKU', INSTRUME=''
+      +7: TELESCOP='SUZAKU', INSTRUME=''
+      +8: TELESCOP='SUZAKU', INSTRUME=''
+      +9: TELESCOP='SUZAKU', INSTRUME=''
+     +10: TELESCOP='SUZAKU', INSTRUME=''
+     +11: TELESCOP='SUZAKU', INSTRUME=''
+     +12: TELESCOP='SUZAKU', INSTRUME=''
+     +13: TELESCOP='SUZAKU', INSTRUME=''
+     +14: TELESCOP='SUZAKU', INSTRUME=''
+     +15: TELESCOP='SUZAKU', INSTRUME=''
+     +16: TELESCOP='SUZAKU', INSTRUME=''
+     +17: TELESCOP='SUZAKU', INSTRUME=''
+     +18: TELESCOP='SUZAKU', INSTRUME=''
+     +19: TELESCOP='SUZAKU', INSTRUME=''
+     +20: TELESCOP='SUZAKU', INSTRUME=''
+     +21: TELESCOP='SUZAKU', INSTRUME=''
+     +22: TELESCOP='SUZAKU', INSTRUME=''
+     +23: TELESCOP='SUZAKU', INSTRUME=''
+ [ 3] Processing 'test-results/ae100037050.orb'
+      +1: TELESCOP='SUZAKU', INSTRUME=''
+      +2: TELESCOP='SUZAKU', INSTRUME=''
+ [ 4] Processing 'test-results/ae100037050.tim'
+      +1: TELESCOP='SUZAKU', INSTRUME=''
+      +2: TELESCOP='SUZAKU', INSTRUME=''
+      +3: TELESCOP='SUZAKU', INSTRUME=''
+      +4: TELESCOP='SUZAKU', INSTRUME=''
+ [ 5] Processing 'test-results/ae100037050hxd_0.hk'
+      +0: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +1: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +2: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +3: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +4: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +5: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +6: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +7: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +8: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +9: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +10: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +11: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +12: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +13: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +14: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +15: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +16: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +17: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +18: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +19: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +20: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +21: TELESCOP='SUZAKU', INSTRUME='HXD'
+     +22: TELESCOP='SUZAKU', INSTRUME='HXD'
+ [ 6] Processing 'test-results/ae100037050hxd_0_wam.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +1: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +2: TELESCOP='SUZAKU', INSTRUME='HXD'
+ [ 7] Processing 'test-results/ae100037050hxd_0_wel.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +1: TELESCOP='SUZAKU', INSTRUME='HXD'
+      +2: TELESCOP='SUZAKU', INSTRUME='HXD'
+ [ 8] Processing 'test-results/ae100037050xi0_0.hk'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +6: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +7: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +8: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +9: TELESCOP='SUZAKU', INSTRUME='XIS0'
+ [ 9] Processing 'test-results/ae100037050xi0_0_3x3n000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS0'
+ [10] Processing 'test-results/ae100037050xi0_0_5x5n000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS0'
+ [11] Processing 'test-results/ae100037050xi0_0_dun000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS0'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS0'
+ [12] Processing 'test-results/ae100037050xi1_0.hk'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +6: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +7: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +8: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +9: TELESCOP='SUZAKU', INSTRUME='XIS1'
+ [13] Processing 'test-results/ae100037050xi1_0_3x3n001.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS1'
+ [14] Processing 'test-results/ae100037050xi1_0_5x5n001.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS1'
+ [15] Processing 'test-results/ae100037050xi1_0_dun001.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS1'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS1'
+ [16] Processing 'test-results/ae100037050xi2_0.hk'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +6: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +7: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +8: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +9: TELESCOP='SUZAKU', INSTRUME='XIS2'
+ [17] Processing 'test-results/ae100037050xi2_0_3x3n000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS2'
+ [18] Processing 'test-results/ae100037050xi2_0_5x5n000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS2'
+ [19] Processing 'test-results/ae100037050xi2_0_dun000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS2'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS2'
+ [20] Processing 'test-results/ae100037050xi3_0.hk'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +6: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +7: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +8: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +9: TELESCOP='SUZAKU', INSTRUME='XIS3'
+ [21] Processing 'test-results/ae100037050xi3_0_3x3n000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS3'
+ [22] Processing 'test-results/ae100037050xi3_0_5x5n000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS3'
+ [23] Processing 'test-results/ae100037050xi3_0_dun000.fff'
+      +0: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +1: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +2: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +3: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +4: TELESCOP='SUZAKU', INSTRUME='XIS3'
+      +5: TELESCOP='SUZAKU', INSTRUME='XIS3'
+ [24] Processing 'test-results/ae100037050xrs_0_all.hk'
+      +1: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +2: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +3: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +4: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +5: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +6: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +7: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +8: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +9: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +10: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +11: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +12: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +13: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +14: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +15: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +16: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +17: TELESCOP='SUZAKU', INSTRUME='XRS'
+ [25] Processing 'test-results/ae100037050xrs_0_dump.hk'
+      +1: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +2: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +3: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +4: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +5: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +6: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +7: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +8: TELESCOP='SUZAKU', INSTRUME='XRS'
+      +9: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +10: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +11: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +12: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +13: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +14: TELESCOP='SUZAKU', INSTRUME='XRS'
+     +15: TELESCOP='SUZAKU', INSTRUME='XRS'
+
+Finished.
+
+BUGS
+
+None reported. 
+
+SEE ALSO 
+
+	none
+
+AUTHOR
+
+    This program was developed primarily in the ASTRO-E ANL environment by 
+    Yoshitaka Ishisaki (Tokyo Metropolitan University).
+    
+
+LAST MODIFIED
+
+    May 2007
+

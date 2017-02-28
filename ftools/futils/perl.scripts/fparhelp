@@ -1,0 +1,132 @@
+#! /usr/local/bin/perl
+#
+#   fhelp --
+#
+#   This program takes an ftool name and searches the FTools help 
+#   directory for the corresponding help file
+#
+#
+#   $Id: fparhelp,v 3.4 1997/05/22 19:56:12 elwin Exp $
+#
+#   Larry Brown 9/21/1995
+#   Hughes STX for GSFC/HEASARC
+#   
+
+
+use Getopt::Std;
+getopt('e');
+
+
+if ($opt_h ) {
+    print<<EOHELP;
+
+                 ****** fparhelp ******
+
+Lists the help file for the specified parameter for the given ftool.
+fparhelp attempts to determine help on an individual parameter by 
+parsing the IRAF help file for that ftool, this might fail, so in a 
+script, you should probably choose an appropriate '-e' option.
+
+USAGE:
+
+fparhelp ftool parname
+
+
+FLAGS:
+
+Flags must be given before the positional arguments (i.e. the name of 
+the ftool and the parameter).
+
+-h          print this help
+
+-e  -1|0|1  what to do if fparhelp can not determine parameter specific
+            help:
+
+              -1  print the whole help file for ftool (default)
+
+	       0  happily do nothing
+             
+               1  exit with an error status and an error message
+
+            Note: fparhelp *always* reports an error if it can''t even 
+            *find* the required helpfiles.
+
+CAVEAT:
+
+This program was designed to be called by other programs.  While it will
+probably work by itself, its behavior might not always be intuitive.
+
+EOHELP
+    exit 0;
+}
+
+if (defined $opt_e) {
+    $errorFlag = $opt_e;
+} else {
+    $errorFlag = -1;
+}
+
+if ($#ARGV != 1) {
+    exit 1;
+}
+
+$ftool = $ARGV[0];
+$par = $ARGV[1];
+
+if (defined $ENV{LHEA_HELP}) {
+    $helpDir = "$ENV{LHEA_HELP}";
+} else {
+    die "Environment variable LHEA_HELP needs to be set\n";
+}
+
+$workDir = pwd;
+chdir $helpDir || die "Cannot find Help directory: $helpDir\n";
+if (-e "$ftool.hlp") {
+    open HLPFILE,"$ftool.hlp";
+    while ($line = <HLPFILE>) {
+	#look for parameter specific help
+	if ($line =~ /^\.ls\s+(\(|)(\S+)/) {
+	    #ok, we may have a parameter, read in its info
+	    $currentPar = $2;
+	    $parstart{$currentPar}=substr($line,4);
+	    $line = <HLPFILE>;
+	    until ( $line =~ /^\.le/ or eof) {
+		$helpHash{$currentPar} .= $line;
+		$line = <HLPFILE>;
+	    }
+	}
+    }
+    #loaded and ready to party
+    if ($helpHash{$par}) {
+	print $parstart{$par};
+	$the_help = $helpHash{$par};
+	$~ = "PARHELP";
+	write;
+    } elsif ($errorFlag == 0) {
+	exit(0);
+    } elsif ($errorFlag == 1) {
+	die "Can't find information about parameter $par for ftool $ftool.\n";
+    } elsif (-e "$ftool.txt") {
+        system("cat $ftool.txt");
+    } else {
+	die "Can't find help on $ftool\n";
+    }
+} elsif (-e "$ftool.txt" ) {
+    if ($errorFlag == -1) {
+	system("cat $ftool.txt");
+    } else {
+	die "Cannot find IRAF help file for ftool $ftool\n";
+    }
+} else {
+    die "Cannot find any help for $ftool\n";
+}
+
+
+
+
+
+
+format PARHELP =
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$the_help
+.

@@ -1,0 +1,464 @@
+
+
+
+                       Lawrence Berkeley Laboratory
+
+                         University of California
+
+                           Berkeley, California
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                  Group A Physics Programming Note P-284
+
+                        TPC Note No. TPC-LBL-83-16
+
+
+
+
+                       PEP-4 COMics User Interface
+
+
+
+                              COMICS$LIBRARY
+
+
+
+
+                                B. Gabioud
+
+
+
+                                March 1983
+
+                                                                          Page 2
+P-284             TPC-LBL-83-16
+
+
+                          COMICS$LIBRARY:COMICS
+
+
+
+                                B. Gabioud
+
+
+           To get a copy of this type COMICS$LIBRARY:COMICS.MEM
+           Source files are readable from COMICS$SOURCES (CMS)
+
+
+             COMICS$LIBRARY:COMICS.OLB is a library of  Fortran-77
+        subroutines  to interface Pep4 Online and Offline programs
+        with the  user.   This  note  does  not  describe  a  nice
+        software  package, but rather something Pep4 collaborators
+        have to cope with.
+
+
+
+        1  HISTORY OF COMICS.OLB
+
+             Originally COMics was a Pep4  Online  process  by  B.
+        Pardoe,  designed to connect the numerous Online processes
+        to  a  variable  number  of   terminals.    (Note   P-273,
+        TPC-LBL-80-60).   A  lot  of flexibility was put in matrix
+        screen formatting.  Communication with  subprocesses  used
+        mailboxes  and  Asynchrous  System Traps (AST's), in order
+        that Real Time processes do not have to wait for the user.
+
+
+             Two difficulties  appeared:   the  programming  of  a
+        screen  required  many  subroutine  calls,  and the use of
+        AST's  breaks  the  code  into  subroutines  at  illogical
+        places,  i.e.   between a question and the handling of the
+        answer,  instead  of  between  one  answer  and  the  next
+        question,  the  result  being a heavy and unreadable code.
+        The  solution  of  these  programming   difficulties   was
+        provided  by Orin Dahl, who wrote a library of routines to
+        interface the program with COMics, which was  much  easier
+        to  use  than  COMics  itself,  and  a  mechanism to avoid
+        breaking the code at illogical places.
+
+
+             As a  consequence  of  the  small  number  of  Orin's
+        interface  routines,  the  original  flexibility in screen
+        formatting disappeared.  Also the possibility  of  several
+        terminals  was never used.  Moreover COM was not accepting
+        command files, and was not compatible with  batch  Offline
+        processing.
+
+
+             This latest problem was fatal.   In  a  few  days  of
+        September  1981,  I  wrote a new set of interface routines
+        with the same calling  sequence  as  Orin's  routines,  to
+        provide  compatibility  with existing programs, which were
+        able to run in batch and accepted indirect command  files.
+
+                                                                          Page 3
+HISTORY OF COMICS.OLB
+
+
+        The  use  of  CLI (Note P-278, TPC-LBL-82-15) as low level
+        terminal I/O routines made that easy.
+
+
+             September  1981  Version   was   a   purely   Offline
+        interface,  without  AST's, but externally compatible with
+        them.  In June 1982 a  Online  version,  using  AST's  was
+        produced.  The library COMICS$LIBRARY:COMICS itself is the
+        same Online and Offline.  However the Online  subprocesses
+        have their own version of 3 CLI subroutines.
+
+
+
+        2  INCLUDE 'COMICS(COMODE)'
+
+             In  every  subroutine  using  COMics,  the  following
+        library  module  'Comics$Library:Comics(Comode)' has to be
+        included:
+
+        C+++++  This is COMODE.TXT
+        C
+                Common /Comode/ Icomer, Batch, Rltime, Lun_com,
+             &          Bytes_com(4)
+        C
+                Integer*4 Icomer, Batch, Rltime, Lun_com
+                Byte Bytes_com, Control_c
+                Character*3 Com_prompt
+                Equivalence (Com_prompt,Bytes_com(1))
+                Equivalence (Control_c,Bytes_com(4))
+        C
+        C-----  End of  COMODE.TXT
+
+
+             ICOMER is the status returned by COMics.  You  should
+        not change its value.  It is set to 1 for normal operation
+        and to -1 Online when one has to return from the AST  (see
+        next  section).   A  value of 2 indicates that a Control_C
+        was typen as the answer to the question.   You  can  check
+        for that possibility and take the appropriate action.
+
+
+             RLTIME is a logical variable which is set  to  .TRUE.
+        Online  and  .FALSE.   Offline.   This  variable is set by
+        COMics.
+
+
+             LUN_COM is the Fortran Logical Unit  for  writing  to
+        the  COMics  terminal.  Offline LUN_COM is 6, Online it is
+        not.  Online statements like TYPE, PRINT, WRITE(6,*) write
+        to the Message terminal.
+
+
+             COM_PROMPT is the Character*3 prompt used  by  COMics
+        subroutines.   Online  it  is  automatically  set  to  the
+        process name.  Offline, you have to call INIT_COM_TALK  to
+        define it (see section 4).
+
+                                                                          Page 4
+THE AST MECHANISM
+
+
+        3  THE AST MECHANISM
+
+             In the Online system, during a sequence of  calls  to
+        COMics,  subroutines  must return through the stack to the
+        original AST receiver while waiting for the user  to  type
+        in  a  response.   Then, after the typing is finished, the
+        routine must go directly back to the location  from  where
+        it  exited.   This procedure is controlled by the variable
+        ICOMER.   Under  normal  operation  ICOMER  is   positive.
+        However,  during  a return to wait for the user, ICOMER is
+        set to -1.
+
+
+             An example may perhaps make it a little clearer:
+
+                SUBROUTINE MAIN_COM_ROUTINE
+                IMPLICIT NONE   !the only recommended
+                INCLUDE 'COMICS$LIBRARY:COMICS(COMODE)' !contains
+        ICOMER
+                INTEGER*4 LABEL !remembers location of return
+        during
+                SAVE LABEL      ! a wait for an AST (for typing to
+        finish).
+        C
+        C  First test if returning from an AST wait.
+        C
+                IF (ICOMER.LT.0) GOTO LABEL
+                . . .
+        C
+        C  Main call of COMics
+        C
+         10     ASSIGN 10 TO LABEL
+                CALL INQUIRE('Which option',...)
+                IF (ICOMER.EQ.2) GOTO 10        !retry in case of
+        Control_C
+                IF (ICOMER.NE.1) RETURN
+                . . .
+        C
+        C  Call another subroutine which calls COMics
+        C
+         20     ASSIGN 20 TO LABEL
+                CALL SUB_COM_ROUTINE
+                IF (ICOMER.EQ.2) GOTO 10        !back to main
+        question
+                IF (ICOMER.NE.1) RETURN
+                . . .
+                RETURN
+                END
+        C=====
+                SUBROUTINE SUB_COM_ROUTINE
+                IMPLICIT NONE
+                INCLUDE 'COMICS$LIBRARY:COMICS(COMODE)'
+                INTEGER*4 LABEL
+                SAVE LABEL
+        C
+                IF (ICOMER.LT.0) GOTO LABEL
+
+                                                                          Page 5
+THE AST MECHANISM
+
+
+                . . .
+         30     ASSIGN 30 TO LABEL
+                CALL MODVAL('Which variable',...)
+                IF (ICOMER.NE.1) RETURN !we return when Control_C
+                . . .
+                END
+
+
+
+             Thus we do 4 things to control the AST waits:
+
+        1. Include Comics$Library:Comics(Comode)
+
+        2. Tell Fortran to save the variable LABEL between calls
+
+        3. Immediately upon entering go to LABEL if ICOMER is
+        negative
+
+        4. Replace each subroutine call with a sequence of 3
+        lines:
+            nn  ASSIGN nn TO LABEL
+                CALL SUBROUTINE
+                IF (ICOMER.NE.1) RETURN
+
+
+             In case you have several COMics routines calling each
+        other,  each  one  of them should have the same structure.
+        Evidently the variable LABEL is local in each of them.
+
+
+
+        4  COMICS SUBROUTINES
+
+             The following describes COMics subroutines, which are
+        available  when  you link to:  COMICS$LIBRARY:COMICS/LIBR,
+        CLI$LIBRARY:CLI/LIBR
+
+
+
+        4.1  Initialization
+
+             In Offline programs only, before using  other  COMics
+        routines, you have to call INIT_COM_TALK.
+
+                CALL INIT_COM_TALK(PROMPT)
+
+        where PROMPT is a  Character*3  variable,  specifying  the
+        prompt  to  appear  in  every  question.   For example, if
+        PROMPT = 'ANL', you will get ANL>  as  the  prompt.   This
+        routine  can  be  called  more than one time to change the
+        prompt.
+
+                                                                          Page 6
+COMICS SUBROUTINES
+
+
+        4.2  CALL MODVAL(QUEST,NVAL,NAMES,HELP,%DESCR(VALUES))
+
+             This routine allows to modify interactively the array
+        VALUES(NVAL).   VALUES  can be either INTEGER*4, REAL*4 or
+        CHARACTER*(up to 50).  This routine can be thought  as  an
+        array version of FLTRD/INTRD/TXTRD (see CLI writeup).
+
+                QUEST = a character  string  which  describes  the
+                        theme.
+                NVAL = # of variables to be modified (max=32).
+                NAMES(NVAL) = an array of character strings naming
+                        the individual variables.
+                HELP(NVAL)  =  an  array  of   character   strings
+                        commenting  each  variable,  or  a  single
+                        string beginning with a  '$',  giving  the
+                        key to a help text module.
+                %DESCR(VALUES) = Descriptor of the variable array.
+
+        Example (by Nobu Toge):
+                INCLUDE 'COMICS$LIBRARY:COMICS(COMODE)'
+                PARAMETER NVAL = 5
+                REAL*4  VALUES(NVAL) /1.,2.,3.,4.,5./
+                CHARACTER*5 NAMES(NVAL)
+        /'One','Two','Three','Four','Five'/
+                CHARACTER*30 HELP(NVAL)
+             &          /'Kore wa ichi','Ni','San','Shi','Go desu
+        yo'/
+                SAVE LABEL, VALUES
+        C
+                IF (ICOMER.LT.0) GOTO LABEL
+                ........
+         10     ASSIGN 10 TO LABEL
+                CALL
+        MODVAL('Counting',NVAL,NAMES,HELP,%DESCR(VALUES))
+                IF (ICOMER.NE.1) RETURN
+                ........
+
+
+             The program prints the table of  values  and  prompts
+        you.   If  you accept the values, you type Return.  If you
+        want  to  change  something,  you  type  one  or   several
+        expressions  like  NAME=VALUE,  followed  by  OK.  You can
+        answer in one or several lines.  You  can  abbreviate  the
+        names.   If  you  hit  one  Control_C  when the program is
+        waiting for OK, you erase the  new  values.   If  you  hit
+        Control_C  when  no  new value is displayed, you exit from
+        MODVAL.
+
+
+
+        4.3  CALL INQUIRE(QUEST,NVAL,NAMES,HELP,NREPLY,LANSWER)
+
+             This routine asks the user to make his choice from  a
+        menu  of  NVAL  items, and stores the answers in the array
+        LANSWER.   This  routine  could  be  thought  as  a   more
+        elaborate version of KEYRD (see CLI writeup).
+
+                                                                          Page 7
+COMICS SUBROUTINES
+
+
+                QUEST = a character  string  which  describes  the
+                        theme.
+                NVAL = dimension of NAMES table (max=32).
+                NAMES(NVAL) = Character array containing the menu.
+                HELP(NVAL) = Help text for each item, or a  single
+                        string  beginning  with  a '$', giving the
+                        key to a help text module.
+                NREPLY  =  Number  of   replies   requested.    If
+                        positive, INQUIRE tries to pick up exactly
+                        NREPLY items to be selected out of  NAMES.
+                        If  zero or negative INQUIRE tries to pick
+                        up equal to or more than -NREPLY items.
+                LANSWER = Integer array receiving the answer.   If
+                        NREPLY   is  positive  LANSWER  should  be
+                        dimensioned to (0:NREPLY).  If  NREPLY  is
+                        zero   or   negative   LANSWER  should  be
+                        dimensioned  to   (0:NVAL).    The   first
+                        element, LANSWER(0) gives the # of answers
+                        selected by the user.  The other  elements
+                        LANSWER(1)     ...     LANSWER(LANSWER(0))
+                        contain the item numbers.   For  instance,
+                        if  NAMES(1),  (3),  and (4) are selected,
+                        LANSWER will contain 3, 1, 3 and 4.
+
+
+             The program prints the table of names, tells you  how
+        many items to select, and waits for your answer.  You type
+        in the list of names, abbreviated  if  you  want,  in  the
+        order  you want.  If the program asks for N items you have
+        to enter exactly N names, if it says N or  more,  you  end
+        the  list  with  OK.   If  a  name  is not recognized, the
+        remainder of the line  is  ignored  and  the  question  is
+        re-asked.   If  the program aks for N or more and you have
+        not yet answered OK, a single Control_C  erases  what  you
+        have  already  entered.   If you dont have answered yet, a
+        Control_C makes you exit from INQUIRE.
+
+
+
+        4.4  CALL INQUIR(QUEST,NVAL,NAMES,HELP,NREPLY,BITMAP)
+
+             This routine is  the  same  as  INQUIRE,  except  the
+        result  is  returned  as  a  bit  pattern.  For example if
+        NAMES(1),  (3),  and  (4)  are  selected,  the   Integer*4
+        variable BITMAP will be set to '15'O = 13.
+
+
+
+        4.5  CALL SHOWIT(QUEST,NVAL,NAMES,HELP)
+
+             This routine only shows an array  of  names,  in  the
+        same  format  as  INQUIRE,  and waits for the user to type
+        Return.  The passed arguments  are  similar  to  those  of
+        INQUIRE.
+
+                                                                          Page 8
+COMICS SUBROUTINES
+
+
+        4.6  Output To The COMics Terminal
+
+             You can freely write  to  the  logical  unit  LUN_COM
+        (which is 6 Offline but not 6 Online).  Example:
+
+                WRITE (LUN_COM,*) 'This is the COM Terminal'
+
+        One can also use the following routines:
+
+                CALL TELLIT(TEXT)       !type    the     character
+        variable TEXT
+                CALL TELLALL(NDIM,TEXT) !type the character  array
+        TEXT(NDIM)
+
+
+
+        4.7  Note For Online Programming
+
+             If you write COMics routines for the  Online  System,
+        you  have to be aware the AST can interrupt the program at
+        any place.  So you have to make sure that both the AST and
+        the  program  will not use the same code at the same time,
+        as VAX Fortran code is not reentrant.  You  also  have  to
+        avoid  recursive I/O:  you are not allowed to use the same
+        logical unit at the same time in both, nor can  encode  or
+        decode at the same time.
+
+
+
+        4.8  HELP Libraries
+
+             You have the option to get a text from a help library
+        instead of from the arrays of Help text in the code.
+
+
+             A $ in the Help argument tells  the  subroutine  that
+        you  want a Help library module.  The routine HELP_LIBRARY
+        defines the Library File Name.  Example:
+
+                CALL HELP_LIBRARY('HELP_LOG_NAME')
+
+                CALL                INQUIRE(QUEST,NVAL,NAMES,'$ANL
+        QUIT',NREPLY,LANSWER)
+
+
+             If  you  answer  ?   or  HELP,  you  get   the   text
+        corresponding   to   topic   ANL   subtopic   QUIT,   file
+        HELP_LOG_NAME.  Look at CLI (Note P-278, TPC-LBL-82-15) if
+        you  want  to  be  remembered  how to make a help library.
+        Note also that COMics help is independent of CLI help.

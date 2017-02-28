@@ -1,0 +1,19 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_CXXTASK		= sprbnarf
+
+HD_CXXTASK_SRC_cxx	= sprbnarf.cxx
+
+HD_CXXFLAGS		= ${HD_STD_CXXFLAGS}
+
+HD_CXXLIBS		= ${HD_LFLAGS} -l${HEASP} -l${CCFITS} ${HD_STD_CXXLIBS}
+
+HD_INSTALL_TASKS	= ${HD_CXXTASK}
+
+HD_INSTALL_PFILES	= sprbnarf.par
+
+HD_INSTALL_HELP		= sprbnarf.html
+
+include ${HD_STD_MAKEFILE}

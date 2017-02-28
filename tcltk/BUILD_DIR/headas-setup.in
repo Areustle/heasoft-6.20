@@ -1,0 +1,340 @@
+#! /bin/sh
+#    Filename: headas-setup(.in)
+# Description: Writes an initialization script for HEADAS software
+#              which is custom fit to the user and the particular
+#              software installation. Note that this script is
+#              designed to be invoked by headas-init.csh/headas-init.sh,
+#              and should not normally be invoked directly by user.
+# Author/Date: James Peachey, HEASARC/GSFC/NASA, May 4, 1999
+#
+# local variables used by this script internally only
+#-------------------------------------------------------------------------------
+this_script=`echo $0 | sed 's:.*/::'`
+headas_info="$this_script:"
+headas_error="$headas_info ERROR --"
+headas_error2="$headas_info         "
+
+# check for valid arguments and environment variables
+#-------------------------------------------------------------------------------
+# one and only argument needs to tell flavor of script, used
+# to create the output from this script
+flavor=$1
+if [ "x$flavor" != xcsh -a "x$flavor" != xsh ]; then
+  echo "$headas_info usage $this_script csh|sh" >&2
+  exit 3
+fi
+
+# make sure HEADAS is an absolute path, with no trailing /s
+# avoid using pwd unless necessary, because pwd does not
+# preserve the names of sym-links, which can confuse the issue
+if [ `echo $HEADAS | grep -c '^/'` -eq 0 ]; then
+  HEADAS=`cd $HEADAS; pwd`
+else
+  HEADAS=`echo $HEADAS | sed 's://*:/:g' | sed 's:/$::'`
+fi
+export HEADAS
+
+LHEASOFT="$HEADAS"
+export LHEASOFT
+FTOOLS="$HEADAS"
+export FTOOLS
+
+#-------------------------------------------------------------------------------
+
+# find a place for us -- somewhere, a place for us
+#-------------------------------------------------------------------------------
+# find general "home" directory; this is paranoid, but in case some
+# non-interactive shell doesn't set HOME, try some other places
+if [ "x$HOME" != x ]; then
+  :
+elif [ "x$TMPDIR" != x ]; then
+  HOME="$TMPDIR"
+elif [ -w /tmp ]; then
+  HOME="/tmp"
+else
+  HOME="."
+fi
+if [ ! -w "$HOME/." ]; then
+  echo "$headas_error unable to cd $HOME" >&2
+  echo "$headas_error2 HOME must point to a writable directory" >&2
+  exit 3
+fi
+
+# configure defaults
+#-------------------------------------------------------------------------------
+LHEAPERL="@PERL@"
+UNAME_SYSTEM="@UNAME_SYSTEM@"
+EXT="@EXT@"
+LHEA_TOP="@prefix@"
+HD_BUILD_ARCH_32_BIT="@HD_BUILD_ARCH_32_BIT@"
+#-------------------------------------------------------------------------------
+
+# handle directory containing libraries
+#-------------------------------------------------------------------------------
+HEADAS_LIB=''
+if [ -d $HEADAS/lib/. ]; then
+  HEADAS_LIB=$HEADAS/lib
+fi
+#-------------------------------------------------------------------------------
+
+# handle directory containing binaries
+#-------------------------------------------------------------------------------
+if [ -x $HEADAS/bin/. ]; then
+  HEADAS_BIN=$HEADAS/bin
+
+  # prune existing references to HEADAS_BIN from path, then put
+  # HEADAS_BIN at the front. extra colons are so that match
+  # will occur anywhere in path
+  PATH=`echo ":$PATH:" | sed "s%:$HEADAS_BIN:%:%g" | sed "s%::*$%%"`
+  PATH="$HEADAS_BIN$PATH"
+
+  # anything which uses readline (i.e. most binaries) must have these set
+  FTOOLSINPUT=stdin
+  FTOOLSOUTPUT=stdout
+fi
+#-------------------------------------------------------------------------------
+
+# handle directory containing scripts
+#-------------------------------------------------------------------------------
+if [ -d $HEADAS/scripts/. ]; then
+  HEADAS_SCRIPTS=$HEADAS/scripts
+
+  # prune existing references to HEADAS_SCRIPTS from path, then put
+  # HEADAS_SCRIPTS at the front. extra colons are so that match
+  # will occur anywhere in path
+  PATH=`echo ":$PATH:" | sed "s%:$HEADAS_SCRIPTS:%:%g" | sed "s%::*$%%"`
+  PATH="$HEADAS_SCRIPTS$PATH"
+fi
+
+# check whether HEADAS perl library exists
+if [ -d "$HEADAS/lib/perl" ]; then
+  HEADAS_PERLLIBS=$HEADAS/lib/perl
+  # make perl happy about its library paths
+  if [ "x$PERL5LIB" != x ]; then
+    PERL5LIB=`echo ":$PERL5LIB:" | \
+      sed "s%:$HEADAS_PERLLIBS:%:%g" | sed "s%::*$%%"`
+    PERL5LIB="$HEADAS_PERLLIBS$PERL5LIB";
+  else
+    PERL5LIB="$HEADAS_PERLLIBS"
+  fi
+  if [ "x$PERLLIB" != x ]; then
+    PERLLIB=`echo ":$PERLLIB:" | \
+      sed "s%:$HEADAS_PERLLIBS:%:%g" | sed "s%::*$%%"`
+    PERLLIB="$HEADAS_PERLLIBS$PERLLIB";
+  else
+    PERLLIB="$HEADAS_PERLLIBS"
+  fi
+fi
+#-------------------------------------------------------------------------------
+# handle PIL/XPI stuff (parameter files)
+#-------------------------------------------------------------------------------
+if [ -d $HEADAS/syspfiles/. ]; then
+  PFCLOBBER=1
+
+  # make sure local parameter file directory exists
+  if [ ! -w $HOME/pfiles/. ]; then
+    mkdir $HOME/pfiles
+    if [ $? -ne 0 ]; then
+      echo "$headas_error cannot create local pfiles directory $HOME/pfiles" >&2
+      exit 3
+    fi
+  fi
+
+  # use PFILES (if set) to set initial values for locpfiles and syspfiles
+  if [ "x$PFILES" != x ]; then
+    syspfiles=`echo $PFILES | sed "s%.*;%%"`
+    locpfiles=`echo $PFILES | sed "s%;*$syspfiles$%%"`
+  fi
+
+  # move HOME/pfiles to front of locpfiles and weed out redundancies
+  if [ "x$locpfiles" = x ]; then
+    locpfiles="$HOME/pfiles"
+  else
+    locpfiles=`echo ":$locpfiles:" | \
+      sed "s%:$HOME/pfiles:%:%g" | sed "s%::*$%%"`
+    locpfiles="$HOME/pfiles$locpfiles"
+  fi
+
+  # move HEADAS/syspfiles to front of syspfiles and weed out redundancies
+  if [ "x$syspfiles" = x ]; then
+    syspfiles="$HEADAS/syspfiles"
+  else
+    syspfiles=`echo ":$syspfiles:" | \
+      sed "s%:$HEADAS/syspfiles:%:%g" | sed "s%::*$%%"`
+    syspfiles="$HEADAS/syspfiles$syspfiles"
+  fi
+
+  PFILES="$locpfiles;$syspfiles"
+fi
+#-------------------------------------------------------------------------------
+# make sure "saved" variables are exported in current form so they
+# take effect when the initialization script is written
+#-------------------------------------------------------------------------------
+export DYLD_LIBRARY_PATH LD_LIBRARY_PATH PATH PERLLIB PERL5LIB
+#-------------------------------------------------------------------------------
+
+# LD_LIBRARY_PATH
+#-------------------------------------------------------------------------------
+if [ "x$HEADAS_LIB" = x ]; then
+  :
+elif [ "x$LD_LIBRARY_PATH" = x ]; then
+  LD_LIBRARY_PATH="$HEADAS_LIB"
+else
+  LD_LIBRARY_PATH=`echo ":$LD_LIBRARY_PATH:" | \
+    sed "s%:$HEADAS_LIB:%:%g" | sed "s%::*$%%"`
+  LD_LIBRARY_PATH="$HEADAS_LIB$LD_LIBRARY_PATH"
+fi
+
+#-------------------------------------------------------------------------------
+# Darwin & Cygwin PATHs:
+#-------------------------------------------------------------------------------
+case $UNAME_SYSTEM in
+  Darwin*)
+    if [ "x$HEADAS_LIB" = x ]; then
+      :
+    elif [ "x$DYLD_LIBRARY_PATH" = x ]; then
+      DYLD_LIBRARY_PATH="$HEADAS_LIB"
+    else
+      DYLD_LIBRARY_PATH=`echo ":$DYLD_LIBRARY_PATH:" | \
+        sed "s%:$HEADAS_LIB:%:%g" | sed "s%::*$%%"`
+      DYLD_LIBRARY_PATH="$HEADAS_LIB$DYLD_LIBRARY_PATH"
+    fi
+    ;;
+  CYGWIN*)
+    if [ "x$HEADAS_LIB" = x ]; then
+      :
+    elif [ "x$PATH" = x ]; then
+      PATH="$HEADAS_LIB"
+    else
+      PATH=`echo ":$PATH:" | sed "s%:$HEADAS_LIB:%:%g" | sed "s%::*$%%"`
+      PATH="$HEADAS_LIB$PATH"
+    fi
+    ;;
+esac
+
+#-------------------------------------------------------------------------------
+# LHEASOFT additions:
+#-------------------------------------------------------------------------------
+LHEA_DATA=''
+if [ -d $LHEASOFT/refdata/. ]; then LHEA_DATA=$LHEASOFT/refdata; fi
+
+LHEA_HELP=''
+if [ -d $LHEASOFT/help/. ]; then LHEA_HELP=$LHEASOFT/help; fi
+
+# handle directory containing libraries
+LHEA_LIB=''
+if [ -d $LHEASOFT/lib/. ]; then
+  LHEA_LIB=$LHEASOFT/lib
+
+  # pgplot variables
+  PGPLOT_FONT=''
+  if [ -f $LHEA_LIB/grfont.dat ]; then
+    PGPLOT_FONT=$LHEA_LIB/grfont.dat
+  fi
+  PGPLOT_RGB=''
+  if [ -f $LHEA_LIB/rgb.txt ]; then
+    PGPLOT_RGB=$LHEA_LIB/rgb.txt
+  fi
+  PGPLOT_DIR=''
+  if [ "x$PGPLOT_FONT" != x -a "x$PGPLOT_RGB" != x ]; then
+    PGPLOT_DIR=$LHEA_LIB
+  fi
+
+  # tclreadline library location
+  TCLRL_LIBDIR=''
+  if [ -f $LHEA_LIB/tclreadline/tclreadlineInit.tcl ]; then
+    TCLRL_LIBDIR=$LHEA_LIB
+  fi
+
+  # pow stuff
+  POW_LIBRARY=''
+  if [ -d $LHEA_LIB/pow/. ]; then
+    POW_LIBRARY=$LHEA_LIB/pow
+  fi
+
+  # Python path for Xspec:
+  if [ -d $LHEA_LIB/python/. ]; then
+    if [ "x$PYTHONPATH" = x ]; then
+      PYTHONPATH=$LHEA_LIB/python:$LHEA_LIB
+    else
+      PYTHONPATH=`echo ":$PYTHONPATH:" | sed "s%:$LHEA_LIB/python:%:%g" | \
+	sed "s%:$LHEA_LIB:%:%g" | sed "s%::*$%%"`
+      PYTHONPATH="$LHEA_LIB/python:$LHEA_LIB$PYTHONPATH"
+    fi
+  fi
+
+  # lynx.cfg location:
+  LYNX_CFG=''
+  if [ -f $LHEA_LIB/lynx.cfg ]; then
+    LYNX_CFG=$LHEA_LIB
+  fi
+fi
+
+# handle directory containing xronos window files
+XRDEFAULTS=''
+if [ -r $LHEASOFT/xrdefaults/. ]; then XRDEFAULTS=$LHEASOFT/xrdefaults; fi
+
+# check whether any xanadu binaries are installed. if so, set up xanadu extras
+if [ -x $LHEASOFT/bin/ximage -a ! -d $LHEASOFT/bin/ximage/. ]; then
+  xanadu_opt=yes
+elif [ -x $LHEASOFT/bin/xspec -a ! -d $LHEASOFT/bin/xspec/. ]; then
+  xanadu_opt=yes
+elif [ -x $LHEASOFT/bin/lcurve -a ! -d $LHEASOFT/bin/lcurve/. ]; then
+  xanadu_opt=yes
+else
+  xanadu_opt=no
+fi
+
+XANADU=''
+XANBIN=''
+if [ $xanadu_opt = yes ]; then
+  XANADU=$LHEA_TOP
+  XANBIN=$LHEASOFT
+fi
+
+#-------------------------------------------------------------------------------
+# list of variables needed in initialization script
+#-------------------------------------------------------------------------------
+varlist="HEADAS LHEASOFT FTOOLS"
+varlist="$varlist DYLD_LIBRARY_PATH LD_LIBRARY_PATH PATH"
+varlist="$varlist LHEAPERL PERLLIB PERL5LIB"
+varlist="$varlist PFCLOBBER PFILES"
+varlist="$varlist FTOOLSINPUT FTOOLSOUTPUT"
+varlist="$varlist LHEA_DATA LHEA_HELP EXT"
+varlist="$varlist PGPLOT_FONT PGPLOT_RGB PGPLOT_DIR POW_LIBRARY"
+varlist="$varlist PYTHONPATH LYNX_CFG"
+varlist="$varlist XRDEFAULTS TCLRL_LIBDIR XANADU XANBIN"
+
+if [ "x$HD_BUILD_ARCH_32_BIT" != x ]; then
+  varlist="$varlist HD_BUILD_ARCH_32_BIT"
+fi
+
+#-------------------------------------------------------------------------------
+# save values in output initialization shell scripts
+#-------------------------------------------------------------------------------
+# name of temporary config script
+HOST_NAME=`hostname`
+headas_config="$HOME/headas-config-$HOST_NAME"
+
+# Bourne Shell version, write only for sh flavor initialization
+if [ $flavor = sh ]; then
+  rm -f $headas_config$$.sh
+  touch $headas_config$$.sh
+  for var in $varlist; do
+    eval "if [ \"x\$$var\" != x ]; then
+            echo \"\$var=\\\"\$$var\\\"; export \$var\" >> $headas_config$$.sh;
+          fi"
+  done
+  echo "$headas_config$$.sh"
+# C Shell version, write only for csh flavor initialization
+elif [ $flavor = csh ]; then
+  rm -f $headas_config$$.csh
+  touch $headas_config$$.csh
+  for var in $varlist; do
+    eval "if [ \"x\$$var\" != x ]; then
+            echo setenv \$var \\\"\$$var\\\" >> $headas_config$$.csh;
+          fi"
+  done
+  echo "$headas_config$$.csh"
+fi
+#-------------------------------------------------------------------------------

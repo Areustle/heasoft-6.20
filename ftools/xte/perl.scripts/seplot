@@ -1,0 +1,617 @@
+#!/usr1/local/bin/perl
+#
+# Script to run sebitmask and fselect one after the other and create
+# an output file
+#
+# Brian K. Elza 3/7/95
+# XTE GSFC/NASA
+#
+# A C-shell script performing similar operations will also exist.
+# version 1.0.0 3/7/95
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('h');			
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+NAME
+    seplot -- a script that queries the user for  all  required  input
+    and runs in sucession SEEXTRCT and FPLOT. 
+    
+    
+USAGE
+    seplot 
+    
+    
+DESCRIPTION
+    This script file is meant to allow the user to add files for filtering on 
+    the fly and then plot the results. In this way the user can add files to
+    be processed on the fly and see the results of each additional file added.
+    After the first run all previous answers are carried through for each 
+    subsequent iteration. 
+
+    This script file will ask the user if he wants full filtering capability.
+If the user answers YES than ALL of the required parameters for SEEXTRCT will
+be asked for. If the user answers NO than only the absolutely necessary 
+parameters will be asked for. 
+    The script will (if there is more than one possiblity) ask the user if 
+the lightcurve or the spectra is to be plotted. The user will be able to 
+interact with FPLOT interactively at the PLT> command option. 
+    
+PARAMETERS
+    
+EXAMPLES
+    1. seplot
+    
+    
+NOTES:
+    
+    
+BUGS
+    
+        Please report problems to xtehelp\@athena.gsfc.nasa.gov. Provide a
+        detailed  description  of  the  problem and an e-mail address at
+        which you can be reached if  further  information  is  required.
+        Before  reporting  a  bug  please  check  your .PAR file. At the
+        moment all comparisons are CASE SENSITIVE.
+    
+    
+SEE ALSO
+    SEEXTRCT and FSELECT for more information
+
+EOHELP1
+exit;
+    }
+
+# now onto the program ...
+
+require "utils.pl";
+
+print "Do you want full filtering capability (Yes/No)?";
+chop($answer = <STDIN>);
+
+@infile2=&runcom('pget seextrct infile');
+chop($infile2[0]);
+print "Input file name or \@file-of-filenames:[$infile2[0]]";
+($infile = <STDIN>);
+if($infile =~ /^./ ){
+    chop($infile);
+}
+else{
+    $infile = $infile2[0];
+}
+
+$origfile = $infile;
+
+# Now we will test to see if the input file is a LIST of files. If it is
+# then we will copy all of the files contained within this file to a
+# unique filename
+if($infile =~ /^@/ ){
+
+    $infile =~ s/^@//;	# Remove the @ symbol
+    $origfile = $infile;	# Store the filename in origfile
+    open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+    open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+    while(<INPUT_FILE>) {
+	print OUTPUT_FILE $_; # Copy files from INFILE to OUTPUT
+    }
+    close(INPUT_FILE);	# We are finished with the input file.
+    close(OUTPUT_FILE);	# Close up the output file too.
+    print "output file created was outfile_${$}\n";
+}
+else {
+    open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # open a unique output file
+    print OUTPUT_FILE "$infile \n"; # Copy the filename to output file
+    close(OUTPUT_FILE);	# Close the output file.
+}
+
+if($answer =~ /^[yY]/){
+    @infile2=&runcom('pget seextrct gtiorfile');
+    chop($infile2[0]);
+    print "Input GTI files to be OR'd with INFILE:[$infile2[0]]";
+    ($gtiorfile = <STDIN>);
+    if($gtiorfile =~ /^./){
+	chop($gtiorfile);}
+    else{
+	$gtiorfile = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct gtiandfile');
+    chop($infile2[0]);
+    print "Input GTI files to be AND'd with INFILE:[$infile2[0]]";
+    ($gtiandfile = <STDIN>);
+    if($gtiandfile =~ /^./){
+	chop($gtiandfile);}
+    else{
+	$gtiandfile = $infile2[0];
+    }
+}
+
+@infile2=&runcom('pget seextrct outroot');
+chop($infile2[0]);
+print "Root name for output file:[$infile2[0]]";
+($outroot = <STDIN>);
+if($outroot =~ /^./){
+    chop($outroot);}
+else{
+    $outroot = $infile2[0];
+}
+
+@infile2=&runcom('pget seextrct timecol');
+chop($infile2[0]);
+print "Name of TIME column:[$infile2[0]]";
+($timecol = <STDIN>);
+if($timecol =~ /^./){
+    chop($timecol);}
+else{
+    $timecol = $infile2[0];
+}
+
+@infile2=&runcom('pget seextrct columns');
+chop($infile2[0]);
+print "Name of COLUMN to be accumulated:[$infile2[0]]";
+($columns = <STDIN>);
+if($columns =~ /^./){
+    chop($columns);}
+else{
+    $columns = $infile2[0];
+}
+
+@infile2=&runcom('pget seextrct binsz');
+chop($infile2[0]);
+print "Input the binsize in seconds, use 0.1 etc. if nec (INDEF):[$infile2[0]]"; 
+($binsz = <STDIN>); 
+if($binsz =~ /^./){
+    chop($binsz);}
+else{
+    $binsz = $infile2[0];
+}
+
+if($answer =~ /^[yY]/){
+    @infile2=&runcom('pget seextrct mfracexp');
+    chop($infile2[0]);
+    print "Minimum acceptable fractional exposure (INDEF):[$infile2[0]]";
+    ($mfracexp = <STDIN>);
+    if($mfracexp =~ /^./){
+	chop($mfracexp);}
+    else{
+	$mfracexp = $infile2[0];
+    }
+}
+
+@infile2=&runcom('pget seextrct printmode');
+chop($infile2[0]);
+print "Chose print option, LIGHTCURVE, SPECTRUM, or BOTH:[$infile2[0]]";
+($printmode = <STDIN>);
+if($printmode =~ /^./){
+    chop($printmode);}
+else{
+    $printmode = $infile2[0];
+}
+			      
+@infile2=&runcom('pget seextrct lcmode');
+chop($infile2[0]);
+print "Type of binning for LIGHTCURVE: (SUM, RATE, MEAN):[$infile2[0]]";
+($lcmode = <STDIN>);
+if($lcmode =~ /^./){
+    chop($lcmode);}
+else{
+    $lcmode = $infile2[0];
+}
+
+    @infile2=&runcom('pget seextrct spmode');
+    chop($infile2[0]);
+    print "Type of binning for SPECTRUM (SUM, RATE, MEAN):[$infile2[0]]";
+    ($spmode = <STDIN>);
+    if($spmode =~ /^./){
+	chop($spmode);}
+    else{
+	$spmode = $infile2[0];
+    }
+
+if($answer =~ /^[yY]/){
+    @infile2=&runcom('pget seextrct mlcinten');
+    chop($infile2[0]);
+    print "Maximum acceptable intensity for Light Curve (INDEF):[$infile2[0]]";
+    ($mlcinten = <STDIN>);
+    if($mlcinten =~ /^./){
+	chop($mlcinten);}
+    else{
+	$mlcinten = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct mspinten');
+    chop($infile2[0]);
+    print "Maximum acceptable intensity for Spectrum (INDEF):[$infile2[0]]";
+    ($mspinten = <STDIN>);
+    if($mspinten =~ /^./){
+	chop($mspinten);}
+    else{
+	$mspinten = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct timemin');
+    chop($infile2[0]);
+    print "Starting time for summation in seconds (INDEF):[$infile2[0]]";
+    ($timemin = <STDIN>);
+    if($timemin =~ /^./){
+	chop($timemin);}
+    else{
+	$timemin = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct timemax');
+    chop($infile2[0]);
+    print "Ending time for summation in seconds (INDEF):[$infile2[0]]";
+    ($timemax = <STDIN>);
+    if($timemax =~ /^./){
+	chop($timemax);}
+    else{
+	$timemax = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct timeint');
+    chop($infile2[0]);
+    print "Input time intervals t1-t2,t3-t4 in seconds (INDEF):[$infile2[0]]";
+    ($timeint = <STDIN>);
+    if($timeint =~ /^./){
+	chop($timeint);}
+    else{
+	$timeint = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct chmin');
+    chop($infile2[0]);
+    print "Minimum energy bin to include in Spectra (INDEF) or 0-255:[$infile2[0]]";
+    ($chmin = <STDIN>);
+    if($chmin =~ /^./){
+	chop($chmin);}
+    else{
+	$chmin = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct chmax');
+    chop($infile2[0]);
+    print "Maximum energy bin to include in Spectra (INDEF) or 0-255:[$infile2[0]]";
+    ($chmax = <STDIN>);
+    if($chmax =~ /^./){
+	chop($chmax);}
+    else{
+	$chmax = $infile2[0];
+    }
+    
+    @infile2=&runcom('pget seextrct chint');
+    chop($infile2[0]);
+    print "Input energy intervals to be retained 0-1,2-255 (INDEF):[$infile2[0]]";
+    ($chint = <STDIN>);
+    if($chint =~ /^./){
+	chop($chint);}
+    else{
+	$chint = $infile2[0];
+    }
+    
+    @infile2=&runcom('pget seextrct chbin');
+    chop($infile2[0]);
+    print "Input channels for each bin 0-5,6-255 (INDEF):[$infile2[0]]";
+    ($chbin = <STDIN>);
+    if($chbin =~ /^./){
+	chop($chbin);}
+    else{
+	$chbin = $infile2[0];
+    }
+ 
+    @infile2=&runcom('pget seextrct ephem');
+    chop($infile2[0]);
+    print "Input the ephemeris of the phase in seconds (INDEF):[$infile2[0]]";
+    ($ephem = <STDIN>);
+    if($ephem =~ /^./){
+	chop($ephem);}
+    else{
+	$ephem = $infile2[0];
+    }
+    
+    @infile2=&runcom('pget seextrct period');
+    chop($infile2[0]);
+    print "Input the period in seconds, use 0.1 etc. if nec (INDEF):[$infile2[0]]";
+    ($period = <STDIN>);
+    if($period =~ /^./){
+	chop($period);}
+    else{
+	$period = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct phaseint');
+    chop($infile2[0]);
+    print "Input phase interval 0.0-0.5,0.75-1.0 (INDEF):[$infile2[0]]";
+    ($phaseint = <STDIN>);
+    if($phaseint =~ /^./){
+	chop($phaseint);}
+    else{
+	$phaseint = $infile2[0];
+    }
+}
+    print "\n";
+    print "Running seextrct:\n";
+
+# Here we set up seextrct_string to get ready to call seextrct.
+
+if($answer =~ /^[yY]/){
+    $tmp_file='@'."outfile_${$}";
+    $seextrct_string = "seextrct infile='".$tmp_file."' gtiorfile=$gtiorfile " ; 
+    $seextrct_string .= "gtiandfile=$gtiandfile outroot=$outroot extenpha='.pha' extenlc='.lc' ";  
+    $seextrct_string .= "phasefile=' ' bitfile=' ' timecol=$timecol ";
+    $seextrct_string .= "columns='".$columns."' multiple='no' "; 
+    $seextrct_string .= "binsz=$binsz mfracexp=$mfracexp tnull=0.0 printmode=$printmode "; 
+    $seextrct_string .= "lcmode=$lcmode spmode=$spmode mlcinten=$mlcinten ";
+    $seextrct_string .= "mspinten=$mspinten timemin=$timemin timemax=$timemax "; 
+    $seextrct_string .= "timeint='".$timeint."' gticols='START STOP' "; 
+    $seextrct_string .= "chmin=$chmin chmax=$chmax "; 
+    $seextrct_string .= "chint=$chint chbin=$chbin ephem=$ephem period=$period "; 
+    $seextrct_string .= "phaseint=$phaseint obsdate='MJDREF' obstime='TSTART TSTOP' " ;   
+    $seextrct_string .= "sensecase=no ";
+    $seextrct_string .= "chkit=no clobber=yes negative=IGNORE bailout=no mode='h' ";
+
+} 
+else {
+    $tmp_file='@'."outfile_${$}";
+    $seextrct_string = " seextrct infile='".$tmp_file."' gtiorfile='-' " ; 
+    $seextrct_string .= "gtiandfile='-' outroot=$outroot extenpha='.pha' extenlc='.lc' ";  
+    $seextrct_string .= "phasefile=' ' bitfile=' ' timecol=$timecol ";
+    $seextrct_string .= "columns='".$columns."' multiple='no' "; 
+    $seextrct_string .= "binsz=$binsz mfracexp='INDEF' tnull=0.0 printmode=$printmode "; 
+    $seextrct_string .= "lcmode=$lcmode spmode=$spmode mlcinten='INDEF' ";
+    $seextrct_string .= "mspinten='INDEF' timemin='INDEF' timemax='INDEF' "; 
+    $seextrct_string .= "timeint='INDEF' gticols='START STOP' "; 
+    $seextrct_string .= "chmin='INDEF' chmax='INDEF' "; 
+    $seextrct_string .= "chint='INDEF' chbin='INDEF' ephem='INDEF' period='INDEF' "; 
+    $seextrct_string .= "phaseint='INDEF' obsdate='MJDREF' obstime='TSTART TSTOP' " ;   
+    $seextrct_string .= "sensecase=no ";
+    $seextrct_string .= "chkit='no' clobber='yes' negative='IGNORE' bailout='no' mode='h' ";
+}
+
+$extenpha = '.pha';
+$extenlc = '.lc';
+
+print "Running seextrct - be patient!\n";
+print "$seextrct_string\n";
+
+system($seextrct_string);
+
+#@result=&runcom($seextrct_string);
+#print "@result";
+
+print "\n";
+print "###########################################################\n";
+print "Completed running seextrct\n";
+
+print "Calling FPLOT\n\n";
+
+
+# This is where we have to get ready for plotting the light-curve,
+# spectra, or both. We allow the user to change the output and select
+# the rows to be applied for each call...
+
+if($printmode =~ /^both/i){
+    print "Do you want to plot the light-curve (l), spectra (s), or both (b): [l,s,b]";
+    $answer2 = <STDIN>;
+    if($answer2 =~ /^./){
+	chop($answer2);}
+    else{
+	print "Defaulting to plotting both files...\n";
+	$answer2 = 'b'
+    }
+
+    if($answer2 =~ /^[Bb]/){
+	print "Since you have selected both, lets deal with the LIGHT-CURVE first.\n";
+    }
+}
+
+if($printmode =~ /^lightcurve/i){
+    $pltfilelc = "$outroot" . "$extenlc";
+    $xparmlc = "TIME";
+    if($lcmode =~ /^sum/i){
+	$yparmlc = "COUNTS";
+    }elsif($lcmode =~ /^rate/i){
+	$yparmlc = "RATE";
+    }elsif($lcmode =~ /^mean/i){
+	$yparmlc = "MEAN";
+    }else {
+	print "ERROR LCMODE can only be SUM, RATE, or MEAN\n";
+    }
+
+} elsif($printmode =~ /^spectrum/i){
+    $pltfilesp = "$outroot" . "$extenpha";
+    $xparmsp = "CHANNEL";
+    if($spmode =~ /^sum/i){
+	$yparmso = "COUNTS";
+    }elsif($spmode =~ /^rate/i){
+	$yparmsp = "RATE";
+    }elsif($spmode =~ /^mean/i){
+	$yparmsp = "MEAN";
+    }else {
+	print "ERROR SPMODE can only be SUM, RATE, or MEAN\n";
+    }
+} elsif($printmode =~ /^both/i){
+    if($answer2 =~ /^[Ll]/ || $answer2 =~ /^[Bb]/){
+	$pltfilelc = "$outroot" . "$extenlc";
+	$xparmlc = "TIME";
+	if($lcmode =~ /^sum/i){
+	    $yparmlc = "COUNTS";
+	}elsif($lcmode =~ /^rate/i){
+	    $yparmlc = "RATE";
+	}elsif($lcmode =~ /^mean/i){
+	    $yparmlc = "MEAN";
+	}else {
+	    print "ERROR LCMODE can only be SUM, RATE, or MEAN\n";
+	}
+    } 
+    
+    if($answer2 =~ /^[Ss]/ || $answer2 =~ /^[Bb]/){
+	$pltfilesp = "$outroot" . "$extenpha";
+	$xparmsp = "CHANNEL";
+	if($spmode =~ /^sum/i){
+	    $yparmsp = "COUNTS";
+	}elsif($spmode =~ /^rate/i){
+	    $yparmsp = "RATE";
+	}elsif($spmode =~ /^mean/i){
+	    $yparmsp = "MEAN";
+	}else {
+	    print "ERROR SPMODE can only be SUM, RATE, or MEAN\n";
+	}
+    }
+}
+
+if($answer2 =~ /^[Ll]/ || $answer2 =~ /^[Bb]/){
+    print"\nPlotting Light-curve with FPLOT\n";
+
+    @infile2=&runcom('pget fplot rows');
+    chop($infile2[0]);
+    print "Lists of rows:[$infile2[0]]";
+    ($rows = <STDIN>);
+    if($rows =~ /^./){
+	chop($rows);}
+    else{
+	$rows = $infile2[0];
+    }
+
+    @infile2=&runcom('pget fplot device');
+    chop($infile2[0]);
+    print "Device: /XWindow, /XTerm, /TK, /PS, etc:[$infile2[0]]";
+    ($device = <STDIN>);
+    if($device =~ /^./){
+	chop($device);}
+    else{
+	$device = $infile2[0];
+    }
+
+    @infile2=&runcom('pget fplot pltcmd');
+    chop($infile2[0]);
+    print "Any legal PLT command:[$infile2[0]]";
+    ($pltcmd = <STDIN>);
+    if($pltcmd =~ /^./){
+	chop($pltcmd);}
+    else{
+	$pltcmd = $infile2[0];
+    }
+
+    $fplot_stringlc = "fplot infile=$pltfilelc xparm=$xparmlc yparm=$yparmlc rows='".$rows."' device='".$device."' pltcmd='".$pltcmd." ' offset=no maxpts=10000 binmode=DEFAULT mode=h";
+
+    print "$fplot_stringlc\n";
+    system($fplot_stringlc);
+} 
+
+if($answer2 =~ /^[Ss]/ || $answer2 =~ /^[Bb]/){
+    print "\nPlotting Spectra with FPLOT\n";
+    
+    @infile2=&runcom('pget fplot rows');
+    chop($infile2[0]);
+    print "Lists of rows:[$infile2[0]]";
+    ($rows = <STDIN>);		
+    if($rows =~ /^./){		
+	chop($rows);}
+    else{
+	$rows = $infile2[0];
+    }
+
+    @infile2=&runcom('pget fplot device');
+    chop($infile2[0]);
+    print "Device: /XWindow, /XTerm, /TK, /PS, etc:[$infile2[0]]";
+    ($device = <STDIN>);
+    if($device =~ /^./){
+	chop($device);}
+    else{
+	$device = $infile2[0];
+    }
+
+    @infile2=&runcom('pget fplot pltcmd');
+    chop($infile2[0]);
+    print "Any legal PLT command:[$infile2[0]]";
+    ($pltcmd = <STDIN>);
+    if($pltcmd =~ /^./){
+	chop($pltcmd);}
+    else{
+	$pltcmd = $infile2[0];
+    }
+
+    $fplot_stringsp = "fplot infile=$pltfilesp xparm=$xparmsp yparm='".$yparmsp."' rows='".$rows."' device='".$device."' pltcmd='".$pltcmd." ' offset=no maxpts=10000 binmode=DEFAULT mode=h";
+
+    print "$fplot_stringsp\n";
+    system($fplot_stringsp);
+}
+
+print "\n";
+print "###########################################################\n";
+
+print "Next file or list of files to be processed? (RETURN to end)\n";
+$infile = <STDIN>;
+if($infile =~ /^./){
+    chop($infile);
+    $terminate=0;}
+else{
+    print "Terminating.... a list of all files processed is in outfile_${$}\n";
+    $terminate=1;
+}
+
+until($terminate){
+    if($infile =~ /^@/ ){
+
+	$infile =~ s/^@//;	# Remove the @ symbol
+	$origfile = $infile;	# Store the filename in origfile
+	open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+	open(OUTPUT_FILE,">>outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+	while(<INPUT_FILE>) {
+	    print OUTPUT_FILE $_; # Copy files from INFILE to OUTPUT
+	}
+	close(INPUT_FILE);	# We are finished with the input file.
+	close(OUTPUT_FILE);	# Close up the output file too.
+	print "output file created was outfile_${$}\n";
+    }
+    else {
+	$origfile = $infile;
+	open(OUTPUT_FILE,">>outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # open a unique output file
+	print OUTPUT_FILE "$infile \n"; # Copy the filename to output file
+	close(OUTPUT_FILE);	# Close the output file.
+    }
+
+    print "Calling seextrct\n";   
+    system($seextrct_string);
+
+    print "Calling fplot\n";
+    if($answer2 =~ /^[Lc]/ || $answer2 =~ /^[Bb]/){
+	print "Plotting Light-curve\n";
+	system($fplot_stringlc);
+    } 
+    
+    if($answer2 =~ /^[Ss]/ || $answer2 =~ /^[Bb]/){
+	print "Plotting Spectra\n";
+	system($fplot_stringsp);
+    }
+
+
+    print "Next file or list of files to be processed? (RETURN to end)\n";
+    $infile = <STDIN>;
+    if($infile =~ /^./){
+	chop($infile);
+	$terminate=0;}
+    else{
+	print "Terminating.... a list of all files processed is in outfile_${$}\n";
+	$terminate=1;
+    }
+}
+
+print "File stored is $origfile\n";
+@result=&runcom("pset seextrct infile='".$origfile."' ");
+print "Do you want to save this file? [Yes,No]";
+chop($answer10 = <STDIN>);
+if($answer10 =~ /^[Yy]/){
+}
+else{
+    print "Deleting outfile_${$}\n";
+    unlink("outfile_${$}") || print "Having trouble deleting outfile_${$}\n"; # Remove the output file if not told to save it.
+}

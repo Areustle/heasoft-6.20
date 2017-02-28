@@ -1,0 +1,1189 @@
+#!/usr/bin/perl 
+# File name: xrttdrss2
+# 
+# Task name: xrttdrss2
+# 
+# Description:  
+#                  
+# 
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 :  BS 14/02/2006 - First version
+#                             - Minor change
+#      0.1.1 :  BS 15/02/2006 - Modified input and output default filename
+#      0.1.2 :     02/03/2006 - Bug fixed in image process if cleanbp=no
+#                             - Added zipped input files handling
+#      0.1.3 :     06/03/2006 - Replaced 'outpcfile' input par with 'outpcfile2' and 
+#                               added 'outpcfile1' input parameter
+#      0.1.4 :  NS 30/10/2006 - Added new keyword ATTFLAG in output file when executing
+#                               swiftxform and coordinator; its value is taken from
+#                               ATTFLAG keyword in attitude file hdu
+#      0.1.5 :     03/11/2006 - Call to coordinator with teldef get from CALDB
+#                               (time-dependent) when teldef=CALDB
+#      0.1.6 :     17/11/2006 - Bug fixed in image process when input file contains
+#                               slew and pointing images.
+#                             - Subtracted primary hdu from # images counting
+#      0.1.7 :     18/04/2007 - Set iterate=yes phamax=4095 gradeiterate=no in
+#                               xrthotpix call
+#      0.1.8 :     12/07/2007 - xrtflagpix task call with 'bpfile'="CALDB" and 'thrfile'="CALDB"
+#      0.1.9 :     19/12/2013 - Added check of the 'ATTFLAG' keyword of the input attitude file
+#      0.2.0 :     17/02/2014 - Modified check of the 'ATTFLAG' keyword of the input attitude file
+#                               
+#                               
+#                              
+# Notes        
+# 
+#   type "fhelp xrttdrss2" for parameters description
+#
+# Usage:     
+# 
+#   xrttdrss2 imfile=<file image name> pcfile=<file event name> [parameter=value ... ]
+#
+# Input files:  
+#
+#   
+# Output files: 
+#
+#
+#
+# HEADAS tasks needed:
+#        
+#        
+#        
+#============================================================#
+
+require "libswxrtperl.pl";
+#require "/data2/nino/build19/headas-6.1/swift/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+use strict;
+
+#use vars qw( %Task %Default %Image %Photon @Par %Ind @CleanupList);
+
+use vars qw( %Task %Default %Image %Photon @Par %Ind @CleanupList);
+
+#
+# Specific of the task
+#
+my ($fptr, $status);
+%Task = (
+         start   => `date`,
+         name    => "xrttdrss2",
+         version => "0.1.9",
+         releasedate => "2013-12-19",
+         stem    => "xrttdrss2_0.1.9",
+         emptystem => "               ",
+         status  => 0,
+         errmess => "",
+	 message => "",
+	 cleanbp => 0,
+	 subimbias => 0,
+	 chatter   => 3,
+
+	 );
+
+%Image = (
+	  infile   => "",
+	  outfile   => "",
+	  tmpfile   => "",
+	  attfile   => "",
+	  );
+
+%Photon = (
+	   infile     => "",
+	   outfile1    => "",
+	   outfile2    => "",
+	   attfile    => "",
+	  );
+
+
+#
+#  Defaults
+#
+
+%Default = (
+            DEFAULT => "DEFAULT",
+            NONE    => "NONE",
+	    );
+
+
+
+&PrntChty(3,"---------------------------------------------------------------------\n");
+&PrntChty(3," \t\tRunning '$Task{stem}'\n");
+&PrntChty(3,"---------------------------------------------------------------------\n");
+
+print '-' x 69, "\n";
+print '=' x 20, ' XRTTDRSS2 STARTING AT ', scalar(gmtime()), "\n";
+print '-' x 69, "\n";
+ 
+#
+# Get Input Parameters 
+#
+
+if ( &GetInputParameters ) {
+    $Task{errmess} = "Error parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+
+if (!&CompUL(&GetValPar("attfile"),$Default{NONE}) ) {
+    $Photon{attfile}=&GetValPar("attfile");
+    $Image{attfile}=&GetValPar("attfile");
+
+}
+else
+{
+    $Photon{attfile}=&GetValPar("pcfile");
+    $Image{attfile}=&GetValPar("imfile");
+
+}
+#
+# Check input parameters
+# 
+
+if ( (&CompUL(&GetValPar("imfile"),$Default{NONE})) && (&CompUL(&GetValPar("pcfile"),$Default{NONE})))
+{
+    $Task{errmess} = "No input files specified";
+    goto EXITWITHERROR;
+}
+
+#
+# Check if input files exist and process it
+#
+
+if (!&CompUL(&GetValPar("imfile"),$Default{NONE}) ) {
+    my ($DefStemIm) = $$;
+
+    $Image{infile} = &GetValPar("imfile");
+    $Image{outfile}=&GetValPar("outimfile");
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- PROCESSING IMAGE MESSAGE\n");
+
+
+    if (!&CheckZip($Image{infile})) { goto EXITWITHERROR;} 
+    
+    if (&CompUL($Image{outfile},$Default{DEFAULT}) ) {
+	
+	
+	$DefStemIm = &GetTDRSSDefaultStem($Image{infile});
+	if($Task{status})
+	{
+	    &PrntChty(2,"$Task{stem}: Error: use Use 'stemout' input parameter'\n");
+	    goto EXITWITHERROR;
+	    
+	}
+	$Image{outfile}= $DefStemIm."xim_sk.img";
+    }
+    
+    if ( &CheckExistFile($Image{outfile})) {
+	goto EXITWITHERROR;
+    }
+    
+    if (! -f $Image{infile}) {
+	$Task{errmess} = "Input image File: '$Image{infile}' not found";
+	goto EXITWITHERROR;
+    }
+    
+    if($Task{cleanbp} || $Task{subimbias})
+    {
+	
+	if ( &RunXrtImage($Image{infile}, $Image{outfile}) ) {
+	    &PrntChty(3,"$Task{stem}: ERROR: running xrtimage\n");
+	    $Task{errmess} = "ERROR running 'xrtimage' on $Image{infile}";		
+	    goto EXITWITHERROR;
+	} # runxrtimage
+    }
+    elsif (!copy($Image{infile}, $Image{outfile})) {
+	$Task{errmess} = "Unable to copy file: '$Image{infile}' in '$Image{outfile}'.";
+	goto EXITWITHERROR;
+    }
+    
+# Read needed keywords from input file
+    fits_open_file($fptr,$Image{outfile},READONLY,$status);
+    
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $Image{infile}" ;
+    goto EXITWITHERROR; 
+    }
+
+my (@img_list) = &CountImages($fptr);
+#   print "Ho trovato $#img_list record\n";
+
+    fits_close_file($fptr,$status);
+
+if ($#img_list < 0)
+{
+    $Task{errmess} = "Error: No Image extension to process";
+    goto EXITWITHERROR;
+}
+else 
+{
+    my ($ra_pnt, $dec_pnt, $pa_pnt);
+
+    $Image{tmpfile}=$DefStemIm."tmp.img";
+    
+    for (my $i=0; $i <= $#img_list; $i++)
+    {
+			
+	if($img_list[$i]!=1)
+	{   
+
+	    fits_open_file($fptr,$Image{outfile},READONLY,$status);
+	    
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Unable to open fits file : $Image{infile}" ;
+		goto EXITWITHERROR; 
+	    }
+
+	    ( $ra_pnt, $dec_pnt, $pa_pnt) = &ReadPNTKeywords($fptr, $img_list[$i]);
+	    if($Task{status})
+	    {
+		&PrntChty(2,"$Task{stem}: Error: Unable to read needed keywords\n");
+		goto EXITWITHERROR;
+		
+	    }
+
+	    fits_close_file($fptr,$status);
+	    
+	    if ( &RunSwiftXform($Image{outfile}, $i , $Image{tmpfile} , $ra_pnt, $dec_pnt, $pa_pnt, $img_list[$i]))
+	    {
+		&PrntChty(3,"$Task{stem}: ERROR: running swiftxform\n");
+		$Task{errmess} = "ERROR running 'swiftxform' on $Image{outfile}";		
+		goto EXITWITHERROR;
+	    } 
+	    
+   
+	    &RenameFile($Image{tmpfile}, $Image{outfile});
+	    if($Task{status})
+	    {
+		&PrntChty(2,"$Task{stem}: Error: \n");
+		goto EXITWITHERROR;
+		
+	    }
+	}
+
+	if ($status) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to close fits file : $Image{infile}" ;
+	    goto EXITWITHERROR; 
+	}
+	push @CleanupList, $Image{tmpfile};
+	
+    }
+}
+
+
+}
+
+# Process Photon Counting
+
+if(&CompUL(&GetValPar("cleanbp"),"no") && &CompUL(&GetValPar("outpcfile1"), "none"))
+{
+    &PrntChty(2,"$Task{stem}: Warning:  cleanbp input parameter set to ".&GetValPar("cleanbp")."\n");
+    &PrntChty(2,"$Task{stem}: Warning:  and outpcfile1 set to ".&GetValPar("outpcfile1")."\n");
+    &PrntChty(2,"$Task{stem}: Warning:  Nothing will be done for $Photon{infile} PC file\n");
+}
+elsif (!&CompUL(&GetValPar("pcfile"),$Default{NONE}) ) {
+    
+    $Photon{infile} = &GetValPar("pcfile");
+    $Photon{outfile2} = &GetValPar("outpcfile2");
+    $Photon{outfile1} = &GetValPar("outpcfile1");
+    
+   
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- PROCESSING PHOTON MESSAGE\n");
+
+    # Build PC output filename
+    
+    my $DefStemPC;
+    
+    #coordinator output
+    
+    if(&CompUL($Photon{outfile1},$Default{DEFAULT}))
+    {
+	$DefStemPC = &GetTDRSSDefaultStem($Photon{infile});
+	if($Task{status})
+	{
+	    &PrntChty(2,"$Task{stem}: Error: Use 'stemout' input parameter'\n");
+	    goto EXITWITHERROR;
+	    
+	}
+	$Photon{outfile1}= $DefStemPC."_xpc_uf.evt";
+	if ( &CheckExistFile($Photon{outfile1})) {
+	    goto EXITWITHERROR;
+	}
+	
+    }
+    elsif(&CompUL($Photon{outfile1},$Default{NONE}) ){
+	
+	$Photon{outfile1}=$$."_xpc_uf.evt";
+    }
+    
+    if (&CompUL($Photon{outfile2},$Default{DEFAULT})){
+	$DefStemPC = &GetTDRSSDefaultStem($Photon{infile});
+	if($Task{status})
+	{
+	    &PrntChty(2,"$Task{stem}: Error: Use 'stemout' input parameter'\n");
+	    goto EXITWITHERROR;
+	    
+	}
+	
+	$Photon{outfile2}= $DefStemPC."_xpc_cl.evt";
+	
+    }
+    
+    if ( &CheckExistFile($Photon{outfile2})) {
+	goto EXITWITHERROR;
+    }
+    
+    if (! -f $Photon{infile}) {
+	$Task{errmess} = "Input image File: '$Photon{infile}' not found";
+	goto EXITWITHERROR;
+    }
+    
+    if (!&CheckZip($Photon{infile})) { goto EXITWITHERROR;} 
+    
+    
+    if (!copy($Photon{infile}, $Photon{outfile1})) {
+	$Task{errmess} = "Unable to copy file: '$Photon{infile}' in '$Photon{outfile1}'.";
+	goto EXITWITHERROR;
+    }
+       
+    if ( &RunCoordinator($Photon{outfile1}) ) 
+    { 
+	$Task{errmess} = "Unable to trasform coordinates.";
+	goto EXITWITHERROR;
+    }
+  
+    if($Task{cleanbp})
+    {
+	if ( &RunXrtflagpix($Photon{outfile1},$Photon{outfile2} ) ) 
+	{ 
+	    $Task{errmess} = "Unable to flag CALDB bad pixels.";
+	    goto EXITWITHERROR;
+	}
+	if ( &RunXrtHotPix($Photon{outfile2}) ) 
+	{ 
+	    $Task{errmess} = "Unable to search and flag hot pixels.";
+	    goto EXITWITHERROR;
+	}
+	
+	
+	if ( &RunFselect($Photon{outfile2},"STATUS==b0") ) 
+	{ 
+	    $Task{errmess} = "Unable to select good events.";
+	    goto EXITWITHERROR;
+	} 
+    }
+    
+    if (&CompUL(&GetValPar("outpcfile1"),$Default{NONE}) ) {
+	push @CleanupList, $Photon{outfile1};
+    }
+}
+
+if ( &CompUL( &GetValPar("cleanup"), "yes" ) ) {&Cleanup(@CleanupList);}
+
+
+&Success($Task{message});
+print '-' x 69, "\n";
+print '=' x 20, ' XRTTDRSS2 COMPLETE AT ', scalar(gmtime()), "\n";
+print '-' x 69, "\n";
+exit(0);
+
+ EXITWITHERROR:
+    if ( &CompUL( &GetValPar("cleanup"), "yes" ) ) {&Cleanup(@CleanupList);}
+    &Error;
+print '-' x 69, "\n";
+print '=' x 20, ' XRTTDRSS2 COMPLETE AT ', scalar(gmtime()), "\n";
+print '-' x 69, "\n";
+exit (1);
+
+
+#
+#   Subroutines
+#
+
+sub DeleteFile {
+    my ($namefile) = @_;
+    if (! unlink($namefile)) {
+	$Task{errmess} = "Unable to Remove '$namefile' file. $!";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+}
+
+#Return 1 in case of errors
+sub CheckExistFile {
+    my ($file) = @_;
+    if ( -f $file) {
+	if (!$Task{clobber} ) {
+	    &PrntChty(2, "$Task{stem}: Error: the '$file' exists\n");
+	    &PrntChty(2, "$Task{stem}: Error: please delete '$file' or\n");
+	    &PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Cannot overwrite '$file' file";
+	    $Task{status} = 1;
+	    return 1;
+	} else { 
+	    &DeleteFile($file);
+	    return 0;
+	}
+    }
+    return 0;
+
+}
+
+
+sub GetInputParameters {
+
+
+    use vars qw( %Task $datamode @Par %Ind);
+  
+    my ( $name, $indref, $p);
+    $Task{chatter} = 3;
+
+
+
+    ($indref,@Par) = &GetParameterList();
+
+
+    if ($Task{status}) { goto EXITWITHERROR;}
+    
+    %Ind = %$indref;
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+    
+    if (&GetValPar("imfile","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 xrttdrss2 imfile`);
+	if ( !$String) {
+	    &PrntChty(2,"$Task{stem}: Error: error running: 'pquery2 xrttdrss2 imfile'\n");
+	    return 1;
+	}
+	&SetValPar("imfile",$String);
+	&SetValPar("imfile",2,"set");
+    }
+
+#      
+#    foreach $p (@Par) {
+#	if (($p->{set} == 1) && (!&RequestParameter($p->{name}))) {
+#	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+#	    return 1;
+#	}
+#    }
+
+   if (! &LoadParameter()) {
+       &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+       return 1;
+   }
+
+
+    $Task{chatter} = &GetValPar("chatter");
+    if ( &GetValPar("clobber") =~ /[yY]/ ) {
+	$Task{clobber} = 1;
+    }
+
+    if ( &GetValPar("cleanbp") =~ /[yY]/ ) {
+	$Task{cleanbp} = 1;
+    }
+
+    if ( &GetValPar("subimbias") =~ /[yY]/ ) {
+	$Task{subimbias} = 1;
+    }
+
+
+    return 0;
+} # GetInputParameters
+
+
+sub CheckXRTTDRSS2 {
+
+    my ( $file, $extname ) = @_;
+
+    my $xrttdrss2 = "";
+    my $checkexist = 1;
+
+    &GetKeyword($file ,$extname ,undef,"XRTTDRSS2",\$xrttdrss2,$checkexist);
+
+    if (( $Task{status} != 0) && ($Task{status} != KEY_NO_EXIST) ) {
+	goto EXITWITHERROR;
+    }
+    elsif ( $xrttdrss2 eq "T" ) {
+	&PrntChty(2,"$Task{stem}: Error: Keyword 'XRTTDRSS2' set to 'T'\n");
+	&PrntChty(2,"$Task{stem}: Error: The file '$file' has just been processed\n");
+	&PrntChty(2,"$Task{stem}: Error: by the 'xrttdrss2' task\n");
+	$Task{status} = 1;
+	return 1;
+    }
+
+    $Task{status} = 0;
+    $Task{errmess} = " ";
+
+    return 0;
+
+} # CheckXRTTDRSS2
+
+
+sub CountImages
+{
+   my ($ffp) = @_;
+   my $count = 0;
+   my $status=0;
+   my @hdu_list ;
+   my $hdun = 1;
+   my $type;
+ 
+   
+   while (!fits_movabs_hdu($ffp, $hdun, $type, $status))
+   {
+       if ($type eq IMAGE_HDU)
+       {
+	   $hdu_list[$count] = $hdun;
+	   $count ++;
+       }
+       
+
+
+       $hdun ++;
+   }
+
+   $count=$count-1;
+   &PrntChty(1,"$Task{stem}: Info: The input image contains $count image(s)\n");
+
+   return @hdu_list;
+} #CountImages
+
+sub RunXrtImage {
+
+    my ( $EvtFile,$OutEvtFile) = @_;
+    my ( $par, $ret );
+    my ( $command, %xrtimage );
+
+    use vars qw ( %Task  %InFiles  %Parms_str  %Parms_num  %Parms_bool  %Default );
+
+    %xrtimage = (
+		 infile       => $EvtFile,
+		 outfile      => $OutEvtFile,
+		 hdfile       => $EvtFile,
+		 biasfile     => "CALDB",
+		 bias         => -1,
+		 biasdiff     => 20,
+		 maxtemp      => &GetValPar("maxtemp"),
+		 bpfile       => "CALDB",
+		 srcfile      => "CALDB",
+		 userbpfile   => $Default{NONE},
+		 outbpfile    => $Default{NONE},
+		 bptable      => "CALDB",
+		 cleanbp      => &GetValPar("cleanbp"),
+		 cleansrc     => &GetValPar("cleanbp"),
+		 subbias      => &GetValPar("subimbias"),
+		 clobber      => &GetValPar("clobber"),
+		 gtiscreen    => "no",
+		 gtifile      => $Default{NONE},
+		 chatter      => &GetValPar("chatter"),
+		 history      => &GetValPar("history"),
+		 );
+    
+    
+    $command = "xrtimage";
+    for $par ( keys %xrtimage ) { $command .= " $par=$xrtimage{$par}"; } 
+
+    &RunningSub("RunXrtImage","xrtimage");
+    &RunningComm("RunXrtImage",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXrtImage","xrtimage",$command);
+        $Task{errmess} = "ERROR running 'xrtimage'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunXrtImage","xrtimage");
+    return 0;
+
+} # RunXrtImage
+
+sub RunSwiftXform {
+
+    my ( $InFile, $hdu_num, $OutFile, $ra_pnt, $dec_pnt, $pa_pnt, $hdu_abs_num ) = @_;
+
+    use vars qw( %Task %Parms_str %Parms_num %Parms_bool  %Default );
+    my ( $command, $ret, $par, %swiftxform, $attflag);
+
+    
+#
+# Build the command line to run 'swiftxform'
+#
+
+    %swiftxform = (
+		   infile       => $InFile."+$hdu_num" ,
+		   outfile      => $OutFile,
+		   attfile      => $Image{attfile},
+		   alignfile    => $Default{NONE},
+		   method       => &GetValPar("method"),
+		   to           => "SKY",               
+		   ra           => $ra_pnt,
+		   dec          => $dec_pnt,
+		   roll         => $pa_pnt,
+		   teldeffile   => &GetValPar("teldef"),
+		   bitpix       => 0,
+		   zeronulls    => "yes",
+		   aberration   => "no",
+		   seed         => -1956,
+		   copyall      => "yes",
+		   extempty     => "no",
+                   allempty     => "no",
+		   skytime      => "DEFAULT",
+		   history      => &GetValPar("history"),
+		   clobber      => &GetValPar("clobber"),
+		   cleanup      => "yes",
+		   chatter      => &GetValPar("chatter"),
+		);
+
+    $command = "swiftxform";
+    for $par ( keys %swiftxform ) { $command .= " $par=\"$swiftxform{$par}\""; } 
+
+    &RunningSub("RunSwiftXForm","swiftxform");
+    &RunningComm("$Task{stem}",$command);
+
+    
+    $ret = 0;
+    $ret = system( $command );
+    
+    if ( $ret != 0 ) {
+	&ErrorComm("$Task{stem}","swiftxform",$command);
+        $Task{errmess} = "ERROR running 'swiftxform'";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    &GetAttitudeATTFLAG($Image{attfile}, \$attflag);
+    if ($Task{status})
+    { 
+	return 1; 
+    }
+    if( $attflag eq "111" || $attflag eq "101" ){
+	&PrntChty(2,"$Task{stem}: Error: input attitude data not suitable for XRT data processing,\n");
+	&PrntChty(2,"$Task{stem}: Error:  use the sw*sat.fits or sw*pat.fits attitude file.\n");
+	return 1; 
+    }
+
+    
+    if(!&AddKeywordExtNum($OutFile,$hdu_abs_num,TSTRING,"ATTFLAG",$attflag,"Attitude type flag")) 
+    {
+	return 1;
+    }
+    
+    return 0;
+
+} # RunSwiftXform
+
+sub ReadPNTKeywords {
+    
+  
+    my ($fpp,$hdu_num)  = @_;
+    my ($ra, $dec, $pa);  
+    use vars qw (%Task);
+    my ($status)=0;
+    my $comm;
+ 
+    fits_movabs_hdu($fpp,$hdu_num, ANY_HDU,$status);
+
+    if ($status) {
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: Cannot move to $hdu_num extension of input image\n");
+	&PrntChty(2,"$Task{stem}: Error: CFITSIO error: $status\n");
+	$Task{errmess} = "Cannot move into $hdu_num extension of the input image";
+	return;
+    }
+    fits_read_key($fpp,TDOUBLE, "RA_PNT",$ra,$comm,$status);
+    if ($status) {
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: Cannot read RA_PNT keyword\n");
+	&PrntChty(2,"$Task{stem}: Error: CFITSIO error: $status\n");
+	$Task{errmess} = "Cannot read RA_PNT keyword";
+	return;
+    }
+
+    fits_read_keyword($fpp,"DEC_PNT",$dec,$comm,$status);
+    if ($status) {
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: Cannot read DEC_PNT keyword\n");
+	&PrntChty(2,"$Task{stem}: Error: CFITSIO error: $status\n");
+	$Task{errmess} = "Cannot read DEC_PNT keyword";
+	return;
+    }
+
+    fits_read_keyword($fpp,"PA_PNT",$pa,$comm,$status);
+    if ($status) {
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: Cannot read PA_PNT keyword\n");
+	&PrntChty(2,"$Task{stem}: Error: CFITSIO error: $status\n");
+	$Task{errmess} = "Cannot read PA_PNT keyword";
+	return;
+    }
+
+
+    return ($ra, $dec, $pa) ;
+      
+}
+#ReadPNTKeywords
+sub RequestParameter() {
+    return 1;
+}
+sub GetTDRSSDefaultStem {
+
+    my ( $infile) = @_;
+    use vars qw ( %Task );
+
+    my ( $STDXPos ) =  15;
+
+
+    my ( $infilenopath ) = substr($infile,rindex( $infile, '/' )+1);
+    # take  stem
+
+    if ( substr( $infilenopath,0,2 ) !~ "sw" || rindex( $infilenopath , 'x' ) != $STDXPos )
+    {
+	&PrntChty(2,"$Task{stem}: Error: GetSwXRTDefaultStem: Input file name '$infile',\n");
+	&PrntChty(2,"$Task{stem}: Error: GetSwXRTDefaultStem: does not match SWIFT/XRT standard naming conventions\n");
+	$Task{errmess} = "Cannot define standard stem of files";
+	$Task{status} = 1;
+	return ;
+    }
+    
+
+    my $OutStr = substr($infilenopath,0,$STDXPos);
+    return ($OutStr);
+
+} # GetTDRSSDefaultStem
+
+sub RunCoordinator {
+
+    my ( $outevtfile) = @_;
+    my ( $command, $ret, $Tcdlt4, $ra_pnt, $dec_pnt, $pa_pnt,$par, $attflag);
+    use vars qw( %Task %Photon);
+
+    fits_open_file($fptr,$Photon{infile},READONLY,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $Photon{infile}" ;
+	return 1;
+    }
+
+    ( $ra_pnt, $dec_pnt, $pa_pnt) = &ReadPNTKeywords($fptr, 2);
+    
+    
+    # Get Observation Start Date from the input file
+    my ( $StartDate, $StartTime, $teldeffilename);
+    &GetEventStartDate($outevtfile,\$StartDate,\$StartTime);
+    if ( $Task{status} ) {
+	&PrntChty(2,"$Task{stem}: Error: RunCoordinator: unable to get Start Date from $outevtfile\n");
+	return 1;
+    }
+    
+    if (&CompUL(&GetValPar("teldef"),"CALDB")) {
+	my ($refa,$refb) = &CallQuzcif ("teldef", $StartDate,$StartTime,"-",1);
+
+	if ($Task{status}) {
+	    &PrntChty(2,"$Task{stem}: Error: RunCoordinator: cannot retrieve TELDEF file name from CALDB\n");
+	    return 1;
+	}
+	if ( @$refb[0] != 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: RunCoordinator: error on 'teldef' file format\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	 $teldeffilename = @$refa[0];
+	
+    } else {
+	$teldeffilename = &GetValPar("teldef");
+	if (! -f $teldeffilename ) {
+	    &PrntChty(2,"$Task{stem}: Error: RunCoordinator: Teldef File '$teldeffilename' not found\n");
+	    $Task{status} = 1;
+	    $Task{errmess} = "CALDB Teldef File: '$teldeffilename' not found";
+	    return 1;
+	}
+    }
+    
+    # Set the coordinator input teldef file (coordinator does not
+    # support teldef=CALDB)
+    
+    my ( %coordinator ) = (
+			   eventfile       => $outevtfile,
+			   eventext        => "EVENTS",
+			   timecol         => "TIME",
+			   skyxnull        => -1,
+			   skyynull        => -1,
+			   attfile         => $Photon{attfile},
+			   teldef          => $teldeffilename,
+			   aberration      => "no",
+			   follow_sun      => "no",
+			   ra              => $ra_pnt,
+			   dec             => $dec_pnt,
+			   randomize       => "yes",
+			   seed            => -1956,
+			   timemargin      => 32.,
+			   interpolation   => &GetValPar("interpolation"),
+			   history         => &GetValPar("history"),
+			   );
+
+    $command = "coordinator";
+    for $par ( keys %coordinator ) { $command .= " $par=$coordinator{$par}"; } 
+	
+    &RunningSub("RunCoordinator","coordinator");
+    &RunningComm("RunCoordinator",$command);
+
+
+    $ret = 0;
+    $ret = system( $command );
+	
+    if ( $ret != 0 ) {
+	$Task{errmess} = "ERROR running 'coordinator'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &GetAttitudeATTFLAG($Photon{attfile}, \$attflag);
+    if ($Task{status})
+    { 
+	goto error_runcoordinator; 
+    }
+    if( $attflag eq "111" || $attflag eq "101" ){
+	&PrntChty(2,"$Task{stem}: Error: input attitude data not suitable for XRT data processing,\n");
+	&PrntChty(2,"$Task{stem}: Error:  use the sw*sat.fits or sw*pat.fits attitude file.\n");
+	goto error_runcoordinator;
+    }
+
+
+    # Open Output file and perform some checks
+
+    my ($fptr,$status) = (0,0);
+
+    fits_open_file($fptr,$Photon{outfile1},READWRITE,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $Photon{outfile1}\n";
+	return 1;
+    }
+    
+    fits_movnam_hdu($fptr,ANY_HDU,"EVENTS",0,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot move into '$coordinator{eventfile}' file, extension 'EVENTS'";
+	goto error_runcoordinator;
+    }
+
+    fits_update_key($fptr,TLOGICAL,"XRTDETXY",1,"Are DETX/Y coordinates computed (T/F)?", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'XRTDETXY' of '$Photon{outfile1}' file";
+	goto error_runcoordinator;
+    }
+    
+    fits_update_key($fptr,TLOGICAL,"XRTSKYXY",1,"Are X/Y coordinates computed (T/F)?", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'XRTSKYXY' of '$Photon{outfile1}' file";
+	goto error_runcoordinator;
+    }
+
+    fits_update_key($fptr,TSTRING,"ATTFLAG",$attflag,"Attitude type flag", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'ATTFLAG' of '$Photon{outfile1}' file";
+	goto error_runcoordinator;
+    }
+
+# Get X,Y column numbers
+    
+    my ( $colx, $coly, $comm );
+
+    fits_get_colnum($fptr,0,"X",$colx,$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Error getting 'X' column number";
+	goto error_runcoordinator;
+    }
+
+    fits_get_colnum($fptr,0,"Y",$coly,$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Error getting 'Y' column number";
+	goto error_runcoordinator;
+    }
+
+    # Add TNULL keywords for X,Y columns with 'skyxnull' and 'skyynull' values
+    # this should be done by 'coordinator' (TBD)
+
+    my ( $tnullx, $tnully );
+
+    $tnullx = 0;
+    $tnully = 0;
+
+    fits_read_key($fptr,TLONG,"TNULL$colx",$tnullx,$comm,$status);
+    if ( $status == KEY_NO_EXIST ) {
+	$status = 0;
+	fits_update_key($fptr, TLONG, "TNULL$colx", $Default{SKYNULL}, $Default{DUMMY_KEY_COMM}, $status );
+	if ( $status ) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot update 'TNULL$colx' keyword";
+	    goto error_runcoordinator;
+	}    
+    }
+    elsif ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot read 'TNULL$colx' keyword";
+	goto error_runcoordinator;
+    }
+    elsif ( $tnullx != $Default{SKYNULL} ) {
+	fits_update_key($fptr, TLONG, "TNULL$colx", $Default{SKYNULL}, $Default{DUMMY_KEY_COMM}, $status );
+	if ( $status ) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot update 'TNULL$colx' keyword";
+	    goto error_runcoordinator;
+	}    
+    }
+    
+    fits_read_key($fptr,TLONG,"TNULL$coly",$tnully,$comm,$status);
+    if ( $status == KEY_NO_EXIST ) {
+	$status = 0;
+	fits_update_key($fptr, TLONG, "TNULL$coly", $Default{SKYNULL}, $Default{DUMMY_KEY_COMM}, $status );
+	if ( $status ) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot update 'TNULL$coly' keyword";
+	    goto error_runcoordinator;
+	}    
+    }
+    elsif ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot read 'TNULL$coly' keyword";
+	goto error_runcoordinator;
+    }
+    elsif ( $tnully != $Default{SKYNULL} ) {
+	fits_update_key($fptr, TLONG, "TNULL$coly", $Default{SKYNULL}, $Default{DUMMY_KEY_COMM}, $status );
+	if ( $status ) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot update 'TNULL$coly' keyword";
+	    goto error_runcoordinator;
+	}    
+    }
+
+    # end of work: update current HDU checksum
+    fits_write_chksum($fptr,$status);
+    if ( $status ) {
+	 $Task{status} = 1;
+	 $Task{errmess} = "Cannot update HDU 'EVENTS' checksum: $status";
+	 goto error_runcoordinator;
+    }    
+
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+	if ( $status ) { 
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot close '$Photon{outfile1}' event file";
+	    return 1;
+	}
+	if ( $Task{status} ) { print"$Task{errmess}\n"; return 1; }
+    }
+    
+    return 0;
+
+
+error_runcoordinator:
+    
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+	if ( $status ) { 
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot close '$Photon{outfile1}' event file";
+	    return 1;
+	}
+	if ( $Task{status} ) { print"$Task{errmess}\n"; return 1; }
+    }
+    
+    return 1;
+
+
+    
+} # RunCoordinator
+sub RunXrtflagpix {
+
+    my ( $evtfile, $outevtfile) = @_;
+    my ( $command, $ret, $Tcdlt4, $dir, $stem, %xrtflagpix, $par );
+    my ( $OutBpFile );
+
+    use vars qw ( %Photon);
+
+
+    %xrtflagpix = (
+		   infile       => $evtfile,
+		   bpfile       => "CALDB",
+		   hdfile       => $evtfile,
+		   srcfile      => "CALDB",
+		   userbpfile   => $Default{NONE},
+		   bptable      => "CALDB",
+		   thrfile      => "CALDB",
+		   phas1thr     => 80,
+		   maxtemp      => &GetValPar("maxtemp"),
+		   outbpfile    => $Default{NONE},
+		   outfile      => $outevtfile,
+		   overstatus   => "yes",
+		   chatter      => &GetValPar("chatter"),
+		   clobber      => &GetValPar("clobber"),
+		   history      => &GetValPar("history"),
+		   );
+
+    
+    $command = "xrtflagpix";
+    for $par ( keys %xrtflagpix ) { $command .= " $par=$xrtflagpix{$par}"; } 
+
+
+    &RunningSub("RunXrtFlagPix","xrtflagpix");
+    &RunningComm("RunXrtFlagPix",$command);
+
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+        $Task{errmess} = "ERROR running 'xrtflagpix'";
+        &PrntChty(2,"$Task{'stem'}: ERROR: running 'xrtflagpix' on '$evtfile'\n");
+	$Task{status} = 1;
+	return 1;
+    }
+
+    return 0;
+
+} # RunXrtflagpix
+sub RunXrtHotPix {
+
+    my( $evtfile) = @_;
+    my ( $command, $ret, %xrthotpix , $par);
+
+    %xrthotpix = (
+		 infile    => $evtfile,
+		 outfile   => $Default{NONE},
+		 outbpfile => $Default{NONE},
+		 overstatus=> "yes",
+		 usegoodevt => "yes",
+		 gradeiterate => "no",
+		 cellsize  => 3,  
+		 impfac    => 1000.0,    
+		 logpos    => -5.3,    
+		 bthresh   => 3, 
+		 phamin    => 0, 
+		 phamax    => 4095, 
+		 cleanflick=> "yes",
+		 iterate   => "yes",
+		 hotneigh  => "no",
+		 clobber   => &GetValPar("clobber"),
+		 history   => &GetValPar("history"),
+		 chatter   => &GetValPar("chatter"),
+		  );
+
+    $command = "xrthotpix";
+    for $par ( keys %xrthotpix ) { $command .= " $par=$xrthotpix{$par}"; } 
+
+    &RunningSub("RunXrtHotPix","xrthotpix");
+    &RunningComm("RunXrtHotPix",$command);
+
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	$Task{errmess} = "ERROR running 'xrthotpix'";
+	$Task{errmess} = "$Task{'stem'}: Error running 'xrthotpix' on '$evtfile'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    return 0;
+
+} # RunXrtHotPix
+sub RunFselect {
+
+    my ($InEvt, $ExprFselect) = @_;
+    use vars qw( %Task %Parms_str %Parms_num %Parms_bool  %Default );
+    my ( $command, $ret, $par, %fselect, $par);
+    
+    
+# Build the command line to run 'fselect'
+#
+
+    my ($OutEvt) = $$.".tmp";
+
+    %fselect = (
+		infile       => $InEvt,
+		outfile      => $OutEvt,
+		expr         => "$ExprFselect",
+		histkw       => &GetValPar("history"),
+		copyall      => "yes",              
+		keycopy      => "yes",
+		clobber      => &GetValPar("clobber"),
+		);
+
+    $command = "fselect";
+    for $par ( keys %fselect ) { 
+	if ( $par eq "expr" )
+	{ $command .= " $par=\"$fselect{$par}\""; } 
+	else
+	{ $command .= " $par=$fselect{$par}"; } 
+    }
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+        $Task{errmess} = "ERROR running 'fselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # update checksum
+
+    if ( system("ftchecksum $OutEvt update=yes chatter=0") )
+    {
+	&PrntChty(1,"$Task{stem}: WARNING Error updating checksum\n"); 
+    }
+    
+    &RenameFile($OutEvt, $InEvt);
+
+
+    return 0;
+
+} # RunFselect
+sub CheckZip {
+
+#If input file is zipped exit with error
+
+    my ($inputfile) = @_;
+
+    my ( @splitfields ) = split ( /\./,$inputfile);
+    if ( $splitfields[$#splitfields] eq "gz" || $splitfields[$#splitfields] eq "Z" ) {
+	&PrntChty(2, "$Task{stem}: Error: The input file is compressed\n");
+	&PrntChty(2, "$Task{stem}: Error: cannot process the file '$inputfile'\n");
+	$Task{errmess} = "Unable to process the compressed '$inputfile' file";
+	return 0;
+    }
+    return 1;
+
+} # CheckZip

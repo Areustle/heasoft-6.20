@@ -1,0 +1,7 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_HEADERS	= cli.h com.h
+
+include ${HD_STD_MAKEFILE}

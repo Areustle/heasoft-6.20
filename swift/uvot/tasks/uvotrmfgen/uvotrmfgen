@@ -1,0 +1,839 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotrmfgen/uvotrmfgen,v $
+# $Revision: 1.17 $
+# $Date: 2006/11/16 19:00:01 $
+#
+#	uvotrmfgen
+#
+#	Build a UVOT response matrix
+#
+#	Calculations FITS file construction taken from Martin Still's rmfbld.f file.
+#
+#	Acronyms
+#	ARF     Ancillary Response File
+#	LSF     Line Spread Function
+#	RMF     Redistribution Matrix File
+#
+#
+# $Log: uvotrmfgen,v $
+# Revision 1.17  2006/11/16 19:00:01  rwiegand
+# Catching up on some UVOT CALDB naming conventions.
+#
+# Revision 1.16  2005/09/16 12:18:45  rwiegand
+# Allow user to qualify CALDB queries.
+#
+# Revision 1.15  2005/06/07 13:30:52  rwiegand
+# Write notes for CALDB parameters.
+#
+# Revision 1.14  2005/02/01 16:30:30  rwiegand
+# Ignore case when checking for special parameter value CALDB.
+#
+# Revision 1.13  2005/01/21 20:52:01  rwiegand
+# Previous change was broken.  Really need to control when/what
+# interpolation is attempted.
+#
+# Revision 1.12  2004/12/10 16:16:32  rwiegand
+# Keep all LSF values for fitting spline.
+#
+# Revision 1.11  2004/10/17 11:29:02  rwiegand
+# Updated calibration file formats for position dependence of LSF.
+#
+# Revision 1.10  2004/09/17 13:10:48  rwiegand
+# Updated calibration file extension names to SPECRESP<filter>.
+#
+# Revision 1.9  2004/07/09 16:19:28  rwiegand
+# Implemented CALDB support.
+#
+# Revision 1.8  2004/04/07 18:44:42  rwiegand
+# Reduced LO_THRES to 1e-10.  Zero values in MATRIX less than LO_THRES again.
+#
+# Revision 1.7  2004/04/02 22:50:12  rwiegand
+# UVOT grism wavelength scale was split into two tables requiring an
+# extension name change.  Reversed the entries in each MATRIX row.
+#
+# Revision 1.6  2004/03/26 15:42:26  rwiegand
+# Reversed order of rows in output tables [now increasing energy instead of
+# increasing wavelength].
+#
+# Revision 1.5  2004/03/17 20:58:00  rwiegand
+# Zeroed MATRIX column entries between 0 and 1e-3.  Energy column pairs
+# had high and low values reversed.
+#
+# Revision 1.4  2004/03/03 19:29:26  rwiegand
+# Caught up with changes to naming conventions.  Updated constant names.
+#
+# Revision 1.3  2003/11/26 15:23:02  rwiegand
+# Use Task::FITS keyword support.
+#
+# Revision 1.2  2003/09/08 21:29:37  rwiegand
+# Added infrastructure (unit test, help file, Makefile).
+#
+# Revision 1.1  2003/09/08 16:33:08  rwiegand
+# Tool for building UVOT response matrices.
+#
+
+use strict;
+
+package UVOT::RMFGen;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Math::Spline;
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+
+
+use constant c_m_per_s => 2.99792458e8;  # speed of light [ m/s ]
+use constant h_J_s => 6.6260755e-34;  # Planck constant [ J*s ]
+use constant J_per_eV => 1.6021817e-19;
+
+use constant ANGSTROM_TO_CM => 1e-8;
+use constant MIN_EFF_AREA => 1e-6;  # [ cm^2 ]
+
+use constant LO_THRESHOLD => 1e-10;
+
+
+
+
+# main
+{
+	my $tool = UVOT::RMFGen->new(
+		version => 'v0.2',
+		);
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadSpectrum
+		if $self->isValid;
+
+	$self->loadEffectiveArea
+		if $self->isValid;
+
+	$self->loadLineScaleFactor
+		if $self->isValid;
+
+	$self->writeRMF
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				spectrum=file outfile=file areafile=string lsffile=string
+				clobber=bool chatter=int
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+
+		foreach my $key (qw(outfile)) {
+
+			my $path = $args->{$key};
+
+			if (-e $path) {
+				$self->error(BAD_OUTPUT,
+						"$path exists and clobber not set");
+			}
+		}
+	}
+}
+
+
+sub scaleArray
+{
+	my ($aref, $factor) = @_;
+
+	foreach my $x (@$aref) {
+		$x *= $factor;
+	}
+}
+
+
+sub loadSpectrum
+{
+	my ($self) = @_;
+
+	my $path = $self->args->{spectrum};
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT, "unable to open $path: $status");
+	}
+
+	if (not $status) {
+		$fits->movnam_hdu(BINARY_TBL, 'CALSPEC', 0, $status);
+		if ($status) {
+			$self->error(BAD_INPUT,
+				"unable to move to $path CALSPEC extension");
+		}
+		else {
+			$self->{header} = $fits->read_header;
+		}
+	}
+
+	$self->storeHeaderKeywords($self->{header},
+			keys => [ qw(TELESCOP INSTRUME FILTER WHEELPOS) ],
+			);
+
+	if ($self->isValid) {
+		$self->report("spectrum filter is '$self->{FILTER}', clocking is '$self->{WHEELPOS}'")
+			if $self->chatter(1);
+	}
+
+	my $rows = 0;
+	if (not $status) {
+		$fits->get_num_rows($rows, $status);
+		if ($status) {
+			$self->error(BAD_INPUT,
+					'unable to get number of rows in SPECTRUM');
+		}
+		else {
+			$self->report("SPECTRUM table contains $rows entries")
+				if $self->chatter(4);
+		}
+	}
+
+	my @columns = (
+		{ name => 'LAMBDA' },
+	);
+	if (not $status) {
+		foreach my $col (@columns) {
+			my $column = 0;
+			my $name = $col->{name};
+			$fits->get_colnum(CASEINSEN, $name, $column, $status);
+			if (not $status) {
+				my @data = (0) x $rows;
+				my $nulls = 0;
+				$fits->read_col_dbl($column, 1, 1, $rows, -1, \@data,
+							$nulls, $status);
+				if ($nulls) {
+					$self->error(BAD_INPUT,
+						"nulls in SPECTRUM '$name' data");
+				}
+				elsif (not $status) {
+					$col->{data} = \@data;
+				}
+				else {
+					$self->error(BAD_INPUT,
+						"unable to read '$name' data");
+				}
+			}
+			else {
+				$self->error(BAD_INPUT,
+					"unable to find '$name' column in spectrum file");
+			}
+		}
+	}
+
+	if (not $status) {
+		$self->{channels} = $rows;
+		$self->{LAMBDA} = $columns[0]{data};
+		# check units?
+
+		# convert to cgs
+		scaleArray($self->{LAMBDA}, ANGSTROM_TO_CM);
+	}
+	else {
+		$self->error(BAD_INPUT,
+			"error loading spectrum data");
+	}
+
+	if ($fits) {
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+}
+
+
+sub loadEffectiveArea
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{areafile};
+	my $path = '';
+	if ($arg =~ /^CALDB/i) {
+		my $e = "FILTER.eq.$self->{FILTER}.and.WHEELPOS.eq.$self->{WHEELPOS}";
+		$path = $self->queryCALDB('SPECRESP',
+				header => $self->{header},
+				qualifiers => $arg,
+				expression => $e,
+				asString => 1, withExt => 1,
+				);
+		$self->parameterNote(areafile => $path)
+			if $path;
+	}
+	else {
+		$path = $arg . "[SPECRESP$self->{FILTER}$self->{WHEELPOS}]";
+	}
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT, "unable to open $path: $status");
+	}
+
+	my $rows = 0;
+	if (not $status) {
+		$fits->get_num_rows($rows, $status);
+		if ($status) {
+			$self->error(BAD_INPUT, 'unable to get number of rows');
+		}
+		else {
+			$self->report("effective area table contains $rows entries")
+				if $self->chatter(4);
+		}
+	}
+
+	my @columns = (
+		{ name => 'WAVE_MIN' },
+		{ name => 'WAVE_MAX' },
+		{ name => 'SPECRESP' },
+	);
+	my %columns = map { ($_->{name} => $_) } @columns;
+
+	if (not $status) {
+		foreach my $col (@columns) {
+			my $column = 0;
+			my $name = $col->{name};
+			$fits->get_colnum(CASEINSEN, $name, $column, $status);
+			if (not $status) {
+				my @data = (0) x $rows;
+				my $nulls = 0;
+				$fits->read_col_dbl($column, 1, 1, $rows, -1, \@data,
+							$nulls, $status);
+				if ($nulls) {
+					$self->error(BAD_INPUT,
+							"nulls in effective area '$name' data");
+				}
+				elsif ($status) {
+					$self->error(BAD_INPUT,
+							"unable to read '$name' data");
+				}
+				else {
+					$col->{data} = \@data;
+				}
+			}
+			else {
+				$self->error(BAD_INPUT,
+						"unable to find '$name' column in effective area file");
+			}
+		}
+	}
+
+	if (not $status) {
+		foreach my $colname (qw(WAVE_MIN WAVE_MAX SPECRESP)) {
+			$self->{$colname} = $columns{$colname}{data};
+			# convert to cgs
+			if ($colname eq 'WAVE_MIN' or $colname eq 'WAVE_MAX') {
+				scaleArray($self->{$colname}, ANGSTROM_TO_CM);
+			}
+		}
+	}
+	else {
+		$self->error(BAD_INPUT,
+				"error loading effective area data");
+	}
+
+	if ($fits) {
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+}
+
+
+sub loadLineScaleFactor
+{
+	my ($self) = @_;
+	if ($self->{FILTER} !~ /GRISM/i) {
+		return;
+	}
+
+	my $arg = $self->args->{lsffile};
+
+	my $path = '';
+	if ($arg =~ /^CALDB/i) {
+		$path = $self->queryCALDB('GRISMLSF',
+				header => $self->{header},
+				qualifiers => $arg,
+				asString => 1, withExt => 1);
+		$self->parameterNote(lsffile => $path)
+			if $path;
+	}
+	else {
+		my $tag = substr($self->{FILTER}, 0, 1);
+		$path = $arg . "[$tag" . 'GRISMLSF]';
+	}
+
+	$self->storeHeaderKeywords($self->{header},
+			keys => [ qw(WHEELPOS ZERODETX ZERODETY) ],
+			);
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+	}
+	else {
+		$self->loadLineScaleFactorAux($fits);
+		$fits->close_file($status);
+	}
+}
+
+
+sub loadLineScaleFactorAux
+{
+	my ($self, $fits) = @_;
+
+	my $status = 0;
+
+	my @columns = (
+		{ name => 'CLOCKING', typ => 'int' },
+		{ name => 'DETX' },
+		{ name => 'DETY' },
+		{ name => 'WAVELENGTH' },
+		{ name => 'LINESF' },
+	);
+	my %columns = map { $_->{name} => $_ } @columns;
+
+	my $count = -1;
+	$fits->get_num_rows($count, $status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+			"unable to determine number of rows in LSF table");
+	}
+	elsif ($count < 1) {
+		$self->error(BAD_INPUT,
+			"no rows in LSF table");
+	}
+
+	foreach my $col (@columns) {
+
+		$col->{data} = [ ];
+
+		my $index = -1;
+		my $null = -1;
+		my $nulls = -1;
+
+		my $method = $col->{typ}
+				? 'read_col_' . $col->{typ}
+				: 'read_col_dbl';
+
+		if ($fits->get_colnum(0, $col->{name}, $index, $status)) {
+			$self->error(BAD_INPUT,
+				"unable to locate LSF column $col->{name}");
+		}
+		elsif ($fits->$method($index, 1, 1, $count, $null,
+				$col->{data}, $nulls, $status)) {
+			$self->error(BAD_INPUT,
+				"unable to load LSF column $col->{name}");
+		}
+	}
+
+	my $clocking = $columns{CLOCKING}{data};
+	my $detx     = $columns{DETX}{data};
+	my $dety     = $columns{DETY}{data};
+	my $lambda   = $columns{WAVELENGTH}{data};
+	my $lsf      = $columns{LINESF}{data};
+
+# choose the row nearest the zeroth order
+	my @keep;
+	my $distance;
+	my $zerox = $self->{ZERODETX};
+	my $zeroy = $self->{ZERODETY};
+	for (my $i = 0; $i < $count; ++$i) {
+
+		next if $clocking->[$i] != $self->{WHEELPOS};
+
+		my $d = ($detx->[$i] - $zerox) ** 2 + ($dety->[$i] - $zeroy) ** 2;
+
+		my %entry = (
+			LAMBDA => $lambda->[$i],
+			LINESF => $lsf->[$i],
+		);
+
+		if (not @keep or $d < $distance) {
+			$distance = $d;
+			@keep = (\%entry);
+		}
+		elsif ($d == $distance) {
+			push(@keep, \%entry);
+		}
+	}
+
+	if (not @keep) {
+		$self->error(BAD_INPUT,
+				'no LINESF entries with appropriate clocking'
+				. " [WHEELPOS=$self->{WHEELPOS}]");
+	}
+	else {
+		my %uniq = map { $_->{LAMBDA} => $_ } @keep;
+		my @sorted = sort { $a->{LAMBDA} <=> $b->{LAMBDA} } values(%uniq);
+		$self->{WAVELSF} = [ map { $_->{LAMBDA} } @sorted ];
+		$self->{LINESF} = [ map { $_->{LINESF} } @sorted ];
+
+		# convert to cgs
+		scaleArray($self->{WAVELSF}, ANGSTROM_TO_CM);
+		scaleArray($self->{LINESF}, ANGSTROM_TO_CM);
+	}
+}
+
+
+
+sub cmToKeV
+{
+	my ($cm) = @_;
+	my $keV = h_J_s * c_m_per_s / ($cm * 1e-2 * J_per_eV * 1000);
+	return $keV;
+}
+
+
+sub interpolateLineScaleFactor
+{
+	my ($self, $lambda, $lsf) = @_;
+
+	my $lambdaCal = $self->{WAVELSF};
+	my $lsfCal = $self->{LINESF};
+
+	my $count = @$lambda;
+
+	my $countCal = @$lambdaCal;
+	my $lsf0 = $lsfCal->[0];
+
+	if ($countCal == 1) {
+		$self->warning("single applicable LSF calibration point- no interpolation");
+		for (my $i = 0; $i < $count; ++$i) {
+			$lsf->[$i] = $lsf0;
+		}
+	}
+	elsif ($countCal == 2) {
+		$self->warning("two applicable LSF calibration points\n\tlinear interpolation");
+		my $lambda0 = $lambdaCal->[0];
+		my $dLsfdLambda = ($lsfCal->[1] - $lsf0) / ($lambdaCal->[1] - $lambda0);
+		for (my $i = 0; $i < $count; ++$i) {
+			my $dLambda = $lambda->[$i] - $lambdaCal->[0];
+			$lsf->[$i] = $lsf0 + $dLsfdLambda * ($lambda->[$i] - $lambda0);
+		}
+	}
+	else {
+		my @lsf2;
+		Math::Spline::cubic($self->{WAVELSF}, $self->{LINESF},
+				Math::Spline::NATURAL, Math::Spline::NATURAL, \@lsf2);
+		Math::Spline::splint($self->{WAVELSF}, $self->{LINESF}, \@lsf2,
+					$lambda, $lsf);
+	}
+}
+
+
+
+sub putResponseMatrix
+{
+	my ($self, $fits) = @_;
+
+	my $channels = $self->{channels};
+
+	my $status = 0;
+	if ($fits->create_tbl(BINARY_TBL, 0, 0, 0, 0, 0, 'MATRIX', $status)) {
+		$self->error(BAD_OUTPUT,
+					"unable to create MATRIX extension: $status");
+	}
+
+	my @keywords = (
+		TELESCOP => [ $self->{TELESCOP}, 'Mission/satellite name' ],
+		INSTRUME => [ $self->{INSTRUME}, 'Instrument/detector' ],
+		FILTER   => [ $self->{FILTER}, 'Filter information' ],
+		CHANTYPE => [ 'PI', 'Type of channels (PHA, PI etc)' ],
+		HDUCLASS => [ 'OGIP', 'File format is OGIP standard' ],
+		HDUCLAS1 => [ 'RESPONSE', 'Extension contains response data' ],
+		HDUCLAS2 => [ 'RSP_MATRIX', 'Extension contains a response matrix' ],
+		HDUCLAS3 => [ 'FULL', 'Type of stored matrix' ],
+		HDUVERS  => [ '1.3.0', 'Version of the file format' ],
+		TLMIN4   => [ 0, 'First legal channel number' ],
+		TLMAX4   => [ $channels - 1, 'Last legal channel number' ],
+		NUMGRP   => [ $channels, 'Sum of the N_GRP column' ],
+		NUMELT   => [ $channels, 'Sum of the N_CHAN column' ],
+		DETCHANS => [ $channels, 'Number of raw detector channels' ],
+		LO_THRES => [ LO_THRESHOLD, 'Minimum value in MATRIX column to apply' ],
+	);
+
+	$self->putKeywords($fits, @keywords);
+
+	my @columns = (
+		{ name => 'ENERG_LO',
+			form => 'E',
+			units => 'keV',
+		},
+		{ name => 'ENERG_HI',
+			form => 'E',
+			units => 'keV',
+		},
+		{ name => 'N_GRP',
+			form => 'I',
+		},
+		{ name => 'F_CHAN',
+			form => '1I',
+		},
+		{ name => 'N_CHAN',
+			form => '1I',
+		},
+		{ name => 'MATRIX',
+			form => "PE($channels)",
+		},
+	);
+
+	my $ci = 0;
+	my %columns = map { $_->{index} = ++$ci; ($_->{name} => $_) } @columns;
+
+	my $binWidth = ($self->{LAMBDA}[-1] - $self->{LAMBDA}[0])
+					/ ($channels - 1);
+
+	my @wmin = map { $_ - $binWidth / 2 } @{ $self->{LAMBDA} };
+	my @wmax = map { $_ + $binWidth / 2 } @{ $self->{LAMBDA} };
+	my @emin = map { cmToKeV($_) } @wmax;
+	my @emax = map { cmToKeV($_) } @wmin;
+	my @ngrp = (1) x $channels;
+	my @fchan = (0) x $channels;
+	my @nchan = ($channels) x $self->{channels};
+
+	$self->writeColumn($fits, $columns{ENERG_LO}, [ reverse(@emin) ]);
+	$self->writeColumn($fits, $columns{ENERG_HI}, [ reverse(@emax) ]);
+	$self->writeColumn($fits, $columns{N_GRP}, [ reverse(@ngrp) ]);
+	$self->writeColumn($fits, $columns{F_CHAN}, [ reverse(@fchan) ]);
+	$self->writeColumn($fits, $columns{N_CHAN}, [ reverse(@nchan) ]);
+
+	$self->{E_MIN} = \@emin;
+	$self->{E_MAX} = \@emax;
+	my @wmen;
+
+	for (my $i = 0; $i < $channels; ++$i) {
+		$wmen[$i] = ($wmin[$i] + $wmax[$i]) / 2;
+	}
+
+	# determine the normalization for the LSF
+	my $mnorm = 0;
+	my $wmen0 = $wmen[int($channels / 2)];
+	my @lsf;
+	if ($channels > 1) {
+		$self->interpolateLineScaleFactor(\@wmen, \@lsf);
+	}
+	for (my $i = 0; $i < $channels; ++$i) {
+		my $oox2 = $lsf[$i] ** 2 / 4;
+		my $q = exp(-($wmen0 - $wmen[$i]) ** 2 / $oox2);
+		$mnorm += $q;
+	}
+
+	# determine the center of each effective area channel
+	my @wamen;
+	{
+		my $wamin = $self->{WAVE_MIN};
+		my $wamax = $self->{WAVE_MAX};
+		my $narows = @$wamin;
+		for (my $i = 0; $i < $narows; ++$i) {
+			$wamen[$i] = ($wamin->[$i] + $wamax->[$i]) / 2;
+		}
+	}
+
+	# determine spline function
+	my @y2;
+	my $problem = Math::Spline::cubic(\@wamen, $self->{SPECRESP},
+				Math::Spline::NATURAL, Math::Spline::NATURAL, \@y2);
+	if ($problem) {
+		$self->error(BAD_EXECUTE,
+				"unable to spline effective area: $problem");
+	}
+
+	# interpolate/extrapolate spline function
+	my @effarea;
+	for (my $i = $channels - 1; $i >= 0; --$i) {
+		my $ea = 0;
+		my $problem = Math::Spline::splint(\@wamen, $self->{SPECRESP}, \@y2,
+					$wmen[$i], \$ea);
+		if ($problem) {
+			$self->error(BAD_EXECUTE,
+					"unable to splint effective area: $problem");
+		}
+		else {
+			if ($ea < MIN_EFF_AREA) {
+				$ea = MIN_EFF_AREA;
+			}
+			$effarea[$i] = $ea;
+			if ($self->chatter(5)) {
+				my $wmenstr = sprintf('%.2e', $wmen[$i]);
+				my $eastr = sprintf('%.2e', $ea);
+				$self->report("wmen[$i] = $wmenstr cm, effarea = $eastr cm^2")
+			}
+		}
+	}
+
+	# convolve effective area with LSF
+	my $colnum;
+	{
+		my $c = $columns{MATRIX};
+		$colnum = $c->{index};
+		$fits->insert_col($colnum, $c->{name}, $c->{form}, $status);
+	}
+
+	if ($channels > 1) {
+		# grism filter
+		for (my $i = 0; $self->isValid and $i < $channels; ++$i) {
+			my @matrix = (0) x $channels;
+			for (my $j = 0; $j < $channels; ++$j) {
+				my $oox2 = $lsf[$j] ** 2 / 4;
+				my $exp = exp(-($wmen[$i] - $wmen[$j]) ** 2 / $oox2);
+				my $value = $exp * $effarea[$i] / $mnorm;
+				if ($value < LO_THRESHOLD) {
+					$value = 0;
+				}
+				$matrix[$j] = $value;
+			}
+			my $revi = $channels - $i;
+			my @rmat = reverse(@matrix);
+			$fits->write_col_flt($colnum, $revi, 1, $channels, \@rmat, $status);
+			if ($status) {
+				$self->error(BAD_OUTPUT,
+						"problem writing MATRIX row $revi: $status");
+			}
+		}
+	}
+	else {
+		$fits->write_col_flt($colnum, 1, 1,
+				$channels, [ reverse(@{ $self->{SPECRESP} }) ], $status);
+
+		if ($status) {
+			$self->error(BAD_OUTPUT,
+					"problem writing EBOUNDS data: $status");
+		}
+	}
+
+	$fits->write_date($status);
+	$fits->write_chksum($status);
+
+}
+
+
+sub putEnergyBounds
+{
+	my ($self, $fits) = @_;
+
+	my $channels = $self->{channels};
+
+	my $status = 0;
+	if ($fits->create_tbl(BINARY_TBL, 0, 0, 0, 0, 0, 'EBOUNDS', $status)) {
+		$self->error(BAD_OUTPUT,
+					"unable to create EBOUNDS extension: $status");
+	}
+
+	my @keywords = (
+		TELESCOP => [ $self->{TELESCOP}, 'Mission/satellite name' ],
+		INSTRUME => [ $self->{INSTRUME}, 'Instrument/detector' ],
+		FILTER   => [ $self->{FILTER}, 'Filter information' ],
+		CHANTYPE => [ 'PI', 'Type of channels (PHA, PI etc)' ],
+		HDUCLASS => [ 'OGIP', 'File format is OGIP standard' ],
+		HDUCLAS1 => [ 'RESPONSE', 'Extension contains response data' ],
+		HDUCLAS2 => [ 'EBOUNDS', 'Extension contains a response matrix' ],
+		HDUVERS  => [ '1.2.0', 'Version of the file format' ],
+		DETCHANS => [ $channels, 'Number of raw detector channels' ],
+		TLMIN1   => [ 0, 'First legal channel number' ],
+		TLMAX1   => [ $channels - 1, 'Last legal channel number' ],
+	);
+
+	$self->putKeywords($fits, @keywords);
+
+	my @columns = (
+		{ name => 'CHANNEL',
+			form => 'I',
+			units => 'channel',
+		},
+		{ name => 'E_MIN',
+			form => 'E',
+			units => 'keV',
+		},
+		{ name => 'E_MAX',
+			form => 'E',
+			units => 'keV',
+		},
+	);
+
+	my $i = 0;
+	my %columns = map { $_->{index} = ++$i; ($_->{name} => $_) } @columns;
+
+	$self->writeColumn($fits, $columns{CHANNEL}, [ reverse(0 .. $channels-1) ]);
+	$self->writeColumn($fits, $columns{E_MIN}, [ reverse(@{ $self->{E_MIN} }) ]) ;
+	$self->writeColumn($fits, $columns{E_MAX}, [ reverse(@{ $self->{E_MAX} }) ]);
+
+	$fits->write_date($status);
+	$fits->write_chksum($status);
+}
+
+
+sub writeRMF
+{
+	my ($self) = @_;
+
+	my $path = $self->{tmpout} = $self->temporary('tmpout');
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::create_file($path, $status);
+	if (not $fits) {
+		$self->error(BAD_OUTPUT,
+				"unable to create $path: $status");
+	}
+
+	$self->putResponseMatrix($fits)
+		if $self->isValid;
+
+	$self->putEnergyBounds($fits)
+		if $self->isValid;
+
+	if ($self->isValid) {
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+	elsif ($fits) {
+		my $tmp = 0;
+		$fits->delete_file($tmp);
+		if (-f $path) {
+			unlink($path)
+				or $self->warning("unable to unlink invalid output $path");
+		}
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		rename($self->{tmpout}, $args->{outfile})
+			or $self->error(BAD_OUTPUT,
+				"unable to rename $self->{tmpout} to $args->{outfile} [$!]");
+	}
+
+	$self->removeTemporaries;
+}
+

@@ -1,0 +1,135 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotflux/ut-uvotflux,v $
+# $Revision: 1.2 $
+# $Date: 2007/05/22 15:53:36 $
+#
+# $Log: ut-uvotflux,v $
+# Revision 1.2  2007/05/22 15:53:36  rwiegand
+# Corrected name of runTool method.
+#
+# Revision 1.1  2007/05/21 17:23:31  rwiegand
+# Split uvotmag into two tools: uvotflux for magnitude and flux calibration
+# and uvotcoincidence for coincidence loss correction.
+#
+#
+
+use strict;
+
+package Test::MagFlux;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = Test::MagFlux->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string caldb=boolean chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotflux
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotflux
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	# note: make a working copy of the source list (without magnitudes)
+	# since it will be updated
+	$self->shell("cp -f $input/nomag.fits $output/sources.fits");
+	$self->shell("chmod +w $output/sources.fits");
+	return if not $self->isValid;
+
+	my @args = (
+		infile    => "$output/sources.fits",
+		zerofile  => $caldb ? 'CALDB' : "$input/swucolor.fits",
+
+		filter    => 'default',
+		ratecol   => 'COI_RATE',
+		errcol    => 'COI_RATE_ERR',
+
+		# cleanup   => 'no',
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(infile zerofile template)) {
+		if ($args{$key} eq 'CALDB') {
+		}
+		elsif (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	{
+		my $command = $self->buildCommand('uvotflux', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{infile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{infile},
+			reltol => 1e-3,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+}
+

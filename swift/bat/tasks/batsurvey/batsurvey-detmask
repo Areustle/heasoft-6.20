@@ -1,0 +1,459 @@
+#!/usr/bin/perl
+#
+# bat-survey-detmask - perform standard quality filtering by detector for BAT survey analysis
+#
+# $Id: batsurvey-detmask,v 1.4 2010/06/22 02:11:25 craigm Exp $
+#
+# $Log: batsurvey-detmask,v $
+# Revision 1.4  2010/06/22 02:11:25  craigm
+#
+#
+# Fix sloppy pattern matching in file names.
+#
+# I was using m/NONE/i which would match *any* string NONE within the
+# filename string.  If it happened to contain that substring anywhere,
+# with any upper/lowercase combination, then odd things would start to
+# happen.
+#
+# I fixed these by making them more stringent.
+#
+# Unit tests still pass.
+# --CM
+#
+# Revision 1.3  2010/05/26 01:19:20  craigm
+# Use new features of SimpleFITS library, which makes the application code more simple; unit tests still pass --CM
+#
+# Revision 1.2  2009/07/09 01:24:04  craigm
+# Updates to battsplit, batdrmgen-multi, batsurvey, batsurvey-aspect batsurvey-detmask batsurvey-gti; this update changes slightly how parameters are read, so that 'ask' parameters are always prompted first, and in the order listed in the parameter file; previously the order was jumbled by perl's hash behavior, so people could be prompted for parameter 2 before being prompted for 1;  now all the perl tasks should behave properly in this respect;  all unit tests still pass without changes --CM
+#
+# Revision 1.1  2008/05/20 10:37:55  craigm
+# Commit of 'batsurvey' task 6.0; this is a modification of version '5G'; primarily the modifications were to make the task more FTOOL-like, and no real changes to the core algorithms were done; the names of the tasks were changed to 'batsurvey{-xxx}' from the original 'bat-survey{-xxx}'; batsurvey-aspect now has an alignfile=CALDB option; the formats of the inventory.dat and outventory.dat have been changed; some version coding has been done to allow expansion in the future, as well as printing the number of energy bins; unit test pases on Linux-32bit against actual survey processing version 5G --CM
+#
+# Revision 1.6  2007/01/16 17:55:21  craigm
+# Update script to handle new rules for command line paramters that have '=' signs in their values (i.e. we *must* specify the name=value technique (applies to both bat-survey and bat-survey-detmask) --CM
+#
+# Revision 1.5  2007/01/16 17:36:09  craigm
+# Fix small typo regarding search for zero counts in the image --CM
+#
+# Revision 1.4  2006/12/12 09:40:33  craigm
+# Add outenamask and outcaldbmask parameters, so that the important intermediate files can be captured; add cleanup parameter to remove many extraneous files --CM
+#
+# Revision 1.3  2006/11/21 08:44:53  craigm
+# Bump to veresion 1.1; compute the total map value (sum all the individual image components) and run bathotpix on that as well; print the CALDB and detector enable/disable maps that were found by batdetmask --CM
+#
+# Revision 1.2  2006/10/24 06:56:21  craigm
+# Solve the case when there are more than 25 input detector masks - in which case ftimgcalc falls over --CM
+#
+# Revision 1.1  2006/10/24 03:57:21  craigm
+#
+#
+# Initial commit of BAT survey processing, broken into more modular bits...
+#
+# bat-survey is still the main driver and not an FTOOL; the rest are FTOOLs;
+#
+# bat-survey-erebin is a copy from its own directory, with some
+# modifications to write out quality maps;
+#
+# bat-survey-gti scans an observation for good time intervals based on
+# loads of quality-screening criteria;
+#
+# bat-survey-detmask does quality filtering at a detector level for a
+# snapshot observation: hot pixels (in multiple energy bands), global
+# quality map, user quality map (possibly multiple), pattern mask
+# quality-selected from survey; detector enable/disable)
+#
+# bat-survey-aspect does attitude drift checking for a snapshot
+# observation.  It looks for attitude drifts of more than a certain
+# magnitude, and reports them back to the calling task in order to make
+# a policy decision.
+#
+# 
+
+use strict;
+use HEACORE::HEAINIT;
+use Time::Local;
+use POSIX;
+
+my $taskname = "batsurvey-detmask";
+my $taskvers = "1.3";
+
+# ===================================
+# Execute main subroutine, with error trapping
+my $status = 0;
+my @tmpfiles = ();
+my ($tmpfile, $atstatus, $cleanup);
+$cleanup = 1;
+eval {
+    $status = headas_main(\&bat_survey_detmask);
+};
+$atstatus = $@;
+
+# ==================================
+# Remove any scratch file
+if ($cleanup) {
+  foreach $tmpfile (@tmpfiles) {
+    if ( -f $tmpfile) { unlink($tmpfile); }
+  }
+}
+
+# ===================================
+# Check for errors and report them to the console
+if ($atstatus) {
+    if ($status == 0) { $status = -1; }
+    warn $atstatus;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub bat_survey_detmask {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &bat_survey_detmask_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+sub bat_survey_detmask_work {
+
+  # ===== 
+  # Initialization
+  # The HEAUTILS module provides access to HDpar_stamp()
+  # set_toolname(), set_toolversion(), and headas_clobberfile()
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  
+  use Astro::FITS::CFITSIO qw(:longnames :constants);
+  use SimpleFITS;
+  
+  my $chatter;
+  $status = PILGetInt("chatter",$chatter);
+  my $verbose = ($chatter >= 5)?(1):(0);
+  # Ordered parameters, usually ask parameters which must come first
+  my @parmlist = ("infile", "outfile");
+  my %parms = (
+	       infile => \&PILGetString,
+	       outfile => \&PILGetString,
+	       detflagfile => \&PILGetString,
+	       detmask => \&PILGetString,
+	       totalmap => \&PILGetBool,
+	       repoquery => \&PILGetBool,
+	       patternmask => \&PILGetString,
+	       outenamask => \&PILGetString,
+	       outcaldbmask => \&PILGetString,
+	       cleanup => \&PILGetBool,
+	       clobber => \&PILGetBool, 
+	      );
+  
+  print "$taskname v$taskvers\n" if ($chatter >= 1);
+  print "----------------------------------------------------------\n" 
+    if ($chatter >= 2);
+  
+  my ($parm, $func, $val);
+  # ... first read ordered parameters, then anything else
+  foreach $parm ( @parmlist, keys(%parms) ) {
+    my $func = $parms{$parm};
+    next if (ref($func) ne "CODE");  # Skip if we already did this parm
+    undef($val);
+    $status = &$func("$parm", $val);
+    die "ERROR: could not retrieve parameter '$parm'" if ($status);
+    $parms{$parm} = $val;
+    print "$parm=$val\n" if ($verbose);
+  }
+  
+  my ($enamap, $cmd, $lastmask, $detmask1);
+  my $infile = $parms{infile};
+  my $outfile = $parms{outfile};
+  my $patternmask = $parms{patternmask};
+  # Global
+  $cleanup = $parms{cleanup};
+  
+  # ==== Detector enable/disable map
+  print "Enable Map Query\n" if ($verbose);
+  if (! $parms{repoquery} ) {
+    if ($parms{detflagfile} eq "NONE") {
+      $enamap = "NONE";
+    } else {
+      my @defiles = glob($parms{detflagfile});
+      if ($#defiles >= 0) {
+	$enamap = $defiles[0];
+      } else {
+	die "ERROR: could not find any enable/disable maps";
+      }
+    }
+  } else {
+    $cmd = "repoquery bdetflag '$infile'";
+    print "  $cmd\n" if ($verbose);
+    $enamap = `$cmd`;
+    chomp($enamap);
+  }
+  print "   RESULT=$enamap\n" if ($verbose);
+  die "ERROR: requested enable map '$enamap' does not exist" if ("$enamap" ne "NONE" && ! -f "$enamap");
+  $lastmask = "$enamap";
+
+  print "   Enable/disable map: $enamap\n" if ($chatter >= 2);
+  
+  # ==== Global detmask from CALDB
+  $detmask1 = "$outfile"."-global";
+  $cmd = "batdetmask date='$infile' outfile='$detmask1' detmask='$enamap' ";
+  if ($verbose) { $cmd .= "chatter=5 "; } else { $cmd .= "chatter=0 "; }
+  unlink($detmask1);
+  print "$cmd\n" if ($verbose);
+  system("$cmd < /dev/null");
+  die "ERROR: could not create detector quality map" if (! -f "$detmask1");
+  push @tmpfiles, $detmask1;
+
+  my $caldb1 = `pget batdetmask outcaldbmask`;
+  chomp($caldb1);
+  print "       CALDB map used: '$caldb1'\n";
+  my $enamap1 = `pget batdetmask outdetmask`;
+  chomp($enamap1);
+  print "   Enable/disable map: $enamap1\n" if ($chatter >= 2);
+
+  # If requested, then save the raw input maps
+  if ($parms{outenamask} !~ m/^INDEF$/i) {
+    $cmd = "ftcopy infile='$enamap1' outfile='$parms{outenamask}' ".
+      "copyall=NO clobber=YES ";
+    unlink($parms{outenamask});
+    print "$cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+  }
+  if ($parms{outcaldbmask} !~ m/^INDEF$/i) {
+    $cmd = "ftcopy infile='$caldb1' outfile='$parms{outcaldbmask}' ".
+      "copyall=NO clobber=YES ";
+    unlink($parms{outcaldbmask});
+    print "$cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+  }
+
+  $lastmask = "$detmask1";
+  print "    batdetmask result: $detmask1\n" if ($chatter >= 2);
+
+  if ("$patternmask" ne "NONE") {
+    my ($tstart, $t_epoch, $patternmask1);
+    my @tlist;
+
+    my $fits = SimpleFITS->open("$infile",access => "readwrite", type => "data");
+    die "ERROR: could not open '$infile'" if (! $fits );
+    $tstart = $fits->readkey("TSTART");
+    die "ERROR: could not read TSTART keyword of '$infile'" if ($fits->status());
+    $fits->close();
+    print "   TSTART=$tstart\n" if ($verbose);
+    
+    #                 ss mm hh DD MM YYYY
+    $t_epoch = timegm( 0, 0, 0, 1, 0,2001-1900); # Swift epoch (UTC)
+    @tlist = gmtime($tstart + $t_epoch);
+    $patternmask1 = strftime("$patternmask", 
+			     $tlist[0], $tlist[1], $tlist[2], $tlist[3],
+			     $tlist[4], $tlist[5], $tlist[6], $tlist[7]);
+    print "  Global pattern mask: $patternmask1\n" if ($chatter >= 2);
+    die "ERROR: global pattern mask '$patternmask1' does not exist" if (! -f $patternmask1);
+    
+    my $postpattern = "$outfile"."-postpattern";
+    $cmd = "ftimgcalc outfile='$postpattern' expr='MAX(A,B)' ".
+      "a='$lastmask' b='$patternmask1' wcsimage=:A bitpix=B ".
+	"clobber=YES ";
+    unlink($postpattern);
+    print "$cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+    die "ERROR: could not create modified detector quality map" 
+      if (! -f "$postpattern");
+    $lastmask = "$postpattern";
+    push @tmpfiles, $postpattern;
+  }
+
+  # ==== Incorporate any user detector quality maps
+  if ( "$parms{detmask}" ne "NONE" ) {
+      my (@detmasks);
+      my ($detmask1, $i);
+
+      # Search for @filename.lis file listing
+      if ( "$parms{detmask}" =~ m/^@(.*)$/) {
+	  @detmasks = `cat '$1'`;
+      } else {
+	  @detmasks = ($parms{detmask});
+      }
+      my $ntot = 0;
+      my $uct  = 0;
+      while ($#detmasks >= 0) {
+	$i = 0;
+	my $imglist = "a='$lastmask' ";
+	my $expr    = "A";
+	while ($#detmasks >= 0 && $i < 25) {
+	  $detmask1 = pop(@detmasks);
+	  chomp($detmask1);
+	  my $imglet = chr(65+32+$i+1);
+	  my $imgname = "M$i";
+	  $imglist .= "$imglet=$imgname='$detmask1' ";
+	  $expr = "MAX($expr,$imgname)";
+	  $i = $i + 1;
+	  $ntot = $ntot + 1;
+	}
+	
+	my $userfile = "$outfile"."-user$uct";
+	$cmd = "ftimgcalc outfile='$userfile' expr='$expr' $imglist ".
+	  "wcsimage=:M0 bitpix=B ".
+	    "clobber=YES ";
+	
+	unlink($userfile);
+	print "$cmd\n" if ($verbose);
+	system("$cmd < /dev/null");
+	die "ERROR: could not create quality map with user mask applied"
+	  if (! -f "$userfile");
+	push @tmpfiles, $userfile;
+	$lastmask = "$userfile";
+	$uct = $uct + 1;
+      }
+      print "       User specified: $ntot detector masks\n";
+  }
+  
+  # ==== Search for hot pixels
+  if ( "$infile" ne "NONE" ) {
+      unlink("$outfile");
+
+      my $fits = SimpleFITS->open("$infile", access => "readonly");
+      die "ERROR: could not open '$infile'" if ($fits == 0 || $fits->status() != 0);
+
+      my ($nimg);
+      my ($curhdu, $hdutype0, $hdutype, $status1) = (-1, -1, 0);
+
+      $curhdu   = $fits->curhdu();
+      $hdutype0 = $fits->curhdutype();
+
+      # The input file could be a table of images or a series of image
+      # extensions.  Decide which one right now.
+      if ($hdutype0 == IMAGE_HDU) {
+	  $nimg = $fits->nhdu();
+      } else {
+	  $nimg = $fits->nrows();
+      }
+
+      my $totmap;
+      printf("      Input image has: %d extensions (start at %d)\n",
+	     $nimg, $curhdu) if ($chatter >= 2);
+      # Loop through each image in the input file, until we get to the end
+      die "ERROR: file '$infile' is empty" if ($nimg == 0);
+      while ($curhdu <= $nimg) {
+
+	  printf("        - processing DPI extension %d\n", $curhdu);
+	  # For a file starting with an image extension, we advance to
+	  # the next extension and see if it is truly an image
+	  # extension before calling bathotpix.
+
+	  if ($hdutype0 == IMAGE_HDU) {
+	      $fits->move($curhdu);
+	      $hdutype = $fits->curhdutype();
+	      if ($hdutype != $hdutype0) {
+		  print "            (not an image)\n";
+		  $curhdu = $curhdu + 1;
+		  next;
+	      }
+	  }
+	      
+	  my $hotmask = "$outfile"."-hot$curhdu";
+	  $cmd = "bathotpix infile='$infile' outfile='$hotmask' ".
+	    "detmask='$lastmask' row='$curhdu' clobber=YES ";
+	  if ($verbose) { $cmd .= "chatter=2 "; } else { $cmd .= "chatter=0 "; }
+	  print "$cmd\n" if ($verbose);
+	  system("$cmd < /dev/null");
+	  die "ERROR: could not create hot pixel map $curhdu" if (! -f "$hotmask");
+	  push @tmpfiles, $hotmask;
+
+	  if ($parms{totalmap}) {
+	    my $ext = $curhdu - 1;
+	    if (!defined($totmap)) {
+	      $totmap = "$outfile"."-totmap";
+	      $cmd = "ftcopy infile='$infile"."[$ext]' outfile='$totmap' ".
+		"copyall=NO clobber=YES ";
+	      print "$cmd\n" if ($verbose);
+	      system("$cmd < /dev/null");
+	      die "ERROR: could not create total map" if (! -f "$totmap");
+	    } else {
+	      # Perform the sum ...
+	      $cmd = "ftimgcalc outfile='$totmap'-tmp expr='A+B' ".
+		"a='$infile"."[$ext]' b='$totmap' ".
+		  "wcsimage=:A bunit=:a clobber=YES ";
+	      print "$cmd\n" if ($verbose);
+	      system("$cmd < /dev/null");
+	      die "ERROR: could not create total map" if (! -f "$totmap"."-tmp");
+	      
+	      # ... and then rename the sum back to "$totmap"
+	      rename("$totmap"."-tmp","$totmap");
+	    }
+	  }
+
+	  # Advance to the next image
+	  $lastmask = $hotmask;
+	  $curhdu = $curhdu + 1;
+      }
+
+
+      # One last time to run bathotpix, on the total map, if
+      # requested
+      if ($parms{totalmap} && defined($totmap) && -f "$totmap") {
+	my $hotmask = "$outfile"."-hottot";
+	$cmd = "bathotpix infile='$totmap' outfile='$hotmask' ".
+	  "detmask='$lastmask' clobber=YES row=1 ";
+	if ($verbose) { $cmd .= "chatter=2 "; } else { $cmd .= "chatter=0 "; }
+	print "$cmd\n" if ($verbose);
+	system("$cmd < /dev/null");
+	die "ERROR: could not create hot pixel map total" if (! -f "$hotmask");
+	push @tmpfiles, $totmap;
+	push @tmpfiles, $hotmask;
+	
+	$lastmask = $hotmask;
+      }
+
+      # Search for pixels with zero counts
+      if ($parms{totalmap} && defined($totmap) && -f "$totmap") {
+	my $zeromask = "$outfile"."-zeromask";
+	$cmd = "ftimgcalc outfile='$zeromask' ".
+	  "expr='(B == 0)?(1-#GOODVAL):(A)' a='$lastmask' b='$totmap' ".
+	  "wcsimage=:A clobber=YES ";
+	unlink($zeromask);
+	print "$cmd\n" if ($verbose);
+	system("$cmd < /dev/null");
+	die "ERROR: could not mask for zero counts" if (! -f "$zeromask");
+	push @tmpfiles, $zeromask;
+
+	$lastmask = $zeromask;
+      }
+
+  }
+
+  # Finally, use whatever the final mask was produced as the output file.
+  print "    (using $lastmask as the final mask)\n" if ($verbose);
+  system("cp '$lastmask' '$outfile'");
+  
+  print "        Combined mask: $outfile\n" if ($chatter >= 2);
+  system("ftimgcalc outfile=NONE expr='SUM(A==#GOODVAL)' a='$outfile' chatter=2 | sed -e 's/^.*= */        Number of good pixels: /'") if ($chatter >= 2);
+  print "----------------------------------------------------------\n" 
+    if ($chatter >= 2);
+  print "DONE (status=$status)\n" if ($chatter >= 1);
+  
+  return $status;
+}
+

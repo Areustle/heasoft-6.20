@@ -1,0 +1,207 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batmasktaglc/ut_batmasktaglc,v $
+# $Revision: 1.7 $
+# $Date: 2009/06/08 00:56:22 $
+#
+#	ut_batmasktaglc
+#		validate batmasktaglc to convert mask tagged light
+#               curves to regular light curves
+#
+#
+
+# This is a unit test template that has been filled in for batdrmgen.
+# The steps for modifying it are summarized here, and described in
+# more detail below:
+#    1. Fill in name of task just below
+#    2. Skip over the parameter validation stuff, unless you
+#       really care about it.
+#    3. If the unit test itself has any parameters, read them
+#       into local variables as shown by the other examples.
+#    4. Construct a list of task parameters and values.
+#    5. List any input files.  The unit test will verify they are present.
+#    6. List any template files for outputs.  The unit test will 
+#       check that the task outputs match the templates listed.
+#
+# If the running of the test requires any specialized processing, then
+# look beyond STEP 6.
+#
+#
+# The conclusion of the test reports the success or fail status, based
+# on whether the task ran successfully, and all the outputs compared
+# successfully to their templates.
+#
+
+# ******************* STEP 1. FILL IN NAME OF TASK HERE ********
+$taskname      = "batmasktaglc";
+$ut_taskname   = "ut_batmasktaglc";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance suffix ebounds
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+	# ******************* STEP 3. Fill in any parameters to the unit test
+	# These parameters will have already been read in from the parameter
+	# file, you just need to pull them into Perl local variables.
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+	my $suffix = $self->args->{suffix};
+	my $ebounds = $self->args->{ebounds};
+
+	# ******************* STEP 4. FILL IN PARAMETERS HERE ********
+	# For each task parameter, list as follows:
+	#           parametername => value
+        # where value can either be a number or a "string"
+        # Generally speaking, each parameter should be assigned a value.
+	my %task = (
+		    infile        => "$input/batmasktaglc_${suffix}_rw.lc",
+		    quadfile      => "$input/batmasktaglc_${suffix}_qd.lc",
+		    outfile       => "$output/batmasktaglc_${suffix}_mt.lc",
+		    maskwt        => "file",
+		    corrections   => "none",
+		    clobber       => "Yes",
+		    ebounds       => "$ebounds",
+		    chatter       => 1,
+		    history       => "Yes",
+		    );
+
+	# ******************* STEP 5. FILL IN INPUT FILES HERE ********
+	# List here any task parameter which is an "input" parameter
+	# The unit test will verify that the file listed is present.
+	# NOTE: this is the parameter name, not the file name itself.
+	@infiles = ("infile", "quadfile");
+
+	
+	# ******************* STEP 6. LIST ANY TEMPLATE FILES ********
+	# This is the place to list any template files.  
+	# For each task output parameter, list as follows:
+	#           parametername => "filename.template",
+        # When the task runs, the unit test will automatically compare
+        # any output file (eg, $task{parametername}) with its template
+        # (eg, $template{parametername}).  The comparison is done with
+        # the ftdiff task.
+	my %template = (
+			outfile => "$input/batmasktaglc_${suffix}_mt.lc.template",
+			);
+
+	# ******************* DON'T USUALLY NEED TO MODIFY ANYTHING ELSE ****
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+        # Check template files are present
+        foreach my $key (keys %template) {
+                if (not -f $template{$key}) {
+                        $self->fatal(BAD_INPUT,
+                                "invalid template $key file:
+$template{$key}");
+                        return -1;
+                }
+        }
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	# Run the command
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	$command = qq(ftverify infile=$task{outfile} outfile=STDOUT heasarc=yes);
+	$self->doCommand($command);
+
+	$command = "ftdiff $template{outfile} $task{outfile} tolerance=$tolerance exclude=CREATOR";
+	$result = $self->doCommand($command);
+	if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	    $ndiffs = $1;
+	    print "   -->  FTDIFF reports $ndiffs differences\n";
+	    if ($ndiffs ne 0) {
+		$lines = $result->{output};
+		print "$lines\n" if $self->chatter(5);
+		$self->error(BAD_OUTPUT, "error because of bad compare");
+	    }
+
+	}
+	
+}
+

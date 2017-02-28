@@ -1,0 +1,561 @@
+A Tutorial for XPI
+*Overview
+**Introduction
+This is a tutorial for using the XPI library.  It consists of four
+parts.
+---
+ * A basic discussion of what the XPI library does.
+
+ * A simple example showing how to write a new standalone task from
+scratch.
+
+ * An example where a current xanadu standalone task is converted to
+XPI.
+
+ * An example where a hypothetical command driven program is
+converted.
+---
+
+*An overview of the XPI library
+One of the most common user interfaces for a program is the command
+line interface.  This is the default interface for both VMS and most
+flavors of UNIX.  In the future though it would be more user friendly
+to also have a Graphical User Interface, or GUI.  This presents a
+problem because the command syntax for most command line programs are
+hidden deep within the source code.  XPI will help solve this.
+
+XPI also helps a programmer write a command line program by moving
+most of the common parsing code into a set of subroutines.  This will
+solve the problem of each program requiring time and energy to write
+and debug code to break a command line apart and then interpret it.
+
+*A Simple Example
+
+As a way of getting started, let's look at a simple example.
+
+Let's say that we wanted to write a simple copy command.  We want our
+copy command to take two parameters from the user.  We'll need to know
+the input file name and the output file name.  To keep things simple,
+this is all we'll look for right now.
+
+An easy syntax for the user would be
+
+xancp <infile> <outfile>
+
+
+The first step is to create a parameter file.  Each standalone task
+requires a parameter file.  These files are almost identical to the
+parameter files which IRAF uses.  An example for our simple copy
+program is:
+
+INFILE,s,al,"",,,"> Name of input file?"
+OUTFILE,s,al,"",,,"> Name of output file?"
+MODE,s,h,"ql",,,""
+
+
+Each parameter has a line in the parameter file.  If the user doesn't
+use any way of specifying parameter matching then the order is the
+order on the command line.  Each line is broken into 7 fields
+separated by commas.  The fields are:
+
+---
+ * Name.
+
+ * Type.  b - boolean, i - integer, r - real, s - string are
+the ones currently supported.
+
+ * Mode.  a - auto, q - query, l - learn, h - hidden.
+
+ * Default value.
+
+ * Minimum value.
+
+ * Maximum value.
+
+ * Prompt.  This is what the user sees if they need to be prompted.
+
+---
+
+For now, keep the last line as it is above.  This line is only kept
+for IRAF compatibility.  The XPI library doesn't use this line.
+
+
+
+Now, here is the fortran code to for the xancp program
+
+
+      PROGRAM xancp
+
+* just the main program
+      INTEGER*4 ierr
+
+
+* Load the parameter table information.
+*
+* The first parameter is the name of the program
+* The second is the name of the disk to find the system copy of the .par file
+* and the third is the directory to find the system copy of the .par file.
+*
+* The parameter file name will be xancp.par and if the user doesn't have
+* their own copy then we will look in
+* xanadu:[lib.xpi.examples.standalone]xancp.par for vms or
+* /xanadu/lib/xpi/examples/standalone/xancp.par for unix.
+*
+      CALL TBLDSTAND('xancp','xanadu','lib/xpi/examples/standalone',
+     &	ierr)
+      CALL xancpsub
+
+      END
+
+
+      SUBROUTINE xancpsub
+
+
+      IMPLICIT NONE
+
+      CHARACTER*100 filename
+      INTEGER*4 ierr
+
+
+* A few xanadu calls to setup the output system
+
+      CALL XCHATY(10,10)
+      CALL XWRITE(' XANCP example',5)
+
+
+* Get the value of the infile parameter and put it in the fortran variable
+* filename
+
+      CALL PCLGST('infile',filename,ierr)
+
+      call xwrite(' Infile is '//filename,5)
+
+
+
+      filename = ' '
+
+* Get the value of the outfile parameter and put it in the fortran variable
+* filename
+
+      CALL PCLGST('outfile',filename,ierr)
+      call xwrite (' outfile is '//filename,5)
+
+
+* Now do what ever you wanted to do to copy the files
+
+      STOP
+      END
+
+
+Compile the above program and link it with the XPI and the xanadu
+libraries.  Make sure that the XPI library is searched before the
+xanadu library.  Then put the sample parameter file in
+xanadu:[lib.xpi.examples.standalone]xancp.par for vms or
+/xanadu/lib/xpi/examples/standalone/xancp.par for unix.  Once that is
+done the program is ready to go.
+
+* Converting an existing XANADU standalone program to XPI.
+
+The basic procedure will be the same as writing a new program like
+xancp above.  As an example I'll use excerpts from DUMPFITS.
+
+DUMPFITS was converted to run under the xanadu system from a normal
+fortran user interface.  It basically had three parameters.  The
+first, an input FITS file was required.  The second, an output file,
+was optional, and defaulted to the terminal if it wasn't there, and
+the third was also optional and told whether the user wanted
+pagebreaks or not.  It's parameter file looked like this:
+
+INFILE,s,al,"COSB01.DAT",,,"> Name of FITS file?"
+OUTFILE,s,h,,,,"> Name of optional output file?"
+PAGEBREAK,b,al,yes,,,"> Page breaks?"
+MODE,s,h,"ql",,,""
+
+
+There are three differences from the xancp parameter file.  The first
+is that INFILE has a default.  This was left over from the last time
+dumpfits was used.  The second difference is that OUTFILE has a mode
+of h rather than al.  This means that OUTFILE is a hidden parameter
+and if the user doesn't specify it then the user will not be asked for
+a value, it will just return the default.  The last difference is that
+the parameter PAGEBREAK is a boolean rather than a string.  Since it
+has a mode of al it would normally be asked for, except it has a
+default.  Since it also has a mode of learn it will save what ever the
+user overrides the pagebreak parameter with.
+
+
+The old dumpfits user interface looked like this:
+
+**==DMPFIT3.spg  processed by SPAG 3.09I  at 13:28 on  7 Jan 1992
+* Version 3 dumpfits
+
+	.
+	.
+	.
+
+	Comments deleted to save space
+
+	.
+	.
+	.
+
+
+      PROGRAM DMPFIT3
+
+
+      IMPLICIT NONE
+
+      INTEGER*4 unit
+      INTEGER*4 rwmode
+      INTEGER*4 blocksize
+      CHARACTER*100 filename
+      CHARACTER*100 line
+      CHARACTER*10 pagebreak
+      INTEGER*4 status
+      INTEGER*4 hdutype
+      LOGICAL*4 tty
+      LOGICAL*4 page
+      INTEGER*4 iparse , iflag
+      INTEGER*4 nret
+
+      CALL XCHATY(10,10)
+      CALL XWRITE(' DUMPFITS 2.0f',5)
+
+====== Get the input from the user, or from the command line
+
+      CALL XINIRD('<fits file name> [<output file>]:',line,iparse)
+      IF ( iparse.NE.0 ) STOP 'ERROR IN XINIRD'
+
+====== Get the first parameter's value
+
+      CALL XGTSTR(line,iparse,1,'fits file name:',1,filename,nret,iflag,
+     &            -1)
+      unit = 20
+      rwmode = 0
+      CALL FTOPEN(unit,filename,rwmode,blocksize,status)
+      CALL PRINT_ERROR(status)
+
+      filename = ' '
+
+======= Get the second parameter's value
+
+      CALL XGTSTR(line,iparse,1,'output file name:',1,filename,nret,
+     &            iflag,-1)
+      tty = .FALSE.
+      IF ( filename.EQ.' ' ) THEN
+         filename = '/dev/tty'
+         tty = .TRUE.
+      ENDIF
+      OPEN (10,FILE=filename,STATUS='unknown')
+      IF ( tty ) THEN
+
+======= Get input to determine whether or not we will do page breaks
+
+         CALL XINIRD('Do you want page breaks? (Default is yes) ',line,
+     &               iparse)
+         IF ( iparse.NE.0 ) STOP 'ERROR IN XINIRD'
+         CALL XGTSTR(line,iparse,1,'page breaks:',1,pagebreak,nret,
+     &               iflag,-1)
+         page = .TRUE.
+         IF ( pagebreak(1:1).EQ.'n' .OR. pagebreak(1:1).EQ.'N' ) THEN
+            page = .FALSE.
+         ENDIF
+      ENDIF
+
+	.
+	.
+	.
+
+	The rest of the code deleted
+	.
+	.
+	.
+
+
+
+
+
+
+The above was replaced with:
+
+**==DUMPFITS_MAIN.spg  processed by SPAG 3.09I  at 16:58 on 20 May 1992
+* Version 3 dumpfits
+
+	.
+	.
+	.
+	Comments deleted
+	.
+	.
+	.
+
+      PROGRAM DUMPFITS_MAIN
+
+======= This is all new code to load the parameter file and then
+======= call the program which dumpfits used to be
+
+* just the main program
+      INTEGER*4 ierr
+
+
+
+      CALL TBLDSTAND('dumpfits','xanadu','lib/xpi/xparm',ierr)
+      CALL DMPFIT3
+
+      END
+**==DMPFIT3.spg  processed by SPAG 3.09I  at 16:58 on 20 May 1992
+
+      SUBROUTINE DMPFIT3
+
+
+      IMPLICIT NONE
+
+      INTEGER*4 unit
+      INTEGER*4 rwmode
+      INTEGER*4 blocksize
+      CHARACTER*100 filename
+      INTEGER*4 status
+      INTEGER*4 hdutype
+      LOGICAL*4 tty
+      LOGICAL*4 page
+      INTEGER*4 ierr
+
+      CALL XCHATY(10,10)
+      CALL XWRITE(' DUMPFITS 2.0f',5)
+
+====== Get the value of the INFILE parameter
+
+      CALL PCLGST('infile',filename,ierr)
+      unit = 20
+      rwmode = 0
+      status = 0
+      CALL FTOPEN(unit,filename,rwmode,blocksize,status)
+      CALL PRINT_ERROR(status)
+
+      filename = ' '
+
+====== Get the value of the OUTFILE parameter
+
+      CALL PCLGST('outfile',filename,ierr)
+      tty = .FALSE.
+      IF ( filename.EQ.' ' ) THEN
+         filename = '/dev/tty'
+         tty = .TRUE.
+      ENDIF
+      OPEN (10,FILE=filename,STATUS='unknown')
+      IF ( tty ) THEN
+         page = .TRUE.
+
+====== If we didn't open an OUTFILE then get the value of PAGEBREAK
+
+         CALL PCLGSB('pagebreak',page,ierr)
+      ENDIF
+	.
+	.
+	.
+	Rest of code deleted
+	.
+	.
+	.
+
+The big differences between the source for the old dumpfits and the new
+dumpfits is that new version has a separate main program grafted on
+the front and rather than using xgtarg to split up a command line you
+call PCLGSx to get the different parameter values.  All the prompting,
+input validation, and command line parsing is handled by the XPI
+library.  The reason for the separate main program which load the
+parameter file and then calls the subroutine to do all of the work is
+to make porting to IRAF easier.  It is not a requirement.
+
+
+
+* Converting an existing command driven program to XPI
+This is a bit more dificult problem.  For starters take a look at
+/xanadu/xpi/examples/command or xanadu:[lib.xpi.examples.command].
+This is a simple example of a command line program  but with the large
+parse tables from browse.  As above, the first thing to do is to
+create the tables.
+
+Each table consists of comma separated fields.  The first to do is the
+command table.  This is a table of all the valid commands, a one line
+help message, a access mode, and a window type.  The two access modes
+are w for world and s for system.  XPI doesn't use the window type,
+this is reserved for the GUI.
+
+Here is an example:
+
+alias  ,alias a command               ,w,def
+spawn  ,spanw a dcl command           ,w,def
+debug  ,toggle debugging              ,w,def
+sc     ,search in a cone              ,w,def
+sparm  ,search by parameter           ,w,def
+sname  ,search by name                ,w,def
+dall   ,display all                   ,w,def
+dat    ,display ascii table           ,w,def
+dline  ,display line                  ,w,def
+dpage  ,display page                  ,w,def
+dsam   ,display sample                ,w,def
+lat    ,list ascii tables             ,w,def
+ldb    ,list databases                ,w,def
+
+Even though the table above is formatted into columns, the important
+formatting is done by commas.  The position on the line is not
+important.
+
+The second table do build is the key word table.  This table is only
+used for user help and the GUI at the moment.  It has two comma
+separated fields.  The first is the general class of command, the
+second is the actual command the user types.  An example:
+
+search, sname
+search, sparm
+search, sc
+search, sql
+display, dall
+display, dat
+display, dclass
+display, dcoord
+display, dline
+display, dpage
+display, dsam
+display, sef
+display, sif
+display, sort
+plot, pdev
+plot, pp
+plot, psam
+list, lat
+list, databases
+list, class
+
+
+The third table to build is the parameter table (or .par file for IRAF
+fans).  This will have one entry for each parameter used for each
+command in the whole program.  The is one place where one may need to
+think and ponder a bit.  One example would be you have 6 different
+commands which take a RA.  You could just call the parameters RA1,
+RA2, ..., RA6, or you could just call the parameter RA.  If you call
+it RA and have the parameter value learned then the RA's will all
+default to the same value.  In some cases this makes sense, in others
+it doesn't.
+
+Here is an example .par file.
+
+
+INFILE,s,a,"index.fits",,,"> Name of FITS file and [ext#]"
+OUTFILE,s,a,"STDOUT",,,"> Name of optional output file"
+HDRFILE,s,h,"STDOUT",,,"> Name of optional header output file"
+DATFILE,s,h,"STDOUT",,,"> Name of optional data output file"
+COLUMNS,s,a,,,,"> Names of columns"
+ROWS,s,a,"-",,,"> Lists of rows"
+PAGEWIDTH,i,h,80,1,256,"> Page width"
+PRHEAD,b,h,yes,,,"> Flag for header keywords"
+PRDATA,b,h,yes,,,"> Flag for data"
+SHOWCOL,b,h,yes,,,"> Flag for column names"
+SHOWUNIT,b,h,yes,,,"> Flag for units"
+SHOWROW,b,h,yes,,,"> Flag for row numbers"
+ALIGN,b,h,yes,,,"> Flag for column width"
+ANAME,s,al,"t9",,,"> Alias name"
+ACMD,s,al,"t10",,,"> Command string to alias"
+SHOW,b,h,no,,,">"
+LIST,b,h,no,,,">"
+DELETE,b,h,no,,,">"
+SYSTEM,b,h,no,,,">"
+USER,b,h,no,,,">"
+PREVIOUS,b,h,no,,,">"
+NEW,b,h,no,,,">"
+ALL,b,h,no,,,">"
+PAGE,b,h,no,,,">"
+FULL,b,h,no,,,">"
+
+
+
+The most difficult table is saved for last.  If one thinks of these
+tables as relations in a relational database then this joins two
+tables in a Many-Many relationship.  This is called the key table.
+
+The first column is command this line is associated with.  The second
+column is the parameter this is associated with.  The third field is
+the parameter order.  1 means the first positional parameter, 2 means
+the second positional parameter, and so on.  0 means that this
+parameter isn't a positional parameter.  The last column is called the
+group parameter.  It is for hierachal commands where certain
+parameters are not compatible.
+
+
+
+alias, show, 0,
+alias, list, 0,
+alias, delete, 0,
+alias, system, 0,
+alias, user, 0,
+alias, previous, 0,
+alias, new, 0,
+alias, full, 0,
+alias, aname, 1,
+alias, acmd, 2,
+asam, par1, 1,
+asam, par2, 2,
+asam, par3, 3,
+asam, chi, 0,
+asam, momment, 0,
+asam, regression, 0,
+asam, cross_correlate, 0,
+asam, comp, 0,
+asam, plot, 0,
+asam, historgram, 0,
+asam, bins, 0,
+asam, ait, 0,
+cdb, db, 1,
+cdb, sample, 2,
+cdb, index, 3,
+cey, year, 1,
+chanpha, par, 1,
+chanpha, background, 0,
+chanpha, bad_chan, 0,
+chanpha, correction, 0,
+chanpha, file, 0,
+chanpha, prefix, 0,
+chanpha, response, 0,
+chanpha, systematic, 0,
+chat, terminal, 1,
+chat, log, 2,
+cind, param, 1,
+cpd, dev, 1,
+comp, rad, 0,
+comp, srad, 0,
+comp, list, 0,
+comp, par, 0,
+comp, range, 0,
+comp, time, 0,
+comp, stats_par, 0,
+comp, summary, 0,
+comp, mean, 0,
+comp, min, 0,
+comp, max, 0,
+comp, db_stats, 0,
+comp, new_db, 0,
+comp, ninter, 0,
+comp, full, 0,
+cross, db, 0,
+cross, sample, 0,
+cross, rad, 0,
+cross, srad, 0,
+cross, list, 0,
+cross, full, 0,
+cross, shift, 0,
+cross, param, 0,
+cross, range, 0,
+cross, time, 0,
+csam, samp, 1,
+csam, index, 2,
+dall, range, 1,
+dall, full, 0,
+dat, range, 1,
+dat, tab, 0,
+dat, full, 0,
+dbhelp, topic, 1,
+dbhelp, observatory, 0,
+dbhelp, general, 0,
+dbhelp, database, 0,
+dclass, range, 1,

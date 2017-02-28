@@ -1,0 +1,605 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotimggen/uvotimggen,v $
+# $Revision: 1.13 $
+# $Date: 2005/11/02 15:19:32 $
+#
+#	uvotimggen
+#
+#	create a multi-extensioned fits file from a single extension
+#       fits input file for testing.
+#
+#
+# $Log: uvotimggen,v $
+# Revision 1.13  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.12  2004/03/04 16:07:45  rwiegand
+# Reorganized the code.
+#
+# Revision 1.11  2003/11/07 15:19:24  valett
+# now creates an ouput file for each filter
+# new output files now match swift/uvot file naming conventions.
+# now calculates burst
+#
+# Revision 1.10  2003/10/06 13:53:51  valett
+# update ut-uvotimggen to reflect new calling seq.
+#
+# Revision 1.9  2003/10/03 17:11:11  valett
+# localized seed image info gathering.
+# corrected image exposure processing.
+#
+# Revision 1.8  2003/10/01 17:48:12  valett
+# removed debug.  updated .par file.
+#
+# Revision 1.7  2003/10/01 14:31:32  valett
+# Added burst simulation, and cleaned up some code.
+#
+# Revision 1.5  2003/08/08 17:58:24  valett
+# filled in time keywords (TSTART, TSTOP, EXPOSURE), and allowed user to
+# supply their own start time.
+#
+# Revision 1.4  2003/08/06 02:01:33  valett
+# uvotimggen now writes out the WCS keywords.
+#
+# Revision 1.3  2003/08/05 19:04:13  valett
+# Uses new exposure sequence input file.  A few more keywords need to be
+# updated.
+#
+# Revision 1.2  2003/07/28 17:19:49  valett
+# inital version of the html file.
+#
+# Revision 1.1  2003/07/28 15:36:02  valett
+# initial version of uvotimggen.  Doesn't clean up temp files.  Doesn't use
+# new input table format, and doesn't have a do your own burst feature.
+#
+
+use strict;
+
+package Uvotimggen;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+use POSIX;
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+
+use constant E => exp(1);
+use constant PI => 4 * atan2(1,1);
+
+use constant COLUMNS => qw(
+	TSTARTs FILTER EXPOSUREs MODE FOVam BIN FNUM1 FNUM2 FNUM REVOLUTIONS
+	TMOVE FASTMODE1 FASTMODE2 IMAGEMODE1 IMAGEMODE2 Vbits TFRAMEh TSUMh
+);
+
+
+# my @filters = qw(uu bb vv w1 w2 m2 wh gv gu mg);
+
+
+# main
+{
+	my $tool = Uvotimggen->new(
+		tool => 'uvotimggen',
+		version => 'v1.1',
+		code => 0,
+		);
+
+	eval {
+		$tool->parseOptions(
+			argv => [ @ARGV ],
+			options => [ qw(
+				imgfile expfile obsid tfirst
+				grbtime grbx grby rate0
+				clobber cleanup history chatter
+				) ],
+			);
+
+		$tool->execute;
+	};
+
+	if ($@) {
+		$tool->error(BAD_TASK, $@);
+	}
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->initialization
+		if $self->isValid;
+
+	$self->createBurstTemplate
+		if $self->isValid;
+
+	$self->parseExposureFile
+		if $self->isValid;
+
+	$self->createExposures
+		if $self->isValid;
+
+	$self->finalization;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(FTOOLS HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+}
+
+
+sub initialization
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# read keywords from input image
+	my $path = $args->{imgfile};
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my $header = $fits->read_header($status);
+
+	$fits->close_file($status);
+
+	my $description = '';
+	foreach my $key (qw(NAXIS1 NAXIS2 EXPOSURE CTYPE1 CTYPE2)) {
+		$description .= "\n\t$key => $header->{$key}";
+	}
+
+	$self->{skyInput} = ($header->{CTYPE1} =~ /-TAN/) ? 1 : 0;
+
+	$self->report("input image parameters$description");
+	$self->{image} = $header;
+
+	if ($args->{grbtime} =~ /default/i) {
+		$self->{TBASE} = $header->{TSTART};
+	}
+	else {
+		$self->{TBASE} = $args->{grbtime};
+	}
+}
+
+
+sub parseExposureFile
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $path = $args->{expfile};
+
+	my $fh = FileHandle->new($path);
+	if (not $fh) {
+		die("unable to open $path: $!");
+	}
+
+	my @exposures;
+	my $line = 0;
+
+	while (<$fh>) {
+
+		next if /^#/;
+
+		my @values = split(/,/, $_);
+
+		my $i = 0;
+		my %exposure = map { $_ => $values[$i++] } COLUMNS;
+		$exposure{ID} = ++$line;
+
+		my $description = '';
+		foreach my $key (qw(ID TSTARTs FILTER EXPOSUREs FOVam)) {
+			$description .= "\n\t$key => $exposure{$key}";
+		}
+
+		$self->report("exposure:$description");
+
+		push(@exposures, \%exposure);
+	}
+
+	undef($fh);
+
+	$self->{exposures} = \@exposures;
+}
+
+
+sub createExposures
+{
+	my ($self) = @_;
+
+	my $tfirst = $self->args->{tfirst};
+
+	foreach my $exp (@{ $self->{exposures} }) {
+
+		$self->report("creating exposure $exp->{ID}");
+
+		$exp->{MISSIONs} = $self->{TBASE} + $tfirst + $exp->{TSTARTs};
+		$self->{exposure} = $exp;
+
+		$self->extractExposure
+			if $self->isValid;
+
+		$self->scaleExposure
+			if $self->isValid;
+
+		$self->extractBurst
+			if $self->isValid;
+
+		$self->scaleBurst
+			if $self->isValid;
+
+		$self->addBurstToExposure
+			if $self->isValid;
+
+		$self->updateKeywords
+			if $self->isValid;
+
+		$self->appendImage
+			if $self->isValid;
+
+		$self->doCleanup
+			if $self->isValid;
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub extractExposure
+{
+	my ($self) = @_;
+	
+	my $exp = $self->{exposure};
+
+	my $image = $self->{image};
+
+	my $size = POSIX::floor(2048 * $exp->{FOVam} / 17 + 0.5);
+	$exp->{FOVpixels} = $size;
+
+	my $x1 = POSIX::floor(($image->{NAXIS1} - $size) / 2 + 1);
+	my $x2 = $x1 + $size - 1;
+
+	my $y1 = POSIX::floor(($image->{NAXIS2} - $size) / 2 + 1);
+	my $y2 = $y1 + $size - 1;
+
+	$exp->{EXTRACT} = "[$x1:$x2:$exp->{BIN},$y1:$y2:$exp->{BIN}]";
+	$exp->{X1} = $x1;
+	$exp->{Y1} = $y1;
+
+	my $infile = $self->args->{imgfile} . $exp->{EXTRACT};
+
+	$exp->{EXTPATH} = $self->temporary('exp');
+
+	my $command = $self->buildCommand('ftcopy',
+		infile => $infile,
+		outfile => $exp->{EXTPATH},
+		copyall => 'no',
+		);
+
+	$self->shell($command);
+}
+
+
+sub scaleExposure
+{
+	my ($self) = @_;
+	
+	my $exp = $self->{exposure};
+
+	my $scale = $exp->{EXPOSUREs} / $self->{image}->{EXPOSURE};
+
+	$exp->{EXTSCALE} = $self->temporary('scaled');
+
+	my $command = $self->buildCommand('fcarith',
+		infile => $exp->{EXTPATH},
+		const  => $scale,
+		outfil => $exp->{EXTSCALE},
+		ops    => 'MULT',
+        );
+
+	$self->shell($command);
+}
+
+
+sub extractBurst
+{
+	my ($self) = @_;
+
+	my $exp = $self->{exposure};
+
+	my $infile = $self->{grbTemplate} . $exp->{EXTRACT};
+
+	$exp->{EXTGRB} = $self->temporary('grb');
+
+	my $command = $self->buildCommand('ftcopy',
+		infile => $infile,
+		outfile => $exp->{EXTGRB},
+		copyall => 'no',
+		);
+
+	$self->shell($command);
+}
+
+
+sub scaleBurst
+{
+	my ($self) = @_;
+	
+	my $exp = $self->{exposure};
+
+	my $scale = $exp->{EXPOSUREs};
+
+	$exp->{GRBSCALE} = $self->temporary('grbscaled');
+
+	my $command = $self->buildCommand('fcarith',
+		infile => $exp->{EXTGRB},
+		const  => $scale,
+		outfil => $exp->{GRBSCALE},
+		ops    => 'MULT',
+        );
+
+	$self->shell($command);
+}
+
+
+sub addBurstToExposure
+{
+	my ($self) = @_;
+
+	my $exp = $self->{exposure};
+
+	$exp->{PATH} = $self->temporary('expwburst');
+
+	my $command = $self->buildCommand('farith',
+  		infil1 => $exp->{EXTSCALE},
+  		infil2 => $exp->{GRBSCALE},
+		outfil => $exp->{PATH},
+		ops => 'ADD',
+        );
+
+	$self->shell($command);
+}
+
+
+sub createPrimary
+{
+	my ($self, $path) = @_;
+
+	my $keywords = $self->temporary('keywords');
+	my $fh = FileHandle->new($keywords, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+			"unable to create keywords file $keywords [$!]");
+		return;
+	}
+
+	$fh->print("
+SIMPLE = T
+BITPIX = 8
+NAXIS  = 0
+CREATOR = UVOTIMGGEN
+");
+
+	$fh->close;
+
+	my $command = $self->buildCommand('ftemplate',
+		template => $keywords,
+		outfile => $path,
+		);
+
+	$self->shell($command);
+}
+
+
+sub appendImage
+{
+	my ($self) = @_;
+
+	my $exp = $self->{exposure};
+
+	my $args = $self->args;
+	my $filter = $exp->{FILTER};
+
+	my $filename = "sw$args->{obsid}u\L$filter" . 'raw.img';
+
+	# keep track of number of images created for each filter
+	if (not $self->{$filter}) {
+
+		# first file using this filter
+		$self->{$filter} = 1;
+
+		if (-e $filename) {
+			if ($args->{clobber} eq 'yes') {
+				unlink($filename)
+					or $self->warning("unable to remove $filename: $!");
+			}
+			else {
+				$self->error(BAD_OUTPUT,
+					"$filename already exists and clobber not set");
+			}
+		}
+
+		$self->createPrimary($filename);
+	}
+	else {
+		++$self->{$filter};
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftappend',
+				infile => $exp->{PATH},
+				outfile => $filename,
+				);
+
+		$self->shell($command);
+	}
+}
+
+
+sub updateKeywords
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $exp = $self->{exposure};
+
+	my $keywords = $self->temporary('keywords');
+
+	my $fh = FileHandle->new($keywords, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+			"unable to create temporary keyword file");
+		return;
+	}
+
+	
+	my $extname = sprintf("$exp->{FILTER}%08dI", $exp->{MISSIONs});
+	my $targid = substr($args->{obsid}, 0, 8);
+	my $segnum = substr($args->{obsid}, -3);
+	my $tstop = $exp->{MISSIONs} + $exp->{EXPOSUREs};
+	my $x0 = $exp->{X1} - 1;
+	my $y0 = $exp->{Y1} - 1;
+
+    $fh->print("
+EXTNAME  = $extname
+TELESCOP = SWIFT
+INSTRUME = UVOT
+CREATOR  = UVOTIMGGEN  / UVOT image and burst simulator
+DATAMODE = IMAGE
+OBSID    = $args->{obsid}
+TARGID   = $targid
+SEGNUM   = $segnum
+FILTER   = $exp->{filter}
+TSTART   = $exp->{MISSIONs} / Exposure start
+TSTOP    = $tstop / Exposure end
+EXPOSURE = $exp->{EXPOSUREs} / [s] Exposure duration
+WINDOWDX = $exp->{FOVpixels} / Size along X axis
+WINDOWDY = $exp->{FOVpixels} / Size along Y axis
+WINDOWX0 = $x0 / X coord of bottom left corner
+WINDOWY0 = $y0 / Y coord of bootom left corner
+BINX     = $exp->{BIN} / X axis binning
+BINY     = $exp->{BIN} / Y axis binning
+");
+
+	$fh->close;
+
+	my $command = $self->buildCommand('fthedit',
+		infile => $exp->{PATH},
+		keyword => "\@$keywords",
+		value => '',
+		operation => 'add',
+		);
+
+	$self->shell($command);
+
+}
+
+
+sub createBurstTemplate
+{
+	my ($self) = @_;
+	
+	my $args = $self->args;
+
+	$self->report("creating burst template");
+
+	my $grbx = $args->{grbx};
+	my $grby = $args->{grby};
+
+	my $datalist = $self->temporary('pixels');
+	my $template =  $self->temporary('burst', release => 1);
+
+	my $fh = FileHandle->new($datalist, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+				"unable to create burst list file [$!]");
+		return;
+	}
+
+  	my $sigma = 1.36; # width of characteristic Gaussain in pixels
+	my $negDistSq;  # negative distance to burst from pixel square
+	my $twoSigmaSq = 2 * ($sigma ** 2);
+	my $rate0 = $args->{rate0};
+	my $A0 = $args->{rate0} / PI / $twoSigmaSq;
+
+	for (my $y = 0; $y < 2048; ++$y) {
+
+		for (my $x = 0; $x < 2048; ++$x) {
+
+			$negDistSq = -(($grbx - $x) ** 2 + ($grby - $y) ** 2);
+
+			my $value = $A0 * exp($negDistSq / $twoSigmaSq);
+
+			$fh->print($value . "\n");
+		}
+	}
+
+	undef($fh);
+
+	$self->report("burst pixel values written to temporary");
+
+	my $command = $self->buildCommand('ftimgcreate',
+		bitpix => FLOAT_IMG,
+		naxes => "2048,2048",
+		datafile => $datalist,
+		outfile => "!$template",
+		);
+
+	$self->shell($command);
+
+	$self->{grbTemplate} = $template;
+}
+
+
+sub doCleanup
+{
+	my ($self) = @_;
+
+	if ($self->args->{cleanup} ne 'yes') {
+		return;
+	}
+
+	foreach my $path ($self->temporaries) {
+		if (-e $path) {
+			if (not unlink($path)) {
+				$self->warning("unable to cleanup $path: $!");
+			}
+		}
+	}
+}
+
+
+sub finalization
+{
+	my ($self) = @_;
+
+	$self->addTemporary($self->{grbTemplate});
+
+	$self->doCleanup;
+}
+
+

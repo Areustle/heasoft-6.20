@@ -1,0 +1,2163 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotproduct/uvotproduct,v $
+# $Revision: 1.39 $
+# $Date: 2016/02/23 21:34:58 $
+# 
+# $Log: uvotproduct,v $
+# Revision 1.39  2016/02/23 21:34:58  rwiegand
+# Modified uvotproduct to use swifttime when converting between MET and UTC and updated labels to reflect that.
+#
+# Revision 1.38  2013/11/20 14:57:11  rwiegand
+# Since there are rare but intermittent issues using ds9 to retrieve DSS images,
+# try the SAO server if the STSci server fails to provide an image.
+#
+# Revision 1.37  2012/09/21 18:02:22  rwiegand
+# Disallow timezero=0 since uvotmaghist treats it specially.
+#
+# Revision 1.36  2012/09/13 22:06:30  rwiegand
+# The interaction with ds9 to draw images was not doing a good job with current
+# versions of ds9.  Allow the user to specify the grid file.  Automatically
+# switch to a ds9 v6 grid file if that version is detected.
+#
+# Revision 1.35  2012/09/07 19:04:38  rwiegand
+# The title is truncated (for unnamed bursts). Addressed by breaking it into
+# two text regions.
+#
+# Revision 1.34  2011/10/27 20:36:15  rwiegand
+# Use rewaiter instead of waiter (which is not generally installed).
+#
+# Revision 1.33  2011/09/30 13:23:11  rwiegand
+# Modified so failure to create a finding chart graphic results in a warning
+# message instead of a task error.
+#
+# Revision 1.32  2011/08/29 18:55:57  rwiegand
+# Run ds9 under waiter so that it will be aborted if too slow.  Added ds9 grid
+# file compatible with version 6.
+#
+# Revision 1.31  2011/05/16 14:55:01  rwiegand
+# Use the nsigma parameter for plots.  Determine whether detections are
+# significant based on photometry NSIGMA (instead of MAG_LIM).
+#
+# Revision 1.30  2011/02/28 17:10:09  rwiegand
+# Moved flux density calculations to library.  Identify UVOT magnitudes
+# as Vega system.
+#
+# Revision 1.29  2011/02/09 21:08:04  rwiegand
+# Changes to support multiple magnitude systems.
+#
+# Revision 1.28  2010/06/30 20:51:26  rwiegand
+# Added subpixel parameter.
+#
+# Revision 1.27  2010/06/29 22:07:32  rwiegand
+# Write regions to magnitude history as FITS tables.
+#
+# Revision 1.26  2010/06/23 20:53:27  rwiegand
+# Added parameter for detector sensitivity loss correction.
+#
+# Revision 1.25  2009/11/06 16:05:45  rwiegand
+# Zoom out 4/3 to prevent labels from being cropped.
+#
+# Revision 1.24  2009/08/28 22:16:51  rwiegand
+# Corrected grid issues for ds9 v5.  Abandoning support for ds9 v4.
+#
+# Revision 1.23  2009/07/26 02:43:43  rwiegand
+# Updated for PSF / encircled energy calibration.
+#
+# Revision 1.22  2009/05/04 18:29:58  rwiegand
+# Use rebin=DEFAULT for the default rebinning setup and made rebin=NONE
+# skip rebinning entirely.
+#
+# Revision 1.21  2009/04/29 21:18:30  rwiegand
+# Do not give up if uvotmaghist does not produce the expected output file.
+# This addresses cases where there are no aspect solutions for any of the
+# images for some filter.
+#
+# Revision 1.20  2009/03/18 19:45:10  rwiegand
+# Fixed a problem between PGPLOT types and file extensions.  Less tightly
+# constrain format of values in xxxpos parameters.
+#
+# Revision 1.19  2009/03/09 20:12:31  rwiegand
+# Support both ds9 v4 and v5.  Use first exposure longer than 50 seconds for
+# finding chart plots.  Added qdpfile and plotfilters parameters.  Show
+# EXTNAME of each exposure in reportfile.
+#
+# Revision 1.18  2008/12/17 22:04:56  rwiegand
+# Write source region to report file.  Updated lower limit of time axis to
+# account for entire error bar of first data point.
+#
+# Revision 1.17  2008/08/21 21:25:34  rwiegand
+# Areas should be averaged instead of summed when combining images.  Include
+# significance in reporting unbinned and rebinned results.
+#
+# Revision 1.16  2008/08/18 15:43:57  rwiegand
+# Updated to use new rebinning code, perform uvotsource photometry on
+# combined images, and report which exposures were combined.
+#
+# Revision 1.15  2008/05/27 20:06:54  rwiegand
+# Added warning that reported significances, upper limits, and magnitude
+# errors are suspect.
+#
+# Revision 1.14  2008/05/06 19:32:34  rwiegand
+# Removed dependency on EXPID keyword. Updated geometry of ds9 window.
+# Do not use settling image for finding chart.  Corrected calculation of
+# magnitude for upper limits.  Use center of source region as best position
+# if no other position available.
+#
+# Revision 1.13  2008/04/22 20:15:26  rwiegand
+# Updated default fwhmsig to 3%.  Allow user to control uvotapercorr fwhmsig
+# value for apercorr=CURVEOFGROWTH.
+#
+# Revision 1.12  2008/04/09 21:41:41  rwiegand
+# Implemented support for bkgreg=DEFAULT.  Removed restriction on naming
+# convention of infile(s).
+#
+# Revision 1.11  2008/04/09 15:12:12  rwiegand
+# Added centroid parameter.
+#
+# Revision 1.10  2008/03/26 20:01:17  rwiegand
+# Implemented timezero parameter.
+#
+# Revision 1.9  2008/03/26 14:50:38  rwiegand
+# Allow user to specify uvotsource calibration parameters.
+#
+# Revision 1.8  2008/03/25 20:04:53  rwiegand
+# Use UVOT::Time instead of swifttime for converting between ISO/UTC and MET.
+#
+# Revision 1.7  2007/11/08 21:01:42  rwiegand
+# Stop saving temporary qdp file.
+#
+# Revision 1.6  2007/10/25 13:52:05  rwiegand
+# Create report with summary of inputs and results.
+#
+# Revision 1.5  2007/10/09 15:36:30  rwiegand
+# Inverted y-axis for magnitude plots.  Display time using calendar instead
+# of MET.  Transfer keywords to output.  Updated ground position color.
+#
+# Revision 1.4  2007/08/22 21:06:07  rwiegand
+# Reimplemented making use of Frank's uvot_fluxes.pl and uvot_blink.pl.
+#
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+use POSIX;
+use Scalar::Util;
+
+use SimpleFITS;
+use UVOT::Filter;
+use UVOT::Source;
+use UVOT::Calibration;
+use UVOT::Rebin;
+use UVOT::Time;
+
+
+my %SHORT_FILTER = (
+	WHITE => 'WH',
+	UVW1 => 'W1',
+	UVW2 => 'W2',
+	UVM2 => 'M2',
+);
+
+
+
+{
+	my $task = __PACKAGE__->new(version => 2.3);
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			ingestPositions
+			loadCalibration
+			setTimeZero
+			studyInput
+			checkDs9Version
+			makeMagnitudeHistories
+			writeRegions
+			rebinResults
+			makePlots
+			selectFindingChartExposure
+			extractFindingChartSubimage
+			makeSummary
+			makeFindingChart
+			finalize
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(options => [ qw(
+				infile=string srcreg=file bkgreg=file reportfile=file
+				batpos=string xrtpos=string uvotpos=string groundpos=string
+				plotfile=file outfile=file plotmag=boolean fcprefix=string
+				timezero=string centroid=boolean fwhmsig=real
+				zerofile=file coinfile=file psffile=file
+				lssfile=file sensfile=file gridfile=file
+				apercorr=string nsigma=real exclude=string frametime=string
+				rebin=string qdpfile=string plotfilters=string subpixel=integer
+				cleanup=boolean clobber=boolean chatter=integer
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	foreach my $key (qw(srcreg bkgreg)) {
+		next if uc($args->{$key}) eq 'NONE';
+		next if $key eq 'bkgreg' and uc($args->{$key}) eq 'DEFAULT';
+
+		$args->{$key} =~ s/\s+$//;
+		if (not -f $args->{$key}) {
+			$self->error(BAD_INPUT,
+					"$key $args->{$key} does not exist");
+		}
+		else {
+			$self->{$key} = $args->{$key};
+		}
+	}
+
+	my @infile;
+	if ($args->{infile} =~ /^@(.+)/) {
+		my $path = $1;
+		my $fh = FileHandle->new($path);
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to open $path [$!]");
+		}
+		else {
+			@infile = <$fh>;
+			chomp(@infile);
+			undef($fh);
+		}
+	}
+	else {
+		@infile = split(/,\s*/, $args->{infile});
+	}
+	$self->{INFILES} = \@infile;
+
+	if (Scalar::Util::looks_like_number($args->{timezero}) and $args->{timezero} == 0) {
+		$self->error(BAD_INPUT, "timezero=$args->{timezero} is not allowed");
+	}
+
+	$self->{WRITE_HISTFILE} = $args->{outfile} !~ /^NONE$/i;
+	if ($args->{clobberFlag}) {
+		if ($self->{WRITE_HISTFILE} and -e $args->{outfile}) {
+			unlink($args->{outfile})
+				or $self->warning("unable to remove $args->{outfile} [$!]");
+		}
+
+		if (-e $args->{plotfile}) {
+			unlink($args->{plotfile})
+				or $self->warning("unable to remove $args->{plotfile} [$!]");
+		}
+	}
+
+	$self->{MAG_SYSTEM} = 'Vega';
+
+	$self->{REBIN} = uc($args->{rebin}) ne 'NONE';
+
+	$self->{PLOT_MAG} = $args->{plotmagFlag};
+
+	$self->{MAKE_FINDING_CHARTS} = uc($args->{fcprefix}) eq 'NONE' ? 0 : 1;
+	if ($self->{MAKE_FINDING_CHARTS}) {
+		foreach my $postfix (qw(_uvot.jpg _dss.jpg)) {
+			my $path = $args->{fcprefix} . $postfix;
+			if (-e $path) {
+				unlink($path)
+					or $self->warning("unable to remove $path [$!]");
+			}
+		}
+	}
+
+# finding chart control
+	$self->{GRID_BIG} = "$ENV{LHEA_DATA}/uvotproduct_big.grd";
+	$self->{GRID_SMALL} = "$ENV{LHEA_DATA}/uvotproduct_small.grd";
+	$self->{GRID_DS9v6} = "$ENV{LHEA_DATA}/uvotproduct_ds9v6.grd";
+
+	if (uc($args->{gridfile}) ne 'NONE') {
+		$self->{GRID_USER} = $args->{gridfile};
+	}
+
+	$self->{SCALE} = 'auto';
+
+	my @plotfilters;
+	foreach my $plotfilters (split(':', $args->{plotfilters})) {
+		my @filters = split(',', $plotfilters);
+		push(@plotfilters, \@filters);
+	}
+	$self->{PLOT_FILTERS} = \@plotfilters;
+}
+
+
+sub checkDs9Version
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (uc($args->{fcprefix}) eq 'NONE') {
+		return;
+	}
+
+	my $result = $self->shell('ds9 -version -exit');
+
+	if ($self->isValid) {
+		my $version = $self->{DS9_VERSION} = $result->{output};
+		$version =~ s/ds9\s*//;
+		if ($version =~ /^5/) {
+			$self->{DS9_V5} = 1;
+		}
+		elsif ($version =~ /^6/) {
+			$self->{DS9_V6} = 1;
+			$self->{GRID_SMALL} = $self->{GRID_DS9v6};
+			$self->{GRID_BIG} = $self->{GRID_DS9v6};
+		}
+		else {
+			$self->warning("unexpected ds9 version '$version'");
+		}
+	}
+}
+
+
+sub loadCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $first = $self->{INFILES}[0];
+	my $header;
+	my $status = SimpleFITS->readonly($first)
+			->readheader($header, clean => 1)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read header of $first");
+		return;
+	}
+
+	my $object = $header->{OBJECT} || 'UNKNOWN';
+	$object =~ s/\s*\(UVOT only\)//;
+	$self->{OBJECT} = uc($object);
+
+	$self->{TARG_ID} = $header->{TARG_ID} || '?';
+	if (not $header->{TRIGTIME}) {
+		$self->warning("header missing TRIGTIME");
+	}
+	else {
+		$self->{TRIGTIME} = $header->{TRIGTIME};
+		$self->{TRIGSTR} = UVOT::Time::met2utc($self, $self->{TRIGTIME},
+				subs => 2, SWIFTTIME => 1);
+		$self->verbose("TRIGTIME $self->{TRIGTIME} / $self->{TRIGSTR} (corrected)");
+	}
+
+	my %coincidence;
+	UVOT::Calibration::loadCoincidenceLoss($self, \%coincidence,
+			PAR => $args->{coinfile},
+			PAR_NOTE => 'coinfile',
+			HEADER => $header,
+			# DEADTIME_CORRECTED => $args->{deadtimecorrFlag},
+			);
+	$self->{CAL_COINCIDENCE} = \%coincidence;
+
+	my %colortable = (
+		REPORTED => 1, # don't bother displaying values
+	);
+	UVOT::Calibration::loadColorTable($self, \%colortable,
+			PAR => $args->{zerofile},
+			PAR_NOTE => 'zerofile',
+			HEADER => $header,
+			);
+	$colortable{NULL} = 99;
+	$colortable{SYS_ERR} = $args->{syserrFlag};
+	$self->{CAL_COLORTABLE} = \%colortable;
+
+	my %reef;
+	UVOT::Calibration::loadEncircledEnergy($self, \%reef,
+			PAR => $args->{psffile},
+			PAR_NOTE => 'psffile',
+			HEADER => $header,
+			);
+	$self->{CAL_PSF} = \%reef;
+
+	my %lss;
+	if (uc($args->{lssfile}) ne 'NONE') {
+		UVOT::Calibration::loadLargeScaleSensitivity($self, \%lss,
+				PAR => $args->{lssfile},
+				PAR_NOTE => 'lssfile',
+				HEADER => $header,
+				);
+	}
+	else {
+		$lss{NONE} = 1;
+	}
+	$self->{CAL_LSS} = \%lss;
+
+	my %sensitivity;
+	UVOT::Calibration::loadDetectorSensitivity($self, \%sensitivity,
+			PAR => $args->{sensfile},
+			PAR_NOTE => 'sensfile',
+			HEADER => $header,
+			);
+	$self->{CAL_SENSCORR} = \%sensitivity;
+
+}
+
+
+sub setTimeZero
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $timezero = $args->{timezero};
+
+	if ($timezero =~ /^\d+-\d+-\d+T\d+:\d+:\d+/) {
+		$self->{TIMEZERO} = UVOT::Time::utc2met($self, $timezero, SWIFTTIME => 1);
+		$self->{TIMELABEL} = "Time since $self->{TIMEZERO} UTC (corrected)";
+		$self->parameterNote(timezero => "=> $self->{TIMEZERO}");
+	}
+	elsif ($timezero =~ /^\d+(\.\d+)?$/) {
+		$self->{TIMEZERO} = $timezero;
+		$self->{TIMELABEL} = "Time since $self->{TIMEZERO} MET";
+	}
+	elsif (uc($timezero) eq 'TRIGTIME') {
+		if (not $self->{TRIGTIME}) {
+			$self->error(BAD_INPUT, 'timezero=TRIGTIME, but TRIGTIME unknown');
+		}
+		else {
+			$self->{TIMEZERO} = $self->{TRIGTIME};
+			my $trigstr = UVOT::Time::met2utc($self, $self->{TRIGTIME},
+					subs => 2, SWIFTTIME => 1);
+			$self->{TIMELABEL} = "t - BAT corrected trigger time ($trigstr UTC)";
+			$self->parameterNote(timezero => "=> TRIGTIME $self->{TIMEZERO}");
+		}
+	}
+	else {
+		$self->error(BAD_INPUT, "invalid timezero '$timezero'");
+	}
+
+	if ($self->isValid and $self->{TIMEZERO} == 0) {
+		$self->error(BAD_INPUT, "invalid timezero '$timezero'");
+	}
+}
+
+
+sub studyInput
+{
+	my ($self) = @_;
+
+	foreach my $infile (@{ $self->{INFILES} }) {
+		my $header;
+		my $fits = SimpleFITS->readonly($infile);
+
+		my $nhdu = $fits->nhdu;
+		my $status = $fits->readheader($header, clean => 1)->status;
+
+		my $filter = $header->{FILTER} || 'UNKNOWN';
+
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"invalid FITS file $infile [$status]");
+		}
+		elsif ($filter eq 'UNKNOWN') {
+			$self->error(BAD_INPUT,
+					"$infile has invalid UNKNOWN FILTER [$status]");
+		}
+		elsif (not UVOT::Filter::isValid($filter)) {
+			$self->error(BAD_INPUT,
+					"$infile has invalid FILTER '$filter' [$status]");
+		}
+
+		if (my $obsid = $header->{OBS_ID}) {
+			$self->{OBS_IDs}{$obsid} = 1;
+		}
+		else {
+			$self->error(BAD_INPUT,
+					"$infile header missing OBS_ID");
+		}
+
+		last if not $self->isValid;
+
+		$self->{FILTERS}{$filter} = 1;
+
+		my @info;
+		for (my $i = 1; $self->isValid and $i <= $nhdu; ++$i) {
+			$status = $fits->move($i)
+					->readheader($header, clean => 1)
+					->status;
+			if ($status) {
+				$self->error(BAD_INPUT,
+						"unable to read $infile $i header [$status]");
+				next;
+			}
+
+			next if $header->{NAXIS} != 2;
+			next if $header->{NAXIS1} < 10;
+			next if $header->{NAXIS2} < 10;
+			if ($header->{FILTER} ne $filter) {
+				$self->error(BAD_INPUT,
+						"$infile HDU $i has FILTER $header->{FILTER}"
+						. " [instead of $filter]");
+			}
+
+			my $aspcorr = (not $header->{ASPCORR}
+					or $header->{ASPCORR} eq 'NONE') ? 0 : 1;
+
+			my %info = (
+				PATH => $infile,
+				HDU1 => $i,
+				FILTER => $header->{FILTER},
+				ASPCORR => $aspcorr,
+				EXPOSURE => $header->{EXPOSURE},
+			);
+			push(@info, \%info);
+		}
+
+		if (@info > 0) {
+			push(@{ $self->{"INPUT:$filter"} }, {
+						PATH => $infile,
+						FILTER => $filter,
+					});
+			push(@{ $self->{"DETAILS:$filter"} }, @info);
+		}
+		else {
+			$self->warning("ignoring $infile [no usable images]");
+		}
+
+		$fits->close;
+	}
+}
+
+
+sub makeBackgroundRegion
+{
+	my ($self, $regfile, $details) = @_;
+
+	# choose the longest aspect corrected HDU
+	my $selected;
+	foreach my $x (@$details) {
+		if (not $selected
+				or ($x->{ASPCORR} and not $selected->{ASPCORR})
+				or ($x->{ASPCORR} and $x->{EXPOSURE} > $selected->{ASPCORR})
+				or (not $selected->{ASPCORR} and $x->{EXPOSURE} > $selected->{ASPCORR})
+				) {
+			$selected = $x;
+		}
+	}
+
+	# run uvotdetect
+	my $detfile = $self->temporary('detect', ext => '.fits');
+	my $command = $self->buildCommand('uvotdetect',
+			infile => $selected->{PATH} . '+' . ($selected->{HDU1} - 1),
+			outfile => $detfile,
+			expfile => 'NONE',
+			threshold => 2.5,
+			zerobkg => -1,
+			calibrate => 'no',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my @table;
+	my $status = SimpleFITS->readonly($detfile)
+			->move('SOURCES')
+			->loadtable(\@table)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_FITS,
+				"unable to load detected objects [$status]");
+		return;
+	}
+
+	my $fh = FileHandle->new($regfile, 'w');
+	my $outer = 25; # arcsec
+	my $inner = 12.5;
+	my $hole = 6;
+
+	my $max_sep = ($outer + $hole) / 3600; # deg
+	my $min_sep = ($inner - $hole) / 3600;
+	$fh->print("fk5; circle($self->{RA_SRC}, $self->{DEC_SRC}, $outer\")\n");
+	$fh->print("fk5; -circle($self->{RA_SRC}, $self->{DEC_SRC}, $inner\")\n");
+	foreach my $o (@table) {
+		my ($sep, $sepra, $sepdec) = angdist(
+				$self->{RA_SRC}, $self->{DEC_SRC}, $o->{RA}, $o->{DEC});
+		if ($sep < $max_sep && $sep > $min_sep) {
+			$fh->print("fk5; -circle($o->{RA}, $o->{DEC}, $hole\")\n");
+		}
+	}
+	$fh->close;
+}
+
+
+sub angdist
+{
+# this function returns the angle of separation between two
+# directions given as (RA,DEC) in degrees using a simple
+# approximate of sqrt((dra/cos(dec))**2 + ddec**2)
+# it is useful when the separations are very small
+        
+# inputs and outputs are in degrees
+        
+unless ($#_ == 3){return (undef,undef,undef);}
+my $ra1 = $_[0];
+my $dec1= $_[1];
+my $ra2 = $_[2];
+my $dec2 = $_[3];
+my $rad = 180./3.141592654;
+my $dra = $ra1 - $ra2;
+if($dra < -180.){$dra+=180.;}
+if($dra >  180.){$dra-=180.;}
+my $dra1 = $dra * cos($dec1/$rad);
+my $ddec=$dec1 - $dec2;
+my $ans = sqrt($dra1*$dra1 + $ddec*$ddec);
+return ($ans,$dra,$ddec);
+}
+
+
+sub makeMagnitudeHistories
+{
+	my ($self) = @_;
+
+	return if not $self->{WRITE_HISTFILE};
+
+	my $args = $self->args;
+
+	# foreach filter
+	#	run uvotmaghist on each file merging results
+	$self->{MAGHIST} = $self->temporary('fullmaghist', ext => '.fits');
+	{
+		my $command = $self->buildCommand('ftimgcreate',
+				bitpix => 8,
+				naxes => 'none',
+				datafile => 'none',
+				outfile => $self->{MAGHIST},
+				);
+		$self->shell($command);
+	}
+
+	my $keyfile = $self->temporary('tmp', ext => '.keys');
+	{
+		my $fh = FileHandle->new($keyfile, 'w');
+		$fh->print("!COMMENT
+!FILTER
+!DETNAM
+!SEG_NUM
+!TSTART
+!TSTOP
+!DATE-OBS
+!DATE-END
+!DATE
+!WHEELPOS
+!HISTORY
+!SEQPNUM
+!CHECKSUM
+!DATASUM
+!HDUCLAS1
+");
+		$fh->close;
+	}
+
+	my @ordered;
+	my $first;
+
+	foreach my $filter (qw(WHITE B U V UVW1 UVW2 UVM2)) {
+
+		next if not $self->{FILTERS}{$filter};
+
+		push(@ordered, $filter);
+
+		my $bkgreg;
+		if (uc($args->{bkgreg}) eq 'DEFAULT') {
+			$bkgreg = $self->temporary("bkg$filter", ext => '.reg');
+			$self->makeBackgroundRegion($bkgreg, $self->{"DETAILS:$filter"});
+			$self->{BKG_REGIONs}{$filter} = $bkgreg;
+		}
+		else {
+			$bkgreg = $args->{bkgreg};
+		}
+
+		my @outfile;
+		foreach my $input (@{ $self->{"INPUT:$filter"} }) {
+			my $infile = $input->{PATH};
+			my $outfile = $self->temporary('maghist0', ext => '.fits');
+			my $command = $self->buildCommand('uvotmaghist',
+					infile => $infile,
+					outfile => $outfile,
+					srcreg => $args->{srcreg},
+					bkgreg => $bkgreg,
+					timezero => $self->{TIMEZERO},
+					zerofile => $args->{zerofile},
+					coinfile => $args->{coinfile},
+					psffile => $args->{psffile},
+					lssfile => $args->{lssfile},
+					sensfile => $args->{sensfile},
+					plotfile => 'NONE',
+					nsigma => $args->{nsigma},
+					apercorr => $args->{apercorr},
+					exclude => $args->{exclude},
+					frametime => $args->{frametime},
+					centroid => $args->{centroid},
+					fwhmsig => $args->{fwhmsig},
+					subpixel => $args->{subpixel},
+					);
+			$self->shell($command);
+			if (not -f $outfile) {
+				$self->warning("no uvotmaghist output for $infile");
+				next;
+			}
+			push(@outfile, $outfile);
+			$first = $infile if not $first;
+		}
+
+		my $filterHistory = undef;
+
+		if (@outfile > 1) {
+			$filterHistory = $self->temporary('maghist', ext => '.fits');
+			my $command = $self->buildCommand('ftmerge',
+					infile => join(',', @outfile),
+					outfile => $filterHistory,
+					);
+			$self->shell($command);
+		}
+		elsif (@outfile > 0) {
+			$filterHistory = $outfile[0];
+		}
+
+		last if not $self->isValid;
+
+		if ($filterHistory) {
+			$self->{"MAGHIST:$filter"} = $filterHistory;
+
+			my $command = $self->buildCommand('cphead',
+					infile => $self->{"INPUT:$filter"}[0]{PATH},
+					outfile => $filterHistory . '+1',
+					keyfil => $keyfile,
+					);
+			$self->shell($command);
+		}
+
+		if ($filterHistory) {
+			my $command = $self->buildCommand('ftappend',
+					infile => $filterHistory
+							. "[col #EXTNAME='$filter']",
+					outfile => $self->{MAGHIST},
+					);
+			$self->shell($command);
+		}
+	}
+
+	if ($first) {
+		my $command = $self->buildCommand('cphead',
+				infile => $first,
+				outfile => $self->{MAGHIST},
+				keyfil => $keyfile,
+				);
+		$self->shell($command);
+	}
+
+	$self->{ORDERED_FILTERS} = \@ordered;
+}
+
+
+sub writeRegions
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	return if not $self->{WRITE_HISTFILE};
+
+	my @region;
+
+	foreach my $tag (qw(SRC BAT XRT UVOT GROUND)) {
+		my $key = $tag . '_REGION';
+		my $value = $self->{$key};
+		next if not $value;
+		if ($value =~ /^TEXT:(.+)/) {
+			my $text = $1;
+			push(@region, { TAG => $tag, TEXT => $text });
+		}
+		elsif ($value =~ /^FILE:(.+)/) {
+			my $path = $1;
+			push(@region, { TAG => $tag, FILE => $path });
+		}
+		else {
+			$self->warning("invalid $key value: $value");
+		}
+	}
+
+	if (uc($args->{bkgreg}) eq  'DEFAULT') {
+		foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+			my $path = $self->{BKG_REGIONs}{$filter};
+			push(@region, { TAG => "BKG:$filter", FILE => $path });
+		}
+	}
+	else {
+		push(@region, { TAG => 'BKG', FILE => $args->{bkgreg} });
+	}
+
+	# select the first image for the WCS definition
+	my $wcsfile = undef;
+	foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+		my $details = $self->{"DETAILS:$filter"};
+		if ($details and @$details > 0) {
+			my $hdu0 = $details->[0]{HDU1} - 1;
+			$wcsfile = "$details->[0]{PATH}+$hdu0";
+		}
+	}
+
+	foreach my $region (@region) {
+
+		my $path;
+		if ($region->{FILE}) {
+			$path = $region->{FILE};
+		}
+		else {
+			$path = $self->temporary('bkgreg', '.txt');
+			my $fh = FileHandle->new($path, 'w');
+			$fh->print("# $region->{TAG} region
+$region->{TEXT}
+");
+			$fh->close;
+		}
+
+		my $tmp = $self->temporary('reg', ext => '.fits');
+		my $command = $self->buildCommand('uvotconvreg',
+				infile => $path,
+				wcsfile => $wcsfile,
+				outfile => $tmp,
+				outtype => 'FITS',
+				);
+		$self->shell($command);
+		last if not $self->isValid;
+
+		$command = $self->buildCommand('ftappend',
+				infile => $tmp . "[1][col #EXTNAME='REG:$region->{TAG}']",
+				outfile => $self->{MAGHIST},
+				);
+		$self->shell($command);
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub rebinResults
+{
+	my ($self) = @_;
+
+	return if not $self->{WRITE_HISTFILE};
+
+	foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+		$self->rebinFilterResults($filter);
+	}
+
+}
+
+
+sub rebinFilterResults
+{
+	my ($self, $filter) = @_;
+
+	my $args = $self->args;
+
+	my $path = $self->{"MAGHIST:$filter"};
+	my @table;
+	my $status = SimpleFITS->readonly($path)
+			->move(2)
+			->loadtable(\@table)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load MAGHIST:$filter table [$status]");
+		return;
+	}
+
+	my @sorted = sort { $a->{TIME} <=> $b->{TIME} } @table;
+	my @filtered;
+	foreach my $e (@sorted) {
+		if ($e->{TSTART} > $self->{TIMEZERO}) {
+			push(@filtered, $e);
+		}
+		else {
+			$self->warning("ignoring exposure $e->{EXTNAME} before TIMEZERO $self->{TIMEZERO}");
+		}
+	}
+
+	if (@filtered < 1) {
+		$self->warning("no $filter exposures to rebin");
+		return;
+	}
+
+	$self->{"UNBINMAGHIST:$filter"} = \@filtered;
+
+	my $id = 0;
+	foreach my $e (@filtered) {
+		$e->{ID} = $id++;
+		$e->{RATE} = $e->{CORR_RATE};
+		$e->{RATE_ERR} = $e->{CORR_RATE_ERR};
+		# $e->{TIME} already set
+		$e->{TIME_ERR} = $e->{TELAPSE} / 2;
+		# $e->{EXPOSURE} already set
+	}
+
+	if (not $self->{REBIN}) {
+		$self->note("rebinning disabled");
+		return;
+	}
+
+	my %rebin = (
+		MIN_SIGMA => 2,
+		MAX_TIME_RATIO => 2,
+		MIN_TIME_RATIO => 1.2,
+		SNR_DIFF => 2,
+		SNR_DIFF_ORPHAN => 2,
+	);
+
+	foreach my $arg (split(/\s*,\s*/, $args->{rebin})) {
+		my ($key0, $value) = split(/\s*=\s*/, $arg);
+		my $key = uc($key0);
+		if ($key eq 'NONE' or $key eq 'DEFAULT') {
+		}
+		elsif (exists($rebin{$key})) {
+			if (defined($value)) {
+				$rebin{$key} = $value;
+			}
+			else {
+				$self->warning("rebin control [$key] missing value");
+			}
+		}
+		else {
+			$self->warning("ignoring unknown rebin control [$arg]");
+		}
+	}
+
+	my @binned;
+
+	my $problem = UVOT::Rebin::rebin(\@filtered, \@binned, %rebin);
+	if ($problem) {
+		$self->warning("unable to rebin $filter data [$problem]");
+		return;
+	}
+
+	# for each row in the binned light curve, calculate the combined
+	# areas/rates and perform photometry
+
+	my @keys = qw(RAW_TOT_CNTS RAW_BKG_CNTS RAW_STD_CNTS
+			SRC_AREA BKG_AREA STD_AREA EXPOSURE);
+
+	my @newTable;
+	my %calibration = (
+		COINCIDENCE => $self->{CAL_COINCIDENCE},
+		COLORTABLE => $self->{CAL_COLORTABLE},
+		CAL_LSS => $self->{CAL_LSS},
+		APERCORR => $args->{apercorr},
+		NSIGMA => $args->{nsigma},
+		CAL_PSF => $self->{CAL_PSF},
+		CAL_SENSCORR => $self->{CAL_SENSCORR},
+	);
+
+	UVOT::Calibration::primeColorTable($self, $self->{CAL_COLORTABLE},
+			$filter, $self->{MAG_SYSTEM});
+	UVOT::Calibration::primeEncircledEnergy($self, $self->{CAL_PSF}, $filter);
+
+	foreach my $binned (@binned) {
+
+		my %entry = map { ($_ => 0) } @keys;
+
+		my @group = @{ $binned->{GROUP} };
+
+		my $ftsum = 0;
+
+		foreach my $e (@group) {
+			foreach my $key (@keys) {
+				$entry{$key} += $e->{$key};
+			}
+			$ftsum += $e->{FRAMTIME} * $e->{EXPOSURE};
+		}
+
+		foreach my $key (qw(TIME TIME_ERR)) {
+			$entry{$key} = $binned->{$key};
+		}
+
+		foreach my $key (qw(SRC_AREA BKG_AREA STD_AREA)) {
+			$entry{$key} /= scalar(@group);
+		}
+
+		$entry{FILTER} = $filter;
+		$entry{TSTART} = $entry{TIME} - $entry{TIME_ERR} + $self->{TIMEZERO};
+		$entry{TSTOP} = $entry{TIME} + $entry{TIME_ERR} + $self->{TIMEZERO};
+		$entry{FWHM_UNCERTAINTY_percent} = $args->{fwhmsig};
+		$entry{FRAMTIME} = $ftsum / $entry{EXPOSURE};
+		$entry{IDs} = join(',', map { $_->{ID} } @group);
+		$entry{EXTNAMEs} = join(',', map { $_->{EXTNAME} } @group);
+		$entry{XY_TYPE} = 'NONE';
+
+		UVOT::Source::performPhotometry($self, \%entry, %calibration);
+
+		$entry{RATE} = $entry{CORR_RATE};
+		$entry{RATE_ERR} = $entry{CORR_RATE_ERR};
+
+		push(@newTable, \%entry);
+	}
+
+	$self->{"REBINMAGHIST:$filter"} = \@newTable;
+
+}
+
+
+sub makePlots
+{
+	my ($self) = @_;
+
+	return if not $self->{WRITE_HISTFILE};
+
+	my $args = $self->args;
+	if (uc($args->{plotfile}) eq 'NONE') {
+		return;
+	}
+
+	if ($args->{plotfile} =~ /(.+?)\.(\w+)$/) {
+		$self->{plotbase} = $1;
+		$self->{plottype} = lc($2);
+		my %EXTENSION = (
+			gif => 'gif',
+			vgif => 'gif',
+			ppm => 'ppm',
+			vppm => 'ppm',
+			ps => 'ps',
+			vps => 'ps',
+			cps => 'ps',
+			vcps => 'ps',
+			wd => 'xwd',
+			vwd => 'xwd',
+		);
+		$self->{plotext} = $EXTENSION{$self->{plottype}} || 'gif';
+	}
+	else {
+		$self->{plotbase} = $args->{plotfile};
+		$self->{plotext} = 'gif';
+		$self->{plottype} = 'gif';
+	}
+	$self->{pgplot} = "pgplot.$self->{plotext}";
+
+	$self->verbose("plotbase=$self->{plotbase} plotext=$self->{plotext} plottype=$self->{plottype} pgplot=$self->{pgplot}");
+
+	my ($qdpbase, $qdpext);
+	if (uc($args->{qdpfile}) ne 'NONE') {
+		if ($args->{qdpfile} =~ /(.+?)\.([^.]+)$/) {
+			$qdpbase = $1;
+			$qdpext = $2;
+		}
+		else {
+			$qdpbase = $args->{qdpfile};
+			$qdpext = '';
+		}
+	}
+
+	my $counter = 0;
+
+	foreach my $plotfilters (@{ $self->{PLOT_FILTERS} }) {
+		++$counter;
+		my $plotpath = "$self->{plotbase}$counter.$self->{plotext}";
+		my $qdppath = undef;
+		if ($qdpbase) {
+			$qdppath = "${qdpbase}$counter.$qdpext";
+		}
+		$self->makePlot($plotfilters, $plotpath, $qdppath);
+	}
+}
+
+
+sub makePlot
+{
+	my ($self, $filtref, $plotpath, $qdppath) = @_;
+
+	my $args = $self->args;
+
+	my $snr = $args->{nsigma};
+	my $ul = $snr;
+
+	my $qdpfile = $self->temporary('uvotproduct', ext => '.qdp');
+	my $fh = FileHandle->new($qdpfile, 'w');
+
+	my $xlog = 'ON';
+	my $ylog = $self->{PLOT_MAG} ? 'OFF' : 'ON';
+
+	$fh->print("READ SErr 1
+READ TErr 2
+LABEL f
+LOG y $ylog
+LOG x $xlog
+SCREEN white
+SCREEN 1 0 0 0
+MARKER 0 ON
+LABEL TOP Swift/UVOT $self->{OBJECT} Target ID $self->{TARG_ID}
+TIME off
+LWidth 4.0
+CSize 1.0
+SKIP Single
+PLOT Vertical
+");
+
+	my $units = $self->{PLOT_MAG} ? 'mag' : 'cps';
+	my $havePlot = undef;
+
+	my $i = 0;
+	my ($yold, $errold);
+
+	my $xmin = undef;
+	my $xmax = undef;
+
+	foreach my $filter (@{ $filtref }) {
+
+		my $maghist = $self->{"REBINMAGHIST:$filter"}
+				|| $self->{"UNBINMAGHIST:$filter"};
+		if (not $maghist) {
+			$self->verbose("makePlot: no data for filter $filter");
+			next;
+		}
+
+		# if no records, skip
+		next if (@{ $maghist } < 1);
+
+		$havePlot = 1;
+
+		++$i;
+		my $shortFilter = $SHORT_FILTER{$filter} || $filter;
+		$fh->print("! filter $filter\nLABEL oy$i $shortFilter $units\n");
+		UVOT::Calibration::primeColorTable($self, $self->{CAL_COLORTABLE},
+				$filter, $self->{MAG_SYSTEM});
+
+		my $ymin = 100.0;
+		my $ymax = 0.0;
+		my $ylim = $ENV{UVOTSOURCE_MAG_LIMIT} || 30;
+
+# this code is taken from Frank's uvot_fluxes:fix_lc
+		foreach my $e (@$maghist) {
+
+			my $y = $e->{CORR_RATE};
+			my $err = $e->{CORR_RATE_ERR};
+			my $yplot;
+			my ($errp, $errm);
+
+			{ # update xmin, xmax
+				my $tmp = $e->{TIME} + $e->{TIME_ERR};
+				if (not defined($xmax) or $tmp > $xmax) { $xmax = $tmp; }
+				$tmp = $e->{TIME} - $e->{TIME_ERR};
+				if (not defined($xmin) or $tmp < $xmin) { $xmin = $tmp; }
+			}
+	
+			if ($e->{NSIGMA} < $ul) {
+				# have upper limit
+				if ($self->{PLOT_MAG}) {
+					my $mag = $e->{MAG_LIM};
+					$errp = ($ylim + 2) - $mag;
+					if ($errp < 1.0) { $errp = 1.0; }
+					$errm = 0.;
+					if ($ymin > $mag) { $ymin = $mag; }
+					if ($ymax < $mag + 1) { $ymax = $mag + 1.0; }
+					$yplot = $mag;
+				}
+				else {
+					$yold = $y;
+					$errold = $err;
+					$y = $snr * $errold;
+					if ($y > 0) { $y += $yold; }
+					$errm = -$y / 1.001;
+					$errp = 0.;
+					my $tmp = $y + $errp;
+					if ($tmp > $ymax) { $ymax = $tmp; }
+					if ($tmp/3.0 < $ymin) { $ymin = $tmp / 3.0; }
+					$yplot = $y;
+				}
+			}
+			else { # data point is not an upper limit
+				if ($self->{PLOT_MAG}) {
+					my $mag = $e->{MAG};
+					my $magm = $self->findMag($e->{RATE} + $e->{RATE_ERR}, $filter);
+					my $magp = $self->findMag($e->{RATE} - $e->{RATE_ERR}, $filter);
+					$errm = $magm - $mag;
+					$errp = $magp - $mag;
+					if ($ymin > $magm) { $ymin = $magm; }
+					if ($ymax < $magp) { $ymax = $magp; }
+					$yplot = $mag;
+				}
+				else {
+					$yplot = $e->{RATE};
+					$errp = $err;
+					$errm = -$err;
+					my $tmp = $y + $err;
+					if ($tmp > $ymax) { $ymax = $tmp; }
+					$tmp = $y - $err;
+					if ($tmp < $ymin) { $ymin = $tmp; }
+				}
+			}
+			$fh->print("$e->{TIME} $e->{TIME_ERR} $yplot $errp $errm\n");
+		}
+		$fh->print("No No No No No\n");
+
+		# set yscale (range) to make plots legible
+		if ($self->{PLOT_MAG}) {
+			# plotting magnitudes on linear scale
+			$ymin = int($ymin - 0.5) - 0.2;
+			$ymax = int($ymax + 1.5) - 0.2;
+			if ($ymin > 22.5) { $ymin = 22.8; }
+			if ($ymax > $ylim) { $ymax = $ylim + 0.3; }
+			my $n = int($ymax - $ymin + 0.5);
+			if ($n - 2 * int($n/2)) { $ymax += 1.0; } # make range an even integer
+			if ($ymax - $ymin < 2.0) { $ymax += 1.0; }
+		}
+		else {
+			# plotting rate on log scale
+			my ($tmp1, $tmp2);
+			# add some slack
+			$ymax *= 1.33;
+			$ymin *= 0.75;
+			my $tmp = $ymax;
+			if ($tmp < 0.0025) {
+				$tmp2 = 0.029;
+				$tmp1 = 0.00011;
+			}
+			else {
+				my ($fract, $whole) = log_split($tmp);
+				if ($fract > 0.4) {
+					$tmp2 = 9.9 * (10 ** $whole);
+				}
+				else {
+					$tmp2 = 2.9 * (10 ** $whole);
+				}
+
+				$tmp = $ymin;
+				if ($tmp < 0.00012) {
+					$tmp1 = 0.00011;
+				}
+				else {
+					($fract, $whole) = log_split($tmp);
+					if ($fract > 0.7) {
+						$tmp1 = 5.01 * (10 ** $whole);
+					}
+					else {
+						$tmp1 = 1.01 * (10 ** $whole);
+					}
+				}
+			}
+			$ymin = $tmp1;
+			$ymax = $tmp2;
+		}
+
+		if ($self->{PLOT_MAG}) {
+			$fh->print("r y$i $ymax $ymin\n");
+		}
+		else {
+			$fh->print("r y$i $ymin $ymax\n");
+		}
+	}
+
+	if (defined($xmin) and defined($xmax)) {
+		my $problem = undef;
+		my ($f1, $w1) = log_split($xmin);
+		my ($f2, $w2) = log_split($xmax);
+		foreach my $x ($f1, $w1, $f2, $w2) {
+			if (not defined($x)) {
+				$problem = 1;
+			}
+		}
+		if ($problem) {
+			$fh->print("r x\n");
+		}
+		else {
+			my ($tmp1, $tmp2);
+			if ($f1 < 0.5) {
+				$tmp1 = 10 ** $w1;
+			}
+			else {
+				$tmp1 = 3 * (10 ** $w1);
+			}
+			if ($f2 > 0.4) {
+				$tmp2 = 10 ** (1.0 + $w2);
+			}
+			else {
+				$tmp2 = 3 * (10 ** $w2);
+			}
+			$fh->print("r x $tmp1 $tmp2\n");
+		}
+	}
+	else {
+		$fh->print("r x\n");
+	}
+
+	$fh->print("
+LABEL x $self->{TIMELABEL}
+hard /$self->{plottype}
+exit
+");
+
+	$fh->close;
+
+	if ($havePlot) {
+		my $command = qq(echo $qdpfile | qdp);
+		$self->shell($command);
+
+		if ($self->isValid) {
+			$self->moveFile($self->{pgplot}, $plotpath);
+
+			if ($qdppath) {
+				$self->moveFile($qdpfile, $qdppath);
+			}
+		}
+	}
+
+}
+
+
+sub findMag
+{
+	my ($self, $rate) = @_;
+	my %object = (
+		RATE => $rate,
+		RATE_ERR => 0,
+	);
+	UVOT::Source::findMagFlux($self, $self->{CAL_COLORTABLE}, \%object);
+	return $object{MAG};
+}
+
+
+
+# before calling makeFindingChart, depending on whether we have only
+# a BAT position or one of the high precision positions, extract an
+# image from the first WHITE/V exposure that is appropriately sized.
+#
+#	my $path = $self->selectFindingChartExposure;
+#
+#	if ($haveUVOT or $haveXRT or $haveOptical) {
+#		$subDim = 2 arcmin
+#	}
+#	else { # only have BAT position
+#		$subDim = 6 arcmin
+#	}
+#
+#	my $problem = $self->extractFindingChartSubimage($path, RA =>%args);
+
+
+sub ingestPositions
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my %COLOR = (
+		BAT => 'green',
+		XRT => 'blue',
+		UVOT => 'red',
+		GROUND => 'black',
+	);
+
+	my %CROSSHAIR = (
+		UVOT => 1,
+		GROUND => 1,
+	);
+
+	my $reNumber = qr(\d+\.\d+|\d+\.|\.\d+|\d+);
+
+	my $regfile = $self->temporary('merged', ext => '.reg');
+	$self->{REGION_FILE} = $regfile;
+	my $fh = FileHandle->new($regfile, 'w');
+
+	$self->{BAT_ONLY} = 1;
+
+	foreach my $tag (qw(SRC BAT XRT UVOT GROUND)) {
+		my $pkey = $tag . '_POS';
+		my $rkey = lc($tag) . 'pos';
+		if ($tag eq 'SRC') {
+			# hack to load srcreg
+			$rkey = 'srcreg';
+		}
+		my $value = $args->{$rkey};
+
+		my ($ra, $dec, $radius);
+
+		if ($value =~ /^NONE$/i) {
+		}
+		elsif ($value =~ /^([+]?$reNumber)([-+]$reNumber)~($reNumber)$/) {
+			($ra, $dec, $radius) = ($1, $2, $3);
+			$self->{$tag . '_REGION'} = "TEXT:fk5;circle($ra,$dec,$radius\")";
+		}
+		elsif ($value =~ /\.reg$/) {
+			($ra, $dec, $radius) = $self->getRegionPosition($value);
+			$self->{$tag . '_REGION'} = "FILE:$value";
+		}
+		else {
+			$self->warning("ignoring $pkey: '$value'");
+		}
+
+		if ($tag eq 'SRC') {
+			# do not show this one
+		}
+		elsif (defined($ra)) {
+			my $color = $COLOR{$tag};
+			my $xhair = $CROSSHAIR{$tag};
+
+			updateRegionFile($fh, $ra, $dec, $radius, $color, $xhair);
+			$self->{RA_BEST} = $ra;
+			$self->{DEC_BEST} = $dec;
+			$self->{BAT_ONLY} = $tag eq 'BAT' ? 1 : 0;
+		}
+	}
+
+	$fh->close;
+
+	{
+		my ($ra, $dec, $radius) = $self->getRegionPosition($args->{srcreg});
+		if (defined($ra)) {
+			$self->{RA_SRC} = $ra;
+			$self->{DEC_SRC} = $dec;
+
+			if (not defined($self->{RA_BEST})) {
+				$self->{RA_BEST} = $ra;
+				$self->{DEC_BEST} = $dec;
+			}
+		}
+	}
+}
+
+
+sub getRegionPosition
+{
+	my ($self, $regfile) = @_;
+	my ($ra, $dec, $arcsec);
+
+	my $fh = FileHandle->new($regfile);
+	if (not $fh) {
+		$self->warning("unable to open $regfile [$!]");
+		return;
+	}
+	my $system = 'image';
+	my $first = 1;
+	while (<$fh>) {
+		if (/^\s*(\w+)\s*$/) {
+			$system = $1;
+		}
+		elsif (/^\s*(?:(\w+)\s*;)?\s*circle\(([^,]+),\s*([^,]+),\s*([^)]+)\)/) {
+			my $subsys = $1 || $system;
+			if ($first) {
+				($ra, $dec, $arcsec) = $self->getRegionPositionAux($subsys, $2, $3, $4);
+			}
+			$first = 0;
+		} 
+	}
+	undef($fh);
+
+	if (not defined($ra)) {
+		$self->warning("no position found in $regfile");
+	}
+
+	return ($ra, $dec, $arcsec);
+}
+
+
+sub getRegionPositionAux
+{
+	my ($self, $system, $rastr, $decstr, $radius) = @_;
+
+	my ($ra, $dec, $arcsec);
+
+	# TODO: if $rastr and $decstr end in d (for degrees),
+	# $system doesn't matter
+	my $reNumber = qr([-+]?\d+\.\d+);
+
+	if ($rastr =~ /^($reNumber)d$/ and $decstr =~ /^($reNumber)d$/) {
+		$system = 'fk5';
+		chop($rastr);
+		chop($decstr);
+	}
+
+	if ($system !~ /^(fk5|icrs|j2000)$/) {
+		$self->error(BAD_INPUT,
+				"unhandled region system $system for determining sky position");
+	}
+	else {
+		if ($rastr =~ /^$reNumber$/) {
+			$ra = sprintf('%.6f', $rastr);
+		}
+		elsif ($rastr =~ /^(\d+):(\d+):(\d+(?:\.\d+)?)$/) {
+			$ra = sprintf('%.6f', 15 * ($1 + $2 / 60 + $3 / 3600));
+		}
+		else {
+			$self->warning("unexpected RA $rastr");
+		}
+
+		if ($decstr =~ /^$reNumber$/) {
+			$dec = sprintf('%.6f', $decstr);
+		}
+		elsif ($decstr =~ /^([-+]?)(\d+):(\d+):(\d+(?:\.\d+)?)$/) {
+			my $sign = $1 eq '-' ? -1 : 1;
+			$dec = sprintf('%.6f', $sign*($2 + $3 / 60 + $4 / 3600));
+		}
+		else {
+			$self->warning("unexpected source DEC $decstr");
+		}
+	}
+
+	if ($radius =~ /(.+?)"$/) {
+		$arcsec = $1;
+	}
+	elsif ($radius =~ /(.+?)'$/) {
+		$arcsec = $1 / 60.;
+	}
+	else {
+		# convert pixels to arcsec
+		$arcsec = $radius * ($self->{HEADER}{CDELT2} * 3600);
+	}
+
+	return ($ra, $dec, $arcsec);
+}
+
+
+sub updateRegionFile
+{
+	my ($fh, $ra, $dec, $arcsec, $color, $xhair) = @_;
+	my $radius_as = sprintf('%.2f', $arcsec);
+	if ($xhair) {
+		my $d0 = 0.001;
+		my $d1 = 0.003;
+		my $dec0 = $dec - $d0;
+		my $dec1 = $dec - $d1;
+		$fh->print(qq(fk5;line($ra,$dec0,$ra,$dec1) # color=$color\n));
+		$dec0 = $dec + $d0;
+		$dec1 = $dec + $d1;
+		$fh->print(qq(fk5;line($ra,$dec0,$ra,$dec1) # color=$color\n));
+		my $cos = cos(Math::toRadians($dec));
+		$d0 /= ($cos + 0.0001);
+		$d1 /= ($cos + 0.0001);
+		my $ra0 = $ra - $d0;
+		my $ra1 = $ra - $d1;
+		$fh->print(qq(fk5;line($ra0,$dec,$ra1,$dec) # color=$color\n));
+		$ra0 = $ra + $d0;
+		$ra1 = $ra + $d1;
+		$fh->print(qq(fk5;line($ra0,$dec,$ra1,$dec) # color=$color\n));
+	}
+	else {
+		$fh->print(qq(fk5;circle($ra,$dec,$radius_as") # color=$color\n));
+	}
+}
+
+
+sub selectFindingChartExposure
+{
+	my ($self) = @_;
+
+	return if not $self->{MAKE_FINDING_CHARTS};
+
+	$self->verbose("inspecting files to choose finding chart exposure");
+
+	my $bestTime;
+	my $selected;
+
+	# use first exposure > 50 [s] for finding chart
+	# see 2009 Feb 17 note from Frank
+	foreach my $path (@{ $self->{INFILES} }) {
+		my $fits = SimpleFITS->readonly($path);
+		my $status = $fits->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to open $path [$status]");
+		}
+		last if not $self->isValid;
+
+		my $nhdu = $fits->nhdu;
+		my $header;
+		for (my $i = 0; $i < $nhdu; ++$i) {
+			$status = $fits->move($i+1)
+					->readheader($header, clean => 1)
+					->status;
+			next if $header->{NAXIS} != 2;
+			next if $header->{NAXIS1} < 10;
+			next if $header->{NAXIS2} < 10;
+			next if $header->{EXPOSURE} <= 50;
+			if (not defined($bestTime) or $header->{TSTART} < $bestTime) {
+				$bestTime = $header->{TSTART};
+				$selected = "$path+$i";
+			}
+		}
+		$fits->close;
+	}
+
+	if (defined($selected)) {
+		$self->{FC_FILEXT} = $selected;
+		$self->report("using $self->{FC_FILEXT} with TSTART $bestTime for finding chart");
+	}
+	else {
+		$self->warning('no exposure found appropriate for finding chart');
+	}
+}
+
+
+sub makeFindingChart
+{
+	my ($self) = @_;
+
+	return if not $self->{SUBIMAGE_PATH};
+
+	my $args = $self->args;
+
+	my $path = $self->{SUBIMAGE_PATH};
+	my $fptr = SimpleFITS->readonly($path);
+	my $status = $fptr->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "error opening $path [$status]");
+		return;
+	}
+
+	my $header;
+	$status = $fptr->readheader($header, clean => 1)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read $path header [$status]");
+		return;
+	}
+
+	foreach my $key (qw(TARG_ID
+			NAXIS1 CDELT1 CRVAL1 CRPIX1
+			NAXIS2 CDELT2 CRVAL2 CRPIX2)) {
+		if (not exists($header->{$key})) {
+			$self->error(BAD_INPUT, "$path missing $key");
+		}
+	}
+	return if not $self->isValid;
+
+	my $width = abs($header->{NAXIS1} * $header->{CDELT1});
+
+	$self->report(sprintf('TSTART: %12.1f TSTOP %12.1f',
+			$header->{TSTART}, $header->{TSTOP}));
+
+	my $fn_uvot = "$args->{fcprefix}_uvot.jpg";
+	my $fn_dss = "$args->{fcprefix}_dss.jpg";
+
+	my $fn_grid;
+	if ($self->{GRID_USER}) {
+		$fn_grid = $self->{GRID_USER};
+	}
+	elsif ($self->{BAT_ONLY}) {
+		$fn_grid = $self->{GRID_BIG};
+	}
+	else {
+		$fn_grid = $self->{GRID_SMALL};
+	}
+
+	my $scale = $self->{SCALE};
+	if ($scale =~ /auto/) {
+# try to auto-scale the image
+# set limit to mean + 5*sigma, but no smaller than 5 and no larger than 100
+		my $mean=undef;
+		my $sigma=undef;
+# mod 2007-01-26
+		my $result = $self->shell("ftstat centroid=no clip=yes $path");
+		foreach my $line (@{ $result->{lines} }) {
+			chomp($line);
+			if($line =~/mean\:\s*(.*)$/){
+				$mean=$1;
+			} elsif ($line =~/sigma\:\s*(.*)$/) {
+				$sigma=$1;
+			}
+		} # close foreach
+		my $scale_max=400.0;
+		my $scale_min=0.5;
+		if(defined($mean) && defined($sigma)){
+			printf     "image mean: %7.1f sigma: %7.1f\n",$mean,$sigma;
+#			$scale_max=$mean + 6.0*$sigma;
+			if($mean > 0.2 && $mean < 10.0) {
+				$scale_min=0.5*$mean;
+				$scale_min=sprintf("%4.1f",$scale_min);
+			}
+		}
+		$scale = "-log -scale limits $scale_min $scale_max";
+	}
+	else {
+		if ($scale !~ /^-(linear|sqrt|histequ|log)$/) {
+			$scale = '-log';
+		}
+	}
+
+
+	# use black_on_white unless $color or $white_on_black set
+	my $color = $self->{FINDING_CHART_COLOR};
+	if ($color) {
+	# only accept 3 colors, anything else gets changed to "standard"
+		if ($color !~ /^(hsv|sls)$/) {
+			$color = 'standard';
+		}
+		$scale .= " -cmap $color";
+	}
+	else {
+		my $white_on_black = $self->{WHITE_ON_BLACK};
+		unless($white_on_black){$scale .= " -invert";}
+	}
+
+# =========== process the FITS file data =================
+
+# processing steps consist of:
+#  determine center of image in (RA,Dec)
+#  update region file with bounding box and title
+#  call ds9 to produce 2 jpg images
+
+# compute center pixel
+	$self->report("RA_PNT: $header->{RA_PNT}  DEC_PNT: $header->{DEC_PNT}");
+	my $x_cent = ($header->{NAXIS1} + 1.0) / 2.0;
+	my $y_cent = ($header->{NAXIS2} + 1.0) / 2.0;
+	my $dx = $x_cent - $header->{CRPIX1};
+	my $dy = $y_cent - $header->{CRPIX2};
+	my $box_dec = $header->{CRVAL2} + $dy * $header->{CDELT2};
+	my $corr = cos(Math::toRadians($header->{CRVAL2}));
+	my $box_ra = $header->{CRVAL1} + $dx * $header->{CDELT1} / $corr;
+
+# convert center to sexagesimal
+# changed 2006-11-10 to use 3rd parameter
+	my ($rahms, $decdms) = deg2sex($box_ra, $box_dec, ":");
+	unless(defined($rahms)) {
+		$self->error(BAD_TASK, "conversion of $box_ra, $box_dec failed");
+		return;
+	}
+
+	my $dssimage = "-DSS_SKYOPT survey all";
+	if ($width > 0.01 && $width < 1.0) {
+		my $width_dss = sprintf('%.3f', $width * 60.0);
+		$dssimage .= " -DSS_SKYOPT size $width_dss $width_dss";
+	}
+
+	$dssimage .= " -DSS_SKYOPT coord $rahms $decdms";
+
+# prepare the title for the UVOT image
+	my $objstr;
+	if (my $object = $header->{OBJECT}) {
+		$object =~ s/\s*\(UVOT only\)//;
+		$object = uc($object);
+		$objstr = "$object/$header->{TARG_ID}";
+	}
+	else {
+		$objstr = $header->{TARG_ID};
+	}
+
+	my $dt = sprintf('%.1f', $header->{TSTART} - $self->{TIMEZERO});
+	my $timestr = UVOT::Time::met2utc($self, $header->{TSTART},
+			subs => 2, SWIFTTIME => 1) . ' UTC';
+	my $dssTitle = "DSS $objstr";
+
+	my $uvotRegions = $self->temporary('uvot', ext => '.reg');
+	{
+		my $fh = FileHandle->new($self->{REGION_FILE});
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to load $self->{REGION_FILE} [$!]");
+			return;
+		}
+		my @content = <$fh>;
+		$fh->close;
+
+		# write the regions for the UVOT image
+		$fh = FileHandle->new($uvotRegions, 'w');
+		foreach my $line (@content) {
+			$fh->print($line . "\n");
+		}
+
+		my $vspace = $header->{NAXIS2} / 4; # zoomed 0.75
+		my $vdelta = $vspace / 3;
+		my $format = qq(color=red font="helvetica 14 bold");
+		my $phys_y = $header->{NAXIS2} + 2 * $vdelta;
+		my $text1 = "UVOT/$header->{FILTER} $objstr";
+		$fh->print("physical; text $x_cent $phys_y {$text1} # $format\n");
+
+		$phys_y = $header->{NAXIS2} + $vdelta;
+		my $text2 = sprintf('T+%ds = %s (corrected)', $dt, $timestr);
+		$fh->print("physical; text $x_cent $phys_y {$text2} # $format\n");
+		$fh->close;
+	}
+
+# build ds9 command line
+	my $ds9 = "ds9 -geometry 800x700+0+200"
+			. " $path $scale"
+			. " -grid yes -grid load $fn_grid -zoom to fit -zoom 0.75"
+			. " -regions load $uvotRegions"
+			. " -saveas jpeg $fn_uvot"
+			. " -grid reset -grid yes -grid load $fn_grid"
+			. " -grid title text '$dssTitle'"
+			. " $dssimage"
+			. " -linear -scale mode minmax"
+			. " -regions load $self->{REGION_FILE}"
+			. " -frame first -match frames wcs -tile no -frame last"
+			. " -saveas jpeg $fn_dss"
+			. " -exit";
+
+	my $timeout_s = $ENV{UVOTPRODUCT_DS9_TIMEOUT} || 60;
+	my $sleep = qq(sleep $timeout_s);
+	my $limit_s = $timeout_s + 10;
+	my $command = qq(rewaiter -primary="$ds9" -secondary="$sleep" -limit=$limit_s);
+
+	for my $skyopt (qw(dssstsci dsssao)) {
+		my $tmp = $command;
+		$tmp =~ s/DSS_SKYOPT/$skyopt/g;
+		$self->shell($tmp);
+
+# check that we actually created files
+		my $ok = 1;
+		foreach my $fn ($fn_dss, $fn_uvot) {
+			# ages are in seconds from start of program
+			my $age = (-e $fn) ? ((-M $fn) * 86400) : -1;
+			if (not -e $fn or $age > 0) {
+				$self->warning("$fn was not created [age $age]");
+				$ok = undef;
+			}
+		}
+
+		last if $ok;
+	}
+}
+
+
+sub extractFindingChartSubimage
+{
+	my ($self) = @_;
+
+	my $path = $self->{FC_FILEXT};
+	return if not $path;
+
+	my $fptr = SimpleFITS->readonly($path);
+	my $status = $fptr->status;
+	if ($status) {
+		$self->error(2, "error opening $path [$status]");
+		return;
+	}
+
+	my $header;
+	$fptr->readheader($header, clean => 1);
+
+	my $wcs = $self->getWCS($header);
+
+	my $subpath = $self->temporary('subimage');
+	$self->{SUBIMAGE_PATH} = $subpath;
+
+	# convert RA,DEC to x0,y0
+	my ($x0, $y0) = $self->worldToPix($wcs, $self->{RA_BEST}, $self->{DEC_BEST});
+
+	# half-width of subimage
+	my $arcmin = $self->{BAT_ONLY} ? 6 : 2.6;
+	my $dhw = $arcmin / 60 / 2 / $wcs->{CDELT2};
+
+	my $xmin = int($x0 - $dhw);
+	my $xmax = int($x0 + $dhw);
+	my $ymin = int($y0 - $dhw);
+	my $ymax = int($y0 + $dhw);
+
+	if ($xmin < 1) { $xmin = 1; }
+	if ($xmax > $header->{NAXIS1}) { $xmax = $header->{NAXIS1}; }
+	if ($ymin < 1) { $ymin = 1; }
+	if ($ymax > $header->{NAXIS2}) { $ymax = $header->{NAXIS2}; }
+
+	my $filter = "[$xmin:$xmax,$ymin:$ymax]";
+
+	my $command = $self->buildCommand('ftcopy',
+			infile => $path . $filter,
+			outfile => $subpath,
+			copyall => 'no',
+			);
+
+	$self->shell($command);
+
+}
+
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		my $path = $self->{MAGHIST};
+		if ($path and -f $path) {
+			rename($path, $args->{outfile})
+				or $self->error(BAD_OUTPUT,
+					"unable to rename $path to $args->{outfile} [$!]");
+		}
+	}
+}
+
+
+# /home/heasfs/marshall/perl/deg2sex.pm
+
+# this module has methods to convert decimal deg to hms
+# and dec deg to dms
+
+# mod 2006-09-11 to add $sep parameter
+#  if defined, sub uses $sep as separator character(s)
+#  standard separator is ":"
+
+sub deg2sex
+{
+	unless($#_ == 1 || $#_ == 2){return (undef,undef);}
+
+	my ($dc,$dg,$dmn,$dsec,$hr,$mn);
+	my ($ra,$sec,$sep,$sign,$tmp);
+
+	$ra=$_[0];
+	$dc=$_[1];
+	if($#_ == 2){$sep=$_[2];}
+
+	unless(defined($sep)){$sep=":";}
+
+# start with RA
+	if($ra < 0.){$ra+=360.} ;
+	$tmp=$ra/15. ;
+	$hr=int($tmp) ;
+	$tmp=($tmp - $hr)*60. ;
+	$mn=int($tmp);
+	$sec=($tmp - $mn)*60. ;
+# now do dec
+	$sign="+";
+	if($dc < 0.) {
+		$sign="-";
+		$dc=-$dc;
+	}
+	$tmp=$dc ;
+	$dg=int($tmp) ;
+	$tmp=($tmp - $dg)*60. ;
+	$dmn=int($tmp);
+	$dsec=($tmp - $dmn)*60. ;
+#  printf "%9.4f%10.4f",$ra,$dc ;
+	if(defined($sep)){
+		$ra=sprintf("%02d%s%02d%s%05.2f",$hr,$sep,$mn,$sep,$sec);
+		$dc=sprintf("%-s%02d%s%02d%s%04.1f",$sign,$dg,$sep,$dmn,$sep,$dsec);
+	} else {
+		$ra=sprintf("%02dh%02dm%05.2fs",$hr,$mn,$sec);
+		$dc=sprintf("%-s%02do%02d\'%04.1f\"",$sign,$dg,$dmn,$dsec);
+	}
+	($ra,$dc);
+}
+
+
+sub log_split
+{
+# this routine splits number into fract*(10**whole)
+# fract should be >= 0
+# it returns (undef,undef) for invalid inputs
+
+# usage is: ($fract,$whole)=&log_split($val);
+	unless ($#_ == 0){return (undef,undef);}
+ 
+	my ($val) = @_;
+
+	my ($fract,$tmp,$whole);
+
+	unless(defined($val)){return (undef,undef);}
+	if($val <= 0.0){
+		return (undef,undef);
+	}
+	else {
+		$tmp=log($val)/2.30258509299405;
+		$whole=floor($tmp);
+		$fract=$tmp - $whole;
+	}
+	return ($fract,$whole);
+}
+
+
+sub makeSummary
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	return if $args->{reportfile} =~ /^NONE$/i;
+
+	my $fh = FileHandle->new($args->{reportfile}, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $args->{reportfile} [$!]\n");
+		return;
+	}
+
+	my $obsids = join(', ', sort(keys(%{ $self->{OBS_IDs} })));
+	$fh->print("Swift/UVOT light curve for $obsids\n\n");
+
+	$fh->print("---------------------------------------------------------\n");
+	my $binWord = $self->{REBIN} ? 'Binned' : 'Unbinned';
+	$fh->print("$binWord data for UVOT exposures\n\n");
+
+	my $allRows = 1;
+
+	my $snr = $args->{nsigma};
+	$fh->print("FILTER   TSTART    TSTOP    MAG  +/-  UL(${snr}o)\n");
+
+	foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+
+		my $maghist = $self->{"REBINMAGHIST:$filter"}
+				|| $self->{"UNBINMAGHIST:$filter"};
+		next if not $maghist;
+
+		my @rows;
+		if ($allRows) {
+			@rows = @$maghist;
+		}
+		else {
+			# just the first binned data point
+			@rows = ($maghist->[0]);
+		}
+
+		foreach my $row (@rows) {
+			my $magstr;
+			my $start = $row->{TIME} - $row->{TIME_ERR};
+			my $stop = $row->{TIME} + $row->{TIME_ERR};
+
+			if ($row->{NSIGMA} < $snr) {
+				$magstr = sprintf('%5s %4s %5.2f',
+						'', '', $row->{MAG_LIM});
+			}
+			else {
+				$magstr = sprintf('%5.2f %4.2f %5s',
+						$row->{MAG}, $row->{MAG_ERR}, '');
+			}
+
+			my $record = sprintf('%-6s %8.1f %8.1f  %s',
+					lc($filter), $start, $stop, $magstr);
+
+			$fh->print($record . "\n");
+		}
+
+		if ($allRows) {
+			$fh->print("\n");
+		}
+	}
+
+	$fh->print("\nINPUT:\n");
+	foreach my $name (@{ $self->{INFILES} }) {
+		$fh->print("\t$name\n");
+	}
+
+	if ($self->{TRIGTIME}) {
+		$fh->print("\nTRIGTIME = $self->{TRIGTIME} = $self->{TRIGSTR} (corrected)\n");
+	}
+
+	$fh->print("\nOBS_IDs:\n");
+	foreach my $obsid (sort(keys(%{ $self->{OBS_IDs} }))) {
+		$fh->print("\t$obsid\n");
+	} 
+
+	$fh->print("---------------------------------------------------------\n");
+	$fh->print("\nREGION FILES:\n");
+	my @bkg;
+	if (uc($args->{bkgreg}) ne 'DEFAULT') {
+		push(@bkg, 'BKG');
+		$self->{BKG_REGION} = "FILE:$args->{bkgreg}";
+	}
+	foreach my $tag (qw(SRC BAT XRT UVOT GROUND), @bkg) {
+		my $key = $tag . '_REGION';
+		my $value = $self->{$key};
+		next if not $value;
+		$fh->print("\n# $tag region\n");
+		if ($value =~ /^TEXT:(.+)/) {
+			$fh->print("$1\n");
+		}
+		elsif ($value =~ /^FILE:(.+)/) {
+			my $path = $1;
+			my $fhi = FileHandle->new($path);
+			if (not $fhi) {
+				$fh->print("# unable to open $path\n");
+				$self->warning("unable to open $path [$!]");
+				next;
+			}
+			my @text = <$fhi>;
+			undef($fhi);
+			$fh->print(@text);
+		}
+		else {
+			$self->warning("invalid $key value: $value");
+		}
+	}
+	if (uc($args->{bkgreg}) eq 'DEFAULT') {
+		foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+			$fh->print("\n# $filter background region\n");
+			my $path = $self->{BKG_REGIONs}{$filter};
+			my $fhi = FileHandle->new($path);
+			if (not $fhi) {
+				$fh->print("# unable to open $path [$!]\n");
+				$self->warning("unable to open $path [$!]");
+				next;
+			}
+			my @text = <$fhi>;
+			undef($fhi);
+			$fh->print(@text);
+		}
+	}
+
+	$fh->print("\n---------------------------------------------------------\n");
+
+	foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+
+		my $unbinned = $self->{"UNBINMAGHIST:$filter"};
+		next if not $unbinned;
+
+		$fh->print("\nUnbinned Data for $filter sky images:\n");
+		$fh->print("No Exposure   t-trig      dt net_rate     +/-   mag   +/- n_sig EXTNAME\n");
+
+		my $i = 0;
+		foreach my $e (@$unbinned) {
+			my $dt = $e->{TELAPSE} / 2;
+			$fh->printf("%2d %8.1f %8.1f %7.1f %8.4f %7.4f %5.2f %5.2f %5.2f %s\n",
+					$i, $e->{EXPOSURE}, $e->{TIME}, $e->{TIME_ERR},
+					$e->{CORR_RATE}, $e->{CORR_RATE_ERR},
+					$e->{MAG}, $e->{MAG_ERR}, $e->{NSIGMA}, $e->{EXTNAME});
+			++$i;
+		}
+	}
+
+if ($self->{REBIN}) {
+	$fh->print("\n---------------------------------------------------------\n");
+
+	foreach my $filter (@{ $self->{ORDERED_FILTERS} }) {
+
+		my $maghist = $self->{"REBINMAGHIST:$filter"};
+		next if not $maghist;
+
+		$fh->print("\nRebinned Data for $filter sky images:\n");
+		$fh->print("No Exposure   t-trig      dt net_rate     +/-   mag   +/- n_sig binned\n");
+
+		my $i = 0;
+		foreach my $e (@$maghist) {
+			$fh->printf("%2d %8.1f %8.1f %7.1f %8.4f %7.4f %5.2f %5.2f %5.2f %s\n",
+					$i, $e->{EXPOSURE}, $e->{TIME}, $e->{TIME_ERR},
+					$e->{CORR_RATE}, $e->{CORR_RATE_ERR},
+					$e->{MAG}, $e->{MAG_ERR}, $e->{NSIGMA}, $e->{IDs});
+			++$i;
+		}
+
+		$fh->print("\nRebinned exposures\n");
+		$i = 0;
+		foreach my $e (@$maghist) {
+			$fh->printf("%2d %s\n", $i, $e->{EXTNAMEs});
+			++$i;
+		}
+	}
+} # $self->{REBIN}
+
+	$fh->close;
+}
+

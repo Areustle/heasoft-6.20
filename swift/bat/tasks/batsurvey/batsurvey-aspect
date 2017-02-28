@@ -1,0 +1,330 @@
+#!/usr/bin/perl
+#
+# bat-survey-aspect - perform standard attitude-checking 
+#
+# $Id: batsurvey-aspect,v 1.6 2010/06/22 02:11:25 craigm Exp $
+#
+# $Log: batsurvey-aspect,v $
+# Revision 1.6  2010/06/22 02:11:25  craigm
+#
+#
+# Fix sloppy pattern matching in file names.
+#
+# I was using m/NONE/i which would match *any* string NONE within the
+# filename string.  If it happened to contain that substring anywhere,
+# with any upper/lowercase combination, then odd things would start to
+# happen.
+#
+# I fixed these by making them more stringent.
+#
+# Unit tests still pass.
+# --CM
+#
+# Revision 1.5  2009/09/15 18:56:09  craigm
+# Change tools that call QUZCIF to make sure retrieve=NO is set, so random files are not copied to random places; relevant unit tests still pass --CM
+#
+# Revision 1.4  2009/07/09 01:24:04  craigm
+# Updates to battsplit, batdrmgen-multi, batsurvey, batsurvey-aspect batsurvey-detmask batsurvey-gti; this update changes slightly how parameters are read, so that 'ask' parameters are always prompted first, and in the order listed in the parameter file; previously the order was jumbled by perl's hash behavior, so people could be prompted for parameter 2 before being prompted for 1;  now all the perl tasks should behave properly in this respect;  all unit tests still pass without changes --CM
+#
+# Revision 1.3  2009/01/31 03:56:32  craigm
+# Previous checkin was debugging code only, no new logic --CM
+#
+# Revision 1.2  2009/01/31 03:53:38  craigm
+# Version 6.2 of task; new parameter filtnames which allows to select which filters are used by batsurvey-gti --CM
+#
+# Revision 1.1  2008/05/20 10:37:55  craigm
+# Commit of 'batsurvey' task 6.0; this is a modification of version '5G'; primarily the modifications were to make the task more FTOOL-like, and no real changes to the core algorithms were done; the names of the tasks were changed to 'batsurvey{-xxx}' from the original 'bat-survey{-xxx}'; batsurvey-aspect now has an alignfile=CALDB option; the formats of the inventory.dat and outventory.dat have been changed; some version coding has been done to allow expansion in the future, as well as printing the number of energy bins; unit test pases on Linux-32bit against actual survey processing version 5G --CM
+#
+# Revision 1.2  2007/04/20 07:13:07  craigm
+# Fix bug where the script did not save the amount of 'bad attitude' time; the calling script got -1 instead of the time; the correct value is now saved --CM
+#
+# Revision 1.1  2006/10/24 03:57:20  craigm
+#
+#
+# Initial commit of BAT survey processing, broken into more modular bits...
+#
+# bat-survey is still the main driver and not an FTOOL; the rest are FTOOLs;
+#
+# bat-survey-erebin is a copy from its own directory, with some
+# modifications to write out quality maps;
+#
+# bat-survey-gti scans an observation for good time intervals based on
+# loads of quality-screening criteria;
+#
+# bat-survey-detmask does quality filtering at a detector level for a
+# snapshot observation: hot pixels (in multiple energy bands), global
+# quality map, user quality map (possibly multiple), pattern mask
+# quality-selected from survey; detector enable/disable)
+#
+# bat-survey-aspect does attitude drift checking for a snapshot
+# observation.  It looks for attitude drifts of more than a certain
+# magnitude, and reports them back to the calling task in order to make
+# a policy decision.
+#
+# 
+
+use strict;
+use HEACORE::HEAINIT;
+
+my $taskname = "bat-survey-aspect";
+my $taskvers = "1.3";
+
+# ===================================
+# Execute main subroutine, with error trapping
+my $status = 0;
+eval {
+    $status = headas_main(\&bat_survey_aspect);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub bat_survey_aspect {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &bat_survey_aspect_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+
+sub bat_survey_aspect_work {
+
+    # ===== 
+    # Initialization
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+
+    use Astro::FITS::CFITSIO qw(:longnames :constants);
+    use SimpleFITS;
+
+    PILPutReal('med_ra',   -999.0);
+    PILPutReal('med_dec',  -999.0);
+    PILPutReal('med_roll', -999.0);
+    PILPutReal('expotot',  -1.0);
+    PILPutReal('expobad',  -1.0);
+
+    my $chatter;
+    $status = PILGetInt("chatter",$chatter);
+    my $verbose = ($chatter >= 5)?(1):(0);
+    my @parmlist = ("gtifile", "attfile", "outattfile", "outgtifile");
+    my %parms = (
+		 gtifile => \&PILGetString,
+		 attfile => \&PILGetString,
+		 outattfile => \&PILGetString,
+		 outgtifile => \&PILGetString,
+		 alignfile => \&PILGetString,
+		 point_toler => \&PILGetReal,
+		 roll_toler => \&PILGetReal,
+		 clobber => \&PILGetBool, 
+		);
+
+    print "$taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------------------------\n" if ($chatter >= 2);
+
+    my ($parm, $func, $val);
+    # ... first read ordered parameters, then anything else
+    foreach $parm ( @parmlist, keys(%parms) ) {
+      my $func = $parms{$parm};
+      next if (ref($func) ne "CODE");  # Skip if we already did this parm
+      undef($val);
+      $status = &$func("$parm", $val);
+      die "ERROR: could not retrieve parameter '$parm'" if ($status);
+      $parms{$parm} = $val;
+      print "$parm=$val\n" if ($verbose);
+    }
+
+    my ($cmd);
+    my ($expotot, $expopnt, $expobad, $expopct);
+    my ($med_ra, $med_dec, $med_roll);
+    my ($expr,$fits,$ppntvect);
+    my (@pntvect);
+
+    # Query CALDB if needed
+    if ($parms{alignfile} =~ m/^caldb$/i) {
+      my ($fits,$keyvalue,$date,$cmd,$utc_date,$utc_time);
+      my $keyword = "DATE-OBS";
+
+      # First open the attitude file and extract the
+      # DATE-OBS keyword.  We use the date to query
+      # CALDB.
+      print "  Opening $parms{attfile}...\n" if ($chatter >= 5);
+      $fits = SimpleFITS->open("$parms{attfile}", 
+			       type=>"data", access=>"readonly");
+      die "ERROR: could not open $date" if (! $fits);
+      $keyvalue = $fits->readkey($keyword);
+      die "ERROR: could not read $keyword keyword of $parms{attfile}" 
+	if ($fits->status());
+      $fits->close();
+      print "    $keyword=$keyvalue\n" if ($chatter >= 5);
+      $date = "$keyvalue";
+
+      if ("$date" =~ m/^(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)/ ) {
+	$utc_date = $1;
+	$utc_time = $2;
+	print "  UTC: $date ($utc_date $utc_time)\n" if ($chatter >= 5);
+      } else {
+	# Fall-back.  I'm a little lax here because the alignment
+	# has not changed throughout the mission, and is 
+	# not expected to change.
+	$utc_date = $date;
+	$utc_time = "00:00:00";
+      }
+
+      my ($cmd,@result,$inspec,@inlist,$cfile,$extno);
+      # CALDB query command for the spacecraft alignment file
+      $cmd = "quzcif mission=Swift instrument=SC detector=- filter=- ".
+	"codename=ALIGNMENT date='$utc_date' time='$utc_time' expr='-' ".
+	"retrieve='NO' ";
+      print "$cmd\n" if ($verbose);
+
+      @result = `$cmd`;
+      die "ERROR: CALDB query failed with error: @result\n" if ($?);
+      $inspec = "$result[0]";
+      chomp($inspec);
+
+      # Format is "filename   extension"
+      @inlist = split(/ +/,$inspec);
+      $cfile = "$inlist[0]";
+
+
+      # Defend against possible remote-CALDB
+      if ("$cfile" !~ m/^(http|ftp):/i and not -f "$cfile") {
+	die "ERROR: CALDB query failed to find the Swift alignment file (returned '$inspec')";
+      }
+  
+      $extno  = "$inlist[1]";
+
+      $parms{alignfile} = "$cfile";
+      $parms{alignfile} .= "[$extno]" if ($extno);
+      print "parms{alignfile} = $parms{alignfile}\n" if ($verbose);
+    }
+
+    # Find total requested exposure
+    $cmd = "pset ftstat sum=-1"; 
+    print "$cmd\n" if ($verbose); system("$cmd < /dev/null");
+    my $file = "$parms{gtifile}";
+    $file .= "[1]" if ($file !~ m/\[/);
+    $cmd = "ftstat infile='$file"."[col EXPOSURE=STOP-START]' ";
+    if (! $verbose) { $cmd .= " > /dev/null"; }
+    print "$cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+    
+    $expotot = `pget ftstat sum`; chomp($expotot);
+    die "ERROR: Pointing-check exposure calculation failed"	if ($expotot < 0);
+    PILPutReal('expotot',   $expotot);
+
+
+    # ==== Make clean attitude file
+    $cmd = "aspect attfile='$parms{attfile}' alignfile='$parms{alignfile}' ".
+      "gtis='$parms{gtifile}' newattfile='$parms{outattfile}' clobber=YES ";
+    if ($verbose) { $cmd .= "chatter=1 "; } else { $cmd .= "chatter=0 ";}
+    print "$cmd\n" if ($verbose);
+    unlink("$parms{outattfile}") if ($parms{clobber});
+    system("$cmd < /dev/null");
+    if (! -f "$parms{outattfile}" ) {
+      die "WARNING: Could not create pointing-specific attitude file";
+    }
+
+    $fits = SimpleFITS->open("<$parms{outattfile}")->move(2);
+    $status = $fits
+	->readcol('POINTING',{rows=>1},$ppntvect)
+	->close()
+	->status();
+    if ($status) {
+      die "WARNING: could not retrieve median RA/DEC/ROLL from $parms{outattfile}";
+    }
+    @pntvect=@$ppntvect;
+    
+    $med_ra   = $pntvect[0];
+    $med_dec  = $pntvect[1];
+    $med_roll = $pntvect[2];
+    print "  MEDIAN RA=$med_ra  DEC=$med_dec  ROLL=$med_roll\n" if ($chatter >= 2);
+
+    # Save these values to the parameter file
+    PILPutReal('med_ra',   $med_ra);
+    PILPutReal('med_dec',  $med_dec);
+    PILPutReal('med_roll', $med_roll);
+
+    # =====================================
+    # Do a pointing check here (looking for drift or slew-in-place)
+
+    if ($parms{outgtifile} !~ m/^NONE$/i ) {
+	$expr = "ANGSEP(POINTING[1],POINTING[2],$med_ra,$med_dec) < $parms{point_toler} && ABS(POINTING[3]-$med_roll) < $parms{roll_toler}";
+	# Attitude file and default extension
+	my $infile = "$parms{attfile}";
+	if ($infile !~ m/\[/) { $infile .= "[ATTITUDE]"; }
+	# Select only the requested time range
+	$infile .= "[gtifilter(\"$parms{gtifile}\")]";
+	$cmd = "ftcopy infile='$infile' outfile='$parms{outattfile}-att.tmp' ".
+	  "clobber=YES";
+	print "$cmd\n" if ($verbose);
+	unlink("$parms{outattfile}-att.tmp") if ($parms{clobber});
+	system("$cmd < /dev/null");
+	die "ERROR: Could not create temporary attitude file" if (! -f "$parms{outattfile}-att.tmp");
+
+	$cmd = "maketime infile='$parms{outattfile}-att.tmp' ".
+	    "outfile='$parms{outgtifile}' expr='$expr' prefr=0.5 postfr=0.5 ".
+	    "name=NONE value=NONE time=TIME compact=NO clobber=YES";
+	print "$cmd\n" if ($verbose);
+	unlink("$parms{outgtifile}") if ($parms{clobber});
+	system("$cmd < /dev/null");
+	die "ERROR: Could not create pointing-check GTI file" if (! -f "$parms{outgtifile}");
+
+
+	# Compare to total good-pointed exposure
+	$cmd = "pset ftstat sum=-1"; 
+	print "$cmd\n" if ($verbose); 
+	system("$cmd < /dev/null");
+	$cmd = "ftstat infile='$parms{outgtifile}"."[1][col EXPOSURE=STOP-START]' ";
+	if (! $verbose) { $cmd .= " > /dev/null"; }
+	print "$cmd\n" if ($verbose);
+	system("$cmd < /dev/null");
+
+	$expopnt = `pget ftstat sum`; chomp($expopnt);
+	die "ERROR: Pointing-check exposure calculation failed"	if ($expopnt < 0);
+
+	$expobad = $expotot - $expopnt;
+	PILPutReal('expobad',  $expobad);
+	$expopct = $expobad / $expotot * 100.0;
+	printf("  TOTAL EXPOSURE: %10.2f s\n",$expotot) if ($chatter >=2);
+	printf("  BAD POINTING:   %10.2f s (=%6.2f percent)\n".
+	       "        (pointing,roll more than %6.2f,%5.2f away from median)\n",$expobad,$expopct,$parms{point_toler},$parms{roll_toler}) if ($chatter >= 2);
+
+    }
+
+    return $status;
+}
+

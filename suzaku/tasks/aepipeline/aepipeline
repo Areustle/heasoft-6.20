@@ -1,0 +1,4947 @@
+#!/usr/bin/perl -w
+#
+# File name: aepipeline
+#  
+# Task name: aepipeline
+#       
+# Description:
+#
+# Script to perform Suzaku Data Reduction.
+# Duplicates functionality of Suzaku Pipeline ae1.
+#
+# Author/Date: Peter Hall NASA GSFC / 17 September 2009
+#
+# History:
+#
+# 1.0.0 : PH 17 September 2009 - Build 1 Release
+#
+# 1.0.1 : PH 11 March 2010
+#
+# 1.1.0 : CAP 16 March 2011
+#
+# Single (procedural) program to duplicate the Suzaku "ae1" pipeline processing.
+#
+
+#-----------------------------------------------------------
+
+# Set up
+
+use strict;
+
+use File::Find;
+use File::Spec::Functions;
+use File::Basename;
+use File::Copy;
+use File::Path;
+use Cwd 'abs_path';
+
+use HEACORE::HEAUTILS;
+use HEACORE::HEAINIT;
+use Astro::FITS::CFITSIO qw( :longnames :constants );
+use HEAGen::HEAGen qw( :all );
+
+# turn on AUTOFLUSH
+$| = 1;
+
+#-----------------------------------------------------------
+
+# Data definition
+
+#
+#  Variable Definition
+#
+
+our $debug  = 0;        # Set to 1 for debugging output
+our $report = "";
+our $pipelineerror = 0;
+our $errmsg = 0;
+our $compmsg = 0;
+
+our $command_run = 0;
+our $output_lines = 0;
+our $mgtime = 0;
+our $maketime = 0;
+our $ftcopy = 0;
+our $filecopy = 0;
+our $fptr1   = "";
+our $fptr2   = "";
+our $file_status = 0;
+our $file_exists = 0;
+our $fitskeyword = "";
+our $fitsvalue;
+our $fitscomment = "";
+
+our @filelist_unparsed;
+our @filelist_output;
+
+our %General = (
+    stage1_switch         => 0,
+    stage2_switch         => 0,
+    stage3_switch         => 0,
+    reportname            => "aepipeline_report.txt",
+    reportstore           => "",
+    reportflag            => 0,
+    reportoutput          => 0,
+    reportcurdur          => 0,
+    reportfilehandle      => undef,
+);
+
+our %Task = (
+    start                 => `date`,
+    name                  => "aepipeline",
+    version               => "1.1.0",
+    releasedate           => "2011-04-01",
+    stem                  => "aepipeline_1.1.0",
+    emptystem             => "                 ",
+    clobber               => 0,
+    chatter               => 3,
+    status                => 0,
+    errmess               => "",
+    ra                    => "",
+    dec                   => "",
+);
+
+our %Parms_str = (
+    indir                 => "", # "Input Directory"
+    outdir                => "", # "Output Directory"
+    steminputs            => "", # "Stem for input files name"
+    stemoutputs           => "", # "Stem for output files name"
+    instrument            => "", # "Instrument ALL/XIS/0/1/2/3/HXD/GSO/PIN"
+    xisconflist           => "", # "XIS configurations by MET"
+    leapfile              => "", # "Leap second calibration file"
+    attitude              => "", # "Attitude file"
+    housekeeping          => "", # "Housekeeping file"
+    extended_housekeeping => "", # "Extended housekeeping file"
+    makefilter            => "", # "Makefilter file"
+    orbit                 => "", # "Orbit file"
+    timfile               => "", # "Time file"
+    hxd_gsoght            => "", # "HXD GSO gain history file for HXDPI_OLD"
+    hxd_gsogpt            => "", # "HXD GSO gain history file for HXDPI (Current)"
+    hxd_gsolin            => "", # "HXD GSO linearity table"
+    hxd_gsopsd            => "", # "PSD selection file"
+    hxd_pinghf            => "", # "HXD PIN gain history file"
+    hxd_pinlin            => "", # "HXD PIN linearity table"
+    hxd_pinthr            => "", # "HXD PIN threshold file"
+    WPU                   => "", # "WPU board IDs"
+    xis0_badcolum         => "", # "XIS0 bad column file"
+    xis0_calmask          => "", # "XIS0 calmask file"
+    xis0_makepi           => "", # "XIS0 trail file"
+    xis0_teldef           => "", # "XIS0 telescope definition file"
+    xis1_badcolum         => "", # "XIS1 bad column file"
+    xis1_calmask          => "", # "XIS1 calmask file"
+    xis1_makepi           => "", # "XIS1 trail file"
+    xis1_teldef           => "", # "XIS1 telescope definition file"
+    xis2_badcolum         => "", # "XIS2 bad column file"
+    xis2_calmask          => "", # "XIS2 calmask file"
+    xis2_makepi           => "", # "XIS2 trail file"
+    xis2_teldef           => "", # "XIS2 telescope definition file"
+    xis3_badcolum         => "", # "XIS3 bad column file"
+    xis3_calmask          => "", # "XIS3 calmask file"
+    xis3_makepi           => "", # "XIS3 trail file"
+    xis3_teldef           => "", # "XIS3 telescope definition file"
+    pointing              => "", # "XISCOORD - Pointing type, KEY/USER"
+    xis0_expr             => "", # "MAKETIME XIS0 Expression"
+    xis1_expr             => "", # "MAKETIME XIS1 Expression"
+    xis2_expr             => "", # "MAKETIME XIS2 Expression"
+    xis3_expr             => "", # "MAKETIME XIS3 Expression"
+    hxd_pin_expr          => "", # "MAKETIME HXD PIN Expression"
+    hxd_gso_expr          => "", # "MAKETIME HXD GSO Expression"
+    hxd_pse_expr          => "", # "MAKETIME HXD PSE Expression"
+    xis0_grade            => "", # "EXTRACTOR XIS0 GRADE"
+    xis1_grade            => "", # "EXTRACTOR XIS1 GRADE"
+    xis2_grade            => "", # "EXTRACTOR XIS2 GRADE"
+    xis3_grade            => "", # "EXTRACTOR XIS3 GRADE"
+    xis0_psum_grade       => "", # "EXTRACTOR XIS0 GRADE PSUM Mode"
+    xis1_psum_grade       => "", # "EXTRACTOR XIS1 GRADE PSUM Mode"
+    xis2_psum_grade       => "", # "EXTRACTOR XIS2 GRADE PSUM Mode"
+    xis3_psum_grade       => "", # "EXTRACTOR XIS3 GRADE PSUM Mode"
+);
+
+our %Parms_num = (
+    chatter               => 0, # "Chatter (0-5)"
+    entry_stage           => 0, # "Entry stage of processing (1,2 or 3)"
+    exit_stage            => 0, # "Exit  stage of processing (1,2 or 3)"
+    xis_start             => 0, # "XIS CALDB start time"
+    hxd_start             => 0, # "HXD CALIB start time"
+    seed                  => 0, # "Seed for random number generators"
+    anl_verbose           => 0, # "ANL verbosity setting (-1 for full, 0 for minimal)"
+    event_freq            => 0, # "Event row counting frequency in FTOOLS"
+    num_event             => 0, # "Number of event (-1:all, 0:exit)"
+    time_convert_mode     => 0, # "HxdTime2aetime mode.: 1, 2, 3, 4"
+    ea1                   => 0, # "XISCOORD - 1st XYZ-Euler angle (deg), asked when attitude=EULER"
+    ea2                   => 0, # "XISCOORD - 2nd XYZ-Euler angle (deg), asked when attitude=EULER"
+    ea3                   => 0, # "XISCOORD - 3rd XYZ-Euler angle (deg), asked when attitude=EULER"
+    ref_alpha             => 0, # "XISCOORD - R.A. of the sky reference position, asked when pointing=USER"
+    ref_delta             => 0, # "XISCOORD - DEC. of the sky reference position, asked when pointing=USER"
+    ref_roll              => 0, # "XISCOORD - Roll angle of the sky reference, asked when pointing=USER"
+    hk_time_margin        => 0, # "XISPI - Time margin in second to consider AE-temp is valid"
+    hk_aetemp_min         => 0, # "XISPI - Minimum value in degC to consider AE-temp is valid"
+    hk_aetemp_max         => 0, # "XISPI - Maximum value in degC to consider AE-temp is valid"
+    constant_spth         => 0, # "XISPI - Value of the split threshold, when the constant method is selected"
+    cellsize              => 0, # "CLEANSIS - Search cell size in units of pixels"
+    logprob               => 0, # "CLEANSIS - The LOG of the Poisson probability threshold for rejecting a pixel"
+    bthresh               => 0, # "CLEANSIS - Zero background cutoff threshold"
+);
+
+our %Parms_bool = (
+    clobber               => "", # "Clobber existing files"
+    history               => "", # "Keep history"
+    report                => "", # "Produce separate report file for run"
+    remove_temp_files     => "", # "Remove temporary files"
+    verify_input          => "", # "Enable input verification"
+    hxdpi_old             => "", # "Use hxdpi_old version instead of hxdpi ? (Default=No)"
+    anl_profile           => "", # "Enable ANL profiling"
+    use_pwh_mode          => "", # "Use HXD_WEL_PWH column in HK FITS or not"
+    bstgti                => "", # "XISTIME - Generate GTI for the burst option without approximation"
+    aberration            => "", # "XISCOORD - Correct aberration"
+    enable_scipixq        => "", # "XISPUTPIXELQUALITY - Flag to enable SCI pixel quality bits"
+    enable_trcor          => "", # "XISPI - Flag to enable charge trail correction"
+    enable_cticor         => "", # "XISPI - Flag to enable CTI correction"
+    enable_scicti         => "", # "XISPI - Flag to enable CTI correction for SCI"
+    enable_edge_smooth    => "", # "XISPI - Flag to enable smoothing the PHA to PI relation around edge"
+    flag_rand_phas0       => "", # "XISPI - Flag to randomize PHAS[0]"
+    flag_constant_spth    => "", # "XISPI - Flag if the constant split threshold method is applied"
+    cleansis_run          => "", # "CLEANSIS - Run yes or no"
+);
+
+# Set switches for instrument processing
+
+our %instrument = (
+    pin                   => "",  # HXD PIN
+    gso                   => "",  # HXD GSO
+    pse                   => "",  # HXD PSE (pseudo-event files)
+    xi0                   => "",  # XIS Module 0
+    xi1                   => "",  # XIS Module 1
+    xi2                   => "",  # XIS Module 2
+    xi3                   => "",  # XIS Module 3
+);
+
+# Set patterns for recognizing input files
+
+our %files = (
+    attitude              => "",
+    housekeeping          => "",
+    extended_housekeeping => "",
+    makefilter            => "",
+    orbit                 => "",
+    timfile               => "",
+    hxd_event_uf_wel      => [],
+    hxd_event_cl_gso      => [],
+    hxd_event_cl_pin      => [],
+    hxd_event_cl_pse      => [],
+    hxd_hk_hk             => "",
+    hxd_hk_gti_tel_uf     => [],
+    hxd_hk_gti_wel_uf     => [],
+    xis_event_uf_xi0      => [],
+    xis_event_uf_xi1      => [],
+    xis_event_uf_xi2      => [],
+    xis_event_uf_xi3      => [],
+    xis_event_cl_xi0      => [],
+    xis_event_cl_xi1      => [],
+    xis_event_cl_xi2      => [],
+    xis_event_cl_xi3      => [],
+    xis_hk_xi0            => "",
+    xis_hk_xi1            => "",
+    xis_hk_xi2            => "",
+    xis_hk_xi3            => "",
+    xis_conf_uf_xi0       => [],
+    xis_conf_uf_xi1       => [],
+    xis_conf_uf_xi2       => [],
+    xis_conf_uf_xi3       => [],
+    xis_tel_uf_xi0        => [],
+    xis_tel_uf_xi1        => [],
+    xis_tel_uf_xi2        => [],
+    xis_tel_uf_xi3        => [],
+);
+
+our $zpatt = qr/(\.Z|\.z|\.gzip|\.GZIP|\.gz|\.GZ|\.zip\.ZIP)?/;
+our %patterns = (
+    attitude              => qr/(\.att)$zpatt$/,
+    housekeeping          => qr/(\.hk)$zpatt$/,
+    extended_housekeeping => qr/(\.ehk)$zpatt$/,
+    makefilter            => qr/(\.mkf)$zpatt$/,
+    orbit                 => qr/(\.orb)$zpatt$/,
+    timfile               => qr/(\.tim)$zpatt$/,
+    hxd_event_uf_wel      => qr/(hxd_[0-9]_wel_uf\.evt)$zpatt$/,
+    hxd_event_cl_gso      => qr/(hxd_[0-9]_gso.._cl\.evt)$zpatt$/,
+    hxd_event_cl_pin      => qr/(hxd_[0-9]_pin.._cl\.evt)$zpatt$/,
+    hxd_event_cl_pse      => qr/(hxd_[0-9]_pse_cl\.evt)$zpatt$/,
+    hxd_hk_hk             => qr/(hxd_0\.hk)$zpatt$/,
+    hxd_hk_gti_tel_uf     => qr/(hxd_[0-9]_tel_uf\.gti)$zpatt$/,
+    hxd_hk_gti_wel_uf     => qr/(hxd_[0-9]_wel_uf\.gti)$zpatt$/,
+    xis_event_uf_xi0      => qr/(xi0_[0-9]_.......z_uf\.evt)$zpatt$/,
+    xis_event_uf_xi1      => qr/(xi1_[0-9]_.......z_uf\.evt)$zpatt$/,
+    xis_event_uf_xi2      => qr/(xi2_[0-9]_.......z_uf\.evt)$zpatt$/,
+    xis_event_uf_xi3      => qr/(xi3_[0-9]_.......z_uf\.evt)$zpatt$/,
+    xis_event_cl_xi0      => qr/(xi0_[0-9]_........_cl\.evt)$zpatt$/,
+    xis_event_cl_xi1      => qr/(xi1_[0-9]_........_cl\.evt)$zpatt$/,
+    xis_event_cl_xi2      => qr/(xi2_[0-9]_........_cl\.evt)$zpatt$/,
+    xis_event_cl_xi3      => qr/(xi3_[0-9]_........_cl\.evt)$zpatt$/,
+    xis_hk_xi0            => qr/(xi0_0\.hk)$zpatt$/,
+    xis_hk_xi1            => qr/(xi1_0\.hk)$zpatt$/,
+    xis_hk_xi2            => qr/(xi2_0\.hk)$zpatt$/,
+    xis_hk_xi3            => qr/(xi3_0\.hk)$zpatt$/,
+    xis_conf_uf_xi0       => qr/(xi0_[0-9]_conf_uf\.gti)$zpatt$/,
+    xis_conf_uf_xi1       => qr/(xi1_[0-9]_conf_uf\.gti)$zpatt$/,
+    xis_conf_uf_xi2       => qr/(xi2_[0-9]_conf_uf\.gti)$zpatt$/,
+    xis_conf_uf_xi3       => qr/(xi3_[0-9]_conf_uf\.gti)$zpatt$/,
+    xis_tel_uf_xi0        => qr/(xi0_[0-9]_tel_uf\.gti)$zpatt$/,
+    xis_tel_uf_xi1        => qr/(xi1_[0-9]_tel_uf\.gti)$zpatt$/,
+    xis_tel_uf_xi2        => qr/(xi2_[0-9]_tel_uf\.gti)$zpatt$/,
+    xis_tel_uf_xi3        => qr/(xi3_[0-9]_tel_uf\.gti)$zpatt$/,
+);
+
+our %archive_dirs = (
+    attitude              => 'auxil',
+    housekeeping          => 'auxil',
+    extended_housekeeping => 'auxil',
+    makefilter            => 'auxil',
+    orbit                 => 'auxil',
+    timfile               => 'auxil',
+    hxd_event_uf_wel      => 'hxd/event_uf',
+    hxd_event_cl_gso      => 'hxd/event_cl',
+    hxd_event_cl_pin      => 'hxd/event_cl',
+    hxd_event_cl_pse      => 'hxd/event_cl',
+    hxd_hk_hk             => 'hxd/hk',
+    hxd_hk_gti_tel_uf     => 'hxd/hk',
+    hxd_hk_gti_wel_uf     => 'hxd/hk',
+    xis_event_uf_xi0      => 'xis/event_uf',
+    xis_event_uf_xi1      => 'xis/event_uf',
+    xis_event_uf_xi2      => 'xis/event_uf',
+    xis_event_uf_xi3      => 'xis/event_uf',
+    xis_event_cl_xi0      => 'xis/event_cl',
+    xis_event_cl_xi1      => 'xis/event_cl',
+    xis_event_cl_xi2      => 'xis/event_cl',
+    xis_event_cl_xi3      => 'xis/event_cl',
+    xis_hk_xi0            => 'xis/hk',
+    xis_hk_xi1            => 'xis/hk',
+    xis_hk_xi2            => 'xis/hk',
+    xis_hk_xi3            => 'xis/hk',
+    xis_conf_uf_xi0       => 'xis/hk',
+    xis_conf_uf_xi1       => 'xis/hk',
+    xis_conf_uf_xi2       => 'xis/hk',
+    xis_conf_uf_xi3       => 'xis/hk',
+    xis_tel_uf_xi0        => 'xis/hk',
+    xis_tel_uf_xi1        => 'xis/hk',
+    xis_tel_uf_xi2        => 'xis/hk',
+    xis_tel_uf_xi3        => 'xis/hk'
+);
+
+# Copy function for output intermediate files
+our $copyfunc = 0;
+
+# Screening related globals
+
+# Column names in mkf file used to determine XIS modes used
+
+our @XIS_CONF_COLS = qw(
+    ADHST_A     ADHST_B       ADHST_C      ADHST_D
+    ADHEND_A    ADHEND_B      ADHEND_C     ADHEND_D
+    ADVST_A     ADVST_B       ADVST_C      ADVST_D
+    ADVEND_A    ADVEND_B      ADVEND_C     ADVEND_D
+    DSC_INOUT_A DSC_INOUT_B   DSC_INOUT_C  DSC_INOUT_D
+    GDSC_OTHERS GDSC_TRAIL_SP GDSC_LEAD_SP GDSC_SINGLE
+    EVTHLW_A    EVTHLW_B      EVTHLW_C     EVTHLW_D
+    EVTHUP_A    EVTHUP_B      EVTHUP_C     EVTHUP_D
+    AREA_DSC_A  AREA_DSC_B    AREA_DSC_C   AREA_DSC_D
+    GRADE_DSC_A GRADE_DSC_B   GRADE_DSC_C  GRADE_DSC_D
+);
+
+# Hash ref to hold a big-ol' data structure for all screening and filtering criteria
+
+our $CRITERIA;
+
+# Hash ref to hold all available XIS minor-mode configurations
+# and another to hold keywords related to those modes
+
+our $XIS_MODES;
+our $XIS_MODE_KEYS;
+
+# Code to set up headas wrapper
+
+exit headas_main(\&aepipeline);
+
+#-----------------------------------------------------------
+
+sub aepipeline {
+
+    # HEASoft Initialization
+
+    set_toolname( $Task{name} );
+    set_toolversion( $Task{version} );
+
+    # Prepending of name and version number for "chat" operator.
+
+    setTask( $Task{name}, $Task{version} );
+    setChat(1);
+    setSysChat( 2 );
+
+    # Run Processing Subroutines
+
+    $pipelineerror = BeginProcessing();
+    unless ( $pipelineerror == 0 ) {
+        $General{reportcurdur} = 1;
+        errmsg("BeginProcessing");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = GetInputParameters();
+    unless ( $pipelineerror == 0 ) {
+        $General{reportcurdur} = 1;
+        errmsg("GetInputParameters");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    # Define the copy/move function to use based on whether we want to keep temp files
+
+    if ( $Parms_bool{remove_temp_files} ) {
+        $copyfunc = \&File::Copy::move;
+    } else {
+        $copyfunc = \&File::Copy::copy;
+    }
+
+    $pipelineerror = PrintInputParameters();
+    unless ( $pipelineerror == 0 ) {
+        $General{reportcurdur} = 1;
+        errmsg("PrintInputParameters");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckOverload();
+    unless ( $pipelineerror == 0 ) {
+        $General{reportcurdur} = 1;
+        errmsg("CheckOverload");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckInputDirectory();
+    unless ( $pipelineerror == 0 ) {
+        $General{reportcurdur} = 1;
+        errmsg("CheckInputDirectory");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckOutputDirectory();
+    unless ( $pipelineerror == 0 ) {
+        $General{reportcurdur} = 1;
+        errmsg("CheckOutputDirectory");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckEntryExitStage();
+    unless ( $pipelineerror == 0 ) {
+        errmsg("CheckEntryExitStage");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckInstrument();
+    unless ( $pipelineerror == 0 ) {
+        errmsg("CheckInstrument");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckExtractorXisGrade();
+    unless ( $pipelineerror == 0 ) {
+        errmsg("CheckExtractorXisGrade");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckCalibrationFiles();
+    unless ( $pipelineerror == 0 ) {
+        errmsg("CheckCalibrationFiles");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = FindInputFiles();
+    unless ( $pipelineerror == 0 ) {
+        errmsg("FindInputFiles");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = CheckAuxilFiles();
+    unless ( $pipelineerror == 0 ) {
+        errmsg("CheckAuxilFiles");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = StageSwitcher();
+    unless ( $pipelineerror == 0) {
+        errmsg("StageSwitcher");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    $pipelineerror = FileHistory();
+    unless ( $pipelineerror == 0) {
+        errmsg("FileHistory");
+        EndProcessing();
+        return ($pipelineerror);
+    }
+
+    EndProcessing();
+
+    return ($pipelineerror);
+
+}
+
+#-----------------------------------------------------------
+
+sub BeginProcessing {
+
+    # Start of processing message
+
+    my $StartDate = `date`;
+    $General{reportoutput} = 1;
+
+    chatnp(1, "\n============================================================\n");
+    chatnp(1, "                Running SUZAKU AE pipeline\n");
+    chatnp(1, " Task: $Task{name} Version: $Task{version} Release Date: $Task{releasedate}\n");
+    chatnp(1, " Pipeline began - $StartDate");
+    chatnp(1, "============================================================\n\n");
+
+    AddReport(1, "\n============================================================\n");
+    AddReport(1, "                Running SUZAKU AE pipeline\n");
+    AddReport(1, " Task: $Task{name} Version: $Task{version} Release Date: $Task{releasedate}\n");
+    AddReport(1, " Pipeline began - $StartDate");
+    AddReport(1, "============================================================\n\n");
+
+    return 0;
+
+} # BeginProcessing
+
+#-----------------------------------------------------------
+
+sub GetInputParameters{
+
+    #
+    # pquery2 returns the value of the named parameter on
+    # stdout, prompting if necessary directly to /dev/tty
+    # Any command line arguments must be passed along.
+    #
+
+    # Get "ask" (non-hidden/non-automatically-defaulted) input parameters
+
+    my $invokestring = join(" ", map("\"$_\"", @ARGV));
+    my $Stringa      = "";
+    my $Numerics     = "";
+    my $Booleans     = "";
+
+    # Check requested (non-hidden) input parameters
+
+    my @reqparm = qw(indir outdir steminputs entry_stage exit_stage instrument);
+
+    for my $reqparm ( @reqparm ) {
+
+	chop($Stringa = qx(pquery2 aepipeline $reqparm $invokestring));
+
+	if ( length($Stringa) == 0 ) {
+	    errmsg("Input parameter zero length : $reqparm");
+	    return 1;
+	}
+
+	if ( !$Stringa && $Stringa !~ "0" ) {
+	    errmsg("Input parameter not recognized : $reqparm $invokestring");
+	    return 1;
+	}
+	if ( exists($Parms_str{$reqparm}) ) {
+	    $Parms_str{$reqparm} = $Stringa;
+	} elsif ( exists($Parms_num{$reqparm}) ) {
+	    $Parms_num{$reqparm} = $Stringa;
+	} elsif ( exists($Parms_bool{$reqparm}) ) {
+
+	    if ( $Stringa =~ /[Yy]/) {
+		$Parms_bool{$reqparm} = 1;
+	    } else {
+		$Parms_bool{$reqparm} = 0;
+	    }
+	}
+    }
+
+    # Hidden/defaulted parameters hereonwards
+
+    # Get hidden/defaulted input parameters - string
+
+    foreach my $par ( keys %Parms_str ) {
+	if ( !$Parms_str{$par} && $Parms_str{$par} !~ "0" ) {
+	    chop($Stringa = qx(pquery2 aepipeline $par $invokestring));
+	    if ( length($Stringa) == 0 ) {
+		errmsg("Input parameter zero length : $par");
+		return 1;
+	    }
+	    if ( !$Stringa && $Stringa !~ "0" ) {
+		errmsg("Input parameter not recognized : $par $invokestring");
+		return 1;
+	    }
+	    $Parms_str{$par} = $Stringa;
+	}
+    }
+
+    # Get hidden/defaulted input parameters - numeric
+
+    foreach my $par ( keys %Parms_num ) {
+	if ( !$Parms_num{$par} ) {
+	    chop($Numerics = qx(pquery2 aepipeline $par $invokestring));
+	    if ( length($Numerics) == 0 ) {
+		errmsg("Input parameter zero length : $par");
+		return 1;
+	    }
+	    if ( $Numerics =~ /^\s+$/ ) {
+		errmsg("Input parameter not recognized : $par $invokestring");
+		return 1;
+	    }
+
+	    $Parms_num{$par} = $Numerics;
+	}
+    }
+
+    # Get hidden/defaulted input parameters - boolean
+
+    foreach my $par ( keys %Parms_bool ) {
+	if ( !$Parms_bool{$par} ) {
+	    chop($Booleans = qx(pquery2 aepipeline $par $invokestring));
+	    if ( length($Booleans) == 0 ) {
+		errmsg("Input parameter zero length : $par");
+		return 1;
+	    }
+	    if ( !$Booleans ) {
+		errmsg("Input parameter not recognized : $par $invokestring");
+		return 1;
+	    }
+
+	    # Convert Yes/No values in parameter file to true/false boolean variables
+
+	    if ( $Booleans =~ /[Yy]/) {
+		$Parms_bool{$par} = 1;
+	    } else {
+		$Parms_bool{$par} = 0;
+	    }
+	}
+    }
+
+    # Override any internally defaulted parameters
+
+    $Task{chatter}         = $Parms_num{chatter};
+    setChat($Parms_num{chatter});
+    setSysChat($Parms_num{chatter});
+    $General{reportoutput} = $Parms_num{chatter};
+
+    if (uc($Parms_str{stemoutputs}) eq "DEFAULT") {
+	$Parms_str{stemoutputs} = $Parms_str{steminputs};
+    }
+
+    # Set output report name
+
+    $Parms_str{stemoutputs} =~ s/^\s+//; # Remove leading blanks
+    $Parms_str{stemoutputs} =~ s/\s+$//; # Remove trailing blanks
+
+    unless ( $Parms_str{stemoutputs} eq "" ) {
+	$General{reportname} = "$Parms_str{stemoutputs}_aepipeline_report.txt";
+    }
+
+    return 0;
+
+}				# GetInputParameters
+
+#-----------------------------------------------------------
+
+sub PrintInputParameters{
+
+    unless ( $debug ) {
+	return 0;
+    }
+
+    compmsg("\nInput parameters - string :");
+
+    foreach my $key (sort keys %Parms_str) {
+        compmsg("$key  $Parms_str{$key}");
+    }
+
+    compmsg("\nInput parameters - numeric :");
+
+    foreach my $key (sort keys %Parms_num)
+    {
+	compmsg("$key  $Parms_num{$key}\n");
+    }
+
+    compmsg("\nInput parameters - boolean :");
+
+    foreach my $key (sort keys %Parms_bool)
+    {
+	compmsg("$key  $Parms_bool{$key}");
+    }
+
+    return 0;
+
+}				#  PrintInputParameters
+
+#-----------------------------------------------------------
+
+sub CheckOverload {
+
+    if ( ( $Parms_bool{report} ) && ($Parms_num{chatter} > 2) ) {
+
+	print "\n          WARNING          \n\n";
+	print "Output report requested and chatter level = $Parms_num{chatter}\n";
+	print "This can result in a very large output report file\n";
+	print "Ensure sufficient space available for output report file\n\n";
+
+	for (my $i1 = 5; $i1 > 0; $i1--) {
+	    print "$i1 seconds before continuing\n";
+	    sleep 1;
+	} 
+    }
+
+    return 0;
+
+}				#  CheckOverload
+
+#-----------------------------------------------------------
+
+sub CheckInputDirectory {
+
+    if ( $Parms_str{outdir} eq $Parms_str{indir} ) {
+        errmsg("Output directory same as input directory");
+        errmsg("Input directory  : $Parms_str{indir}");
+        errmsg("Output directory : $Parms_str{outdir}");
+	return 1;
+    }
+
+    if ( -e$Parms_str{indir} )
+    {
+	compmsg("Input Directory Found : $Parms_str{indir}");
+        return 0;
+    } else {
+        errmsg("Input Directory NOT FOUND : $Parms_str{indir}");
+        return 1;
+    }
+
+    return 0;
+
+}				# CheckInputDirectory
+
+#-----------------------------------------------------------
+
+sub CheckOutputDirectory{
+
+    if ( -e$Parms_str{outdir} ) {
+
+	compmsg("Output Directory Found : $Parms_str{outdir}");
+
+	if ( !$Parms_bool{clobber} ) {
+	    errmsg("Output directory exists \& clobber=no : $Parms_str{outdir}");
+	    return 1;
+	}
+
+    } else {
+
+	compmsg("Output Directory Not Found  : $Parms_str{outdir}");
+	compmsg("Making New Output Directory : $Parms_str{outdir}");
+
+        eval { mkpath( $Parms_str{outdir} ); };
+        if ( $@ ) {
+	    errmsg("Cannot make directory : $Parms_str{outdir}");
+	    return 1;
+	}
+    }
+
+    if ( CheckInclusion($Parms_str{indir}, $Parms_str{outdir} )) {
+	errmsg("Output directory $Parms_str{outdir}");
+	errmsg("The output directory cannot be linear to (above or below) the input directory");
+	errmsg("Please specify another directory for output");
+	return 1;
+    }
+
+    # Set up output report name and output previously stored report entries
+    
+    my $organizereport = OrganizeReport();
+
+    return $organizereport;
+
+}				# CheckOutputDirectory
+
+#-----------------------------------------------------------
+
+# Common section for CheckInclusion subroutine
+
+{
+    my ( $indir, $outdir );
+
+    # Build a hash of the subdirectories of $outdir
+
+    my %suboutdirs;
+    my $found = 0;
+
+    sub CheckInclusion {
+        ( $indir, $outdir ) = @_;
+        $indir  = abs_path( $indir );
+        $outdir = abs_path( $outdir );
+
+        # Traverse the $outdir filesystems, noting the subdirs
+
+        File::Find::find( { wanted => \&buildsub, follow => 1, follow_skip => 2 }, $outdir );
+
+        # Traverse the $indir filesystems
+
+        File::Find::find( { wanted => \&lookout, follow => 1, follow_skip => 2 }, $indir );
+        return $found;
+    }
+
+    sub buildsub {
+        my ( $dev, $ino );
+        unless ( defined $File::Find::fullname ) {
+            return;
+        }
+        if ( -d $_ || -d $File::Find::fullname ) {
+            ( $dev, $ino ) = stat _;
+            $suboutdirs{$File::Find::fullname} = [ $_, $dev, $ino ];
+        }
+    }
+
+    sub lookout {
+        my ( $dev, $ino );
+        unless ( defined $File::Find::fullname ) {
+            return;
+        }
+        if ( -d $_ || -d $File::Find::fullname ) {
+            if ( $suboutdirs{$File::Find::fullname} ) {
+                ( ( $dev, $ino ) = stat _ );
+                if ( $dev == $suboutdirs{$File::Find::fullname}->[ 1 ] &&
+                     $ino == $suboutdirs{$File::Find::fullname}->[ 2 ] ) {
+                    $File::Find::prune = 1;
+                    $found             = 1;
+                }
+            }
+        }
+    }
+}   # CheckInclusion subroutine section
+
+#-----------------------------------------------------------
+
+sub CheckEntryExitStage {
+
+    # Check entry stage is in range 1 - 2
+
+    unless ( $Parms_num{entry_stage} =~ /^(1|2)$/ ) {
+        errmsg( "Entry stage must be one of 1,2 or 3" );
+        errmsg( "Entry stage = $Parms_num{entry_stage}" );
+        return 1;
+    }
+
+    # Check exit stage is in range 1 - 2
+
+    unless ( $Parms_num{exit_stage} =~ /^(1|2)$/ ) {
+        errmsg( "Exit stage must be one of 1,2 or 3" );
+        errmsg( "Exit stage = $Parms_num{exit_stage}" );
+        return 1;
+    }
+
+    # Check entry stage is before/same as exit stage
+
+    if ( $Parms_num{entry_stage} > $Parms_num{exit_stage} ) {
+        errmsg( "Entry stage after exit stage" );
+        errmsg( "Entry stage = $Parms_num{entry_stage}" );
+        errmsg( "Exit stage  = $Parms_num{exit_stage}" );
+        return 1;
+    }
+
+    return 0;
+
+}   #  CheckEntryExitStage
+
+#-----------------------------------------------------------
+
+sub CheckInstrument {
+
+    my $instrument_set = 0;
+
+    for my $instrument_key ( keys %instrument ) {
+        $instrument{$instrument_key} = 0;
+    }
+
+    # Split the instrument parameter on ,
+
+    $Parms_str{instrument} =~ s/\s+//g;
+    foreach my $instrument_value ( split( ',', uc( $Parms_str{instrument} ) ) ) {
+
+        unless ( $instrument_value =~ /^(ALL|HXD|PIN|GSO|XIS|XIS0|XIS1|XIS2|XIS3)$/ ) {
+            errmsg( "Invalid instrument : $instrument_value" );
+            return 1;
+        }
+
+        if ( $instrument_value eq "ALL" ) {
+            for my $instrument_key ( keys %instrument ) {
+                $instrument{$instrument_key} = 1;
+            }
+            $instrument_set = 1;
+            last;
+        }
+
+        if ( $instrument_value eq "HXD" ) {
+            $instrument{pin} = 1;
+            $instrument{gso} = 1;
+            $instrument{pse} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "PIN" ) {
+            $instrument{pin} = 1;
+            $instrument{pse} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "GSO" ) {
+            $instrument{gso} = 1;
+            $instrument{pse} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "XIS" ) {
+            $instrument{xi0} = 1;
+            $instrument{xi1} = 1;
+            $instrument{xi2} = 1;
+            $instrument{xi3} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "XIS0" ) {
+            $instrument{xi0} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "XIS1" ) {
+            $instrument{xi1} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "XIS2" ) {
+            $instrument{xi2} = 1;
+            $instrument_set  = 1;
+        } elsif ( $instrument_value eq "XIS3" ) {
+            $instrument{xi3} = 1;
+            $instrument_set  = 1;
+        }
+    }
+
+    if ( $debug ) {
+        print "\nParms_str_instrument = $Parms_str{instrument}\n\n";
+        print "instrument_set = $instrument_set\n\n";
+        print "instrument_pin  = $instrument{pin}\n";
+        print "instrument_gso  = $instrument{gso}\n";
+        print "instrument_pse  = $instrument{pse}\n";
+        print "instrument_xis0 = $instrument{xi0}\n";
+        print "instrument_xis1 = $instrument{xi1}\n";
+        print "instrument_xis2 = $instrument{xi2}\n";
+        print "instrument_xis3 = $instrument{xi3}\n";
+    }
+
+    if ( $instrument_set == 0 ) {
+        errmsg( "No valid instrument found in instrument parameter: '$Parms_str{instrument}'" );
+        return 1;
+    }
+
+    return 0;
+}   #  CheckInstrument
+
+#-----------------------------------------------------------
+
+sub CheckExtractorXisGrade {
+
+    # Check syntax of "extractor_xis_grade" parameters
+
+    foreach my $gradename (qw( xis0_grade xis1_grade xis2_grade xis3_grade xis0_psum_grade xis1_psum_grade xis2_psum_grade xis3_psum_grade )) {
+        my $gradelist = $Parms_str{$gradename};
+        next if $gradelist =~ /^default$/i;
+
+        # Wipe white space
+
+        $gradelist =~ s/\s+//g;
+
+        # Split on ,
+
+        my @gradearr = split( /,/, $gradelist );
+        foreach my $grade ( @gradearr ) {
+
+            # Check for :
+
+            unless ( $grade =~ m/\:/g ) {
+                errmsg( "Colon (:) missing from extractor_xis_grade parameter $gradename" );
+                return 1;
+            }
+
+            # Split on :
+
+            my @subgradearr = split( /:/, $grade );
+            my $subgradearrlength = @subgradearr;
+            if ( $subgradearrlength > 2 ) {
+                errmsg( "Multiple entries in one extractor_xis_grade parameter $gradename" );
+                return 1;
+            }
+
+            # Check for valid grades
+
+            foreach my $subgrade ( @subgradearr ) {
+                unless ( $subgrade =~ m/^(0|2|3|4|6)$/ ) {
+                    errmsg( "Invalid value in extractor_xis_grade parameter $gradename" );
+                    errmsg( "Only values 0, 2, 3, 4 and 6 are allowed" );
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}   # CheckExtractorXisGrade
+
+#-----------------------------------------------------------
+
+sub CheckCalibrationFiles {
+
+    unless ( $debug ) {
+        return 0;
+    }
+
+    # CALDB, if set, provides 3 environment variables.
+    # It is here assumed that if the 3 environment variables
+    # are present and valid then CALDB is set properly.
+    # The variables are :
+
+    # $CALDB       - points to top directory of caldb installation.
+    # $CALDBALIAS  - single FITS table of instrument name alias.
+    # $CALDBCONFIG - single ".txt" file, which is configuration file.
+    #                Lists datasets on system by mission/instrument and their location.
+
+    if ( exists( $ENV{CALDB} ) ) {
+        print "Environment variable CALDB = $ENV{CALDB}\n";
+    } else {
+        print "Environment variable CALDB not set\n";
+    }
+    if ( exists( $ENV{CALDBALIAS} ) ) {
+        print "Environment variable CALDBALIAS = $ENV{CALDBALIAS}\n";
+    } else {
+        print "Environment variable CALDBALIAS not set\n";
+    }
+    if ( exists( $ENV{CALDBCONFIG} ) ) {
+        print "Environment variable CALDBCONFIG = $ENV{CALDBCONFIG}\n";
+    } else {
+        print "Environment variable CALDBCONFIG not set\n";
+    }
+
+    return 0;
+
+}    #  CheckCalibrationFiles
+
+#-----------------------------------------------------------
+
+sub FindInputFiles {
+
+    # Find all files in the input directory that match the stem
+    my @filelist_unparsed = GetFileList( $Parms_str{indir}, $Parms_str{steminputs} );
+
+    if ( $#filelist_unparsed == -1 ) {
+        errmsg( "No input files found with '$Parms_str{steminputs}' stem" );
+        return 1;
+    }
+
+    if ( $debug ) {
+        print "\n";
+        foreach my $filename ( @filelist_unparsed ) {
+            print "File name read $filename\n";
+        }
+        print "\n";
+    }
+
+    my @filelist_parsed;
+
+    # Load names of relevant files from input data directory
+    foreach my $filename ( sort @filelist_unparsed ) {
+        foreach my $filetype ( keys %patterns ) {
+            if ( $filename =~ /$Parms_str{steminputs}$patterns{$filetype}/ ) {
+
+                # Strip off any "zip" extension
+                if ( $2 ) {
+                    $filename =~ s/$2$//;
+                }
+
+                # If more than one file of a given type are expected
+                # add to the list, taking the best one if any duplicates
+                if ( ( ref( $files{$filetype} ) ) eq "ARRAY" ) {
+                    if ( grep { basename($filename) eq basename($_) } @{$files{$filetype}} ) {
+
+                        compmsg( "WARNING: Duplicate files found with name: " . basename($filename) );
+
+                        # we already have a file with this name
+                        my $bestfile = getBestFileOfType( $filename, $filetype, $files{$filetype} );
+                        if ( !defined $bestfile ) {
+                            return 1;
+                        }
+                        compmsg( "WARNING: Using $bestfile" );
+                        @{$files{$filetype}} = ( $bestfile, grep {basename($bestfile) ne basename($_)} @{$files{$filetype}} );
+                        @filelist_parsed = ( $bestfile, grep {basename($bestfile) ne basename($_)} @filelist_parsed );
+                    } else {
+                        push @{$files{$filetype}}, $filename;
+                        push @filelist_parsed, $filename;
+                    }
+                } else {
+                    if ( $files{$filetype} ) {
+
+                        compmsg( "WARNING: Duplicate files found with name: " . basename($filename) );
+
+                        # we already have a file with this name
+                        my $bestfile = getBestFileOfType( $filename, $filetype, [ $files{$filetype} ] );
+                        if ( !defined $bestfile ) {
+                            return 1;
+                        }
+                        compmsg( "WARNING: Using $bestfile" );
+                        $files{$filetype} = $bestfile;
+                        @filelist_parsed  = ( $bestfile, grep {basename($bestfile) ne basename($_)} @filelist_parsed );
+                    } else {
+                        $files{$filetype} = $filename;
+                        push @filelist_parsed, $filename;
+                    }
+                }
+                last;
+            }
+        }
+    }
+
+    # Verify files as FITS files
+
+    if ( $debug ) {
+        print "\nRunning VerifyInputFile for input data files\n";
+    }
+
+    foreach my $filename ( @filelist_parsed ) {
+        my $VerifyInputFile = VerifyInputFile( $filename );
+        unless ( $VerifyInputFile == 0 ) {
+            errmsg( "Error in VerifyInputFile" );
+            return $VerifyInputFile;
+        }
+    }
+
+    # Print file names if requested
+
+    if ( $debug ) {
+        print "\n";
+        foreach my $filename ( sort @filelist_parsed ) {
+            print "Parsed input file name $filename \n";
+        }
+        print "\n";
+    }
+
+    if ( !@filelist_parsed ) {
+        errmsg( "Failed to find any input files matching $Parms_str{steminputs}" );
+        return 1;
+    }
+
+    return 0;
+
+}    # FindInputFiles
+
+sub getBestFileOfType {
+
+    my ( $filename, $filetype, $filelist ) = @_;
+
+    # - If any one of them resides in an "archive-like" directory structure
+    #   prefer it to any that do not.
+    # - Otherwise take the first found and throw a BIG WARNING
+    my $bestfile = $filename;
+    my $archdir  = $archive_dirs{$filetype};
+    my $newpatt  = catfile( $Parms_str{indir}, $archive_dirs{$filetype},
+                            $Parms_str{steminputs} . $patterns{$filetype} );
+    $newpatt = qr/$newpatt/;
+    my @duplfiles = ( );
+    foreach my $listfile ( $filename, grep { basename($filename) eq basename($_) } @$filelist ) {
+        if ( $listfile =~ m#$newpatt# ) {
+            $bestfile = $listfile;
+            last;
+        }
+        push @duplfiles, $listfile;
+    }
+    if ( $bestfile eq $filename && $filename !~ m#$newpatt# ) {
+        my $basefile = basename( $filename );
+        errmsg( "Duplicate files named $basefile found in input directory:" );
+        map( errmsg( "    $_" ), @duplfiles );
+        errmsg( "Neither conforms to orignal archive directory structure." );
+        errmsg( "Cannot determine best file to use." );
+        return undef;
+    }
+    return $bestfile;
+}
+
+#-----------------------------------------------------------
+
+sub VerifyInputFile {
+
+    my $filename = shift;
+
+    unless ( $Parms_bool{verify_input} ) {
+        if ( $debug ) {
+            compmsg( "VerifyInputFile Omitted" );
+        }
+        return 0;
+    }
+
+    my %ftverify = (
+        infile    => $filename,
+        outfile   => 'STDOUT',
+        prhead    => 'no',
+        prstat    => 'yes',
+        errreport => 'e',
+        testdata  => 'yes',
+        tchksum   => 'yes',
+        testfill  => 'yes',
+        heasarc   => 'yes',
+        clobber   => 'yes'
+    );
+
+    # The FITS files (various suffixes) are checked with FVERIFY
+
+    if ( $debug ) {
+        print "File being verified $filename\n";
+    }
+
+    $command_run = command_run( "ftverify", \%ftverify, "for file $filename" );
+
+    if ( $debug ) {
+        print "command_run = $command_run\n\n";
+    }
+
+    unless ( $command_run == 0 ) {
+        return $command_run;
+    }
+
+    return 0;
+
+}    # VerifyInputFile
+
+#-----------------------------------------------------------
+
+# Common section for GetFileList Task
+
+{
+    my ( @list, $fulldirx, $stem );
+
+    sub GetFileList {
+        ( $fulldirx, $stem ) = @_;
+        @list  = {};
+        $#list = -1;
+        &File::Find::find( { wanted => \&Wanted, follow => 1, follow_skip => 2 }, $fulldirx );
+        return @list;
+    }
+
+    sub Wanted {
+	/^.*$stem.*\z/s &&
+	! /^\..*/s &&  # ignore files starting with a dot      	 
+	-f $_ &&
+	push @list, $File::Find::name;
+    }
+}    # GetFileList
+
+#-----------------------------------------------------------
+
+sub CheckAuxilFiles {
+
+    if ( $debug ) {
+        print "\n\nProcessing Auxiliary Files\n\n";
+        print "Attitude file              = $Parms_str{attitude}\n";
+        print "Housekeeping file          = $Parms_str{housekeeping}\n";
+        print "Extended housekeeping file = $Parms_str{extended_housekeeping}\n";
+        print "Makefilter file            = $Parms_str{makefilter}\n";
+        print "Orbit file                 = $Parms_str{orbit}\n";
+        print "Time file                  = $Parms_str{timfile}\n";
+    }
+
+    # Auxiliary File Processing
+    my %auxilfile = (
+        attitude              => ".att",
+        housekeeping          => ".hk",
+        extended_housekeeping => ".ehk",
+        makefilter            => ".mkf",
+        orbit                 => ".orb",
+        timfile               => ".tim"
+    );
+
+    foreach my $filename_auxil ( keys %auxilfile ) {
+
+        compmsg( "Processing Auxiliary File $filename_auxil" );
+
+        # Skip attitude file if specified as "EULER"
+        if ( $filename_auxil eq 'attitude'
+             && uc( $Parms_str{$filename_auxil} ) eq 'EULER' ) {
+            next;
+        }
+
+        # If "DEFAULT" is given, use the found file for this auxil type
+        if ( uc( $Parms_str{$filename_auxil} ) eq "DEFAULT" ) {
+            $Parms_str{$filename_auxil} = $files{$filename_auxil};
+        }
+
+        # Check that something was found for this type
+        if ( !$Parms_str{$filename_auxil} ) {
+            errmsg( "Auxilliary file $filename_auxil not found. Check input directory." );
+            return 1;
+        }
+
+        # Check that the file exists and verify it
+        fits_file_exists( $Parms_str{$filename_auxil}, $file_exists, $file_status );
+        if ( $file_exists == 0 ) {
+            errmsg( "Auxilliary file $filename_auxil not found: $Parms_str{$filename_auxil}" );
+            return 1;
+        }
+
+        # Verify auxilliary files as FITS files
+        my $VerifyInputFile = VerifyInputFile( $Parms_str{$filename_auxil} );
+        unless ( $VerifyInputFile == 0 ) {
+            errmsg( "Error in VerifyInputFile" );
+            return $VerifyInputFile;
+        }
+
+        # Copy auxilliary files to output directory
+        my $outname_auxil = catfile( $Parms_str{outdir}, basename( $Parms_str{$filename_auxil} ) );
+        $ftcopy = ftcopy( $Parms_str{$filename_auxil}, $outname_auxil, 1, $Parms_num{chatter} );
+        unless ( $ftcopy == 0 ) {
+            errmsg( "Error copying $Parms_str{$filename_auxil} to $outname_auxil" );
+            return $ftcopy;
+        }
+        $Parms_str{$filename_auxil} = $outname_auxil;
+    }
+
+    if ( $debug ) {
+        print "Parms_str{attitude}              = $Parms_str{attitude}\n";
+        print "Parms_str{housekeeping}          = $Parms_str{housekeeping}\n";
+        print "Parms_str{extended_housekeeping} = $Parms_str{extended_housekeeping}\n";
+        print "Parms_str{makefilter}            = $Parms_str{makefilter}\n";
+        print "Parms_str{orbit}                 = $Parms_str{orbit}\n";
+        print "Parms_str{timfile}               = $Parms_str{timfile}\n";
+    }
+
+    return 0;
+
+}    #  CheckAuxilFiles
+
+#-----------------------------------------------------------
+
+sub StageSwitcher {
+
+    if ( $debug ) {
+        print "\nRunning StageSwitcher\n";
+    }
+
+    # Decide which stage(s) of processing are to be performed
+    # Stage 1 - Calibration
+    # Stage 2 - Clean and Filter data (various algorithms)
+    # Stage 3 - Products generation
+
+    # Decide which stages (1,2,3) are to be run
+
+    $General{stage1_switch} = 0;
+    $General{stage2_switch} = 0;
+
+    if ( $Parms_num{entry_stage} == 1 ) {
+        $General{stage1_switch} = 1;
+        $General{stage2_switch} = 1;
+        $General{stage3_switch} = 1;
+    }
+    if ( $Parms_num{entry_stage} == 2 ) {
+        $General{stage2_switch} = 1;
+        $General{stage3_switch} = 1;
+    }
+    if ( $Parms_num{entry_stage} == 3 ) {
+        $General{stage3_switch} = 1;
+    }
+    if ( $Parms_num{exit_stage} == 1 ) {
+        $General{stage2_switch} = 0;
+        $General{stage3_switch} = 0;
+    }
+    if ( $Parms_num{exit_stage} == 2 ) {
+        $General{stage3_switch} = 0;
+    }
+
+    # Copy data needed regardless of starting stage
+
+    if ( $instrument{xi0} == 1 || $instrument{xi1} == 1 ||
+         $instrument{xi2} == 1 || $instrument{xi3} == 1 ) {
+        foreach my $chip (qw( xi0 xi1 xi2 xi3 )) {
+            if ( $instrument{$chip} == 1 ) {
+                if ( length( $files{"xis_hk_$chip"} ) gt 0 ) {
+                    my $outname_xi_hk = catfile( $Parms_str{outdir}, basename( $files{"xis_hk_$chip"} ) );
+                    $ftcopy = ftcopy( $files{"xis_hk_$chip"}, $outname_xi_hk, 1, $Parms_num{chatter} );
+                    unless ( $ftcopy == 0 ) {
+                        errmsg( "Error copying $outname_xi_hk" );
+                        return $ftcopy;
+                    }
+                    $files{"xis_hk_$chip"} = $outname_xi_hk;
+                }
+                if ( length( join( "", @{ $files{"xis_conf_uf_$chip"} } ) ) gt 0 ) {
+                    $filecopy = filecopy( @{ $files{"xis_conf_uf_$chip"} } );
+                    unless ( $filecopy == 0 ) {
+                        errmsg( "Error copying file" );
+                        return $filecopy;
+                    }
+                }
+            }
+        }
+    }
+
+    if ( ( $instrument{pin} == 1 ) || ( $instrument{gso} == 1 ) ) {
+        my $outname_hxd_hk = catfile( $Parms_str{outdir}, basename( $files{hxd_hk_hk} ) );
+        $ftcopy = ftcopy( $files{hxd_hk_hk}, $outname_hxd_hk, 1, $Parms_num{chatter} );
+        unless ( $ftcopy == 0 ) {
+            errmsg( "Error copying $outname_hxd_hk" );
+            return $ftcopy;
+        }
+        $files{hxd_hk_hk} = $outname_hxd_hk;
+        foreach my $telwel (qw(tel_uf wel_uf)) {
+            $filecopy = filecopy( @{$files{"hxd_hk_gti_$telwel"}} );
+            unless ( $filecopy == 0 ) {
+                errmsg( "Error copying file" );
+                return $filecopy;
+            }
+        }
+    }
+
+    # Run relevant stages
+
+    my $Stage1 = 0;
+    my $Stage2 = 0;
+    my $Stage3 = 0;
+
+    if ( $General{stage1_switch} == 1 ) {
+        $Stage1 = Stage1();
+        unless ( $Stage1 == 0 ) {
+            errmsg( "Error running Stage1" );
+            return $Stage1;
+        }
+    }
+
+    if ( $General{stage2_switch} == 1 ) {
+        $Stage2 = Stage2();
+        unless ( $Stage2 == 0 ) {
+            errmsg( "Error running Stage2" );
+            return $Stage2;
+        }
+    }
+
+    if ( $General{stage3_switch} == 1 ) {
+        $Stage3 = Stage3();
+        unless ( $Stage3 == 0 ) {
+            errmsg( "Error running Stage3" );
+            return $Stage3;
+        }
+    }
+
+    if ( $debug ) {
+        print "\nEnd of StageSwitcher\n";
+    }
+
+    return 0;
+
+}    #  StageSwitcher
+
+#-----------------------------------------------------------
+
+sub Stage1 {
+
+    if ( $debug ) {
+	print "\nRunning Stage1\n";
+    }
+
+    my $Stage1Xis = 0;
+    my $Stage1Hxd = 0;
+
+    my $msgtxt = "
+-----------------------------------------------------------------------------
+----------------------------- Running Stage I -------------------------------
+-----------------------------------------------------------------------------
+
+";
+    chatnp(2, $msgtxt);
+
+    # Process XIS data 
+
+    if ( ( $instrument{xi0} == 1 ) ||
+         ( $instrument{xi1} == 1 ) ||
+         ( $instrument{xi2} == 1 ) ||
+         ( $instrument{xi3} == 1 ) ) {
+
+	# S1CalibrateXIS data
+
+	my $S1XisCalibrate = S1XisCalibrate();
+	unless ( $S1XisCalibrate == 0) {
+	    errmsg("Error running S1XisCalibrate");
+	    return $S1XisCalibrate;
+	}
+    }
+
+    # Process HXD data
+
+    if ( ( $instrument{pin} == 1 ) ||
+         ( $instrument{gso} == 1 ) ) {
+
+	# S1CalibrateHXD data
+
+	my $S1HxdCalibrate = S1HxdCalibrate();
+	unless ( $S1HxdCalibrate == 0) {
+	    errmsg("Error running S1HxdCalibrate");
+	    return $S1HxdCalibrate;
+	}
+    }
+
+    if ( $debug ) {
+	print "\nEnd of Stage1\n";
+    }
+
+    return 0;
+
+}				#  Stage1
+
+#-----------------------------------------------------------
+
+sub Stage2 {
+
+    if ( $debug ) {
+	print "\nRunning Stage2\n";
+    }
+
+    my $Stage2Xis = 0;
+    my $Stage2Hxd = 0;
+
+    my $msgtxt = "
+-----------------------------------------------------------------------------
+----------------------------- Running Stage II ------------------------------
+-----------------------------------------------------------------------------
+
+";
+    chatnp(2, $msgtxt);
+    
+    ###############################
+    # Setup the screening criteria
+    ###############################
+    setup_screening_criteria( );
+
+    # Process XIS data 
+
+    if ( ( $instrument{xi0} == 1 ) ||
+         ( $instrument{xi1} == 1 ) ||
+         ( $instrument{xi2} == 1 ) ||
+         ( $instrument{xi3} == 1 ) ) {
+
+	# If Stage 1 has not been run copy "_uf" and "_conf_uf" files 
+	# from input to output directory
+
+	if ($General{stage1_switch} == 0) {
+	    foreach my $chip ( "xi0", "xi1", "xi2", "xi3" ) {
+		if ( $instrument{$chip} == 1) {
+		    if ( length(join("", @{$files{"xis_event_uf_$chip"}})) gt 0 ) {
+			$filecopy = filecopy(@{$files{"xis_event_uf_$chip"}});
+			unless ( $filecopy == 0 ) {
+			    errmsg("Error copying file");
+			    return $filecopy;
+			}
+		    }
+		    if ( length(join("", @{$files{"xis_tel_uf_$chip"}})) gt 0 ) {
+			$filecopy = filecopy(@{$files{"xis_tel_uf_$chip"}});
+			unless ( $filecopy == 0 ) {
+			    errmsg("Error copying file");
+			    return $filecopy;
+			}
+		    }
+		}
+	    }
+	}
+
+	# Run XIS filtering
+
+	my $S2XisFilter = S2XisFilter();
+	unless ( $S2XisFilter == 0) {
+	    errmsg("Error running S2XisFilter");
+	    return $S2XisFilter;
+	}
+
+    }
+
+    # Process HXD data
+
+    if ( ( $instrument{pin} == 1 ) ||
+         ( $instrument{gso} == 1 ) ) {
+
+	# If Stage 1 has not been run copy "_uf" files 
+	# from input to output directory
+
+	if ($General{stage1_switch} == 0) {
+	    $filecopy = filecopy(@{$files{hxd_event_uf_wel}});
+	    unless ( $filecopy == 0 ) {
+		errmsg("Error copying file");
+		return $filecopy;
+	    }
+	    foreach my $telwel (qw(tel_uf wel_uf)) {
+		$filecopy = filecopy(@{$files{"hxd_hk_gti_$telwel"}});
+		unless ( $filecopy == 0 ) {
+		    errmsg("Error copying file");
+		    return $filecopy;
+		}
+	    }
+	}
+
+	# Run HXD filtering
+
+	my $S2HxdFilter = S2HxdFilter();
+	unless ( $S2HxdFilter == 0) {
+	    errmsg("Error running S2HxdFilter");
+	    return $S2HxdFilter;
+	}
+    }
+
+    if ( $debug ) {
+	print "\nEnd of Stage2\n";
+    }
+
+    return 0;
+
+}				#  Stage2
+
+#-----------------------------------------------------------
+
+sub Stage3 {
+
+    if ( $debug ) {
+	print "\nRunning Stage3\n";
+    }
+
+    my $Stage3Xis = 0;
+    my $Stage3Hxd = 0;
+
+    # Process XIS data 
+
+    if ( ( $instrument{xi0} == 1 ) ||
+         ( $instrument{xi1} == 1 ) ||
+         ( $instrument{xi2} == 1 ) ||
+         ( $instrument{xi3} == 1 ) ) {
+
+	# If Stage 1 has not been run copy unfiltered "_uf" 
+	# and configuration "_conf_uf" files from input to output directory
+
+	if ($General{stage1_switch} == 0) {
+	    foreach my $chip ( "xi0", "xi1", "xi2", "xi3" ) {
+		if ( $instrument{$chip} == 1) {
+		    if ( length(join("", @{$files{"xis_event_uf_$chip"}})) gt 0 ) {
+			$filecopy = filecopy(@{$files{"xis_event_uf_$chip"}});
+			unless ( $filecopy == 0 ) {
+			    errmsg("Error copying file");
+			    return $filecopy;
+			}
+                    }
+		    if ( length(join("", @{$files{"xis_tel_uf_$chip"}})) gt 0 ) {
+			$filecopy = filecopy(@{$files{"xis_tel_uf_$chip"}});
+			unless ( $filecopy == 0 ) {
+			    errmsg("Error copying file");
+			    return $filecopy;
+			}
+		    }
+		}
+	    }
+	}
+
+	# If Stage 2 has not been run copy cleaned event "_cl" files 
+	# from input to output directory
+
+	if ($General{stage2_switch} == 0) {
+	    foreach my $chip ( "xi0", "xi1", "xi2", "xi3" ) {
+		if ( $instrument{$chip} == 1) {
+		    if ( length(join("", @{$files{"xis_event_cl_$chip"}})) gt 0 ) {
+			$filecopy = filecopy(@{$files{"xis_event_cl_$chip"}});
+			unless ( $filecopy == 0 ) {
+			    errmsg("Error copying file");
+			    return $filecopy;
+			}
+		    }
+		}
+	    }
+	}
+
+	# Run Stage 3 XIS Processing
+
+	my $S3Xis = S3Xis();
+	unless ( $S3Xis == 0 ) {
+	    errmsg("Error running S3Xis");
+	    return $S3Xis;
+	}
+
+    }
+
+    # Process HXD data
+
+    if ( ( $instrument{pin} == 1 ) ||
+         ( $instrument{gso} == 1 ) ) {
+
+	# If Stage 1 has not been run copy uncleaned "_uf" files 
+        # from input to output directory
+
+	if ($General{stage1_switch} == 0) {
+	    $filecopy = filecopy(@{$files{hxd_event_uf_wel}});
+	    unless ( $filecopy == 0 ) {
+		errmsg("Error copying file");
+		return $filecopy;
+	    }
+	    foreach my $telwel (qw(tel_uf wel_uf)) {
+		$filecopy = filecopy(@{$files{"hxd_hk_gti_$telwel"}});
+		unless ( $filecopy == 0 ) {
+		    errmsg("Error copying file");
+		    return $filecopy;
+		}
+	    }
+	}
+
+	# If Stage 2 has not been run copy cleaned event "_cl" files 
+        # from input to output directory
+
+	if ($General{stage2_switch} == 0) {
+	    foreach my $type ( "pin", "gso", "pse" ) {
+		if ( $instrument{$type} == 1) {
+		    if ( length(join("", @{$files{"hxd_event_cl_$type"}})) gt 0 ) {
+			$filecopy = filecopy(@{$files{"hxd_event_cl_$type"}});
+			unless ( $filecopy == 0 ) {
+			    errmsg("Error copying file");
+			    return $filecopy;
+			}
+		    }
+		}
+	    }
+	}
+
+	# Run Stage 3 HXD Processing
+
+	my $S3Hxd = S3Hxd();
+	unless ( $S3Hxd == 0 ) {
+	    errmsg("Error running S3Hxd");
+	    return $S3Hxd;
+	}
+    }
+
+    if ( $debug ) {
+	print "\nEnd of Stage3\n";
+    }
+
+    return 0;
+
+}				#  Stage3
+
+#-----------------------------------------------------------
+
+sub S1XisCalibrate {     
+
+    if ( $debug ) {
+	print "\nRunning S1XisCalibrate\n";
+    }
+
+    my %xisgtifiles = (
+        xis0 => [],
+        xis1 => [],
+        xis2 => [],
+        xis3 => [],
+    );
+
+    my @xisfilenames = ();
+
+    my $tstop;
+    my $dateobs;
+    my $instrume;
+    my $clk_mode;
+    
+    my $par;
+
+    my $xistime_outfile;
+    my $xiscoord_outfile;
+    my $xisputpixelquality_outfile;
+    my $xispi_outfile;
+
+    # Populate the list of files to calibrate, and clear the initial lists
+    # The initial lists will be re-populated with _OUR_ calibrated outputs
+
+    for my $chip ("xi0", "xi1", "xi2", "xi3") {
+	if ( $instrument{$chip} == 1 ) {
+	    push(@xisfilenames ,  @{$files{"xis_event_uf_$chip"}} );
+	    $files{"xis_event_uf_$chip"} = [ ];
+	}
+    }
+
+    # Loop over all the XIS unfiltered event files.
+
+    foreach my $xisfile ( @xisfilenames ) {
+
+        # Make output file name
+
+        my $xisfile_out = catfile($Parms_str{outdir} , basename($xisfile));
+
+	# Read FITS file
+
+	fits_open_file($fptr1,$xisfile,READONLY,$file_status);
+	if ( $file_status ) {
+	    errmsg("Unable to open FITS file : $xisfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_read_key($fptr1,TDOUBLE,"TSTOP",$tstop,undef,$file_status);
+
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("TSTOP keyword not found in file : $xisfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_read_key($fptr1,TSTRING,"DATE-OBS",$dateobs,undef,$file_status);
+
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("DATE-OBS keyword not found in file : $xisfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_read_key($fptr1,TSTRING,"INSTRUME" , $instrume,undef,$file_status);
+
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("INSTRUME keyword not found in file : $xisfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	$instrume = lc($instrume);
+
+	fits_read_key($fptr1,TSTRING,"CLK_MODE" , $clk_mode,undef,$file_status);
+
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("CLK_MODE keyword not found in file : $xisfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_close_file($fptr1,$file_status);
+	if ( $file_status ) {
+	    errmsg("Unable to close FITS file : $xisfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	if ( $debug == 1 ) {
+	    print "Input file  = $xisfile\n";
+            print "Output file = $xisfile_out\n";
+	    print "tstop       = $tstop\n";
+	    print "dateobs     = $dateobs\n";
+	    print "instrume    = $instrume\n";
+	    print "clk_mode    = $clk_mode\n";
+	}
+
+        # Can this file be processed with the calibration files?
+
+        if ( $tstop < $Parms_num{xis_start} ) {
+        
+	    error(1, "$xisfile occurs before CALDB\n");
+	    error(1, "$xisfile will NOT be re-calibrated\n");
+
+	    AddReport(1, "\n$Task{stem} : ERROR : $xisfile occurs before CALDB\n");
+	    AddReport(1, "\n$Task{stem} : ERROR : $xisfile will NOT be re-calibrated\n");
+
+            $ftcopy = ftcopy( $xisfile , $xisfile_out, 1, $Parms_num{chatter} );
+            unless ( $ftcopy == 0 ) {
+		errmsg("Error copying $xisfile_out");
+		return $ftcopy;
+	    }
+
+            next;
+        }
+
+	#----------------------------------------------------------------------
+
+	$ftcopy = ftcopy( $xisfile , $xisfile_out, 1, $Parms_num{chatter} );
+	unless ( $ftcopy == 0 ) {
+	    errmsg("Error copying $xisfile to $xisfile_out");
+	    return $ftcopy;
+	}
+
+	#----------------------------------------------------------------------
+
+	# xistime
+
+	compmsg("Running xistime on $xisfile_out");
+
+	# Make a temporary file to hold the output from xistime.
+
+ 	$xistime_outfile = "$xisfile_out.xistime_out.evt";
+	if ( $debug ) {
+	    print "xistime outfile = $xistime_outfile\n";
+	}
+
+        my $bstgti = 'no';
+        if ( $Parms_bool{bstgti} && $clk_mode =~ /burst/i ) {
+            $bstgti = 'yes';
+        }
+	my %xistime = (
+		       infile        => $xisfile_out,
+		       outfile       => $xistime_outfile,
+		       ignore_frames => "yes",
+		       timfile       => $Parms_str{timfile},
+		       gapsec        => 0.1,
+                       bstgti        => $bstgti,
+		       anl_verbose   => $Parms_num{anl_verbose},
+		       anl_profile   => bc($Parms_bool{anl_profile}),
+		       num_event     => $Parms_num{num_event},
+		       event_freq    => $Parms_num{event_freq},
+		       chatter       => $Parms_num{chatter});
+
+	$command_run = command_run("xistime", \%xistime, "for file $xisfile_out");
+	unless ($command_run == 0) {
+	    return $command_run;
+	}
+
+        unless( $copyfunc->( $xistime_outfile, $xisfile_out ) ) {
+	    errmsg("failed to move $xistime_outfile to $xisfile_out");
+            return 1;
+        }
+
+	# Update EXPOSURE and LIVETIME keywords in timing mode uf event files
+	# if xistime has set them to 0.  Use the value of ONTIME for
+	# both keywords in each HDU.
+
+	if($xisfile_out =~ /timp/)
+	{
+	    fits_open_file($fptr1,$xisfile_out,READWRITE,$file_status);
+	    if ( $file_status ) {
+		errmsg("Unable to open FITS file : $xisfile_out  File Status = $file_status");
+		return $file_status;
+	    }
+
+	    fits_get_num_hdus( $fptr1, my $n_hdus, $file_status );
+	    if ( $file_status ) {
+		errmsg( "Unable to get number of HDUs in file : $xisfile_out File Status = $file_status" );
+		return $file_status;
+	    }
+
+	    #compmsg("$xisfile_out has $n_hdus HDUs.");
+
+	    for my $hdu (1..$n_hdus)
+	    {
+		my $livetime = 0;
+		my $exposure = 0;
+		my $ontime = 0;
+		my $updatesucceeded = 1;
+
+		fits_movabs_hdu( $fptr1, $hdu, ANY_HDU, $file_status );
+		if ( $file_status ) {
+		    errmsg( "Unable to move to HDU #$hdu in file : $xisfile_out File Status = $file_status" );
+			$file_status = 0;
+                        next;
+		}
+
+		fits_read_key($fptr1,TDOUBLE,"LIVETIME",$livetime,undef,$file_status);
+		if ( $file_status == KEY_NO_EXIST ) {
+		    errmsg("LIVETIME keyword not found in file : $xisfile_out HDU #$hdu File Status = $file_status");
+		    $file_status = 0;
+		}
+		
+		fits_read_key($fptr1,TDOUBLE,"EXPOSURE",$exposure,undef,$file_status);
+		if ( $file_status == KEY_NO_EXIST ) {
+		    errmsg("EXPOSURE keyword not found in file : $xisfile_out HDU #$hdu File Status = $file_status");
+		    $file_status = 0;
+		}
+
+		fits_read_key($fptr1,TDOUBLE,"ONTIME",$ontime,undef,$file_status);
+		if ( $file_status == KEY_NO_EXIST ) {
+		    errmsg("ONTIME keyword not found in file : $xisfile_out HDU #$hdu File Status = $file_status");
+		    $file_status = 0;
+		}
+		    
+
+		if($livetime == 0 && $exposure == 0 && $ontime > 0)
+		{
+		    fits_update_key($fptr1,TDOUBLE,'EXPOSURE', $ontime, undef,$file_status);
+		    if ( $file_status ) {
+			errmsg("EXPOSURE keyword not written to file : $xisfile_out HDU #$hdu File Status = $file_status");
+			$updatesucceeded = 0;
+			$file_status = 0;
+		    }
+
+		    fits_update_key($fptr1,TDOUBLE,'LIVETIME', $ontime, undef,$file_status);
+		    if ( $file_status ) {
+			errmsg("LIVETIME keyword not written to file : $xisfile_out HDU #$hdu File Status = $file_status");
+			$updatesucceeded = 0;
+			$file_status = 0;
+		    }
+
+		    if($updatesucceeded == 1)
+		    {
+			compmsg("Keywords LIVETIME and EXPOSURE have been updated in $xisfile_out HDU #$hdu");
+		    }
+		    
+		}
+
+	    }
+	    
+	    $file_status = 0;
+	    fits_close_file($fptr1,$file_status);
+	    if ( $file_status ) {
+		errmsg("Unable to close FITS file : $xisfile_out File Status = $file_status");
+		return $file_status;
+	    }
+
+	}
+
+	#----------------------------------------------------------------------
+
+	# xiscoord
+
+	compmsg("Running xiscoord on $xisfile_out");
+
+	# Make a temporary file to hold the output from xistime.
+
+ 	$xiscoord_outfile = "$xisfile_out.xiscoord_out.evt";
+	if ( $debug ) {
+	    print "xiscoord outfile = $xiscoord_outfile\n";
+	}
+
+        my $xis_teldef = lc($instrume);
+        $xis_teldef =~ s/xis(\d)/xis$1_teldef/;
+	my $xis_teldef_value = $Parms_str{$xis_teldef};
+
+	my %xiscoord = (
+			infile        => $xisfile_out,
+			ignore_frames => "yes",
+			teldef        => $xis_teldef_value,
+			attitude      => $Parms_str{attitude},
+			pointing      => $Parms_str{pointing},
+			ea1           => $Parms_num{ea1},
+			ea2           => $Parms_num{ea2},
+			ea3           => $Parms_num{ea3},
+			ref_alpha     => $Parms_num{ref_alpha},
+			ref_delta     => $Parms_num{ref_delta},
+			ref_roll      => $Parms_num{ref_roll},
+			aberration    => bc($Parms_bool{aberration}),
+			rand_seed     => $Parms_num{seed},
+			rand_skip     => 0,
+			outfile       => $xiscoord_outfile,
+			anl_verbose   => $Parms_num{anl_verbose},
+			anl_profile   => bc($Parms_bool{anl_profile}),
+			num_event     => $Parms_num{num_event},
+			event_freq    => $Parms_num{event_freq},
+			blank         => -999,
+			chatter       => $Parms_num{chatter});
+
+        $command_run = command_run("xiscoord", \%xiscoord, "for file $xisfile_out");
+        unless ($command_run == 0) {
+	    return $command_run;
+	}
+
+        unless( $copyfunc->( $xiscoord_outfile, $xisfile_out ) ) {
+	    errmsg("failed to move $xiscoord_outfile to $xisfile_out");
+            return 1;
+        }
+
+	#----------------------------------------------------------------------
+
+        # xisputpixelquality
+
+        # Timing/PSUM mode files are not processed with xisputpixelquality
+        # They are bypassed here
+        # Check the CLK_MODE FITS header keyword to detect Timing/PSUM mode files.
+
+        $clk_mode =~ s/\s+//g;
+
+        if ( uc($clk_mode) eq "PSUM" ) {
+	    compmsg("xisputpixelquality bypassed for timing mode file $xisfile");
+	} else {
+
+	    compmsg("Running xisputpixelquality on $xisfile_out");
+
+	    # Make a temporary file to hold the output from xisputpixelquality.
+
+	    $xisputpixelquality_outfile = "$xisfile_out.xisputpixelquality_out.evt";
+	    if ( $debug ) {
+		print "xisputpixelquality outfile = $xisputpixelquality_outfile\n";
+	    }
+
+	    my $xis_badcolum = lc($instrume);
+	    $xis_badcolum =~ s/xis(\d)/xis$1_badcolum/;
+	    my $xis_badcolum_value = $Parms_str{$xis_badcolum};
+
+	    my $xis_calmask = lc($instrume);
+	    $xis_calmask =~ s/xis(\d)/xis$1_calmask/;
+	    my $xis_calmask_value = $Parms_str{$xis_calmask};
+
+	    if ( $debug ) {
+	        print "instrume = $instrume\n";
+		print "xis_badcolum_value = $xis_badcolum_value\n";
+		print "xis_calmask_value  = $xis_calmask_value\n";
+	    }
+
+	    my %xisputpixelquality = (
+				      infile         => $xisfile_out,
+				      ignore_frames  => "yes",
+				      enable_scipixq => bc($Parms_bool{enable_scipixq}),    
+				      badcolumfile   => $xis_badcolum_value,
+				      calmaskfile    => $xis_calmask_value,
+				      outfile        => $xisputpixelquality_outfile,
+				      num_event      => $Parms_num{num_event},
+				      event_freq     => $Parms_num{event_freq},
+				      anl_verbose    => $Parms_num{anl_verbose},
+				      anl_profile    => bc($Parms_bool{anl_profile}),
+				      chatter        => $Parms_num{chatter});
+		
+            $command_run = command_run("xisputpixelquality", \%xisputpixelquality, "for file $xisfile_out");
+            unless ($command_run == 0) {
+		return $command_run;
+	    }
+
+            unless( $copyfunc->( $xisputpixelquality_outfile, $xisfile_out ) ) {
+                errmsg("failed to move $xisputpixelquality_outfile to $xisfile_out");
+                return 1;
+            }
+	}
+
+        #----------------------------------------------------------------------
+
+        # xispi
+
+	compmsg("Running xispi on $xisfile_out");
+
+	# Make a temporary file to hold the output from xistime.
+
+ 	$xispi_outfile = "$xisfile_out.xispi_out.evt";
+	if ( $debug ) {
+	    print "xispi outfile = $xispi_outfile\n";
+	}
+
+	my $xis_instrument_specific_hk = lc($instrume);
+	$xis_instrument_specific_hk =~ s/xis(\d)/xi$1/;
+	my $xis_instrument_specific_hk_value = $files{"xis_hk_$xis_instrument_specific_hk"};
+
+	my $xis_makepi = lc($instrume);
+	$xis_makepi =~ s/xis(\d)/xis$1_makepi/;
+	my $xis_makepi_value = $Parms_str{$xis_makepi};
+
+	if ( $debug ) {
+	    print "instrume = $instrume\n";
+	    print "xis_instrument_specific_hk_value = $xis_instrument_specific_hk_value\n";
+	    print "xis_makepi_value                 = $xis_makepi_value\n";
+	}
+
+	my %xispi = (
+		     infile             => $xisfile_out,
+		     ignore_frames      => "yes",
+		     makepifile         => $xis_makepi_value,
+		     hkfile             => $xis_instrument_specific_hk_value,
+		     enable_trcor       => bc($Parms_bool{enable_trcor}),         
+		     enable_cticor      => bc($Parms_bool{enable_cticor}),            
+		     enable_scicti      => bc($Parms_bool{enable_scicti}),
+		     enable_edge_smooth => bc($Parms_bool{enable_edge_smooth}),
+		     hk_time_margin     => $Parms_num{hk_time_margin},            
+		     hk_aetemp_min      => $Parms_num{hk_aetemp_min},           
+		     hk_aetemp_max      => $Parms_num{hk_aetemp_max},           
+		     flag_rand_phas0    => bc($Parms_bool{flag_rand_phas0}),
+		     flag_constant_spth => bc($Parms_bool{flag_constant_spth}),
+		     constant_spth      => $Parms_num{constant_spth},
+		     rand_seed          => $Parms_num{seed},
+		     rand_skip          => 0.0,
+		     outfile            => $xispi_outfile,
+		     num_event          => $Parms_num{num_event},
+		     event_freq         => $Parms_num{event_freq},
+		     anl_verbose        => $Parms_num{anl_verbose},
+		     anl_profile        => bc($Parms_bool{anl_profile}), 
+		     chatter            => $Parms_num{chatter});
+
+        $command_run = command_run("xispi", \%xispi, "for file $xisfile_out");
+        unless ($command_run == 0) {
+	    return $command_run;
+	}
+
+        unless( $copyfunc->( $xispi_outfile, $xisfile_out ) ) {
+	    errmsg("failed to move $xispi_outfile to $xisfile_out");
+            return 1;
+        }
+
+        #----------------------------------------------------------------------
+
+        # Put the calibrated '_uf.evt' file into the global list of '_uf.evt' files
+        # for this chip
+
+        my $short_instrume = lc( $instrume );
+        $short_instrume    =~ s/xis/xi/;
+        push @{$files{"xis_event_uf_$short_instrume"}}, $xisfile_out;
+
+        #----------------------------------------------------------------------
+
+        # Run xisgtigen
+        # Make the associated saturated frames output
+
+	compmsg("Running xisgtigen on $xisfile_out");
+
+	# Make ".gti" output file.
+
+        my $xisfile_outgti = $xisfile_out;
+        $xisfile_outgti =~ s/\.evt$/.gti/;
+
+	if ( $debug ) {
+	    print "xisfile_outgti outfile = $xisfile_outgti\n";
+	}
+
+	my %xisgtigen = (
+			 infile             => "$xisfile_out",
+			 gapsec             => 0.1,
+			 segment_a          => 'yes',
+			 segment_b          => 'yes',
+			 segment_c          => 'yes',
+			 segment_d          => 'yes',
+			 ignore_frames      => 'no',
+			 outfile            => $xisfile_outgti,
+			 chatter            => $Parms_num{chatter},
+			 num_event          => $Parms_num{num_event},
+			 event_freq         => $Parms_num{event_freq},
+			 anl_verbose        => $Parms_num{anl_verbose},
+			 anl_profile        => bc($Parms_bool{anl_profile}));
+
+        $command_run = command_run("xisgtigen", \%xisgtigen, "for file $xisfile_out");
+        unless ($command_run == 0) {
+	    return $command_run;
+	}
+
+        # If the "_uf.gti" exists write its name to the list file.
+        # Absence of good time intervals means no file is written
+        # This is NOT considered to be an error
+
+        if ( -e $xisfile_outgti ) {
+	    push(@{$xisgtifiles{$instrume}} , $xisfile_outgti);
+	}
+
+        # Keep a list of names of files produced
+
+        push( @filelist_output, $xisfile_out );
+
+    }
+
+    #--------------------------------------------------------------------------------
+
+    # Merge the indivdual saturated frame GTI files 
+    # into one per chip
+
+    foreach my $xislist ( keys %xisgtifiles ) {
+
+	my $xi = $xislist;
+	$xi =~ s/xis/xi/g;
+
+	my $xis_outgti = catfile( $Parms_str{outdir} , $Parms_str{stemoutputs} . $xi . "_0_tel_uf.gti");
+        my $keys_file  = $xis_outgti . '.keywords';
+
+        # No files to process for this chip
+	if (scalar(@{$xisgtifiles{$xislist}}) == 0 ) {
+	    next;
+
+        # One file, just rename the one file to the output file
+	} elsif (scalar(@{$xisgtifiles{$xislist}}) == 1 ) {
+	    rename $xisgtifiles{$xislist}->[0], $xis_outgti;
+
+        # Many files, mgtime them together and update keywords
+	} else {
+
+	    ( $mgtime, $output_lines ) = mgtime($xisgtifiles{$xislist}, '!' . $xis_outgti, "OR");
+            map( AddReport( 2, $_ ), @$output_lines );
+
+	    unless ($mgtime == 0) {
+		errmsg("Error running MGTIME for files $xisgtifiles{$xislist}, $xis_outgti, 'OR'");
+		return $mgtime;
+	    }
+
+	    my @fitskeywords = qw(
+                TELESCOP INSTRUME OBS_MODE OBS_ID   OBSERVER
+                OBJECT   TIMESYS  MJDREFI  MJDREFF  TIMEREF
+                TIMEUNIT TASSIGN  CLOCKAPP DATE-OBS DATE-END
+            );
+
+            # Dump them from the output GTI from xisgtigen
+	    my %ftlist = (
+                infile  => $xisgtifiles{$xislist}->[0] . '[0]',
+                option  => 'K',
+                outfile => $keys_file,
+                clobber => 'yes',
+                include => join( ',', @fitskeywords )
+            );
+            $command_run = command_run("ftlist", \%ftlist, "for file $xis_outgti");
+            unless ($command_run == 0) {
+                unlink $keys_file;
+                return $command_run;
+            }
+
+            foreach my $hdu (qw( 0 1 )) {
+                my %fthedit = (
+                     infile     => $xis_outgti . "[$hdu]",
+                     keyword    => '@' . $keys_file,
+                     operation  => 'add',
+                     protect    => 'yes',
+                     longstring => 'yes',
+                     chatter    => 1,
+                     history    => 'no'
+                );
+                $command_run = command_run("fthedit", \%fthedit, "for file $xis_outgti");
+                unless ($command_run == 0) {
+                    unlink $keys_file;
+                    return $command_run;
+                }
+            }
+            unlink $keys_file;
+	}
+
+        # Keep a list of names of files produced
+
+        push( @filelist_output, $xis_outgti );
+
+    }
+
+    if ( $debug ) {
+	print "\nEnd of S1XisCalibrate\n";
+    }
+
+    return 0;
+
+}				# S1XisCalibrate
+
+#-----------------------------------------------------------
+
+sub S1HxdCalibrate {
+
+    if ( $debug ) {
+	print "\nRunning S1HxdCalibrate\n";
+    }
+
+    # Define variables 
+
+    my $fptr3;
+    my $fptr4;
+    my $fitsfile;   
+    my $tstop;
+    my $tstart;
+    my $dateobs;
+    my $gsolin;
+    my $par;
+
+    my @calibrated_hxd_uf_evt_files = ( );
+    my @calibrated_hxd_uf_gti_files = ( );
+
+    # Run hxdgtigen
+
+    compmsg("Running hxdgtigen on $files{hxd_hk_hk}");
+
+    # Make a temporary file to hold the output from hxdgtigen.
+
+    my $hxdgtigen_outfile = catfile($Parms_str{outdir} , "hxdgtigen_out.gti");
+    if ( $debug ) {
+    	print "hxdgtigen outfile = $hxdgtigen_outfile\n";
+    }
+
+    my %hxdgtigen = (
+    		     hk_dir    => $Parms_str{outdir},
+    		     hk_file   => basename($files{hxd_hk_hk}),
+                     WPU       => $Parms_str{WPU}, 
+    		     gti_fname => '!' . $hxdgtigen_outfile,
+    		     chatter   => $Parms_num{chatter}, 
+    		     clobber   => bc($Parms_bool{clobber}));
+
+    $command_run = command_run("hxdgtigen", \%hxdgtigen, "for file $hxdgtigen_outfile");
+    unless ($command_run == 0) {
+	return $command_run;
+    }
+
+    #----------------------------------------------------------------------
+
+    # Loop over all HXD WEL unfiltered event files.
+
+    compmsg("Looping on HXD WEL unfiltered event files");
+
+    foreach my $hxdfile ( @{$files{hxd_event_uf_wel}} ) {
+
+	# Make output file names
+
+	my $hxdfile_out     = catfile($Parms_str{outdir} , basename($hxdfile));
+	my $hxdfile_gti_out = catfile($Parms_str{outdir} , basename($hxdfile));
+        $hxdfile_gti_out =~ s/\.evt/.gti/;
+        $hxdfile_gti_out =~ s/wel/tel/;
+
+	# Read FITS file
+
+	fits_open_file($fptr1,$hxdfile,READONLY,$file_status);
+	if ( $file_status ) {
+	    errmsg("Unable to open FITS file : $hxdfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_read_key($fptr1,TDOUBLE,"TSTART",$tstart,undef,$file_status);
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("TSTART keyword not found in file : $hxdfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_read_key($fptr1,TDOUBLE,"TSTOP",$tstop,undef,$file_status);
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("TSTOP keyword not found in file : $hxdfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_read_key($fptr1,TSTRING,"DATE-OBS",$dateobs,undef,$file_status);
+	if ( $file_status == KEY_NO_EXIST ) {
+	    errmsg("DATE-OBS keyword not found in file : $hxdfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_close_file($fptr1,$file_status);
+	if ( $file_status ) {
+	    errmsg("Unable to close FITS file : $hxdfile File Status = $file_status");
+	    return $file_status;
+	}
+
+	if ( $debug == 1 ) {
+	    print "Input file  = $hxdfile\n";
+	    print "Output file = $hxdfile_out\n";
+	    print "tstart      = $tstart\n";
+	    print "tstop       = $tstop\n";
+	    print "dateobs     = $dateobs\n";
+	}
+
+	# Can this file be processed with the calibration files?
+
+	if ( $tstop < $Parms_num{hxd_start} ) {
+        
+	    error(1, "$hxdfile occurs before CALDB\n");
+	    error(1, "$hxdfile will NOT be re-calibrated\n");
+
+	    AddReport(1, "\n$Task{stem} : ERROR : $hxdfile occurs before CALDB\n");
+	    AddReport(1, "\n$Task{stem} : ERROR : $hxdfile will NOT be re-calibrated\n");
+
+	    $ftcopy = ftcopy($hxdfile , $hxdfile_out, 1, $Parms_num{chatter});
+            unless ( $ftcopy == 0 ) {
+		errmsg("Error copying to $hxdfile_out");
+		return $ftcopy;
+	    }
+
+	    next;
+	}
+
+	#----------------------------------------------------------------------
+
+        # Check relevant calibration files exist for use with HXDPI and
+        # HXDGRADE This is done here to avoid wasteing time processing data
+        # with HXDTIME (a lengthy process) and then discovering processing
+        # cannot continue due to lack of calibration files
+	foreach my $hxd_filename (qw( hxd_pinghf hxd_gsoght hxd_gsogpt hxd_gsolin hxd_pinlin hxd_gsopsd hxd_pinthr )) {
+	    unless ( uc($Parms_str{$hxd_filename}) eq 'CALDB') {
+		fits_file_exists($Parms_str{$hxd_filename}, $file_exists, $file_status);
+		if ( $file_exists == 0 ) {
+		    errmsg("$hxd_filename calibration file not found : $Parms_str{$hxd_filename}");
+		    return 1;
+		}
+	    }
+	}
+
+        # If hxdpi_old = no and the GSO Gain Parameter Table is set to CALDB,
+        # then query for this file. We need to update the GSOGPT_F keyword
+        # with the basename of the queried file.
+        my $hxd_gsogpt_caldb = basename( $Parms_str{hxd_gsogpt} );
+        if ( uc( $Parms_str{hxd_gsogpt} ) eq 'CALDB' && !$Parms_bool{hxdpi_old} ) {
+
+            my ( $date, $time ) = split /T/, $dateobs;
+            my ( $calnames, $calexts, $online, $num_ret, $num_found ) = ( 0 ) x 5;
+            HDgtcalf( 'SUZAKU', 'HXD', 'WELL_GSO', '-', 'GAIN_PARAM_TABLE',
+                      $date, $time, $date, $time, 'CAL_QUAL.eq.0', 50, 1024,
+                      $calnames, $calexts, $online, $num_ret, $num_found, $file_status );
+            if ( $file_status != 0 || $num_found == 0 ) {
+                errmsg( "Could not determine CALDB file to use for hxd_gsogpt" );
+                return 1;
+            }
+
+            # Take the first one returned (should only be one)
+
+            $hxd_gsogpt_caldb = basename( $calnames->[ 0 ] );
+            if ( !$hxd_gsogpt_caldb ) {
+                errmsg( "Could not determine CALDB file to use for hxd_gsogpt" );
+                return 1;
+            }
+        }
+
+	#----------------------------------------------------------------------
+
+	$ftcopy = ftcopy($hxdfile , $hxdfile_out, 1, $Parms_num{chatter});
+	unless ( $ftcopy == 0 ) {
+	    errmsg("Error copying to $hxdfile_out");
+	    return $ftcopy;
+	}
+
+	#----------------------------------------------------------------------
+
+	# hxdtime
+
+	compmsg("Running hxdtime on $hxdfile_out");
+
+	# Run hxdtime.
+
+        my $hxd_time_evt = "$hxdfile_out.hxd_time.evt";
+        unlink $hxd_time_evt;
+
+	my %hxdtime = (
+		       read_iomode       => 'create',
+		       time_change       => 'y',
+		       grade_change      => 'n',
+		       pi_pmt_change     => 'n',
+		       pi_pin_change     => 'n',
+		       gtimode           => 'y',
+		       gti_time          => 'S_TIME',
+		       create_name       => $hxd_time_evt,
+		       input_name        => $hxdfile_out,
+		       tim_filename      => $Parms_str{timfile},
+		       leapfile          => $Parms_str{leapfile},
+		       hklist_name       => $files{hxd_hk_hk},
+		       time_convert_mode => $Parms_num{time_convert_mode},
+		       use_pwh_mode      => bc($Parms_bool{use_pwh_mode}),
+		       num_event         => $Parms_num{num_event},
+		       event_freq        => $Parms_num{event_freq},
+		       anl_verbose       => $Parms_num{anl_verbose},
+		       anl_profile       => bc($Parms_bool{anl_profile}),
+		       chatter           => $Parms_num{chatter});
+
+        $command_run = command_run("hxdtime", \%hxdtime, "for file $hxdfile_out");
+        unless ($command_run == 0) {
+	    return $command_run;
+	}
+
+        unless( $copyfunc->( $hxd_time_evt, $hxdfile_out ) ) {
+	    errmsg("$hxd_time_evt move command failed");
+            return 1;
+        }
+
+	
+	# Remove all but one instance of the TUNIT3 keyword if it is duplicated.
+
+	$file_status = RemoveDuplicatedKeyword($hxdfile_out, 2, "TUNIT3", TSTRING);
+
+
+	#----------------------------------------------------------------------
+
+	# hxdpi
+
+	compmsg("Running hxdpi on $hxdfile_out");
+
+	# Compute the name of the output file
+
+	my $hxdpi_outfile = "$hxdfile_out.hxdpi_out.evt";
+        unlink $hxdpi_outfile;
+	if ( $debug ) {
+	    print "hxdpi_outfile = $hxdpi_outfile\n";
+	}
+
+        # Generate a list file containing the required hk files for hxdpi
+
+	my @hxdpi_hks = ( $files{hxd_hk_hk}, $files{extended_housekeeping} );
+        my $hxdpi_hk_list_file = catfile($Parms_str{outdir}, "hxdpi_hk.list");
+	if (open(HXDPI_HK,">$hxdpi_hk_list_file")) {
+	    foreach my $hxdpi_hk (@hxdpi_hks) {
+		print HXDPI_HK $hxdpi_hk,"\n";
+	    }
+	    close HXDPI_HK;  
+	} else {
+	    errmsg("Cannot open $hxdpi_hk_list_file for writing");
+            return 1;
+	}
+
+	# Run the hxdpi tool
+        # As of March 2010 there are two versions :
+        # hxdpi     - current version        - uses $Parms_str{hxd_gsoght} (ae_hxd_gsogpt_*.fits.gz)
+        # hxdpi_old - pre March 2010 version - uses $Parms_str{hxd_gsogpt} (ae_hxd_gsoght_*.fits.gz) 
+        # This was done because in March 2010 changes were introduced to HXDPI
+        # which were not back compatible  
+  
+	if ( $Parms_bool{hxdpi_old} ) {
+	    $compmsg = compmsg("Running hxdpi OLD version");
+	    my %hxdpi_old = (
+			     read_iomode      => 'create',
+			     time_change      => 'n',
+			     grade_change     => 'n',
+			     pi_pmt_change    => 'y',
+			     pi_pin_change    => 'y',
+			     gtimode          => 'n',
+			     gti_time         => 'S_TIME',
+			     input_name       => $hxdfile_out,
+			     create_name      => '!' . $hxdpi_outfile,
+			     hklist_name      => "\@$hxdpi_hk_list_file",
+			     hxd_pinghf_fname => $Parms_str{hxd_pinghf},
+			     hxd_gsoght_fname => $Parms_str{hxd_gsoght}, # GHT file 
+			     hxd_gsolin_fname => $Parms_str{hxd_gsolin},
+			     hxd_pinlin_fname => $Parms_str{hxd_pinlin},
+			     rand_seed        => $Parms_num{seed},
+			     rand_skip        => 0,
+			     use_pwh_mode     => bc($Parms_bool{use_pwh_mode}),
+			     num_event        => $Parms_num{num_event},
+			     event_freq       => $Parms_num{event_freq},
+			     anl_verbose      => $Parms_num{anl_verbose},
+			     anl_profile      => bc($Parms_bool{anl_profile}),
+			     chatter          => $Parms_num{chatter});
+	    $command_run = command_run("hxdpi_old", \%hxdpi_old, "for file $hxdfile_out");
+	} else {
+	    $compmsg = compmsg("Running hxdpi CURRENT version");
+	    my %hxdpi = (
+			 read_iomode      => 'create',
+			 time_change      => 'n',
+			 grade_change     => 'n',
+			 pi_pmt_change    => 'y',
+			 pi_pin_change    => 'y',
+			 gtimode          => 'n',
+			 gti_time         => 'S_TIME',
+			 input_name       => $hxdfile_out,
+			 create_name      => '!' . $hxdpi_outfile,
+			 hklist_name      => "\@$hxdpi_hk_list_file",
+			 hxd_pinghf_fname => $Parms_str{hxd_pinghf},
+			 hxd_gsogpt_fname => $Parms_str{hxd_gsogpt}, # GPT file 
+			 hxd_gsolin_fname => $Parms_str{hxd_gsolin},
+			 hxd_pinlin_fname => $Parms_str{hxd_pinlin},
+                         orbit            => $Parms_str{orbit}, # New parameter for HXDPI March 2010
+		         leapfile         => $Parms_str{leapfile}, # New parameter for HXDPI March 2010
+			 rand_seed        => $Parms_num{seed},
+			 rand_skip        => 0,
+			 use_pwh_mode     => bc($Parms_bool{use_pwh_mode}),
+			 num_event        => $Parms_num{num_event},
+			 event_freq       => $Parms_num{event_freq},
+			 anl_verbose      => $Parms_num{anl_verbose},
+			 anl_profile      => bc($Parms_bool{anl_profile}),
+			 chatter          => $Parms_num{chatter});
+	    $command_run = command_run("hxdpi", \%hxdpi, "for file $hxdfile_out");
+
+            # If successful, update GSOGPT_F keyword in header
+
+            if ( $command_run == 0 ) {
+                fits_open_file( $fptr1, $hxdpi_outfile, READWRITE, $file_status );
+                if ( $file_status ) {
+                    errmsg( "Unable to open FITS file : $hxdpi_outfile File Status = $file_status" );
+                    return $file_status;
+                }
+                my $nhdus;
+                fits_get_num_hdus( $fptr1, $nhdus, $file_status );
+                if ( $file_status ) {
+                    errmsg( "Unable to get number of HDUs in file : $hxdpi_outfile File Status = $file_status" );
+                    return $file_status;
+                }
+                foreach my $hdu ( 1..$nhdus ) {
+                    fits_movabs_hdu( $fptr1, $hdu, ANY_HDU, $file_status );
+                    if ( $file_status ) {
+                        errmsg( "Unable to move to HDU #$hdu in file : $hxdpi_outfile File Status = $file_status" );
+                        return $file_status;
+                    }
+                    fits_update_key_str( $fptr1, 'GSOGPT_F', $hxd_gsogpt_caldb,
+                                         'Name of gsogpt used by hxdpi', $file_status );
+                    if ( $file_status ) {
+                        errmsg( "Unable to update keyword GSOGPT_F=$hxd_gsogpt_caldb" );
+                        errmsg( "In file : $hxdpi_outfile File Status = $file_status" );
+                        return $file_status;
+                    }
+                }
+                fits_close_file( $fptr1, $file_status );
+                if ( $file_status ) {
+                    errmsg( "Unable to close FITS file : $hxdpi_outfile File Status = $file_status" );
+                    return $file_status;
+                }
+            }
+	}
+
+	# Check for errors. If none, rename the output as the input.
+
+	unless ( $command_run == 0 ) {
+	    return $command_run;
+	} 
+
+	unless( $copyfunc->( $hxdpi_outfile, $hxdfile_out ) ) {
+	    errmsg("$hxdpi_outfile move command failed");
+	    return 1;
+	}
+
+	if ( $Parms_bool{remove_temp_files} ) {
+            unlink $hxdpi_hk_list_file;
+        }
+
+	#----------------------------------------------------------------------
+
+	# hxdgrade
+
+	compmsg("Running hxdgrade on $hxdfile_out");
+
+	# Compute the name of the output file.
+
+	my $hxdgrade_outfile = "$hxdfile_out.hxdgrade_out.evt";
+        unlink $hxdgrade_outfile;
+
+	if ( $debug ) {
+	    print "hxdgrade_outfile = $hxdgrade_outfile\n";
+	}
+
+	# Run the hxdgrade tool.
+
+	my %hxdgrade = (
+			read_iomode             => 'create',
+			time_change             => 'n',
+			grade_change            => 'y',
+			pi_pmt_change           => 'n',
+			pi_pin_change           => 'n',
+			gtimode                 => 'n',
+			gti_time                => 'S_TIME',
+			input_name              => $hxdfile_out,
+			create_name             => '!' . $hxdgrade_outfile,
+			hxdgrade_psdsel_fname   => $Parms_str{hxd_gsopsd},
+			hxdgrade_pinthres_fname => $Parms_str{hxd_pinthr},
+	 	        leapfile                => $Parms_str{leapfile}, # Not in pipeline version
+			use_pwh_mode            => bc($Parms_bool{use_pwh_mode}),
+			num_event               => $Parms_num{num_event},
+			event_freq              => $Parms_num{event_freq},
+			anl_verbose             => $Parms_num{anl_verbose},
+			anl_profile             => bc($Parms_bool{anl_profile}),
+			chatter                 => $Parms_num{chatter});
+
+        $command_run = command_run("hxdgrade", \%hxdgrade, "for file $hxdfile_out");
+
+	unless ( $command_run == 0 ) {
+	    return $command_run;
+	}
+
+	unless( $copyfunc->( $hxdgrade_outfile, $hxdfile_out ) ) {
+	    errmsg("$hxdgrade_outfile move command failed");
+	    return 1;
+	}
+
+	#----------------------------------------------------------------------
+
+        # Set the "TIMEDEL" FITS keyword in the output HXD file
+
+	fits_open_file($fptr1,$hxdfile_out,READWRITE,$file_status);
+
+	if ( $file_status ) {
+	    errmsg("Unable to open FITS file : $hxdfile_out $file_status File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_update_key($fptr1,TDOUBLE,'TIMEDEL', -999, undef,$file_status);
+	if ( $file_status ) {
+	    errmsg("TIMEDEL keyword not written to file : $hxdfile_out File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_movabs_hdu($fptr1 , 2 , undef, $file_status);
+
+	fits_update_key($fptr1,TDOUBLE,'TIMEDEL', -999, undef,$file_status);
+	if ( $file_status ) {
+	    errmsg("TIMEDEL keyword not written to file : $hxdfile_out File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_movabs_hdu($fptr1 , 3 , undef, $file_status);
+
+	fits_update_key($fptr1,TDOUBLE,'TIMEDEL', -999, undef,$file_status);
+	if ( $file_status ) {
+	    errmsg("TIMEDEL keyword not written to file : $hxdfile_out File Status = $file_status");
+	    return $file_status;
+	}
+
+	fits_close_file($fptr1,$file_status);
+	if ( $file_status ) {
+	    errmsg("Unable to close FITS file : $hxdfile_out $file_status File Status = $file_status");
+	    return $file_status;
+	}
+
+	#----------------------------------------------------------------------
+
+        # Make the HXD "tel_uf.gti" files.
+        # In the pipeline the corresponding code is in the "Filter.pm" module.
+        # (IE. Code that became "S2HxdFilter")
+        # However the HXD "_uf.gti" files need to be made at this point in the processing.
+
+	my $hxdfile_out_two = join("", $hxdfile_out, "[2]");
+
+	( $mgtime, $output_lines ) = mgtime([$hxdgtigen_outfile, $hxdfile_out_two],
+			                    '!' . $hxdfile_gti_out, "AND");
+        map( AddReport( 2, $_ ), @$output_lines );
+
+	unless ($mgtime == 0) {
+	    errmsg("Error running MGTIME for files $hxdgtigen_outfile, $hxdfile_out_two],
+			$hxdfile_gti_out), 'AND'");
+	    return $mgtime;
+	}
+
+        # Update relevant FITS header keywords in $hxdfile_gti_out
+
+        my $keys_file  = $hxdfile_gti_out . '.keywords';
+        my @fitskeywords = qw(
+            TELESCOP INSTRUME OBS_MODE OBS_ID   OBSERVER
+            OBJECT   TIMESYS  MJDREFI  MJDREFF  TIMEREF
+            TIMEUNIT TASSIGN  CLOCKAPP DATE-OBS DATE-END
+        );
+
+        # Dump them from the HXD/HK file
+        my %ftlist = (
+            infile  => $files{hxd_hk_hk} . '[0]',
+            option  => 'K',
+            outfile => $keys_file,
+            clobber => 'yes',
+            include => join( ',', @fitskeywords )
+        );
+        $command_run = command_run("ftlist", \%ftlist, "for file $hxdfile_gti_out");
+        unless ($command_run == 0) {
+            unlink $keys_file;
+            return $command_run;
+        }
+        open KEYS, ">>$keys_file";
+        print KEYS <<EOF;
+-MJDREF
+EOF
+        close KEYS;
+
+        foreach my $hdu (qw( 0 1 )) {
+            my %fthedit = (
+                 infile     => $hxdfile_gti_out . "[$hdu]",
+                 keyword    => '@' . $keys_file,
+                 operation  => 'add',
+                 protect    => 'yes',
+                 longstring => 'yes',
+                 chatter    => 1,
+                 history    => 'no'
+            );
+            $command_run = command_run("fthedit", \%fthedit, "for file $hxdfile_gti_out");
+            unless ($command_run == 0) {
+                unlink $keys_file;
+                return $command_run;
+            }
+        }
+        unlink $keys_file;
+
+        # Add these calibrated '_uf.evt' and "tel_uf.gti" files to the lists
+
+        push @calibrated_hxd_uf_evt_files, $hxdfile_out;
+        push @calibrated_hxd_uf_gti_files, $hxdfile_gti_out;
+
+        # Keep a list of names of files produced
+
+        push( @filelist_output, $hxdfile_out );
+        push( @filelist_output, $hxdfile_gti_out );
+
+    }
+
+    # Save lists of newly calibrated '_uf.evt' and "tel_uf.gti" files
+
+    @{$files{hxd_event_uf_wel}}  = @calibrated_hxd_uf_evt_files;
+    @{$files{hxd_hk_gti_tel_uf}} = @calibrated_hxd_uf_gti_files;
+
+    # Clean up.
+
+    if ( $Parms_bool{remove_temp_files} ) {
+    	unlink $hxdgtigen_outfile;
+    }
+
+    if ( $debug ) {
+	print "\nEnd of S1HxdCalibrate\n";
+    }
+
+    return 0;
+
+}				# S1HxdCalibrate
+
+#-----------------------------------------------------------
+
+sub S2XisFilter {
+    return xis_screen( );
+}
+
+#-----------------------------------------------------------
+
+sub S2HxdFilter {
+    return hxd_wel_screen( );
+}
+
+#------------------------------------------------------------------
+
+#
+# xis_screen
+#
+# Applies screening to XIS files.
+#
+# The method performs the following steps:
+#
+# - Gets the name of the MKF file.
+#
+# - Gets a list of all .sff files (at least one for each instrument) and
+# saves a copy as unfiltered "_uf.evt" file.
+#
+# - Creates a modal GTI for each mode and each RPT
+#
+# - Goes through each unfiltered event file (e.g,. the one for each mode).
+#
+# - Gets the row (e.g., GRADE) and GTI selection (e.g, SAA) criteria for each file.
+#
+# - Applies the selection criteria and saves a cleaned event file.
+#
+# - Removes filter/hot pixels using cleansis FTOOL.
+#
+sub xis_screen {
+
+    my $stat = 0;
+
+    #######################################################################
+    # Read "tim" file to get start time for minor-mode configuration table
+    #######################################################################
+    my ( $tstart, $dateobs );
+    my $fptr = Astro::FITS::CFITSIO::open_file( $Parms_str{timfile}, READONLY, $stat );
+    return $stat unless $stat == 0;
+    $fptr->movabs_hdu( 2, undef, $stat );
+    $fptr->read_key_dbl( "TSTART", $tstart, undef, $stat );
+    $fptr->close_file( $stat );
+    return $stat unless $stat == 0;
+
+    ############################
+    # Convert this to a TT date
+    ############################
+    open TIM, "aetimecalc input=\"mission\" mission=\"$tstart\" leapfile=\"$Parms_str{leapfile}\" |"
+        or die "failed to run aetimecalc\n";
+    while ( <TIM> ) {
+        if ( /Date in TT   = (\S+)/ ) {
+            $dateobs = $1;
+            $dateobs =~ s/\.(\d+)?$//;
+            last;
+        }
+    }
+    close TIM;
+    if ( !defined $dateobs ) {
+        errmsg( "Failed to convert MET=$tstart to UTC" );
+        return 1;
+    }
+
+    #######################################################
+    # Read the XIS configuration table for the input times
+    #######################################################
+    $stat = get_xis_modes( $dateobs, $tstart );
+    return $stat unless $stat == 0;
+
+    ###########################################################
+    # Go through each uf file and convert them in groups to cl
+    ###########################################################
+    foreach my $inst (qw( xi0 xi1 xi2 xi3 )) {
+
+        next unless $instrument{$inst} == 1;
+
+        #############################################################
+        # Determine a unique list of minor modes for this instrument
+        #############################################################
+        my $unique_modes = get_unique_xis_modes( $inst );
+        return $unique_modes if ref( $unique_modes ) ne 'ARRAY';
+
+        ################################################
+        # Loop over available modes for this instrument
+        # and create screened event files for each
+        ################################################
+        foreach my $submode ( sort @$unique_modes ) {
+
+            foreach my $editmode (qw( 2x2 3x3 5x5 tim )) {
+
+                my $key = 'xis_event_uf_' . $inst;
+                my @eventfiles = grep /${inst}_[0-9]_${editmode}....z_uf.evt/,
+                                      @{$files{$key}};
+                next unless @eventfiles;
+
+                compmsg( "Creating XIS screened events for instrument "
+                       . "$inst, edit mode $editmode, sub-mode $submode" );
+
+                my $type = $editmode eq 'tim' ? 'psum' : 'norm';
+                $stat = create_xis_screened_events( $inst, $editmode,
+                                                    $submode, $type );
+                return $stat unless $stat == 0;
+            }
+        }
+    }
+    return 0;
+}
+
+#------------------------------------------------------------------
+
+#
+# create_xis_screened_events
+#
+# Creates a screened event file for a given instrument, mode, sub-mode and
+# events type.
+#
+sub create_xis_screened_events {
+
+    my ( $inst, $editmode, $submode, $type ) = @_;
+
+    my $stat = 0;
+
+    #######################
+    # Set up the extractor
+    #######################
+    my $parmchip = uc( $inst );
+    $parmchip =~ s/XI(\d)/XIS$1/;
+    $stat = setupExtractor("SUZAKU", $parmchip);
+    unless ( $stat == 0 ) {
+        errmsg("setupExtractor failed with status = $stat");
+        return $stat;
+    }
+
+    ###########################################
+    # Get list of all unfiltered files by type
+    ###########################################
+    my $fileskey = 'xis_event_uf_' . $inst;
+    my @eventfiles = grep /${inst}_[0-9]_${editmode}....z_uf\.evt/,
+                          @{$files{$fileskey}};
+    return $stat unless @eventfiles;
+
+    #############################################
+    # Extract a list of unique available fileids
+    #############################################
+    my %fileids = ( );
+    foreach my $file ( @eventfiles ) {
+        if ( $file =~ /${inst}_[0-9]_(${editmode}....z)_uf\.evt/ ) {
+            $fileids{$1} = 1;
+        }
+    }
+
+    #############################################
+    # Loop over file IDs (aka edit mode + ucode)
+    #############################################
+    foreach my $fileid ( sort keys %fileids ) {
+
+        my @editmodeevents = grep /${inst}_[0-9]_${fileid}_uf\.evt/,
+                                  @{$files{$fileskey}};
+        $fileid =~ s/z//;
+
+        ############################################
+        # Compute the name of the $type event file.
+        ############################################
+        my $cl = catfile( $Parms_str{outdir}, $Parms_str{stemoutputs} . $inst
+                                            . '_0_' . $fileid . $submode  . '_cl.evt' );
+
+        compmsg( "Extracting $type events: $cl" );
+
+        #############################
+        # Get row selection criteria
+        #############################
+        my $row_criteria = get_criteria( $inst, $type, $submode, 'row' );
+
+        #############################
+        # Get mkf selection criteria
+        #############################
+        my $mkf_criteria = get_criteria( $inst, $type, $submode, 'mkf' );
+        if ( !$mkf_criteria ) {
+            errmsg( "Could not determine makefilter expression for XIS/$inst/$fileid GTI" );
+            return 1;
+        }
+        compmsg( "Using XIS/$inst/$fileid GTI selection criteria: $mkf_criteria" );
+
+        #####################
+        # Make a GTI from it
+        #####################
+        my $mkf_gti = $cl . '.screengti';
+        my $exprfile = dumpListToTxt( $mkf_criteria );
+        my $outlines;
+        ( $stat, $outlines ) = maketime( $Parms_str{makefilter},
+                                         '!' . $mkf_gti, "\@$exprfile",
+                                           0.0, 1.0);
+        unlink $exprfile;
+        map( AddReport( 2, $_ ), @$outlines );
+        unless ( $stat == 0 ) {
+            errmsg( "Error running maketime" );
+            return $stat;
+        }
+        my $stat = check_gti_good_time( $mkf_gti );
+        if ( $stat != 0 ) {
+            compmsg( "WARNING: No good time in $mkf_gti" );
+            compmsg( "WARNING: No screened event file will be created!" );
+            unlink $mkf_gti;
+
+            # Check if stat was -1. In this case check_gti_good_time failed
+            # simply due to no valid times and not for any other reason.
+            $stat = 0 if  $stat == -1 ;
+
+            next;
+        }
+        $stat = add_mjdref_keys( $mkf_gti );
+        return $stat unless $stat == 0;
+
+        #####################
+        # Run the extractor.
+        #####################
+        ( $stat, $outlines ) = extractor( { filename  => \@editmodeevents,
+                                            selection => $row_criteria,
+                                            eventsout => $cl,
+                                            timefile  => $mkf_gti } );
+        unlink $mkf_gti if $Parms_bool{remove_temp_files};
+        map( AddReport( 2, $_ ), @$outlines );
+        unless ( $stat == 0 ) {
+            errmsg( "extractor failed with status = $stat" );
+            return $stat;
+        }
+
+        #####################################
+        # Check that something was produced.
+        #####################################
+        if ( !-e $cl ) {
+            compmsg( "No screened event file produced for "
+                     . ( join( ", ", @editmodeevents ) ) . "." );
+            next;
+        } else {
+
+            ########################################
+            # Remove cleaned files with zero events
+            ########################################
+            my $fptr = Astro::FITS::CFITSIO::open_file( "$cl\[EVENTS\]",
+                                                        READONLY, $stat );
+            if ( $stat != 0 ) {
+                errmsg( "Failed to open file $cl, status = $stat" );
+                return $stat;
+            }
+            my $nrows;
+            $fptr->get_num_rows( $nrows, $stat );
+            $fptr->close_file( $stat );
+            if ( $nrows == 0 ) {
+                compmsg( "Deleting $cl since it has 0 rows" );
+                unlink $cl;
+                next;
+            }
+        }
+
+        #############################################
+        # Add keywords indicating the discriminator/
+        # thresholds for this mode
+        #############################################
+        my $keysfile = catfile( $Parms_str{outdir}, "keywords.tmp" );
+        open KEYS, ">$keysfile";
+        print KEYS map( "$_\n", get_xis_modal_cards( $submode ) );
+        close KEYS;
+        $stat = command_run( 'fthedit',
+                             { infile    => $cl . '[1]',
+                               keyword   => '@' . $keysfile,
+                               operation => 'add',
+                               protect   => 'yes',
+                               chatter   => 1,
+                               history   => 'no' }, "" );
+        unlink $keysfile;
+        return $stat unless $stat == 0;
+
+        ###################################################
+        # Remove hot and flickering pixels for normal mode
+        ###################################################
+        if ( $type =~ /^norm$/i ) {
+            compmsg( "Running cleansis on $cl." );
+            $stat = remove_hot_pixels( $cl );
+            return $stat unless $stat == 0;
+        }
+
+        ##########################################################
+        # For timing/psum mode remove hot columns using cleansis.
+        ##########################################################
+        if ( $type =~ /^psum$/i ) {
+            compmsg( "Running cleansis on $cl." );
+            $stat = remove_hot_columns( $cl );
+            return $stat unless $stat == 0;
+        }
+
+        #############################
+        # Remove unneeded extensions
+        #############################
+        foreach my $unneeded (qw( HOT_PIXELS LOSTAREAS EXPOSURES FRAMES )) {
+            $stat = command_run( 'fdelhdu',
+                                 { infile  => $cl . "[$unneeded]",
+                                   confirm => 'no',
+                                   proceed => 'yes' }, "" );
+            $stat = 0;
+        }
+        compmsg( "Created XIS screened events: $cl" );
+
+        #########################################
+        # Keep a list of names of files produced
+        #########################################
+        push @filelist_output, $cl;
+    }
+    return $stat;
+}
+
+#------------------------------------------------------------------
+
+#
+# remove_hot_pixels
+#
+# Uses the cleansis FTOOL, which detects and removes anomalous XIS
+# pixels and outputs a cleaned event file with an appended 'hot pixel'
+# extension.  The input event file is overwritten.
+#
+sub remove_hot_pixels {
+
+    my $infile = shift;
+
+    ###############
+    # run cleansis
+    ###############
+    my $outfile = $infile . '.cleansis';
+    unlink $outfile;
+
+    my $cleansis = command_run( 'cleansis',
+                                { datafile => $infile,
+                                  outfile  => '!' . $outfile,
+                                  chipcol  => "SEGMENT",
+                                  cellsize => 5,
+                                  logprob  => -5.3,
+                                  bthresh  => 3,
+                                  phamin   => 0,
+                                  phamax   => 4095,
+                                  rawxcol  => 'RAWX',
+                                  rawycol  => 'RAWY',
+                                  detxcol  => 'DETX',
+                                  detycol  => 'DETY',
+                                  skyxcol  => 'X',
+                                  skyycol  => 'Y' },
+                                "on $infile" );
+
+    #############################################################
+    # Check for errors. If none, rename the output as the input.
+    #############################################################
+    if ( $cleansis != 0 ) {
+        errmsg( "Error running cleansis on $infile." );
+        unlink $outfile if $Parms_bool{remove_temp_files};
+        return $cleansis;
+    }
+    if ( !$copyfunc->( $outfile, $infile ) ) {
+        errmsg( "Failed to move $outfile to $infile" );
+        return 1;
+    }
+    return $cleansis;
+}
+
+#------------------------------------------------------------------
+
+#
+# remove_hot_columns
+#
+# Uses the cleansis FTOOL, which detects and removes anomalous XIS
+# pixels and outputs a cleaned event file with an appended 'hot pixel'
+# extension.  The input event file is overwritten.
+#
+# The parameters used in this subroutine are only appropriate for Timing/PSUM
+# data, hence the name (hot_columns). It may produce erroneous results for
+# non-PSUM mode data.
+#
+sub remove_hot_columns {
+
+    my $infile = shift;
+
+    ####################################################
+    # run cleansis with all x/ycol params set to DETX/Y
+    # and a cell size of 3 pixels
+    ####################################################
+    my $outfile = $infile . '.cleansis';
+    unlink $outfile;
+
+    my $cleansis = command_run( 'cleansis',
+                                { datafile => $infile,
+                                  outfile  => '!' . $outfile,
+                                  chipcol  => "SEGMENT",
+                                  cellsize => 3,
+                                  logprob  => -5.3,
+                                  bthresh  => 3,
+                                  phamin   => 0,
+                                  phamax   => 4095,
+                                  rawxcol  => 'DETX',
+                                  rawycol  => 'DETY',
+                                  detxcol  => 'DETX',
+                                  detycol  => 'DETY',
+                                  skyxcol  => 'DETX',
+                                  skyycol  => 'DETY' },
+                                "on $infile" );
+
+    #############################################################
+    # Check for errors. If none, rename the output as the input.
+    #############################################################
+    if ( $cleansis != 0 ) {
+        errmsg( "Error running cleansis on $infile." );
+        unlink $outfile if $Parms_bool{remove_temp_files};
+        return $cleansis;
+    }
+    if ( !$copyfunc->( $outfile, $infile ) ) {
+        errmsg( "Failed to move $outfile to $infile" );
+        return 1;
+    }
+    return $cleansis;
+}
+
+#------------------------------------------------------------------
+
+#
+# hxd_wel_screen()
+#
+# Applies screening to HXD Well files.
+# 
+# The method performs the following steps (FIXME):
+# 
+# - Gets the name of the MKF file.
+# 
+# - Gets a list of the HXD Well .sff files.
+# 
+# - Saves a copy of each sff file as a unfiltered "_uf.evt" file.
+# 
+# - For each clockmode, gets the appropriate row (e.g, DET_TYPE) and GTI
+# (e.g., SAA) criteria using get_criteria.
+# 
+# - Applies the criteria and saves a cleaned event file.
+# 
+# - Fixes the DETNAM keyword to be WEL_GSO or WEL_PIN for GSO and PIN
+# type files using fix_detnam.
+#
+sub hxd_wel_screen {
+
+    my $stat = 0;
+    my $outlines;
+
+    ########################################
+    # List of available clock modes for HXD
+    ########################################
+    my %clockmodes = (
+        co => "coarse",
+        no => "normal",
+        fi => "fine"
+    );
+    my $tel_unsat = undef;
+
+    ############################################
+    # Get a list of WELL event files to process
+    ############################################
+    if ( !@{$files{hxd_event_uf_wel}} ) {
+        errmsg( 'No WEL GSO/PIN cleaned files created.' );
+        return $stat;
+    }
+
+    ################################
+    # Screen the GSO and PIN events
+    ################################
+    compmsg( 'Beginning HXD GSO/PIN cleaning' );
+    foreach my $type (qw( gso pin )) {
+
+        next unless $instrument{$type} == 1;
+
+        #######################
+        # Set up the extractor
+        #######################
+        my $extractor_inst = 'HXD:WELL_' . uc( $type );
+        $stat = setupExtractor( "SUZAKU", $extractor_inst );
+        unless ( $stat == 0 ) {
+            errmsg("setupExtractor failed with status = $stat");
+            return $stat;
+        }
+
+        #############################
+        # Go through each clock mode
+        #############################
+        foreach my $clockmode ( sort keys %clockmodes ) {
+
+            compmsg( "Screening HXD " . uc( $type )
+                   . " $clockmodes{$clockmode} clockmode data" );
+
+            ##############################################
+            # Compute the name of the cleaned event file.
+            ##############################################
+            my $cl = catfile( $Parms_str{outdir}, $Parms_str{stemoutputs} . 'hxd_0_'
+                                                  . $type . $clockmode . '_cl.evt' );
+
+            ###################################################
+            # Provide a telemetry un-saturated HXD time filter
+            ###################################################
+            if ( !defined $tel_unsat && @{$files{hxd_hk_gti_tel_uf}} ) {
+                $tel_unsat = catfile( $Parms_str{outdir}, $Parms_str{stemoutputs}
+                                                        . 'hxd_0' . '.telunsatgti' );
+                if ( @{$files{hxd_hk_gti_tel_uf}} > 1 ) {
+                    ( $stat, $outlines ) = mgtime( $files{hxd_hk_gti_tel_uf}, '!' . $tel_unsat, 'OR' );
+                    map( AddReport( 2, $_ ), @$outlines );
+                    unless ( $stat == 0 ) {
+                        errmsg( "Error running mgtime" );
+                        return $stat;
+                    }
+                } else {
+                    $stat = ftcopy( $files{hxd_hk_gti_tel_uf}->[ 0 ], $tel_unsat, 1 );
+                    return $stat unless $stat == 0;
+                }
+                $stat = check_gti_good_time( $tel_unsat );
+                if ( $stat != 0 ) {
+                    compmsg( "WARNING: No good time in $tel_unsat" );
+                    unlink $tel_unsat;
+                    $tel_unsat = '';
+                }
+            }
+
+            ##############
+            # Select rows
+            ##############
+            my $row_criteria = get_criteria( 'hxd', $type,
+                                             $clockmode, 'row' );
+
+            ##############################
+            # Run maketime to get the GTI
+            ##############################
+            my $mkf_gti;
+            my $mkf_criteria = get_criteria( 'hxd', $type,
+                                             $clockmode, 'mkf' );
+            if ( $mkf_criteria ) {
+                compmsg( "Using HXD/$type GTI selection criteria: $mkf_criteria" );
+                $mkf_gti = $cl . '.mkf_gti';
+                ( $stat, $outlines ) = maketime( $Parms_str{makefilter},
+                                                 '!' . $mkf_gti, $mkf_criteria,
+                                                 0.0, 1.0);
+                map( AddReport( 2, $_ ), @$outlines );
+                unless ( $stat == 0 ) {
+                    errmsg( "Error running maketime" );
+                    return $stat;
+                }
+                $stat = check_gti_good_time( $mkf_gti );
+                if ( $stat != 0 ) {
+                    compmsg( "WARNING: No good time in $mkf_gti" );
+                    compmsg( "WARNING: No screened event file will be created!" );
+                    unlink $mkf_gti;
+
+                    # Check if stat was -1. In this case check_gti_good_time failed
+                    # simply due to no valid times and not for any other reason.
+                    $stat = 0 if  $stat == -1 ;
+
+                    next;
+                }
+                $stat = add_mjdref_keys( $mkf_gti );
+                return $stat unless $stat == 0;
+            } else {
+                compmsg( "WARNING: Could not determine makefilter expression for HXD/$type GTI" );
+            }
+
+            ##########################################
+            # AND the tel unsat and mkf GTIs together
+            ##########################################
+            my $total_gti = 'NONE';
+            if ( $tel_unsat && $mkf_gti ) {
+                $total_gti = $cl . '.screengti';
+                ( $stat, $outlines ) = mgtime( [ $mkf_gti, $tel_unsat ], '!' . $total_gti, 'AND' );
+                map( AddReport( 2, $_ ), @$outlines );
+                unless ( $stat == 0 ) {
+                    errmsg( "Error running mgtime" );
+                    return $stat;
+                }
+                $stat = check_gti_good_time( $total_gti );
+                if ( $stat != 0 ) {
+                    compmsg( "WARNING: No good time in $total_gti" );
+                    compmsg( "WARNING: No screened event file will be created!" );
+                    unlink $mkf_gti, $total_gti;
+
+                    # Check if stat was -1. In this case check_gti_good_time failed
+                    # simply due to no valid times and not for any other reason.
+                    $stat = 0 if  $stat == -1 ;
+
+                    next;
+                }
+            } elsif ( $tel_unsat ) {
+                $total_gti = $tel_unsat;
+            } elsif ( $mkf_gti ) {
+                $total_gti = $mkf_gti;
+            }
+
+            #####################
+            # Run the extractor.
+            #####################
+            ( $stat, $outlines ) = extractor( { filename  => $files{hxd_event_uf_wel},
+                                                selection => $row_criteria,
+                                                eventsout => $cl,
+                                                timefile  => $total_gti } );
+            unlink( $total_gti, $mkf_gti ) if $Parms_bool{remove_temp_files};
+            map( AddReport( 2, $_ ), @$outlines );
+            unless ( $stat == 0 ) {
+                errmsg( "extractor failed with status = $stat" );
+                return $stat;
+            }
+
+            #####################################
+            # Check that something was produced.
+            #####################################
+            if ( !-e $cl ) {
+                compmsg( "No HXD/$type screened event file produced for "
+                         . ( join( ", ", @{$files{hxd_event_uf_wel}} ) ) . "." );
+                next;
+            } else {
+
+                ########################################
+                # Remove cleaned files with zero events
+                ########################################
+                my $fptr = Astro::FITS::CFITSIO::open_file( "$cl\[EVENTS\]",
+                                                            READONLY, $stat );
+                if ( $stat != 0 ) {
+                    errmsg( "Failed to open file $cl, status = $stat" );
+                    return $stat;
+                }
+                my $nrows;
+                $fptr->get_num_rows( $nrows, $stat );
+                if ( $nrows == 0 ) {
+                    compmsg( "Deleting $cl since it has 0 rows" );
+                    unlink $cl;
+                    next;
+                }
+                $fptr->close_file( $stat );
+            }
+
+            ###############################
+            # TIME sort the cleaned events
+            ###############################
+            compmsg( "Time sorting event file $cl" );
+            $stat = command_run( 'fmemsort',
+                                 { infile    => $cl . '[1]',
+                                   outfile   => '!' . $cl . '.sort',
+                                   columns   => 'TIME',
+                                   method    => 'heap',
+                                   ascend    => 'yes',
+                                   load2mem  => 'no',
+                                   copyprime => 'yes',
+                                   copyall   => 'yes',
+                                   clobber   => 'yes',
+                                   history   => 'yes' }, "" );
+            return $stat unless $stat == 0;
+            rename $cl . '.sort', $cl;
+
+            ######################
+            # Fix header keywords
+            ######################
+            $stat = fix_hxd_event_cl_header( $cl, $type, $clockmode );
+            return $stat unless $stat == 0;
+
+            compmsg( "Created $type cleaned event file $cl" );
+            push( @filelist_output, $cl );
+        }
+    }
+
+    ############################
+    # Extract the pseudo events
+    ############################
+    return $stat unless @{$files{hxd_event_uf_wel}};
+
+    #######################
+    # Set up the extractor
+    #######################
+    my $extractor_inst = 'HXD';
+    $stat = setupExtractor( "SUZAKU", $extractor_inst );
+    unless ( $stat == 0 ) {
+        errmsg("setupExtractor failed with status = $stat");
+        return $stat;
+    }
+
+    #############################################
+    # Compute the name of the psuedo event file.
+    #############################################
+    my $cl = catfile( $Parms_str{outdir}, $Parms_str{stemoutputs} . 'hxd_0_pse_cl.evt' );
+
+    ##############
+    # Select rows
+    ##############
+    my $row_criteria = get_criteria( 'hxd', 'pse', undef, 'row' );
+
+    ##############################
+    # Run maketime to get the GTI
+    ##############################
+    my $mkf_criteria = get_criteria( 'hxd', 'pse', undef, 'mkf' );
+    my $mkf_gti;
+    if ( $mkf_criteria ) {
+        compmsg( "Using HXD/PSE GTI selection criteria: $mkf_criteria" );
+        $mkf_gti = $cl . '.mkf_gti';
+        ( $stat, $outlines ) = maketime( $Parms_str{makefilter},
+                                         '!' . $mkf_gti, $mkf_criteria,
+                                         0.0, 1.0);
+        map( AddReport( 2, $_ ), @$outlines );
+        unless ( $stat == 0 ) {
+            errmsg( "Error running maketime" );
+            return $stat;
+        }
+        $stat = check_gti_good_time( $mkf_gti );
+        if ( $stat != 0 ) {
+            compmsg( "WARNING: No good time in $mkf_gti" );
+            compmsg( "WARNING: No Psuedo event file will be created!" );
+            unlink $mkf_gti, $tel_unsat;
+            return 0;
+        }
+        $stat = add_mjdref_keys( $mkf_gti );
+        return $stat unless $stat == 0;
+    } else {
+        compmsg( "WARNING: Could not determine makefilter expression for HXD/PSE GTI" );
+    }
+
+    ##########################################
+    # AND the tel unsat and mkf GTIs together
+    ##########################################
+    my $total_gti = 'NONE';
+    if ( $tel_unsat && $mkf_gti ) {
+        $total_gti = $cl . '.screengti';
+        ( $stat, $outlines ) = mgtime( [ $mkf_gti, $tel_unsat ], '!' . $total_gti, 'AND' );
+        map( AddReport( 2, $_ ), @$outlines );
+        unless ( $stat == 0 ) {
+            errmsg( "Error running mgtime" );
+            return $stat;
+        }
+        $stat = check_gti_good_time( $total_gti );
+        if ( $stat != 0 ) {
+            compmsg( "WARNING: No good time in $total_gti" );
+            compmsg( "WARNING: No Psuedo event file will be created!" );
+            unlink $mkf_gti, $tel_unsat, $total_gti;
+            return 0;
+        }
+    } elsif ( $tel_unsat ) {
+        $total_gti = $tel_unsat;
+    } elsif ( $mkf_gti ) {
+        $total_gti = $mkf_gti;
+    }
+
+    #####################
+    # Run the extractor.
+    #####################
+    ( $stat, $outlines ) = extractor( { filename  => $files{hxd_event_uf_wel},
+                                        selection => $row_criteria,
+                                        eventsout => $cl,
+                                        timefile  => $total_gti } );
+    unlink( $total_gti, $mkf_gti, $tel_unsat ) if $Parms_bool{remove_temp_files};
+    map( AddReport( 2, $_ ), @$outlines );
+    unless ( $stat == 0 ) {
+        errmsg( "extractor failed with status = $stat" );
+        return $stat;
+    }
+
+    #####################################
+    # Check that something was produced.
+    #####################################
+    if ( !-e $cl ) {
+        compmsg( "No HXD/PSE screened event file produced for "
+                 . ( join( ", ", @{$files{hxd_event_uf_wel}} ) ) . "." );
+    } else {
+
+        ########################################
+        # Remove cleaned files with zero events
+        ########################################
+        my $fptr = Astro::FITS::CFITSIO::open_file( "$cl\[EVENTS\]",
+                                                    READONLY, $stat );
+        if ( $stat != 0 ) {
+            errmsg( "Failed to open file $cl, status = $stat" );
+            return $stat;
+        }
+        my $nrows;
+        $fptr->get_num_rows( $nrows, $stat );
+        if ( $nrows == 0 ) {
+            compmsg( "Deleting $cl since it has 0 rows" );
+            unlink $cl;
+            return 0;
+        }
+        $fptr->close_file( $stat );
+        push @filelist_output, $cl;
+    }
+    return $stat;
+}
+
+#------------------------------------------------------------------
+
+#
+# get_hxd_tel_unsat_gti
+#
+# Returns a telemetry un-saturated GTI file, returns a numeric status
+# if something goes wrong or there is no good time at the end.
+#
+sub get_hxd_tel_unsat_gti {
+
+    my $clockmode = shift;
+
+    my $stat = 0;
+
+    print "@{$files{hxd_hk_gti_tel_uf}}\n";
+    if ( !@{$files{hxd_hk_gti_tel_uf}} ) {
+        return "";
+    }
+
+    ########################################################
+    # Find all of the *tel_uf.gti files for this clock mode
+    ########################################################
+    my @clk_rate_files = ( );
+    foreach my $tel_uf ( @{$files{hxd_hk_gti_tel_uf}} ) {
+        my $fptr = Astro::FITS::CFITSIO::open_file( $tel_uf, READONLY, $stat );
+        return $stat unless $stat == 0;
+        my ( $nhdus, $clk_rate );
+        $fptr->get_num_hdus( $nhdus, $stat );
+        foreach my $hdu ( 2..$nhdus ) {
+            $fptr->movabs_hdu( $hdu, undef, $stat );
+            $fptr->read_key_str( "CLK_RATE", $clk_rate, undef, $stat );
+            print "HDU=$hdu CLK_RATE=$clk_rate substr( lc( \$clk_rate ), 0, 2 )=".substr( lc( $clk_rate ), 0, 2 )."\n";
+            if ( substr( lc( $clk_rate ), 0, 2 ) eq $clockmode ) {
+                push @clk_rate_files, $tel_uf . '[' . ( $hdu - 1 ) . ']';
+            }
+        }
+        $fptr->close_file( $stat );
+    }
+    return "" unless @clk_rate_files;
+
+    #############################################################
+    # "OR" together all the tel_uf.gti files for this clock mode
+    #############################################################
+    my $total_gti = catfile( $Parms_str{outdir}, $clockmode . '_tel_uf.gti' );
+    if ( @clk_rate_files > 1 ) {
+        my $outlines;
+        ( $stat, $outlines ) = mgtime( \@clk_rate_files, '!' . $total_gti, 'OR' );
+        map( AddReport( 2, $_ ), @$outlines );
+        unless ( $stat == 0 ) {
+            errmsg( "Error running MGTIME for files @clk_rate_files" );
+            return $stat;
+        }
+    } else {
+        $stat = ftcopy( $clk_rate_files[ 0 ], $total_gti, 0 );
+        return $stat unless $stat == 0;
+    }
+    $stat = check_gti_good_time( $total_gti );
+    return "" unless $stat == 0;
+
+    $stat = add_mjdref_keys( $total_gti );
+    return $stat unless $stat == 0;
+
+    return $total_gti;
+}
+
+#------------------------------------------------------------------
+
+#
+# fix_hxd_event_cl_header
+#
+# Changes the DETNAM keyword to WELL_GSO or WELL_PIN for GSO and PIN HXD files.
+# Sets the TIMEDEL keyword to the clock mode time (31, 61, or 122 mus).
+#
+sub fix_hxd_event_cl_header {
+
+    my ( $cl, $type, $clockmode ) = @_;
+
+    my %detname   = ( gso => "WELL_GSO", pin => "WELL_PIN" );
+    my %clockmode = ( co => 122e-6, no => 61e-6, fi => 31e-6 );
+    my %clockrate = ( co => "COURSE", no => "NORMAL", fi => "FINE" );
+
+    my $stat = 0;
+
+    my $header = $cl . '.keys';
+
+    if ( open HEAD, ">$header" ) {
+        print HEAD <<EOF;
+DETNAM  = '$detname{$type}' / detector name
+TIMEDEL = $clockmode{$clockmode} / finest time resolution (time between frames)
+EOF
+        close HEAD;
+        $stat = command_run( 'fthedit',
+                             { infile    => $cl . '[0]',
+                               keyword   => '@' . $header,
+                               operation => 'add',
+                               protect   => 'yes',
+                               chatter   => 1,
+                               history   => 'no' }, "" );
+        if ( $stat != 0 ) {
+            unlink $header;
+            return $stat;
+        }
+    } else {
+        errmsg( "Failed to open file $header" );
+        return -1;
+    }
+    if ( open HEAD, ">>$header" ) {
+        print HEAD <<EOF;
+CLK_RATE= $clockrate{$clockmode} / HXD clock rate
+EOF
+        close HEAD;
+        $stat = command_run( 'fthedit',
+                             { infile    => $cl . '[1]',
+                               keyword   => '@' . $header,
+                               operation => 'add',
+                               protect   => 'yes',
+                               chatter   => 1,
+                               history   => 'no' }, "" );
+        if ( $stat != 0 ) {
+            unlink $header;
+            return $stat;
+        }
+    } else {
+        errmsg( "Failed to open file $header" );
+        return -1;
+    }
+    unlink $header;
+    return $stat;
+}
+
+#------------------------------------------------------------------
+
+#
+# get_xis_modes
+#
+# Reads the xis modes file and stores the required modes as a hash
+# of letter codes, e.g.:
+# 
+#     $XIS_MODES->{a} = (
+#         ADHST_A       => 1,
+#         ADHST_B       => 2,
+#         ADHST_C       => 3,
+#         ...
+#     );
+#
+sub get_xis_modes {
+
+    my ( $dateobs, $obsstart ) = @_;
+
+    ############################################################
+    # Map between mkf column names and output FITS keywords
+    # There are subtle (aka WHY WAS THIS DONE?!?!?) differences
+    # between them.
+    ############################################################
+    my %keymap = (
+        ADHST     => 'ADHST',
+        ADHEND    => 'ADHEND',
+        ADVST     => 'ADVST',
+        ADVEND    => 'ADVEND',
+        DSC_INOUT => 'DSCINOUT', # DIFFERENT
+        EVTHLW    => 'EVTLOW',   # DIFFERENT
+        EVTHUP    => 'EVTUP',    # DIFFERENT
+        GDSC      => 'GDSC',
+        AREA_DSC  => 'AREADISC', # DIFFERENT
+        GRADE_DSC => 'GRADEDIS'  # DIFFERENT
+    );
+
+    ###############################################
+    # object variables to store required XIS modes
+    ###############################################
+    $XIS_MODE_KEYS = { };
+
+    #####################################################
+    # Read the XIS configuration letter code master list
+    #####################################################
+    my $xisconf_list = $Parms_str{xisconflist};
+    if ( !-f $xisconf_list ) {
+        errmsg( "File $xisconf_list does not exist!" );
+        return -1;
+    }
+    $XIS_MODES = read_xis_modes_file( $xisconf_list, $dateobs, $obsstart );
+    if ( ref( $XIS_MODES ) ne 'HASH' ) {
+        return $XIS_MODES;
+    }
+
+    #########################################################
+    # setup keyword names, comments and values for each mode
+    #########################################################
+    foreach my $lett ( sort keys %$XIS_MODES ) {
+        $XIS_MODE_KEYS->{$lett} = { };
+        my $ref = $XIS_MODE_KEYS->{$lett};
+        foreach my $key ( keys %keymap ) {
+            $ref->{$key}->{KEYNAM} = $keymap{$key};
+            my @cols = grep /^$key/, @XIS_CONF_COLS;
+            $ref->{$key}->{KEYVAL} = sprintf( "%d,%d,%d,%d",
+                                              map( $XIS_MODES->{$lett}->{$_},
+                                                   @cols ) );
+
+            # create FITS comments like: "adhend_a,_b,_c,_d"
+            my @coms = ( );
+            foreach my $col ( @cols ) {
+                my $com = $col;
+                $com =~ s/${key}//;
+                push @coms, $com;
+            }
+            $ref->{$key}->{KEYCOM} = sprintf( "%s%s,%s,%s,%s",
+                                              lc( $key ),
+                                              lc( $coms[ 0 ] ),
+                                              lc( $coms[ 1 ] ),
+                                              lc( $coms[ 2 ] ),
+                                              lc( $coms[ 3 ] ) );
+        }
+    }
+
+    ##################################################################
+    # Setup the screening criteria - this may have already been done,
+    # but we definitely need to do it here
+    ##################################################################
+    setup_screening_criteria( );
+
+    return 0;
+}
+
+#------------------------------------------------------------------
+
+#
+# read_xis_modes_file
+#
+# Reads xis modes file given as first argument
+#
+sub read_xis_modes_file {
+
+    my ( $file, $dateobs, $obsstart ) = @_;
+
+    my $stat  = 0;
+    my $modes = { };
+
+    #########################################
+    # Check the format of the XIS modes file
+    #########################################
+    my $fptr = Astro::FITS::CFITSIO::open_file( $file, READONLY, $stat );
+    my $isFITS = 1;
+    if ( $stat != 0 ) {
+        $isFITS = 0;
+        fits_clear_errmsg( );
+    }
+
+    ####################################################
+    # For FITS format, determine which extension to use
+    # and dump it to a text file
+    ####################################################
+    my $delete_file = 0;
+    if ( $isFITS ) {
+        my $usehdu = -1;
+        my $nhdus;
+        $fptr->get_num_hdus( $nhdus, $stat );
+        foreach my $hdu ( 1..$nhdus ) {
+            $stat = 0;
+            $fptr->movabs_hdu( $hdu, undef, $stat );
+
+            my ( $cvsd, $cvst );
+            $fptr->read_key_str( 'CVSD0001', $cvsd, undef, $stat );
+            $fptr->read_key_str( 'CVST0001', $cvst, undef, $stat );
+            next unless $cvsd && $cvst;
+
+            #############################################################
+            # Compare input date to the CALDB validity dates in this HDU
+            #############################################################
+            my $cvsdate = join 'T', $cvsd, $cvst;
+            $cvsdate =~ s/\.(\d+)$//;
+            $dateobs =~ s/\.(\d+)$//;
+            if ( $cvsdate le $dateobs ) {
+                $usehdu = $hdu;
+            }
+        }
+        $fptr->close_file( $stat );
+        return $stat unless $stat == 0;
+
+        if ( $usehdu < 1 ) {
+            errmsg( "Could not determine extension to use in $file" );
+            return 1;
+        }
+        my $newfile = catfile( $Parms_str{outdir}, 'xisconf.list.tmp' );
+        $stat = command_run( 'ftlist',
+                             { infile    => $file . "[$usehdu]",
+                               outfile   => $newfile,
+                               option    => 'T',
+                               colheader => 'no',
+                               rownum    => 'no',
+                               clobber   => 'yes' },
+                             "to dump $file to text" );
+        $file = $newfile;
+        $delete_file = 1;
+    }
+
+    ##############################################################
+    # Read the file (either after dumping from FITS or otherwise)
+    ##############################################################
+    if ( !open( XIS_MODES_FILE, "<$file" ) ) {
+        # FATAL error if this fails to open
+        errmsg( "Failed to open file $file!" );
+        return 1;
+    }
+    while ( <XIS_MODES_FILE> ) {
+
+        #################
+        # parse the line
+        #################
+        chomp;
+        my $mode = $_;
+        $mode =~ s/^\s*//;
+        $mode =~ s/\s*$//;
+        $mode =~ s/^#.*?$//;
+        next unless length $mode;
+
+        my @vals = split /\s+/, $mode;
+        my $lett;
+
+        #############################################################
+        # New style xis configuration text file (by MET lookup table
+        # First field is letter, followed by valid MET time range
+        #############################################################
+        if ( @vals == @XIS_CONF_COLS + 3 ) {
+            $lett = shift @vals;
+            my $tstart = shift @vals;
+            my $tstop  = shift @vals;
+            if ( $obsstart < $tstart || $obsstart >= $tstop ) {
+                next;
+            }
+
+        ###################################################################
+        # Old style xis configuration table - one letter per line per mode
+        ###################################################################
+        } elsif ( @vals == @XIS_CONF_COLS + 1 ) {
+            $lett = shift @vals;
+
+        ################
+        # INVALID TABLE
+        ################
+        } else {
+            errmsg( "Invalid format found in $file.\n"
+                  . "Record \"" . ( join( ' ', @vals ) )
+                  . "\" has incorrect number of fields!" );
+            return 1;
+        }
+
+        next unless $lett =~ /^[a-y]$/;
+        next if grep /[^0-9]/, @vals;
+
+        #####################################
+        # hash the values found in the table
+        #####################################
+        $modes->{$lett} = { };
+        for ( my $i = 0; $i < @XIS_CONF_COLS; $i++ ) {
+            $modes->{$lett}->{$XIS_CONF_COLS[ $i ]} = $vals[ $i ];
+        }
+    }
+    close XIS_MODES_FILE;
+    unlink $file if $delete_file;
+    return $modes;
+}
+
+#------------------------------------------------------------------
+
+#
+# get_unique_xis_modes
+#
+# Gets a list of valid XIS letter codes found
+# in the mkf file for a given XIS detector
+#
+sub get_unique_xis_modes {
+
+    my $inst = shift;
+    my $stat = 0;
+
+    my $prefix = $inst;
+    $prefix =~ s/xi/S/;
+    my $filterfile = catfile( $Parms_str{outdir}, $inst . '.filter' );
+    my $rowfilter  = dumpListToTxt( join( '.AND.', map( "!isnull(${prefix}_$_)", @XIS_CONF_COLS ) ) );
+    my $colfilter  = dumpListToTxt( join( ';', map( "${prefix}_$_", @XIS_CONF_COLS ) ) );
+    my $fitsfilter = "[1][\@$rowfilter][col \@$colfilter]";
+    $stat = command_run( 'ftlist',
+                         { infile    => $Parms_str{makefilter} . $fitsfilter,
+                           option    => 'T',
+                           outfile   => $filterfile,
+                           clobber   => 'yes',
+                           columns   => join( ',', map( "${prefix}_$_", @XIS_CONF_COLS ) ),
+                           rows      => '-',
+                           #vector    => '-',
+                           separator => ' ',
+                           rownum    => 'no',
+                           colheader => 'no' },
+                         "" );
+    unlink $rowfilter, $colfilter;
+    return $stat unless $stat == 0;
+    if ( !open( FIL, "<$filterfile" ) ) {
+        errmsg( "Failed to open file $filterfile" );
+        return 1;
+    }
+    my @unique_modes = ( );
+    while ( <FIL> ) {
+        chomp;
+        s/^\s+//g; s/\s+$//g; s/\s+/ /g;
+        next unless length;
+        my $mode = $_;
+        my $found = 0;
+        my $xis_mode;
+        foreach my $letter ( sort keys %$XIS_MODES ) {
+            my $valid_mode = join( " ", map( $XIS_MODES->{$letter}->{$_},
+                                             @XIS_CONF_COLS ) );
+            if ( $mode eq $valid_mode ) {
+                $found = 1;
+                $xis_mode = $letter;
+                last;
+            }
+        }
+        if ( !$found ) {
+            errmsg( "Modes found in $Parms_str{makefilter} not in "
+                  . "XIS configuration list $Parms_str{xisconflist}" );
+            close FIL;
+            unlink $filterfile;
+            return 1;
+        }
+        if ( !grep( /^$xis_mode$/, @unique_modes ) ) {
+            push @unique_modes, $xis_mode;
+        }
+    }
+    close FIL;
+    unlink $filterfile;
+    return \@unique_modes;
+}
+
+#------------------------------------------------------------------
+
+#
+# get_xis_modal_cards($mode)
+#
+# Returns a list of FITS header cards (80 char) that describe the sub-mode
+# given by the input argument. Returns an empty list if no such mode.
+#
+sub get_xis_modal_cards {
+
+    my $mode = shift;
+
+    return ( ) unless exists $XIS_MODE_KEYS->{$mode};
+
+    my @cards = ( );
+    foreach my $key ( keys %{$XIS_MODE_KEYS->{$mode}} ) {
+        next unless exists $XIS_MODE_KEYS->{$mode}->{$key};
+        my $card = sprintf( "%-8s='%s' / %s",
+                            $XIS_MODE_KEYS->{$mode}->{$key}->{KEYNAM},
+                            $XIS_MODE_KEYS->{$mode}->{$key}->{KEYVAL},
+                            $XIS_MODE_KEYS->{$mode}->{$key}->{KEYCOM} );
+        $card = substr( $card, 0, 80 );
+        push @cards, $card;
+    }
+    return @cards;
+}
+
+#------------------------------------------------------------------
+
+#
+# setup_screening_criteria
+#
+# Sets up event screening criteria hash for use with get_criteria().
+#
+sub setup_screening_criteria {
+
+    ###############################
+    # Setup Defaults for screening
+    ###############################
+
+    # Row selection for normal/burst mode XIS event file
+    my $xis_norm_grade  = "GRADE=0:0 2:4 6:6";
+    my $xis_norm_status = "STATUS=0:524287";
+
+    # Row selection for timing/psum mode XIS event file
+    my $xis_psum_grade  = "GRADE=0:2";
+    my $xis_psum_status = "STATUS=0:524287";
+
+    # Basic mkf screening criteria for XIS event data
+    my @xis_mkf_norm = (
+        "SAA_HXD==0",
+        "T_SAA_HXD>436",
+        "ELV>5",
+        "DYE_ELV>20",
+        "ANG_DIST<1.5",
+        "AOCU_HK_CNT3_NML_P==1"
+    );
+
+    # for timing data
+    my @xis_mkf_psum = (
+        @xis_mkf_norm
+    );
+
+    # HXD GSO row screening
+    my $hxd_gso_row = "DET_TYPE=0:0";
+
+    # HXD PIN row screening
+    my $hxd_pin_row = "DET_TYPE=1:1";
+
+    # HXD PSE row screening
+    my $hxd_pse_row = "DET_TYPE=2:2";
+
+    # Basic mkf screening criteria for all HXD event data
+    my @hxd_mkf_event = (
+        "SAA_HXD==0",
+        "T_SAA_HXD>500",
+        "TN_SAA_HXD>180",
+        "HXD_HV_W0_CAL>700",
+        "HXD_HV_W1_CAL>700",
+        "HXD_HV_W2_CAL>700",
+        "HXD_HV_W3_CAL>700",
+        "HXD_HV_T0_CAL>700",
+        "HXD_HV_T1_CAL>700",
+        "HXD_HV_T2_CAL>700",
+        "HXD_HV_T3_CAL>700",
+        "COR>6",
+        "ELV>5",
+        "ANG_DIST<1.5",
+        "AOCU_HK_CNT3_NML_P==1"
+    );
+
+    # HXD PIN specific mkf screening
+    my @hxd_mkf_pin = (
+        @hxd_mkf_event
+    );
+
+    # HXD GSO specific mkf screening
+    my @hxd_mkf_gso = (
+        @hxd_mkf_event,
+        "HXD_DTRATE<3"
+    );
+
+    # HXD PSE specific mkf screening
+    my @hxd_mkf_pse = (
+        @hxd_mkf_event
+    );
+
+    ###################################
+    # Setup the XIS screening criteria
+    ###################################
+    $CRITERIA = { };
+    foreach my $xis (qw( xi0 xi1 xi2 xi3 )) {
+
+        ################################################
+        # Setup user-supplied GRADE filtering if needed
+        ################################################
+        my $xis_grade = $xis;
+        $xis_grade =~ s/xi(\d)/xis$1_grade/;
+        $xis_grade = $Parms_str{$xis_grade};
+        if ( $xis_grade !~ /^DEFAULT$/i ) {
+            $xis_grade =~ s/ //g;
+            my @gradearr = split( /,/, $xis_grade );
+            $xis_norm_grade = "GRADE=" . join( " ", split( /,/, $xis_grade ) );
+        }
+        $xis_grade = $xis;
+        $xis_grade =~ s/xi(\d)/xis$1_psum_grade/;
+        $xis_grade = $Parms_str{$xis_grade};
+        if ( $xis_grade !~ /^DEFAULT$/i ) {
+            $xis_grade =~ s/ //g;
+            my @gradearr = split( /,/, $xis_grade );
+            $xis_psum_grade = "GRADE=" . join( " ", split( /,/, $xis_grade ) );
+        }
+
+        ##############################################
+        # Finalize the XIS row criteria for this chip
+        # and setup the CRITERIA variable
+        ##############################################
+        $CRITERIA->{$xis} = {
+            norm => { row => join( ' ', $xis_norm_grade, $xis_norm_status ) },
+            psum => { row => join( ' ', $xis_psum_grade, $xis_psum_status ) },
+        };
+
+        ######################################################
+        # additional mkf screening criteria based on XIS chip
+        ######################################################
+        my $prefix = 'S' . substr( $xis, 2, 1 );
+        my @addmkf = (
+            "${prefix}_DTRATE<3"
+        );
+
+        ########################################################################
+        # add makefilter criteria, including discriminator threshold selections
+        # if this info is available
+        ########################################################################
+        my $expr_key  = $xis;
+        $expr_key =~ s/xi(\d)/xis$1_expr/;
+        foreach my $dscmode ( sort keys %$XIS_MODES ) {
+            next unless exists $XIS_MODES->{$dscmode};
+            my @modalmkf = map( "${prefix}_$_==$XIS_MODES->{$dscmode}->{$_}",
+                                sort keys %{$XIS_MODES->{$dscmode}} );
+
+            if ( $Parms_str{$expr_key} =~ /^DEFAULT$/i ) {
+                $CRITERIA->{$xis}->{norm}->{mkf}->{$dscmode}
+                    = join '&&', @xis_mkf_norm, @addmkf, @modalmkf;
+                $CRITERIA->{$xis}->{psum}->{mkf}->{$dscmode}
+                    = join '&&', @xis_mkf_psum, @addmkf, @modalmkf;
+            } else {
+
+                ##########################################
+                # Wrap user-supplied criteria with () and
+                # && with modal and data rate selections
+                ##########################################
+                $CRITERIA->{$xis}->{norm}->{mkf}->{$dscmode}
+                    = join '&&', "($Parms_str{$expr_key})", @addmkf, @modalmkf;
+                $CRITERIA->{$xis}->{psum}->{mkf}->{$dscmode}
+                    = join '&&', "($Parms_str{$expr_key})", @addmkf, @modalmkf;
+            }
+        }
+    }
+
+    #######################################
+    # now setup the HXD screening criteria
+    #######################################
+    if ( $Parms_str{hxd_pin_expr} !~ /^DEFAULT$/i ) {
+        @hxd_mkf_pin = ( "($Parms_str{hxd_pin_expr})" );
+    }
+    if ( $Parms_str{hxd_gso_expr} !~ /^DEFAULT$/i ) {
+        @hxd_mkf_pin = ( "($Parms_str{hxd_gso_expr})" );
+    }
+    if ( $Parms_str{hxd_pse_expr} !~ /^DEFAULT$/i ) {
+        @hxd_mkf_pin = ( "($Parms_str{hxd_pse_expr})" );
+    }
+    $CRITERIA->{hxd} = {
+        pin => {
+            row => $hxd_pin_row,
+            mkf => {
+                co => join( '&&', @hxd_mkf_pin, "HXD_WPU_CLK_RATE==0" ),
+                no => join( '&&', @hxd_mkf_pin, "HXD_WPU_CLK_RATE==1" ),
+                fi => join( '&&', @hxd_mkf_pin, "HXD_WPU_CLK_RATE>1" )
+            }
+        },
+        gso => {
+            row => $hxd_gso_row,
+            mkf => {
+                co => join( '&&', @hxd_mkf_gso, "HXD_WPU_CLK_RATE==0" ),
+                no => join( '&&', @hxd_mkf_gso, "HXD_WPU_CLK_RATE==1" ),
+                fi => join( '&&', @hxd_mkf_gso, "HXD_WPU_CLK_RATE>1" )
+            }
+        },
+        pse => {
+            row => $hxd_pse_row,
+            mkf => join( '&&', @hxd_mkf_pse )
+        },
+    };
+}
+
+#------------------------------------------------------------------
+
+#
+# get_criteria($inst,$mode,$submode,$type)
+#
+# Return expression for row or GTI filtering for given instrument, mode,
+# filtering type and submode.
+# 
+# Input:
+#
+# - $inst    - Instrument - xi0, xi1, xi2, xi3 or hxd
+# - $mode    - Instrument mode:
+#                  ** XIS: norm, psum, cal, night, day, modal
+#                  ** HXD: wel, gso, pin, pse, wam
+# - $type    - Type of criteria - either "mkf" or "row" for a GTI or row selection.
+# - $submode - Instrument sub-mode:
+#                  ** XIS: [a-y] discriminator threshold letter code
+#                  ** HXD: clockmode - no, fi, co
+# Output:
+# 
+# - $criteria - String containing selection criteria.
+# 
+# Example:
+# 
+# Filter on row:
+# 
+# my $row_criteria = get_criteria('xi0', 'norm', 'row');
+# 
+# $row_criteria returned is something like "GRADE=0:0 2:4 6:6 STATUS=0:131072"
+# 
+# Filter on gti;
+# 
+# my $mkf_criteria = get_criteria('xis', 'xi0', 'mkf', 'a');
+# 
+# Returns something like "SAA_HXD == 0 && T_SAA_HXD > 256"
+# 
+sub get_criteria {
+
+    my ( $inst, $mode, $submode, $type ) = @_;
+
+    ###################################
+    # convert everything to lower case
+    ###################################
+    $inst = lc( $inst ) if $inst;
+    $mode = lc( $mode ) if $mode;
+    $type = lc( $type ) if $type;
+    $submode = lc( $submode ) if $submode;
+
+    #######################
+    # Check for instrument
+    #######################
+    if ( exists $CRITERIA->{$inst} ) {
+
+        ####################################################
+        # Check for input mode and whether we know about it
+        ####################################################
+        if ( $mode && ref( $CRITERIA->{$inst} ) eq 'HASH' &&
+             exists $CRITERIA->{$inst}->{$mode} ) {
+
+            ###################################################
+            # We know about the mode, check for input type and
+            # whether we know about it
+            ###################################################
+            if ( $type && ref( $CRITERIA->{$inst}->{$mode} ) eq 'HASH' &&
+                 exists $CRITERIA->{$inst}->{$mode}->{$type} ) {
+
+                #######################################################
+                # We know about the type, check for input sub-mode and
+                # whether we know about it
+                #######################################################
+                if ( $submode && ref( $CRITERIA->{$inst}->{$mode}->{$type} ) eq 'HASH' &&
+                     exists $CRITERIA->{$inst}->{$mode}->{$type}->{$submode} ) {
+
+                    ################################
+                    # We do, so return the criteria
+                    ################################
+                    return $CRITERIA->{$inst}->{$mode}->{$type}->{$submode};
+
+                #######################################
+                # No sub-mode available so check if we
+                # can return something "type-specific"
+                #######################################
+                } elsif ( ref $CRITERIA->{$inst}->{$mode}->{$type} eq 'SCALAR' ||
+                          !ref $CRITERIA->{$inst}->{$mode}->{$type} ) {
+                    return $CRITERIA->{$inst}->{$mode}->{$type};
+
+                #############################
+                # We can't so return nothing
+                #############################
+                } else {
+                    return "";
+                }
+
+            #####################################################################
+            # No type given, so check if we can return something "mode-specific"
+            #####################################################################
+            } elsif ( ref $CRITERIA->{$inst}->{$mode} eq 'SCALAR' ||
+                      !ref $CRITERIA->{$inst}->{$mode} ) {
+                return $CRITERIA->{$inst}->{$mode};
+
+            ##############################
+            # We can't, so return nothing
+            ##############################
+            } else {
+                return "";
+            }
+
+        #########################################
+        # No mode given, so check if we can
+        # return something "instrument-specific"
+        #########################################
+        } elsif ( ref $CRITERIA->{$inst} eq 'SCALAR' ||
+                  !ref $CRITERIA->{$inst} ) {
+            return $CRITERIA->{$inst};
+
+        ##############################
+        # We can't, so return nothing
+        ##############################
+        } else {
+            return "";
+        }
+
+    #####################################################
+    # No screening criteria for the specified instrument
+    #####################################################
+    } else {
+        return "";
+    }
+}
+
+#------------------------------------------------------------------
+
+sub S3Xis {
+
+    if ( $debug == 1 ) {
+	print "\nRunning S3Xis\n\n";
+    }
+
+    print "\nStage 3 Processing not yet installed\n\n";
+    compmsg("Stage 3 Processing not yet installed");
+
+    if ( $debug == 1 ) {
+	print "\nEnd of S3Xis\n\n";
+    }
+
+    return 0;			# S3Xis
+
+}
+
+#------------------------------------------------------------------
+
+sub S3Hxd {
+
+    if ( $debug == 1 ) {
+	print "\nRunning S3Hxd\n\n";
+    }
+
+    print "\nStage 3 Processing not yet installed\n\n";
+    compmsg("Stage 3 Processing not yet installed");
+
+    if ( $debug == 1 ) {
+	print "\nEnd of S3Hxd\n\n";
+    }
+
+    return 0;			# S3Hxd
+
+}
+
+#------------------------------------------------------------------
+
+# Utility subroutines
+
+#
+# check_gti_good_time
+#
+# Checks if a GTI file has any rows (assumes there is good time if
+# any rows are in the table).
+#
+sub check_gti_good_time {
+    my $gti = shift;
+    my $stat = 0;
+    my $fptr = Astro::FITS::CFITSIO::open_file( $gti, READONLY, $stat );
+    return $stat unless $stat == 0;
+    my $nrows;
+    my $gtihdu;
+    $stat = findGTIExt( $fptr, \$gtihdu, $stat );
+    return $stat unless $stat == 0;
+    $fptr->get_num_rows( $nrows, $stat );
+    $fptr->close_file( $stat );
+    return $stat unless $stat == 0;
+    if ( $nrows <= 0 ) {
+        return -1;
+    }
+    return $stat;
+}
+
+#------------------------------------------------------------------
+
+#
+# add_mjdref_keys
+#
+# Adds MJDREFI and MJDREFF keywords to all HDUs in input file
+#
+sub add_mjdref_keys {
+    my $file = shift;
+    my $stat = 0;
+    my $fptr = Astro::FITS::CFITSIO::open_file( $file, READWRITE, $stat );
+    return $stat unless $stat == 0;
+    my $nhdus;
+    $fptr->get_num_hdus( $nhdus, $stat );
+    foreach my $hdu ( 1..$nhdus ) {
+        $fptr->movabs_hdu( $hdu, undef, $stat );
+        $fptr->update_key_lng( "MJDREFI", 51544, undef, $stat );
+        $fptr->update_key_dbl( "MJDREFF", 0.00074287037037037, 17, undef, $stat );
+    }
+    $fptr->close_file( $stat );
+    return $stat;
+}
+
+#------------------------------------------------------------------
+# Check a header of a FITS file for multiple appearances of the same keyword.
+# When more than one instance is found, remove all but one instance.
+sub RemoveDuplicatedKeyword
+{
+    my $filename = $_[0];
+    my $extension = $_[1];
+    my $keyname = $_[2];
+    my $keytype = $_[3];
+
+    my $filestatus = 0;
+    my $fptr = 0;
+    my $headerstring = "";
+    my $n_keys = 0;
+
+    if(length($keyname) > 8)
+    {
+	errmsg("Keyword $keyname too long in RemoveDuplicatedKeyword()");
+	return 0;
+    }
+
+    fits_open_file($fptr,$filename,READWRITE,$file_status);
+    if ( $file_status ) {
+	errmsg("Unable to open FITS file : $filename  File Status = $file_status");
+	return $file_status;
+    }
+    
+    fits_movabs_hdu( $fptr, $extension, ANY_HDU, $file_status );
+    if ( $file_status ) {
+	errmsg( "Unable to move to HDU #$extension in file : $filename File Status = $file_status" );
+	    return $file_status;
+	
+    }
+    
+    fits_hdr2str($fptr, 1, $headerstring, $n_keys, $file_status);
+    if($file_status)
+    {
+	errmsg("Cannot read whole header #$extension in file: $filename File Status = $file_status");
+	    return $file_status;
+    }
+    
+    #compmsg("Header string:\n$headerstring");
+
+    my $keycount = 0;
+    my $keypadding = " " x (8 - length($keyname));
+    for(my $c = 0; $c < length($headerstring); $c += 80)
+    {
+	my $line = substr($headerstring, $c, 80);
+	my @xline = split('=', $line);
+	
+	if($xline[0] eq ($keyname . $keypadding))
+	{
+	    $keycount++;
+	    #compmsg("Keyword $keyname found $keycount times: $line");
+	}
+    }
+
+    for(my $k = $keycount; $k > 1; $k--)
+    {
+	fits_delete_key($fptr, $keyname, $file_status);
+	if($file_status)
+	{
+	    errmsg("Cannot delete keyword $keyname in HDU #$extension in file: $filename File Status = $file_status");
+		return $file_status;
+	}
+	compmsg("Duplicate instance of keyword $keyname deleted from $filename HDU #$extension.");
+	
+    }
+
+    fits_close_file($fptr,$file_status);
+    if ( $file_status ) {
+	errmsg("Unable to close FITS file : $filename File Status = $file_status");
+	return $file_status;
+    }
+
+    return $file_status;
+}
+
+#------------------------------------------------------------------
+
+sub FileHistory {
+
+    # Ensure each file name is processed only once
+
+    @filelist_output = sort( @filelist_output );
+    my $prev = 'nonesuch';
+    my @filelist_output_unique = grep( $_ ne $prev && ( ( $prev ) = $_ ), @filelist_output );
+
+    # Check each file
+
+    foreach my $infile ( @filelist_output_unique ) {
+
+        my $hdutotal = 0;
+
+        # Open file and count number of HDU's (Headers)
+
+        fits_open_file( $fptr1, $infile, READWRITE, $file_status );
+        if ( $file_status ) {
+            errmsg( "Unable to open FITS file : $infile File Status = $file_status" );
+            return $file_status;
+        }
+        fits_get_num_hdus( $fptr1, $hdutotal, $file_status );
+        if ( $file_status ) {
+            errmsg( "Unable find number of HDU's in FITS file $infile File Status = $file_status" );
+            return $file_status;
+        }
+
+        # Loop on HDUs
+
+        for ( my $i1 = 1 ; $i1 <= $hdutotal ; $i1++ ) {
+
+            # Only add file history if relevant input parameter is set
+
+            if ( $Parms_bool{history} ) {
+                HDpar_stamp( $fptr1, $i1, $file_status );
+                if ( $file_status ) {
+                    errmsg( "Unable to write history to output FITS file : $infile header number = $i1 File Status = $file_status" );
+                    return $file_status;
+                } else {
+                    compmsg( "Updated history to FITS file $infile, header number $i1" );
+                }
+            }
+
+            # Update the CHECKSUM and DATASUM keywords
+
+            fits_movabs_hdu( $fptr1, $i1, ANY_HDU, $file_status );
+            unless ( $file_status == 0 ) {
+                errmsg( "Unable to move to HDU #$i1 in FITS file : $infile File Status = $file_status" );
+                return $file_status;
+            }
+            fits_write_chksum( $fptr1, $file_status );
+            unless ( $file_status == 0 ) {
+                errmsg( "FITS checksum not written to file : $infile header number = $i1 File Status = $file_status" );
+                return $file_status;
+            }
+        }
+
+        # Close file
+
+        fits_close_file( $fptr1, $file_status );
+        if ( $file_status ) {
+            errmsg( "Unable to close FITS file : $infile File Status = $file_status" );
+            return $file_status;
+        }
+    }
+
+    return 0;
+
+}    # file_history
+
+#------------------------------------------------------------------
+
+sub filecopy {
+
+    if ( $debug ) {
+	print "filecopy : infilearr = @_\n";
+    }
+
+    if ( length(join("", @_)) == 0 ) {
+	errmsg("Blank input field/array passed to filecopy subroutine");
+	return 1;
+    }
+
+    foreach my $infilename ( @_ ) {
+
+	my $outfilename = catfile($Parms_str{outdir} , basename($infilename));
+
+	if ( $debug ) {
+	    print "filecopy : Infilename = $infilename\n";
+	    print "filecopy : Outname    = $outfilename\n";
+	}
+
+	$ftcopy = ftcopy( $infilename, $outfilename, 1, $Parms_num{chatter} );
+	unless ($ftcopy == 0 ) {
+	    errmsg("Error copying $infilename to $outfilename, error code = $ftcopy");
+	    return $ftcopy;
+	}
+
+        # Update filename reference to new (copied) filename
+        # THIS IS IMPORTANT - the reference updates in the passed input/output array.
+
+        $infilename = $outfilename;
+
+    }
+
+    return 0;			# filecopy
+
+}
+
+#-----------------------------------------------------------
+
+sub command_run {
+
+    my $command        = $_[0];
+    my $parameter_list = $_[1];
+    my $parameter_msg  = $_[2];
+
+    my $command_name = uc($command);
+
+    foreach my $par ( sort keys %{$parameter_list} ) {
+	$command .= " $par=\"$parameter_list->{$par}\"";
+    }
+    compmsg("Running $command_name command with : $command");
+
+    open COMMAND_FILEHANDLE, "$command 2>&1 |";
+    while (<COMMAND_FILEHANDLE>) {
+        chatnp( 2, $_ );
+    } 
+    close COMMAND_FILEHANDLE;
+
+    if ( $? == 0 ) {
+	compmsg("$command_name run successfully $parameter_msg");
+	return 0;
+    } elsif 
+    ( $? == -1 ) {
+	errmsg("$command_name Command failed : \$! = $!");
+	return -1;
+    } elsif
+    ( $? & 127 ) {		# BITWISE "AND"
+        my $coredump = sprintf "%d, %s coredump",($?&127),($?&128)?'with':'without';
+	errmsg("$command_name Command failed : died with signal $coredump"); 
+	return $? >> 8;
+    } else {
+        my $other_return = sprintf "%d", $? >> 8;
+	errmsg("$command_name Command failed : returned value $other_return");
+	return $? >> 8;
+    }
+
+}
+
+#-----------------------------------------------------------
+
+sub bc {
+
+    # Boolean Conversion subroutine
+    # Converts boolean variables from T/F to Y/N 
+
+    my $input = shift;		# shift assumes default to @_
+
+    if ($input == 0 ) {
+	return "no";
+    }
+
+    return "yes";
+
+}
+
+#-----------------------------------------------------------
+
+sub compmsg {
+
+    my $compmsgtxt = $_[0];
+
+    chat(2, "$compmsgtxt\n");
+    unless ( defined $General{reportfilehandle} ) {
+        AddReport(2, "\n$Task{stem} : $compmsgtxt\n");
+    }
+
+    return 0;
+
+}
+
+#-----------------------------------------------------------
+
+sub errmsg {
+
+    my $errmsgtxt    = $_[0];
+
+    $Parms_bool{report} = 1;
+
+    error(1, "$errmsgtxt\n");
+    AddReport(1, "$Task{stem} : ERROR : $errmsgtxt\n");
+
+}
+
+#-----------------------------------------------------------
+
+sub AddReport {
+
+    my ( $chatterlevel, $reportline ) = @_;
+
+    if ( $chatterlevel <= $General{reportoutput} ) {
+
+        if ( $General{reportflag} == 0 ) {
+            $General{reportstore} .= $reportline;
+        }
+
+        if ( $Parms_bool{report} && $General{reportflag} == 1 ) {
+
+            unless (defined $General{reportfilehandle} ) {
+                unless ( open (REPORT, ">$General{reportname}")) {
+                    error(1, "Failed to open file : $General{reportname}\n");
+                    $Task{errmess} = "Failed to open file : $General{reportname}";
+                    $Task{status}  = 1;
+                    return 1;
+                }
+                $General{reportfilehandle} = \*REPORT;
+                addOutFH( $General{reportfilehandle} );
+            }
+            print { $General{reportfilehandle} } $reportline;
+
+	}
+
+    } 
+
+    return 0;
+
+}				# AddReport
+
+#-----------------------------------------------------------
+
+sub OrganizeReport {
+
+    if ( $debug ) {
+	print "\nRunning OrganizeReport\n";
+	print "Parms_bool{report}    = $Parms_bool{report}\n";
+	print "General{reportoutput} = $General{reportoutput}\n";
+    }
+
+    # Set up output report name and output previously stored report entries
+
+    unless ( $Parms_bool{report} ) {
+	$General{reportstore} = "";
+    }
+
+    if ( ($Parms_bool{report}) && ($General{reportoutput} > 0) ) {
+
+        if ( $General{reportcurdur} == 0 ) {
+	    $General{reportname} = catfile($Parms_str{outdir},"$Parms_str{stemoutputs}_aepipeline_report.txt");
+	} else {
+	    $General{reportname} = "$Parms_str{stemoutputs}_aepipeline_report.txt";
+	}
+
+        if ( $General{reportname} eq "_aepipeline_report.txt" ) {$General{reportname} = "aepipeline_report.txt";}
+
+	if ( $debug ) {
+	    print "\nReport name = $General{reportname}\n";
+	}
+
+	unless ( defined $General{reportfilehandle} ) {
+            unless( open (REPORT, ">$General{reportname}")) {
+                errmsg("Failed to open file : $General{reportname}");
+                if ( $debug ) {
+                    print "\nReport name = $General{reportname}\n";
+                }
+                return 1;
+            }
+            $General{reportfilehandle} = \*REPORT;
+            addOutFH( $General{reportfilehandle} );
+        }
+
+	print { $General{reportfilehandle} } $General{reportstore};
+	$General{reportstore} = "";
+	$General{reportflag}  = 1;  
+	
+	if ( $debug ) {
+	    print "\nEnd of OrganizeReport\n";
+	}
+
+    }
+
+    return 0;
+
+}				# OrganizeReport
+
+#-----------------------------------------------------------
+
+sub EndProcessing {
+
+    if ( $debug ) {
+	print "\nRunning EndProcessing\n";
+    }
+
+    # End of processing message
+
+    my $EndDate = `date`;
+
+    if ( $pipelineerror ) {
+
+	$Parms_bool{report} = 1;
+        if ( $Parms_num{chatter} == 0 ) {
+	    setChat(1);
+	}
+
+	chatnp(1,  "\n\n============================================================\n");
+	chatnp(1,  "                Running SUZAKU AE pipeline\n");
+	chatnp(1,  " Task: $Task{name} Version: $Task{version} Release Date: $Task{releasedate}\n");
+	chatnp(1,  " Final return code = $pipelineerror\n");
+	chatnp(1,  " Exit ERROR CONDITION - $EndDate\n");
+
+        unless ( defined $General{reportfilehandle} ) {
+            AddReport(1, "\n\n============================================================\n");
+            AddReport(1, "                Running SUZAKU AE pipeline\n");
+            AddReport(1, " Task: $Task{name} Version: $Task{version} Release Date: $Task{releasedate}\n");
+            AddReport(1, " Final return code = $pipelineerror\n");
+            AddReport(1, " Exit ERROR CONDITION - $EndDate\n");
+        }
+
+    } else {
+
+	chatnp(1,  "\n\n============================================================\n");
+	chatnp(1,  "                Running SUZAKU AE pipeline\n");
+	chatnp(1,  " Task: $Task{name} Version: $Task{version} Release Date: $Task{releasedate}\n");
+	chatnp(1,  " Final return code = $pipelineerror\n");
+	chatnp(1,  " Exit with no errors - $EndDate\n");
+
+    }
+
+    if ( $General{reportcurdur} == 0 ) {
+	$General{reportname} = catfile($Parms_str{outdir},"$Parms_str{stemoutputs}_aepipeline_report.txt");
+    } else {
+	$General{reportname} = "$Parms_str{stemoutputs}_aepipeline_report.txt";
+    }
+
+    if ( $General{reportname} eq "_aepipeline_report.txt" ) {$General{reportname} = "aepipeline_report.txt";}
+
+    chatnp(1, " Report written to : $General{reportname}\n");
+    chatnp(1, "============================================================\n\n");
+    
+    unless ( defined $General{reportfilehandle} ) {
+        AddReport(1, " Report written to : $General{reportname}\n");
+        AddReport(1, "============================================================\n\n");
+    }
+
+    # Set up output report name and output previously stored report entries
+    
+    if ( $General{reportflag} == 0 ) {  
+	my $organizereport = OrganizeReport();
+        if ( defined $General{reportfilehandle} ) {
+            close $General{reportfilehandle};
+        }
+    }
+
+    if ( $Task{chatter} >= 1 ) {
+	print("\n");
+    }
+
+    if ( $debug ) {
+	print "\nEnd of EndProcessing\n";
+    }
+
+    if ( $debug ) {
+	print "\nEnd of AEPIPELINE Processing\n\n";
+    }
+
+    return 0;
+
+}				# EndOfProcessing
+
+#-----------------------------------------------------------

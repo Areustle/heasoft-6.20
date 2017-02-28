@@ -1,0 +1,140 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotlss/ut-uvotlss,v $
+# $Revision: 1.2 $
+# $Date: 2007/11/15 21:51:37 $
+#
+#	uvotmaghist unit test
+#
+#
+# $Log: ut-uvotlss,v $
+# Revision 1.2  2007/11/15 21:51:37  rwiegand
+# CALDB mode is not supported.
+#
+# Revision 1.1  2007/10/25 13:43:11  rwiegand
+# Tool for calculating large scale sensitivity.
+#
+
+use strict;
+
+package Test::LSS;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::LSS->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string caldb=boolean chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotlss
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment(qw(FTOOLS));
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotlss
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	if ($caldb) {
+		$caldb = 0;
+		$self->warning('CALDB mode of test is not available');
+	}
+
+	system("cp $input/table.fits $output/table.fits");
+	if ($?) {	
+		$self->error(BAD_INPUT,
+				"unable to copy $input/table.fits to $output [$?]");
+		return;
+	}
+
+	my @args = (
+		input     => 'TABLE',
+		infile    => "$output/table.fits",
+
+		lssfile   => $caldb ? 'CALDB' : "$input/SKYFLAT",
+
+		x         => 0.0,
+		y         => 0.0,
+
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(infile lssfile template)) {
+		if ($args{$key} eq 'CALDB') {
+		}
+		elsif (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	{
+		my $command = $self->buildCommand('uvotlss', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{infile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{infile},
+			reltol => 1e-3,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+}
+

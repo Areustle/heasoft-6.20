@@ -1,0 +1,71 @@
+      REAL FUNCTION sla_RANDOM (SEED)
+*+
+*     - - - - - - -
+*      R A N D O M
+*     - - - - - - -
+*
+*  Generate pseudo-random real number in the range 0 <= X < 1.
+*  (single precision)
+*
+*  !!!  Version for Linux !!!
+*
+*  Given:
+*     SEED     real     an arbitrary real number
+*
+*  Notes:
+*
+*  1)  The result is a pseudo-random REAL number in the range
+*      0 <= sla_RANDOM < 1.
+*
+*  2)  SEED is used first time through only.
+*
+*  Called:  RANDOM (a REAL function compiled by the makefile from rtl_random.c)
+*
+*  B.K.McIlwrath Starlink   12 January 1996
+*
+*  License:
+*    This program is free software; you can redistribute it and/or modify
+*    it under the terms of the GNU General Public License as published by
+*    the Free Software Foundation; either version 2 of the License, or
+*    (at your option) any later version.
+*
+*    This program is distributed in the hope that it will be useful,
+*    but WITHOUT ANY WARRANTY; without even the implied warranty of
+*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*    GNU General Public License for more details.
+*
+*    You should have received a copy of the GNU General Public License
+*    along with this program (see SLA_CONDITIONS); if not, write to the 
+*    Free Software Foundation, Inc., 59 Temple Place, Suite 330, 
+*    Boston, MA  02111-1307  USA
+*
+*-
+
+      IMPLICIT NONE
+
+      REAL SEED
+
+      REAL RANDOM
+
+      REAL AS
+      INTEGER ISEED
+      LOGICAL FIRST
+      SAVE FIRST
+      DATA FIRST /.TRUE./
+
+
+
+*  If first time, turn SEED into a large, odd integer
+      IF (FIRST) THEN
+         AS=ABS(SEED)+1.0
+         ISEED=NINT(AS/10.0**(NINT(ALOG10(AS))-6))
+         IF (MOD(ISEED,2).EQ.0) ISEED=ISEED+1
+         FIRST=.FALSE.
+      ELSE
+         ISEED = 0
+      END IF
+
+*  Next pseudo-random number
+      sla_RANDOM=RANDOM(ISEED)
+
+      END

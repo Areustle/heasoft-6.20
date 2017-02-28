@@ -1,0 +1,658 @@
+#! /usr/bin/perl
+#
+# This script is designed to take an XTE SA or SE data file and a
+# a series or relative time ranges and filter out all times
+# that fall outside of that range of times, and to modify all 
+# appropriate keywords
+#
+# Brian K. Elza 2/15/96
+# XTE GSFC/NASA
+#
+# 10/23/97 Zhiyu Guo made the script also capable of updating keywords
+# TSTARTI, TSTARTF, TSTOPI, and TSTOPF
+#
+# 2/27/98 Zhiyu Guo added another parameter (-c) on the calling line so
+# that users can answer "Do you want to save the file ?" on the calling
+# line.
+#
+# 03Feb99 (MJT) allow for possible ".gz" extensions when checking infile
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('i:f:t:c:rah');	
+		
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+NAME
+
+     grosstimefilt -- a script that queries the user for a series of
+time ranges, and filters an input file so that only data from times
+within those ranges will be written to the output file.
+     
+     The output file will have the KEYWORDS for TSTART and TSTOP
+modified as well as the checksum values.  It is also capable of
+updating keywords TSTARTI, TSTARTF, TSTOPI, and TSTOPF.
+    
+    
+USAGE
+    grosstimefilt -i "infile" -f "outfile" -r (switch to RAW time) 
+	   -a (switch to Absolute time) -t "Time ranges" -h (help)
+	   -c "yes/no"		
+or  
+    grosstimefilt -r -a
+    
+    
+DESCRIPTION
+
+    This script file allows the user to apply a gross time filter to
+an input file, creating an output file containing a small subset of
+the original data for easier subsequent manipulation. The user
+specifies input and output filenames, and a series of relative or
+absolute time ranges, and the script creates an output file containing
+only the data within those time ranges. Such gross time filtering
+might be useful when a great deal of analysis will be done on a
+relatively short stretch of data. Examples are the study of 
+a 20-second burst within a 1-hr event file, or the creation of
+a high time resolution light curve covering a short interval.
+
+     For times relative to the start time of the input file (e.g.,
+0-250.0, 350.0-500.0, 750.0-1000.0), the appropriate time conversions
+are performed using the time keywords in the input file.  Input time
+ranges must have a dash (-) between start and stop times, and a comma
+separating the ranges.
+
+    The script assumes that the input file has the data in the first
+extension and (optionally) a second extension for the GTI information.
+
+    Note that there are two options -r (for RAW time) and -a (for
+ABSOLUTE time).  If neither -r or -a are specified the default is to
+assume that all input time-ranges are in relative time. Some examples
+of all three usages follow:
+
+    Assume we have a file covering 1000.00 seconds of observation time
+with TSTART(I/F)=78358000.00000080 and TSTOP(I/F)=78359000.000000080
+and a TIMEZERO(I/F)=3.33300000 seconds.  We want to select out the
+first 100.00 seconds of data.  The three ways to do this are:
+
+* Relative Time: (the default)
+
+    Time "relative" to the file that is being processed. Specify
+0.0-100.0 in this time system.
+Thus if the same relative time was input for 5 files, than each 
+processed file would contain the first 100.0 seconds of the original 
+file. 
+
+* Raw Time: (the -r option)
+
+    This is the RAW time that is given by the timestamp in the 
+Time column in the data file. Specify
+
+    grosstimefilt  -r -t 78358000.00000080 - 78358100.00000080
+
+To run the code so that it prompts for the time ranges
+and process that information as RAW times, call the script using
+
+    grosstimefilt -r
+
+* Absolute Time: (the -a option)
+
+    This is the ABSOLUTE time that is given by the timestamp in the 
+TIME column, plus the TIMEZERO(I/F) keyword.
+specified in the file. Specify
+
+     grosstimefilt -a -t 78358003.33300080 - 78358103.33300080
+
+To run the code so that it prompts for the time ranges,
+processing that information as ABSOLUTE times, call the script using
+	   
+     grosstimefilt -a
+
+    
+PARAMETERS (SWITCHES/FLAGS)
+
+    -i {file} - provide name of the input file.
+
+    -f {file} - provide the name of an output file to contain the filtered
+                file with data only within the specified time ranges.
+
+    -r (switch to RAW time) - this option allows the user to 
+	      switch to raw time ranges, i.e., specify the times 
+	      exactly as they are given in the RAW data file. (See 
+	      above for more details.)
+
+    -a (switch to Absolute time) - this option allows the user to 
+	      switch to absolute time ranges. Note that the user MUST
+	      take the TIMEZERO value into account since that value is 
+	      added to all "timestamps" within the file, as well as the
+	      TSTART and TSTOP keywords. Failure to do so will lead to an
+	      error by the size of the TIMEZERO keyword value! (See 
+	      above for more details.)
+
+    -t {Time range} - Give a (default is relative) time range in the form of
+		"0-250.0,350.0-500.0, 750.0-1000.0" (Note that both the 
+                TIMEZERO value and the TSTART values are added to all 
+	        input times to calculate the appropriate absolute time.
+
+    -c (yes/no) - determine if a user wants to save the file at the end.
+
+EXAMPLES
+    1. grosstimefilt -r -a -i "FSXX_AAAAAAAA_BBBBBBB" 
+                     -f "FS_new" -t "0-250.0, 350.0-500.0, 750.0-1000.0"
+		     -c yes
+            
+    2. grosstimefilt -r -a
+    
+NOTES
+    
+    Grosstimefilt ONLY filters the data in the data extension. The
+TSTART(I/F) and TSTOP(I/F) values are updated, along with the CHECKSUM and
+DATASUM keywords, but the GTIs are left unchanged. 
+
+    
+BUGS
+    
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+    
+    
+SEE ALSO
+    SAEXTRCT, SEXTRCT, TIMETRANS, and FSELECT for more information
+
+EOHELP1
+exit;
+    }
+
+# now onto the program ...
+
+require "utils.pl";
+
+print "\n";
+print "Running GROSSTIMEFILT v4.0 \n";
+print "#######################################\n\n";
+
+
+    if(defined $opt_a) {
+	if(defined $opt_r) {
+	    print "\n";
+	    print "******ERROR******\n";
+	    print "The -a and -r options are mutually exclusive!\n";
+	    print "Aborting....\n";
+	    exit;
+	}
+	print "\n";
+	print "All time ranges are assumed to be in ABSOLUTE time.\n";
+    } else {
+	if(defined $opt_r) {
+	    print "\n";
+	    print "All time ranges are assumed to be in RAW time.\n";
+	} else {
+	    print "\n";
+	    print "All time ranges are assumed to be in RELATIVE time.\n";
+	}
+    }
+
+print "#######################################\n\n";
+
+if(defined $opt_i) {
+    print "Input file name provided was: $opt_i \n";
+    $infile = $opt_i;
+} else {
+    @infile2=&runcom('pget saextrct infile');
+    if($infile2[0] =~ /^./ ){
+	chop($infile2[0]);
+    }				
+    else{
+	@infile2=&runcom('pget seextrct infile');
+	if($infile2[0] =~ /^./ ){
+	    chop($infile2[0]);
+	}
+    }
+# if nothing was found in sa/seextrct let's make the prompt nice...
+    if($infile2[0] !~ /^./) {
+      $infile2[0] = "";
+    }
+
+    print "Input file name to be filtered:[$infile2[0]]";
+    ($infile = <STDIN>);
+    if($infile =~ /^./ ){
+	chop($infile);
+    }
+    else{
+	$infile = $infile2[0];
+    }
+}
+
+# Now we will test to see if the input file is a LIST of files. If it is
+# then we will copy all of the files contained within this file to a
+# unique filename
+if($infile =~ /^@/ ){
+    print "You input a LIST of files, this is NOT supported at this time.\n";
+    print "Extracting only the first file for filtering.\n";
+    $infile =~ s/^@//;	# Remove the @ symbol
+    open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+    $tmpfile = <INPUT_FILE>; # Copy files from INFILE to OUTPUT
+    chop($tmpfile);
+    -e $tmpfile || -e $tmpfile.".gz" || die "Cannot find $tmpfile !\n";
+    print "Input file used is $tmpfile\n";
+    close(INPUT_FILE);	# We are finished with the input file.
+} else {
+    -e $infile || -e $infile.".gz" || die "Cannot find $infile !\n";
+    $tmpfile = $infile;
+}
+$infile = $tmpfile;
+
+if(defined $opt_f) {
+    print "Output filename provided was: $opt_f \n";
+    $outfile = $opt_f;
+} else {
+    print "Output filename:[outfile_${$}]";
+    ($outfile = <STDIN>);
+    if($outfile =~ /^./ ){
+	chop($outfile);
+    } else{			
+	$outfile = "outfile_${$}";
+	print "Generating output file named:outfile_${$}\n";
+    }
+}
+
+if(defined $opt_t) {
+    print "Specified time ranges are: $opt_t \n";
+    $tmptime = $opt_t;
+} else {
+    print "Input time ranges for filtering:[0-250.0, 350.0-500.0, 750.0-1000.0]";
+    ($tmptime = <STDIN>);
+    if($tmptime =~ /^./ ){
+	chop($tmptime);
+    }
+    else{
+	print "ERROR!!!! No time range specified!!!\n";
+	print "Nothing to do!... Aborting....\n";
+	exit;
+    }
+}
+
+print "\n##########################################\n";
+
+#======================================================================
+    $timestart = 0.0;
+    $timezero = 0.0;
+    $timea = 0.0;
+    $timei = 0.0;
+
+#----------------------------------------------------------------------
+
+$fkeyprint_stringf = "fkeyprint infile=$infile ";
+$fkeyprint_stringf .= "keynam='TIMEZERI' outfile=STDOUT ";
+$fkeyprint_stringf .= "exact=no clobber=no mode=ql ";
+
+@resultf=&runcom($fkeyprint_stringf);
+
+$length_of_array = @resultf;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultb[$i_count] =~ /^TIMEZERI/) {
+	@temp_array = split(/=/,$resultf[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timei = $temp[0];
+    }
+}
+
+$fkeyprint_stringg = "fkeyprint infile=$infile ";
+$fkeyprint_stringg .= "keynam='TIMEZERF' outfile=STDOUT ";
+$fkeyprint_stringg .= "exact=no clobber=no mode=ql ";
+
+@resultg=&runcom($fkeyprint_stringg);
+
+$length_of_array = @resultg;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultg[$i_count] =~ /^TIMEZERF/) {
+	@temp_array = split(/=/,$resultg[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timef = $temp[0];
+    }
+}
+
+$timezero = $timei + $timef;
+
+#---------------------------------------------------------------------
+
+if($timezero == 0.0) {
+
+    $fkeyprint_stringh = "fkeyprint infile=$infile ";
+    $fkeyprint_stringh .= "keynam='TIMEZERO' outfile=STDOUT ";
+    $fkeyprint_stringh .= "exact=no clobber=no mode=ql ";
+
+    @resulth=&runcom($fkeyprint_stringh);
+    $length_of_array = @resulth;
+
+    for($i_count=0; $i_count <= $length_of_array; $i_count++){
+	if($resulth[$i_count] =~ /^TIMEZERO/) {
+	    @temp_array = split(/=/,$resulth[$i_count]);
+	    @temp = split(/ \/ /,$temp_array[1]);
+	    $timea = $temp[0];
+	}
+    }
+    $timezero = $timea;
+
+}
+#----------------------------------------------------------------------
+if($timea == 0){
+    print "TIMEZERI from $infile is: $timei \nTIMEZERF from $infile is: $timef \n";
+}
+if($timei == 0){
+    print "TIMEZERO from $infile is: $timea \n";
+}
+
+$timezero_store = $timezero;
+
+#======================================================================
+
+# Reinitialize these two variables so that can be used again.
+    $timea = 0;
+    $timei = 0; 
+
+#======================================================================
+
+#----------------------------------------------------------------------
+
+$fkeyprint_stringb = "fkeyprint infile=$infile ";
+$fkeyprint_stringb .= "keynam='TSTARTI' outfile=STDOUT ";
+$fkeyprint_stringb .= "exact=no clobber=no mode=ql ";
+
+@resultb=&runcom($fkeyprint_stringb);
+
+$length_of_array = @resultb;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultb[$i_count] =~ /^TSTARTI/) {
+	@temp_array = split(/=/,$resultb[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timei = $temp[0];
+    }
+}
+
+$fkeyprint_stringc = "fkeyprint infile=$infile ";
+$fkeyprint_stringc .= "keynam='TSTARTF' outfile=STDOUT ";
+$fkeyprint_stringc .= "exact=no clobber=no mode=ql ";
+
+@resultc=&runcom($fkeyprint_stringc);
+
+$length_of_array = @resultc;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultc[$i_count] =~ /^TSTARTF/) {
+	@temp_array = split(/=/,$resultc[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timef = $temp[0];
+    }
+}
+
+$timestart = $timei + $timef;
+
+#---------------------------------------------------------------------
+
+if($timestart == 0.0) {
+
+    $fkeyprint_stringd = "fkeyprint infile=$infile ";
+    $fkeyprint_stringd .= "keynam='TSTART' outfile=STDOUT ";
+    $fkeyprint_stringd .= "exact=no clobber=no mode=ql ";
+
+    @resultd=&runcom($fkeyprint_stringd);
+    $length_of_array = @resultd;
+
+    for($i_count=0; $i_count <= $length_of_array; $i_count++){
+	if($resultd[$i_count] =~ /^TSTART/) {
+	    @temp_array = split(/=/,$resultd[$i_count]);
+	    @temp = split(/ \/ /,$temp_array[1]);
+	    $timea = $temp[0];
+	}
+    }
+    $timestart = $timea;
+
+}
+
+#----------------------------------------------------------------------
+if($timea == 0){
+    print "TSTARTI from $infile is: $timei \nTSTARTF from $infile is: $timef \n";
+}
+if($timei == 0){
+    print "TSTART from $infile is: $timea \n";
+}
+
+#======================================================================
+#----------------------------------------------------------------------
+#
+# Okay. Now that we have read in all of the values lets decide what
+# to do with them. The default is as it was before, but we will
+# perform certain operations if the user wants to input different
+# things. 
+
+if(defined $opt_a) {
+    $timestart=0.0;
+} else {
+    if(defined $opt_r) {
+	$timestart=0.0;
+	$timezero = 0.0;
+    } else {
+	$timezero = 0.0;
+    }
+}
+
+
+
+#======================================================================
+
+$tempfile = "tempfile_${$}";
+$savefile = "savefile_${$}";
+
+open(TEMP_FILE,"> $tempfile" ) || die "Sorry can't open $tempfile\n"; # open a unique output file
+
+open(TEMP_FILE2,">  $savefile" ) || die "Sorry can't open $savefile\n"; # open a unique output file
+
+
+$fkeyprint_stra = "fkeyprint infile=${infile}+1 ";
+$fkeyprint_stra .= "keynam='TTYPE1' outfile=STDOUT ";
+$fkeyprint_stra .= "exact=no clobber=no mode=ql ";
+
+@resula=&runcom($fkeyprint_stra);
+$length_of_array = @resula;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resula[$i_count] =~ /^TTYPE1  = \'/) {
+	@temp_arrayN = split(/= \'/,$resula[$i_count]);
+	@tempN = split(/ \' /,$temp_arrayN[1]);
+	$ttype = $tempN[0];
+    }
+}
+
+$gte = " >= ";
+$lte = " <= ";
+$land = " \&\& ";
+$lor = " || ";
+
+@time = split(/,/,$tmptime);
+$itmpt = @time;
+print "\n\nNumber of time ranges specified: $itmpt \n";
+$itmpt--;
+
+for($icount = 0; $icount <= $itmpt; $icount++) {
+    @k = split(/-/,$time[$icount]);
+    $ik = @k;
+    if($ik == 1) {
+	print "\nOnly 1 time value specified in this range!\n";
+	print "This is not valid for input into TIMEINT, but could be used for TIMEMIN or TIMEMAX.\n";
+	print "Not writing value to output file!\n";
+	$timeprint0 = 0.00000000000;
+	$timeprint0 = $timestart + $k[0] ;
+	printf "Time range for $k[0] is %17.8f\n", $timeprint0;
+	printf TEMP_FILE2 "  %17.8f",$timeprint0;
+
+    } elsif($ik == 2) {
+
+	if($icount == 0){
+	    $tfirst = $timestart + $k[0] - $timezero;
+	}
+
+	$timeprint0 = 0.000000000000;
+	$timeprint1 = 0.000000000000;
+
+	$timeprint0 = $timestart + $k[0] - $timezero;
+	$timeprint1 = $timestart + $k[1] - $timezero;
+
+	print "Timestart and timezero are $timestart, $timezero\n";
+
+	$timeprint3 = 0.000000000000;
+	$timeprint4 = 0.000000000000;
+
+	if(defined $opt_a) {
+	    $timeprint3=$k[0];
+	    $timeprint4=$k[1];
+
+	} else {
+	   if(defined $opt_r) {
+	       $timeprint3 = $k[0] + $timezero_store;
+	       $timeprint4 = $k[1] + $timezero_store;
+
+	   } else {
+	       $timeprint3 = $timestart + $k[0] + $timezero_store;
+	       $timeprint4 = $timestart + $k[1] + $timezero_store;
+	   }
+       }
+
+	$tend = $timeprint1;
+
+	printf TEMP_FILE " ($ttype $gte %19.8f $land $ttype $lte %19.8f) ",$timeprint0,$timeprint1;
+	printf TEMP_FILE2 " %19.8f  %19.8f ",$timeprint3,$timeprint4;
+
+
+    } else {
+	print "\n\nERROR! Your time range input is invalid!\nPlease check it and try again.\n\n";
+
+    }
+
+    if($icount++ < $itmpt--){
+	print TEMP_FILE "$lor \n";
+	print TEMP_FILE2 "$lor \n";
+	$icount--;
+	$itmpt++;
+    }
+}
+
+print TEMP_FILE "\n";
+close (TEMP_FILE);
+
+print TEMP_FILE2 "\n";
+close (TEMP_FILE2);
+
+print "\n\n\nAbsolute time ranges (ready to be used in TIMEINT parameter) are:\n";
+
+open(TEMP_FILE2,"$savefile");
+while(<TEMP_FILE2>) {
+    print $_; # Print the results stored in TEMP_FILE
+}
+close(TEMP_FILE2);	# We are finished with the input file.
+
+print "\n\n\nBeginning to filter input file.\n";
+
+print "Expression being passed to fselect is:\n";
+
+open(TEMP_FILE,"$tempfile");
+while(<TEMP_FILE>) {
+    print $_; # Print the results stored in TEMP_FILE
+}
+close(TEMP_FILE);	# We are finished with the input file.
+
+print "\n\nBe patient. This may take a while.\n\n";
+
+@resultj=&runcom('fselect infile="'.$infile.'" outfile="'.$outfile.'" expr="@'.$tempfile.'" mode=h');
+
+print "Completed filtering of input file. Updating information...\n";
+
+unlink("$tempfile") || print "Having trouble deleting $tempfile\n";
+
+$tempfile = "tempfile2_${$}";
+
+open(TEMP_FILE,"> $tempfile" ) || die "Sorry can't open $tempfile\n"; # open a unique output file
+
+printf TEMP_FILE "TSTART = %21.15E /As in the TIME column: raw space craft clock\n",$tfirst;
+printf TEMP_FILE "TSTOP = %21.15E /   add TIMEZERO and MJDREF for absolute TT\n",$tend;
+
+######################################################################
+#This part is added by Zhiyu Guo to make the script update keywords
+#TSTARTI, TSTARTF, TSTOPI, and TSTOPF in addition to TSTART and TSTOP.
+#10/23/97
+#
+$tfirsti=int $tfirst;
+$tfirstf=$tfirst-$tfirsti;
+$tendi=int $tend;
+$tendf=$tend-$tendi;
+printf TEMP_FILE "TSTARTI = %21d /As in the TIME column: raw space craft clock\n",$tfirsti;
+if($tfirstf eq 0){
+printf TEMP_FILE "TSTARTF = %21d /As in the TIME column: raw space craft clock\n",$tfirstf;
+} else {
+printf TEMP_FILE "TSTARTF = %21.15f /As in the TIME column: raw space craft clock\n",$tfirstf;
+}
+printf TEMP_FILE "TSTOPI = %21d /   add TIMEZERO and MJDREF for absolute TT\n",$tendi;
+if($tendf eq 0){
+printf TEMP_FILE "TSTOPF = %21d /   add TIMEZERO and MJDREF for absolute TT\n",$tendf;
+} else {
+printf TEMP_FILE "TSTOPF = %21.15f /   add TIMEZERO and MJDREF for absolute TT\n",$tendf;
+}
+######################################################################
+close (TEMP_FILE);
+
+print "Updating TSTART and TSTOP on primary extension.\n";
+
+@resultk=&runcom('fmodhead infile="'.$outfile.'"+0 tmpfil="'.$tempfile.'" mode=h');
+print "@resultk\n";
+
+print "Updating TSTART and TSTOP on data extension\n";
+
+@resultk=&runcom('fmodhead infile="'.$outfile.'"+1 tmpfil="'.$tempfile.'" mode=h');
+print "@resultk\n";
+
+
+# 07Apr2004 (MJT)
+#Check whether there is a second extension. Ideally we'd also be 
+#making sure that it's a GTI but this check is better than nothing...
+@result=&runcom('fstruct infile="'.$outfile.'" 1>/dev/null; pget fstruct totalhdu');
+if ($result[0] == 3){
+print "Updating TSTART and TSTOP on GTI extension\n";
+
+@resultk=&runcom('fmodhead infile="'.$outfile.'"+2 tmpfil="'.$tempfile.'" mode=h');
+print "@resultk\n"; 
+}
+print "Checking and updating CHECKSUM values.\n";
+@resultk=&runcom('fchecksum infile="'.$outfile.'" update=yes datasum=yes mode=h');
+print "@resultk\n";
+
+print "Filtering is complete.\n";
+
+unlink("$tempfile") || print "Having trouble deleting $tempfile\n"; 
+
+print "The file $savetime contains a list of the absolute times.\n";
+
+if(defined $opt_c){
+	$answer=$opt_c;
+}else{
+	if($answer =~ /^./){
+		chop($answer);
+	}
+
+	print "Do you want to keep this file? [Yes/No]";
+
+	chop($answer = <STDIN>);
+
+if($answer =~ /^[yY]/){
+    }
+else{
+    unlink("$savefile") || print "Having trouble deleting $savefile\n"; 
+}
+}
+

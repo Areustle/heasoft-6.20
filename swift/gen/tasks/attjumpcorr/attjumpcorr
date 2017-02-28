@@ -1,0 +1,404 @@
+#!/usr/bin/perl
+#
+# $Log: attjumpcorr,v $
+# Revision 1.5  2013/07/03 13:06:03  irby
+# Fix for infinite loop bug; submitted by Bob Wiegand.
+#
+# Revision 1.4  2007/11/20 22:28:08  craigm
+# Add some diagnostic messages --CM
+#
+# Revision 1.3  2006/11/07 03:54:01  craigm
+# Bump to version 2.1 -- Now checks to see if the attjumpcorr task has already been run (writes/reads the keyword AJUMPAPP to find out) --CM
+#
+# Revision 1.2  2006/07/06 20:11:05  craigm
+# BUG FIX for the case where the spacecraft does a 'slew in place' or other short-distance slew that does not change the '10 arcminute' attitude flag; unit test added for this case (testcase=2) --CM
+#
+# Revision 1.3  2006/02/23 10:53:03  craigm
+# Bump to version 2.0; this version now also corrects for constant slew rate if requested; addition massive code cleanups to accomodate this --CM
+#
+# Revision 1.2  2006/02/14 19:40:07  craigm
+# New safety features to attjumpcorr which prevents it from correcting too-large jumps and cases where the spacecraft jumps too much per slew -- CM
+#
+# Revision 1.1  2006/02/07 05:40:59  craigm
+# Initial commit; it functions and has a help file --CM
+#
+#
+#
+use HEACORE::HEAINIT;
+
+# ==================================================================
+
+exit headas_main(\&attjumpcorr);
+
+
+# ==================================================================
+# Utility routine to adjust all quaternions between positions
+#   $imaxrate and $ijump.  The jump is assumed to happen between
+#   $ijump-1 and $ijump.
+# The quaternion array referred to by $rqq is modified in place.
+# 
+
+sub qmult {
+    my ($qr, $ir, $q1, $i1, $q2, $i2, $inv2) = (@_);
+
+    if ($inv2) {
+	$$qr[$ir  ] = +$$q1[$i1  ]*$$q2[$i2+3] - $$q1[$i1+1]*$$q2[$i2+2] + $$q1[$i1+2]*$$q2[$i2+1]- $$q1[$i1+3]*$$q2[$i2  ];
+	$$qr[$ir+1] = +$$q1[$i1  ]*$$q2[$i2+2] + $$q1[$i1+1]*$$q2[$i2+3] - $$q1[$i1+2]*$$q2[$i2  ]- $$q1[$i1+3]*$$q2[$i2+1];
+	$$qr[$ir+2] = -$$q1[$i1  ]*$$q2[$i2+1] + $$q1[$i1+1]*$$q2[$i2  ] + $$q1[$i1+2]*$$q2[$i2+3]- $$q1[$i1+3]*$$q2[$i2+2];
+	$$qr[$ir+3] = +$$q1[$i1  ]*$$q2[$i2  ] + $$q1[$i1+1]*$$q2[$i2+1] + $$q1[$i1+2]*$$q2[$i2+2]+ $$q1[$i1+3]*$$q2[$i2+3];
+    } else {
+
+	$$qr[$ir  ] = +$$q1[$i1  ]*$$q2[$i2+3] + $$q1[$i1+1]*$$q2[$i2+2] - $$q1[$i1+2]*$$q2[$i2+1]+ $$q1[$i1+3]*$$q2[$i2  ];
+	$$qr[$ir+1] = -$$q1[$i1  ]*$$q2[$i2+2] + $$q1[$i1+1]*$$q2[$i2+3] + $$q1[$i1+2]*$$q2[$i2  ]+ $$q1[$i1+3]*$$q2[$i2+1];
+	$$qr[$ir+2] = +$$q1[$i1  ]*$$q2[$i2+1] - $$q1[$i1+1]*$$q2[$i2  ] + $$q1[$i1+2]*$$q2[$i2+3]+ $$q1[$i1+3]*$$q2[$i2+2];
+	$$qr[$ir+3] = -$$q1[$i1  ]*$$q2[$i2  ] - $$q1[$i1+1]*$$q2[$i2+1] - $$q1[$i1+2]*$$q2[$i2+2]+ $$q1[$i1+3]*$$q2[$i2+3];
+    }
+    $_[0] = $qr;
+}
+
+sub qjumpcorr {
+    my ($tt, $rqq, $ijump, $imaxrate) = @_;
+    my ($i);
+    my ($qdiff, $qrate, $qrate1, $qrate2, $dt1, $dt2);
+    
+    # Compute the difference quaternion
+    # New quaternion is the "correct" one; the old quaternion
+    # is the one that just precedes it
+    # Invert the old quaternion
+    #     DIFF     = Q[ijump]       x Q[ijump-1]^{-1}
+    qmult($qdiff, 0, $rqq, 4*$ijump, $rqq, 4*($ijump-1), 1);
+
+    if ($method eq "LINEAR") {
+	$dt1 = $tt[$ijump-1] - $tt[$ijump-2];
+	$dt2 = $tt[$ijump+1] - $tt[$ijump  ];
+	qmult($qrate1, 0, $rqq, 4*($ijump-1), $rqq, 4*($ijump-2), 1);
+	qmult($qrate2, 0, $rqq, 4*($ijump+1), $rqq, 4*($ijump  ), 1);
+	$qrate = [0.5*($$qrate1[0]/$dt1+$$qrate2[0]/$dt2), 
+		  0.5*($$qrate1[1]/$dt1+$$qrate2[1]/$dt2), 
+		  0.5*($$qrate1[2]/$dt1+$$qrate2[2]/$dt2), 
+		  0.5*($$qrate1[2]/$dt1+$$qrate2[3]/$dt1)];
+	
+	$dt = $tt[$ijump  ] - $tt[$ijump-1];
+	$$qdiff[0] -= $$qrate[0]*$dt;
+	$$qdiff[1] -= $$qrate[1]*$dt;
+	$$qdiff[2] -= $$qrate[2]*$dt;
+	$$qdiff[3] = sqrt(1 - $$qdiff[0]*$$qdiff[0] - $$qdiff[1]*$$qdiff[1] - $$qdiff[2]*$$qdiff[2]);
+    }
+    
+    # Scan through and adjust all the quaternions
+    foreach $i ($imaxrate .. $ijump-1) {
+	#     RESULT     = DIFF     x ORIG
+	qmult($rqq, $i*4, $qdiff, 0, $rqq, $i*4, 0);
+    }
+
+}
+
+# ==================================================================
+# Utility routine to adjust all pointing values (ra,dec,roll)
+#   between positions $imaxrate and $ijump.  The jump is assumed 
+#   to happen between $ijump-1 and $ijump.
+# The pointing array referred to by $rpnt is modified in place.
+sub pntjumpcorr {
+    my ($tt, $rpnt, $ijump, $imaxrate) = @_;
+    my ($i);
+    my (@pntold,@pntnew);
+    my ($dt1, $dt2, $dt);
+    my ($dra, $ddec, $droll);
+    
+    # New quaternion is the "correct" one; the old quaternion
+    # is the one that just precedes it
+    @pntold = @$rpnt[3*$ijump-3 .. 3*$ijump-1];
+    @pntnew = @$rpnt[3*$ijump   .. 3*$ijump+2];
+
+    $dt    = $tt[$ijump] - $tt[$ijump-1];
+    $dra   = $pntnew[0]-$pntold[0];
+    $ddec  = $pntnew[1]-$pntold[1];
+    $droll = $pntnew[2]-$pntold[2];
+
+    if ($method eq "LINEAR") {
+	# Add rate term (average of before-jump and after-jump)
+	$dt1 = $tt[$ijump-1] - $tt[$ijump-2];
+	$dt2 = $tt[$ijump+1] - $tt[$ijump  ];
+	$dra   -= $dt*0.5*(($$rpnt[3*$ijump-3] - $$rpnt[3*$ijump-6])/$dt1 + 
+			   ($$rpnt[3*$ijump+3] - $$rpnt[3*$ijump  ])/$dt2);
+	$ddec  -= $dt*0.5*(($$rpnt[3*$ijump-2] - $$rpnt[3*$ijump-5])/$dt1 +
+			   ($$rpnt[3*$ijump+4] - $$rpnt[3*$ijump+1])/$dt2);
+	$droll -= $dt*0.5*(($$rpnt[3*$ijump-1] - $$rpnt[3*$ijump-4])/$dt1 +
+			   ($$rpnt[3*$ijump+5] - $$rpnt[3*$ijump+2])/$dt2);
+    }
+
+    # Scan through and adjust all the quaternions
+    foreach $i ($imaxrate .. $ijump-1) {
+#	print "   OLD: $rpnt->[$i*3] $rpnt->[$i*3+1] $rpnt->[$i*3+2]\n";
+	$rpnt->[$i*3  ] += $dra;
+	$rpnt->[$i*3+1] += $ddec;
+	$rpnt->[$i*3+2] += $droll;
+#	print "   NEW: $rpnt->[$i*3] $rpnt->[$i*3+1] $rpnt->[$i*3+2]\n";
+    }
+    
+}
+
+# ==================================================================
+# MAIN ROUTINE
+sub attjumpcorr {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # ===== 
+    # Initialization
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my $taskname = "attjumpcorr";
+    my $version = "2.1";
+
+    my $status = 0;
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($version);
+
+    # ===== 
+    # Retrieve parameters
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+    ($status = PILGetReal('maxgap', $maxgap)) == 0 || die "error getting 'maxgap' parameter";
+    ($status = PILGetReal('jumpthresh', $jumpthresh)) == 0 || die "error getting 'jumpthresh' parameter";
+    ($status = PILGetReal('maxjump', $maxjump)) == 0 || die "error getting 'maxjump' parameter";
+    ($status = PILGetInt('nmaxjump', $nmaxjump)) == 0 || die "error getting 'nmaxjump' parameter";
+    ($status = PILGetString('method', $method)) == 0 || die "error getting 'method' parameter";
+
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    if    ($method =~ m/^l/i) { $method = "LINEAR"; }
+    elsif ($method =~ m/^c/i) { $method = "CONSTANT"; }
+    else {
+	warn "ERROR: 'method' must be one of LINEAR or CONSTANT";
+	$status = -1;
+	return ($status);
+    }
+
+    $fits = SimpleFITS->open("$infile", (access=>"readonly", ext=>"ATTITUDE"));
+    $ffits = SimpleFITS->open("$infile", (access=>"readonly", ext=>"ACS_DATA"));
+    if ($fits->status() || $ffits->status()) {
+	warn "ERROR: could not open $infile";
+	return ($fits->status() | $ffits->status());
+    }
+
+    # Check if the input has already been corrected
+    $ajumpapp = $fits->readkey("AJUMPAPP");
+    if ($fits->status() == 0 && $ajumpapp) {
+      warn "WARNING: input file '$infile' has already been corrected!!";
+    }
+    $fits->setstatus(0);
+
+    headas_clobberfile("$outfile");
+    $ofits = SimpleFITS->open("$outfile", (access=>"create"));
+    if ($ofits->status()) {
+	warn "ERROR: could not create $outfile";
+	return $ofits->status();
+    }
+    $fits->handle()->copy_file($ofits->handle(), 1, 1, 1, $status);
+    if ($status) {
+	warn "ERROR: could not copy input to output";
+	return $status;
+    }
+
+    # Read attitude time and data
+    @tt  = $fits->readcol("TIME");
+    @qq  = $fits->readcol("QPARAM");
+    @pnt = $fits->readcol("POINTING");
+
+    # Read flag time and data
+    @ttf   = $ffits->readcol("TIME");
+    @flags = $ffits->readcol("FLAGS", {type=>TBYTE});
+
+    $n = $fits->nrows();   # Number of attitude rows
+    $nf = $ffits->nrows(); # Number of 
+
+    $fits->handle()->calc_rows(TDOUBLE,"TIME-TIME{-1}",$
+			       1,$n,undef,\@dt,$anynul,$status);
+    $expr = "ANGSEP(POINTING[1],POINTING[2],POINTING{-1}[1],POINTING{-1}[2])";
+    $fits->handle()->calc_rows(TDOUBLE,$expr,
+			       1,$n,undef,\@angdiff,$anynul,$status);
+
+    $fits->close();
+    $ffits->close();
+
+    $jumpthresh /= 3600.0; # [deg/s] Convert from arcsec/s
+    $maxjump /= 3600.0;    # [deg]   Convert from arcsec
+
+    $i = 0; $j = 0;
+
+
+    # The analysis of the attitude file is done with a state machine.
+    #
+    # State machine states
+    #   * 0 = unknown  (starting point, or after a gap)
+    #   * 1 = slewing  (slewing or within 10 arcminutes)
+    #   * 2 = settled  (settled flag is set)
+    #
+
+    $state = 0;
+
+    # Reporting variables
+    $ajumpsq = 0.0;   # Sum-squared jump values
+    $njumps = 0;      # Number of jumps corrected
+    $nslews = 0;      # Number of slews found
+    
+
+    if ($chatter >= 2) { print "-----------------------------------------------\n"; }
+    ROW: while ($i < $n && $j < $nf) {
+#	print "i=$i j=$j\n";
+	if ($ttf[$j] < $tt[$i]) { 
+	    while ($j < $nf and $ttf[$j] < $tt[$i]) { $j++; }
+	    next ROW;
+	}
+	if ($dt[$i] == 0) {
+	    $i++;
+	    next ROW;
+	}
+	if ($dt[$i] > $maxgap) {
+	    $state = 0;
+	}
+
+	$flagi   = $flags[$j];
+	$tenamin = (($flagi & 0x80) != 0) ? 1 : 0;
+	$settled = (($flagi & 0x40) != 0) ? 1 : 0;
+	$angrate = $angdiff[$i] / $dt[$i];
+	if ($chatter >= 5) {
+	    print "   $i $tt[$i] $angrate $flagi $tenamin $settled\n";
+	}
+	
+	if ($state == 1 && $tenamin == 0) {
+	    # Were slewing, still slewing, find the maximum slew rate
+	    if ($angrate > $maxrate) {
+		$maxrate = $angrate;
+		$tmaxrate = $tt[$i];
+		$imaxrate = $i;
+	    }
+	} elsif ($state == 1 && $settled == 1) {
+	    # Were slewing, now settled, complete the computation
+	    $tsettled = $tt[$i];
+	    $isettled = $i;
+	    #
+	    # Re-compute the quaternions and RA/DEC here  ***
+	    # 
+	    if ($chatter >= 3) {
+		print "SLEW: $tslewstart - $tsettled ($islewstart - $isettled)\n";
+		print "     MAXRATE $maxrate [deg/s] at $tmaxrate ($imaxrate)\n";
+	    }
+	    if ($njumps_this_slew > $nmaxjump) {
+		warn "WARNING: number of jumps detected in this slew ($njumps_this_slew) is greater than the maximum ($nmaxjump).  Skipping this slew.";
+	    } elsif ($ijump > 0) {
+		if ($chatter >= 3) {
+		    print "     JUMP $tjump ($ijump) = $ajump [deg]\n";
+		}
+		if ($ajump > $maxjump) {
+		    warn "WARNING: jump at $tjump ($ajump deg) larger than maximum jump size ($maxjump deg). Skipping this jump.";
+		} else {
+		    &qjumpcorr  (\@tt,\@qq,$ijump,$imaxrate);
+		    &pntjumpcorr(\@tt,\@pnt,$ijump,$imaxrate);
+		    $njumps ++;
+		    $ajumpsq += $ajump*$ajump;
+		}
+	    }
+	} elsif ($state == 1 && $tenamin == 1) {
+	    # Were slewing, now settling, look for attitude jumps
+
+
+	    # Look for a one-interval spike in the angular rate,
+	    # plus that there is no following time gap,
+	    # plus that this jump is larger than any previously detected
+	    # jumps after the same slew.
+	    if (($angrate > $jumpthresh) && ($oangrate < $jumpthresh) &&
+		($dt[$i+1] > 0 && $dt[$i+1] < $maxgap) &&
+		($angdiff[$i+1]/$dt[$i+1] < $jumpthresh)) {
+		if ($angdiff[$i] > $ajump) {
+		    #
+		    # We found a jump!!!
+		    $ajump = $angdiff[$i];
+		    $tjump = $tt[$i];
+		    $ijump = $i;
+		}
+
+		$njumps_this_slew ++;
+	        if ($chatter >= 5) { print "    JUMP  $njumps_this_slew\n"; }
+	    } elsif ($angrate > $maxrate) {
+		# No jump, but keep looking for the maximum slew rate
+		#   NOTE: this really handles the slew-in-place case
+		#   where the tenamin flag never gets set to false.
+		$maxrate = $angrate;
+		$tmaxrate = $tt[$i];
+		$imaxrate = $i;
+	    }
+
+
+	} elsif (($state == 0 || $state == 2) && ($tenamin == 0 || $settled == 0)) {
+	    # Were settled, now slewing
+	    #  NOTE: the settled == 0 case handles slew-in-place,
+	    #    which sets settled to false but the S/C is still
+	    #    within 10 arcmin.
+	    $tslewstart = $tt[$i];
+	    $islewstart = $i;
+	    $nslews ++;
+
+	    $oangrate = 1.0e99;
+	    $ijump = -1;	    $tjump = -1;            $ajump = 0;
+	    $imaxrate = 0;	    $tmaxrate = -1;	    $maxrate = 0;
+	    $isettled = -1;	    $tsettled = -1;
+
+	    $njumps_this_slew = 0;
+	    if ($chatter >= 5) { print "  BEGIN SLEW\n"; }
+	}
+
+	# Change of state
+	if ($settled == 0) {
+	    # Now slewing
+	    $state = 1;
+	} else {
+	    $state = 2;
+	}
+	    
+	# Save previous angular rate
+        $oangrate = $angrate;
+	
+	# Increment to next point
+	$i++; $j++;
+    }
+
+    # Problem file: 2005_06/00030028020/auxil/sw00030028020sat.fits.gz
+    # Good file:    2005_06/00030031001/auxil/sw00030031001sat.fits.gz
+
+    $ofits->move("ATTITUDE");
+    $ofits->writecol("POINTING",{},\@pnt);
+    $ofits->writecol("QPARAM",  {},\@qq);
+    $ofits->writekey("AJUMPAPP", 1, "Attitude data was corrected for jumps", 
+		     TLOGICAL);
+    HDpar_stamp($ofits->handle(), 0, $status);
+    $status = $ofits->status();
+    $ofits->close();
+    if ($status) {
+	warn "ERROR: could not write $outfile\n";
+    }
+
+    if ($chatter >= 2) { 
+	$rmsjump = 0.0;
+	if ($njumps > 0) { $rmsjump = sqrt($ajumpsq/$njumps) * 60; }
+	print "      Number of slews: $nslews\n";
+	print "      Number of jumps: $njumps\n";
+	print "   RMS jump magnitude: $rmsjump [arcmin]\n";
+	print "-----------------------------------------------\n"; 
+    }
+
+    return $status;
+}
+

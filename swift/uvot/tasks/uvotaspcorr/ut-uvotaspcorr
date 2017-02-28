@@ -1,0 +1,120 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotaspcorr/ut-uvotaspcorr,v $
+# $Revision: 1.3 $
+# $Date: 2006/05/24 21:15:51 $
+#
+#	ut-uvotaspcorr
+#
+#
+# $Log: ut-uvotaspcorr,v $
+# Revision 1.3  2006/05/24 21:15:51  rwiegand
+# Use ftdiff to compare results now that they are in FITS format.
+#
+# Revision 1.2  2006/03/17 18:15:11  rwiegand
+# Use a GSC partition file which can more readily point to local data.
+#
+# Revision 1.1  2006/01/25 18:55:22  rwiegand
+# Unit test for uvotaspcorr.
+#
+
+use strict;
+
+package Test::UVOTAspCorr;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotaspcorr
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotaspcorr
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{corrfile} = "$output/CORR.uvotaspcorr.V",
+	$self->{template} = "$input/template.fits";
+
+	my @args = (
+		input		=> $input,
+		output		=> $output,
+		filter		=> 'V',
+		apply		=> 'yes',
+		catspec		=> "$input/PARTITION",
+		starid		=> 'NONE',
+
+		chatter		=> 5,
+	);
+
+	{
+		my $command = $self->buildCommand('uvotaspcorr', @args);
+		$self->shell($command);
+	}
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('ftdiff',
+			infile1 => $self->{template},
+			infile2 => $self->{corrfile},
+			reltol => 1e-3,
+			);
+	$self->shell($command);
+}
+

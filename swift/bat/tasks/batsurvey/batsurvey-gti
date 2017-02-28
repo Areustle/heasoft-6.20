@@ -1,0 +1,766 @@
+#!/usr/bin/perl
+#
+# bat-survey-gti - perform standard quality filtering by time for BAT survey analysis 
+#
+# $Id: batsurvey-gti,v 1.10 2010/11/23 22:32:38 craigm Exp $
+#
+# $Log: batsurvey-gti,v $
+# Revision 1.10  2010/11/23 22:32:38  craigm
+# Fix bug in writing of output GTI file, where rows were meant to be be deleted but were not; the result was garbage rows at the end of the table;  now fixed; unit tests still pass --CM
+#
+# Revision 1.9  2010/05/26 01:19:20  craigm
+# Use new features of SimpleFITS library, which makes the application code more simple; unit tests still pass --CM
+#
+# Revision 1.8  2009/11/03 19:33:26  craigm
+# Use new variable named 'ngti_out' which tracks the size of the output GTI; before the 'ngti' variable was doing double duty and could get confused; unit test for 'batsurvey' still passes --CM
+#
+# Revision 1.7  2009/07/09 01:24:04  craigm
+# Updates to battsplit, batdrmgen-multi, batsurvey, batsurvey-aspect batsurvey-detmask batsurvey-gti; this update changes slightly how parameters are read, so that 'ask' parameters are always prompted first, and in the order listed in the parameter file; previously the order was jumbled by perl's hash behavior, so people could be prompted for parameter 2 before being prompted for 1;  now all the perl tasks should behave properly in this respect;  all unit tests still pass without changes --CM
+#
+# Revision 1.6  2009/06/05 04:50:24  craigm
+# Update to version 6.4; new parameter 'gtifile' which allows the user to enter their own time selection good time interval file, in addition of course to the 'filtexpr' parameter; unit tests still pass; I also checked that the time filtering is done properly; --CM
+#
+# Revision 1.5  2009/06/05 03:46:12  craigm
+#
+#
+# Fixed bug in calculation of '$fullebins' variable, does not assume
+# that the upper end of the analysis energy range is always exactly 195
+# keV.
+#
+# Added the 'bsurseq' parameter, which causes a keyword named BSURSEQ to
+# be written to all output files.  This allows the user to tag output
+# files with a specific run number, separate from the software version.
+# This is ignored by the unit test.
+#
+# Some small documentation and code formatting things.
+#
+# Revision 1.4  2009/01/31 03:55:28  craigm
+# Previous commit was version 1.6; fix to call to 'mgtime' call to enforce reading the first extension of each input file; correct handling of sepdph=YES --CM
+#
+# Revision 1.3  2009/01/31 03:53:38  craigm
+# Version 6.2 of task; new parameter filtnames which allows to select which filters are used by batsurvey-gti --CM
+#
+# Revision 1.2  2009/01/29 23:41:29  craigm
+# Bug fix; bump to version 1.5; there was an error in the parsing of the 'filters' parameter, causing it to always do all filters; this does not affect any standard processing --CM
+#
+# Revision 1.1  2008/05/20 10:37:55  craigm
+# Commit of 'batsurvey' task 6.0; this is a modification of version '5G'; primarily the modifications were to make the task more FTOOL-like, and no real changes to the core algorithms were done; the names of the tasks were changed to 'batsurvey{-xxx}' from the original 'bat-survey{-xxx}'; batsurvey-aspect now has an alignfile=CALDB option; the formats of the inventory.dat and outventory.dat have been changed; some version coding has been done to allow expansion in the future, as well as printing the number of energy bins; unit test pases on Linux-32bit against actual survey processing version 5G --CM
+#
+# Revision 1.9  2007/06/26 23:14:23  craigm
+# Fix bug in the call of fits->delete_rows() --CM
+#
+# Revision 1.8  2007/04/20 08:50:37  craigm
+# Fix another bug regarding pre/post_enlarge (the values were being attached to the maketime command line and shouldn't have been); don't rely on 'mgtime' to understand CFITSIO calculator syntax --CM
+#
+# Revision 1.7  2007/04/20 08:25:33  craigm
+# Another subtle syntax bug --CM
+#
+# Revision 1.6  2007/04/20 08:24:16  craigm
+# Fix syntax bug in new pre_enlarge/post_enlarge code --CM
+#
+# Revision 1.5  2007/04/20 07:40:23  craigm
+# Improvements to the survey GTI scanner: work around 60 second sampling of star tracker locked & loss function telemetry (by adding 35 seconds on either side of the first/last sample); remove bogus values from the star tracker loss function telemetry which were causing snapshots to be split into pieces; when merging DPH good time intervals, skip the bad ones instead of crashing outright; remove good time intervals smaller than 'mingti'; remove bad-time gaps smaller than maxgtigap --CM
+#
+# Revision 1.4  2006/11/01 00:09:47  craigm
+# Bump to version 1.3; add an occultation check for a given source position; the user specifies ra,dec,pcodethresh  --CM
+#
+# Revision 1.3  2006/10/31 21:49:55  craigm
+# Bump to version 1.2; allow some timeslop so that surveys within a few seconds of each other are normally joined (this is controled by the surveyslop parameter); also allow the user to select GTIs for each individual DPH (with the sepdph=YES parameter)... this is useful when looking at short term variations; some bug fixes: quote marks; handle single input DPH file; --CM
+#
+# Revision 1.2  2006/10/25 16:27:09  craigm
+# Print the exposure of each GTI --CM
+#
+# Revision 1.1  2006/10/24 03:57:21  craigm
+#
+#
+# Initial commit of BAT survey processing, broken into more modular bits...
+#
+# bat-survey is still the main driver and not an FTOOL; the rest are FTOOLs;
+#
+# bat-survey-erebin is a copy from its own directory, with some
+# modifications to write out quality maps;
+#
+# bat-survey-gti scans an observation for good time intervals based on
+# loads of quality-screening criteria;
+#
+# bat-survey-detmask does quality filtering at a detector level for a
+# snapshot observation: hot pixels (in multiple energy bands), global
+# quality map, user quality map (possibly multiple), pattern mask
+# quality-selected from survey; detector enable/disable)
+#
+# bat-survey-aspect does attitude drift checking for a snapshot
+# observation.  It looks for attitude drifts of more than a certain
+# magnitude, and reports them back to the calling task in order to make
+# a policy decision.
+#
+# 
+
+# TODO: Add occultation filtering
+
+use strict;
+use HEACORE::HEAINIT;
+
+my $taskname = "batsurvey-gti";
+my $taskvers = "1.7";
+
+# ===================================
+# Execute main subroutine, with error trapping
+my $status = 0;
+eval {
+    $status = headas_main(\&bat_survey_gti);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub bat_survey_gti {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &bat_survey_gti_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+
+sub bat_survey_gti_work {
+
+    # ===== 
+    # Initialization
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+
+    use Astro::FITS::CFITSIO qw(:longnames :constants);
+    use SimpleFITS;
+
+    # Reset output parameters to non-sensical values 
+    PILPutReal('totexpo',-1.0);
+    PILPutReal('goodexpo',-1.0);
+    PILPutInt('ngti',-1);
+
+    my $chatter;
+    $status = PILGetInt("chatter",$chatter);
+    my $verbose = ($chatter >= 5)?(1):(0);
+    # Ordered parameters, usually ask parameters which must come first
+    my @parmlist = ("indir", "dphfiles", "outdir");
+    my %parms = (
+		 indir => \&PILGetString,
+		 dphfiles => \&PILGetString,
+		 outdir => \&PILGetString,
+		 gtifile => \&PILGetString,
+		 filters => \&PILGetString,
+		 elimits => \&PILGetString,
+		 rateminthresh => \&PILGetReal,
+		 ratemaxthresh => \&PILGetReal,
+		 detthresh => \&PILGetInt,
+		 ra => \&PILGetString,
+		 dec => \&PILGetString,
+		 pcodethresh => \&PILGetReal,
+		 batoccultgti_opts => \&PILGetString,
+		 saofiltexpr => \&PILGetString,
+		 dphfiltexpr => \&PILGetString,
+		 filtexpr => \&PILGetString,
+		 stlossfcnthresh => \&PILGetReal,
+		 surveyslop => \&PILGetReal,
+		 sepdph => \&PILGetBool,
+		 mjdrefi => \&PILGetInt,
+		 mjdreff => \&PILGetReal,
+		 maxgtigap => \&PILGetReal,
+		 mingti => \&PILGetReal,
+		 clobber => \&PILGetBool, 
+		);
+
+    print "$taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------------------------\n" if ($chatter >= 2);
+
+    my ($parm, $func, $val);
+    # ... first read ordered parameters, then anything else
+    foreach $parm ( @parmlist, keys(%parms) ) {
+      my $func = $parms{$parm};
+      next if (ref($func) ne "CODE");  # Skip if we already did this parm
+      undef($val);
+      $status = &$func("$parm", $val);
+      die "ERROR: could not retrieve parameter '$parm'" if ($status);
+      $parms{$parm} = $val;
+      print "$parm=$val\n" if ($verbose);
+    }
+
+
+my $indir = $parms{indir};
+my $outdir = $parms{outdir};
+my $dphfiles = $parms{dphfiles};
+my $mjdrefi = $parms{mjdrefi};
+my $mjdreff = $parms{mjdreff};
+
+# Intermediate output GTI files
+my $globalgti = "$outdir/global.gti";   # Global GTI from CALDB
+my $rategti = "$outdir/low_rate.gti";   # Rate-derived from DPH data itself
+my $dphgti   = "$outdir/dph.gti";       # Times of each DPH
+my $dflaggti = "$outdir/dataflags.gti"; # GTIs derived from data flags
+my $occultgti= "$outdir/occult.gti";    # Occultation GTI
+
+my %gtitests = ();
+
+# ================================================================
+# Initialize global variables
+my $totexpo = 0.0;
+my $totgoodexpo = 0.0;
+my $ntotgti = 0;
+my $ngoodgti = 0;
+
+# ================================================================
+# Environment checking
+die "ERROR: directory $indir not found" if (! -d "$indir");
+mkdir ("$outdir",0777) if (! -d "$outdir");
+die "ERROR: could not make directory $outdir" if (! -d "$outdir");
+
+# Remove previous contents
+if ($parms{clobber}) {
+  my $file;
+  foreach $file (glob("$outdir/*")) {
+    unlink($file);
+  }
+}
+
+die "ERROR: subdirectory auxil not found" if (! -d "$indir/auxil");
+die "ERROR: subdirectory bat/survey not found" if (! -d "$indir/bat/survey");
+die "ERROR: subdirectory bat/hk not found" if (! -d "$indir/bat/hk");
+
+# ================================================================
+# Change these if files are located in different directories or have
+# different filename patterns
+my $attitude_glob = "$indir/auxil/sw*sat.fits*";   # Attitude data
+my $hk139_glob    = "$indir/bat/hk/sw*ben.hk*";    # BAT HK 0x139
+my $hk011_glob    = "$indir/auxil/sw*sen.hk*";     # S/C HK 0x011
+my $hk014_glob    = "$indir/auxil/sw*sen.hk*";     # S/C HK 0x014
+my $sao_glob      = "$indir/auxil/sw*sao.fits*";   # SAO (prefilter) file
+my $filt_glob     = "$indir/auxil/sw*s.mkf*";      # Filter file 
+
+# ==== Attitude file
+
+my @gatt = glob($attitude_glob);
+die "ERROR: no attitude file found" if ($#gatt == -1);
+my $gatt = $gatt[0];
+
+my @saofiles = glob($sao_glob);
+die "ERROR: no SAO file found" if ($#saofiles == -1);
+my $saofile = $saofiles[0];
+
+# Checks for batoccultgti
+my ($ra, $dec, $dooccult);
+$dooccult = 0;
+if ($parms{ra} !~ m/^NONE$/i && $parms{dec} !~ m/^NONE$/i) {
+  $ra = $parms{ra} + 0.0;
+  $dec = $parms{dec} + 0.0;
+  $dooccult = 1;
+}
+if ($parms{batoccultgti_opts} =~ m/^NONE$/i ) {
+  # Defend against NONE when it should really be blank
+  $parms{batoccultgti_opts} = "";
+}
+
+# ============== MASTER LIST OF GOOD TIME INTERVAL FILTERS ===========
+
+my @gfiles = ( 
+	       { test => "global",
+		 # Global GTI based on CALDB - previous computation
+		 infile => "NONE",
+		 expr => "PRECOMPUTED",
+		 outfile => "$globalgti",
+	       },
+	       { test => "pointing",
+		 # Select ACS data which is settling
+		 infile => glob($attitude_glob)."[ACS_DATA][TIME > 1000]",
+		 expr => "(FLAGS == b1xxxxxxx)",
+		 outfile => "$outdir/ten_arcmin.gti",
+		 prefr => 0.0,
+		 postfr => 0.0 },
+	       { test => "filter_file",
+		 # Filter file selections
+		 infile => glob($filt_glob),
+		 expr => "($parms{filtexpr})",
+		 prefr => 0.0,
+		 postfr => 0.0 },
+	       { test => "ndets",
+		 # Require a minimum number of detectors
+		 infile => glob($hk139_glob)."[hk139x001]",
+		 expr => "BDIHKNGOODDETS > $parms{detthresh}",
+		 outfile => "$outdir/array_on.gti"},
+	       { test => "startracker",
+		 # Require that the star tracker is locked
+		 infile => glob($hk011_glob)."[hk011x001]",
+		 expr => "(SAC_MODESTAT / 32) % 2 == 1 && SAC_ADERR < 0.2",
+		 outfile => "$outdir/startracker_locked.gti",
+		 # NOTE: work around 60-second sampling of this data
+		 pre_enlarge => 35.0,
+		 post_enlarge => 35.0 },
+	       { test => "st_lossfcn",
+		 # Require that the star tracker loss function is low
+		 # NOTE: since the lame SDC forgot to apply the proper scale function
+		 # we are stuck scaling it by hand, using a heuristic cut-off point
+		 # FURTHER NOTE: sometimes the star tracker loss function
+		 # reads invalid values (65535 raw DN), which screw up
+		 # the calculation.  Here we ignore them (remembering to
+		 # check both the raw value and the scaled value).
+		 infile => glob($hk014_glob)."[hk014x001][(STAST_LOSSFCN != 65535)&&(! NEAR(STAST_LOSSFCN,65535E-12,1e-12))]",
+		 expr => "((STAST_LOSSFCN < 1.0)?(STAST_LOSSFCN < $parms{stlossfcnthresh}):(STAST_LOSSFCN*1E-12 < $parms{stlossfcnthresh}))",
+		 outfile => "$outdir/startracker_lossfcn.gti",
+		 # NOTE: work around 60-second sampling of this data
+		 pre_enlarge => 35.0,
+		 post_enlarge => 35.0 },
+	       { test => "dph_rate",
+		 # Require a low rate - previous data selection
+		 infile => "NONE",
+		 expr => "PRECOMPUTED",
+		 outfile => "$rategti" },
+	       { test => "data_flags",
+		 # Require good data - previous data selection
+		 infile => "NONE",
+		 expr => "PRECOMPUTED",
+		 outfile => "$dflaggti",
+		 prefr => 0.0,
+		 postfr => 0.0, },
+	       { test => "earthconstraints",
+		 # Earth constraints (limb and SAA)
+		 infile => "$saofile",
+		 expr => "($parms{saofiltexpr})",
+		 outfile => "$outdir/earthconstraints.gti",
+		 prefr => 0.0,
+		 postfr => 0.0 },
+	       { test => "remove_midnight",
+		 # Remove DPHs that cross the midnight (science planning) boundary
+		 # NOTE: this is checked for as part of the data flags, not with maketime
+		 infile => "NONE",
+		 expr => "BUILTIN",
+		 outfile => "NONE" },
+	       { test => "occultation",
+		 # Only accept times where the source is unocculted
+		 infile => "NONE",
+		 expr => ( $dooccult ) ? ("PRECOMPUTED") : ( "(NONE)" ),
+		 outfile => "$occultgti" },
+
+	       { test => "usergti",
+		 # User-requested good time interval file
+		 infile => "NONE",
+		 expr => ( -f "$parms{gtifile}" ) ? ("PRECOMPUTED") : ( "(NONE)" ),
+		 outfile => "$parms{gtifile}" },
+
+	     );
+
+
+# ===========================
+# User-specified list of filters to apply
+my $filtstr = $parms{filters};
+my @filtlist;
+my $g;
+# Remove leading and trailing spaces
+$filtstr =~ s/^ *//;
+$filtstr =~ s/ *$//;
+
+# Default to "all", also if the user specified a "-negated" test
+if ($filtstr =~ m/^-/ || $filtstr =~ m/, *-/) {
+  $filtstr = "all,$filtstr";
+}
+if ($filtstr eq "") { $filtstr = "all"; }
+    
+@filtlist = split(/,/,$filtstr);
+foreach $filtstr (@filtlist) {
+  $filtstr =~ s/^ *//;
+  $filtstr =~ s/ *$//;
+  
+  if ($filtstr eq "all") {
+    foreach $g (@gfiles) {
+      $gtitests{$g->{test}} = 1;
+    }
+  } elsif ($filtstr =~ m/^-(.*)/) {
+    $gtitests{$1} = 0;
+  } else {
+    $gtitests{$filtstr} = 1;
+  }
+}
+
+# ========================== QUALITY SELECTION =======
+my $totlc = "$outdir/total.lc";
+my $cmd;
+my $mastergti = "$outdir/master.gti";
+my ($fits, $ngti);
+
+# Check DATA_FLAGS for bad DPHs (plus bogus rates)
+if ("$dphfiles" =~ m/^@/ || "$dphfiles" =~ m/,/ ) {
+  $cmd = "ftmerge infile='$dphfiles' outfile='-' ".
+    "columns='TIME,DATA_FLAGS,EXPOSURE' copyall=NO skipbadfiles=YES ";
+} else {
+  $cmd = "ftcopy infile='$dphfiles"."[1][col TIME;DATA_FLAGS;EXPOSURE]' ".
+    "outfile='-' copyall='NO' ";
+} 
+
+# For manipulating the DPH times
+my $dtsep = 0.0;
+if ($parms{sepdph}) {
+  $dtsep = 1.0;
+  $parms{surveyslop} = 0.0;
+}
+
+unlink($mastergti);
+# Convert to a time-sorted GTI
+my $expr      = "START=TIME - $parms{surveyslop};";
+$expr = $expr . "STOP=TIME+EXPOSURE + $parms{surveyslop};";
+$expr = $expr . "#MJDREFI=$mjdrefi;";
+$expr = $expr . "#MJDREFF=$mjdreff;";
+$expr = $expr . "#EXTNAME=\"GTI\";";
+
+$cmd = $cmd . 
+    "| ftsort infile='-[1][col *;$expr]' outfile='$dphgti' ".
+      "columns='TIME' unique=NO clobber=YES ";
+unlink("$dphgti");
+print "$cmd\n" if ($verbose);
+system("$cmd");
+die "ERROR: could not create $dphgti" if (! -f "$dphgti");
+
+$cmd = "pset ftstat sum=0"; print "$cmd\n" if ($verbose); 
+system("$cmd < /dev/null");
+$cmd = "ftstat '$dphgti"."[1][col EXPOSURE]'";
+$cmd .= " > /dev/null " if (! $verbose);
+print "$cmd\n" if ($verbose);
+system("$cmd < /dev/null");
+$totexpo = `pget ftstat sum`; chomp($totexpo);
+chomp($totexpo);
+die "ERROR: zero exposure in observation" if ($totexpo <= 0);
+# Save this result in the parameter file
+PILPutReal('totexpo',$totexpo);
+
+# Filter that GTI to remove bad data and midnight-crossing data
+my @filtlist = ("(".$parms{dphfiltexpr}.")");
+if ($gtitests{remove_midnight}) {
+    # Remove midnight-crossing surveys, which may contain roll-only maneuvers.
+    # These are bad because the BAT does not start a new survey when this kind
+    # of manuever happens.
+    push @filtlist, "(floor(TIME/86400.0) == floor((TIME+EXPOSURE)/86400.0))";
+}
+my $filtexpr1 = join(" && ",@filtlist);
+my $infile = "$dphgti"."[1][$filtexpr1]";
+$cmd = "ftcopy infile='$infile' outfile='$dflaggti' clobber=YES";
+
+unlink("$dflaggti");
+print "$cmd\n" if ($verbose);
+system("cat /dev/null | $cmd");
+die "ERROR: could not create $dflaggti" if (! -f "$dflaggti");
+
+# =======
+# Make a light curve with DPH time-binning
+unlink("$totlc");
+$cmd = "batbinevt infile='$dphfiles' outfile='$totlc' outtype='LC' ".
+  "timedel=0 timebinalg='infile' energybins='$parms{elimits}' ".
+  "weighted=NO clobber=yes detmask=NONE gtifile='$dflaggti' ";
+if ($verbose) { $cmd .= "chatter=5 "; } else { $cmd .= "chatter=0 "; }
+print "$cmd\n" if ($verbose);
+system("$cmd < /dev/null");
+die "ERROR: could not create master light curve" if (! -f $totlc);
+
+# Convert light curve into a GTI
+$expr = "START=TIME - #TIMEPIXR*TIMEDEL - $parms{surveyslop} + $dtsep;";
+$expr = $expr . "STOP = TIME + (1- #TIMEPIXR)*TIMEDEL + $parms{surveyslop} - $dtsep;";
+$expr = $expr . "#MJDREFI=$mjdrefi;";
+$expr = $expr . "#MJDREFF=$mjdreff;";
+$expr = $expr . "#EXTNAME=\"GTI\";";
+$infile = "$totlc"."[1][RATE > $parms{rateminthresh} && RATE < $parms{ratemaxthresh}][col *;$expr]";
+$cmd = "ftsort infile='$infile' outfile='$rategti' columns='TIME' ".
+  "unique=NO clobber=YES";
+print "$cmd\n" if ($verbose);
+system("$cmd < /dev/null");
+die "ERROR: could not create rate GTI" if (! -f "$rategti");
+
+
+# ==== 
+# Occultation GTI if requested
+if ($dooccult) {
+  $cmd = "batoccultgti infile='$saofile' outfile='$occultgti' ".
+    "ra='$ra' dec='$dec' ".
+    "pcodethresh='$parms{pcodethresh}' $parms{batoccultgti_opts} clobber=YES ";
+  print "$cmd\n" if ($verbose);
+  unlink("$occultgti");
+  system("$cmd < /dev/null");
+  die "ERROR: could not create occultation GTI" if (! -f "$occultgti");
+}
+
+# ====
+# Global GTI from CALDB
+$cmd = "batglobalgti infile='CALDB' outfile='$globalgti' ".
+  "expr='QUALITY <= 1' clobber='YES' ";
+if ($verbose) { $cmd .= "chatter=5 "; } else { $cmd .= "chatter=0 "; }
+unlink($globalgti);
+print "$cmd\n" if ($verbose);
+system("$cmd < /dev/null");
+die "ERROR: could not create global GTI" if (! -f "$globalgti");
+
+
+
+# ====
+# Loop through each quality test:
+#    1. Skip some if not needed
+#    2. Assemble the maketime command line
+#    3. Run maketime
+#    4. Check for presence of good times
+#    5. Update MJDREF{I,F}
+#    6. Save GTI file name in list for merging
+
+unlink("$mastergti");
+unlink("$outdir/gti.lis");
+open(GTILIST,">$outdir/gti.lis") or die "ERROR: could not open master GTI list";
+if (defined($globalgti)) { print GTILIST "$globalgti"."[1]\n"; }
+
+printf "       %-20s   %10s\n","Test", "# GTIs" if ($chatter >= 2);
+
+my $gfile; 
+foreach $gfile (@gfiles) {
+  my $test = $gfile->{test};
+  print "Good time filter: $test\n" if ($verbose);
+  if($gtitests{$test} == 0) {
+    printf "       %-20s   %10s\n",$test, "(skipped)" if ($chatter >= 2);
+    print "  (skipped)\n" if ($verbose);
+    next;
+  }
+
+  # Skip this one if the expression is blank
+  next if ($gfile->{expr} eq "BUILTIN");
+  if ($gfile->{expr} =~ m/\(?NONE\)?/ || $gfile->{expr} eq "") {
+    printf "       %-20s   %10s\n",$test, "(skippped)" if ($chatter >= 2);
+    next;
+  }
+
+  my @hk = keys(%$gfile);
+  my $key;
+  $cmd = "maketime";
+  foreach $key (@hk) {
+    next if ($key eq "test" || $key eq "pre_enlarge" || $key eq "post_enlarge");
+    $cmd = $cmd . " $key='$gfile->{$key}'";
+  }
+  if (! defined($gfile->{prefr}) )  { $cmd = $cmd . " prefr=0.5"; }
+  if (! defined($gfile->{postfr}) ) { $cmd = $cmd . " postfr=0.5"; }
+  $cmd = $cmd . " name=NONE value=NONE time=TIME compact=NO clobber=YES";
+  
+  # Remove trailing [] modifiers
+  my $fexpr = "$gfile->{infile}";
+  $fexpr =~ s|\[.*$||;
+  
+  # Execute command, if the file is not NONE
+  if ($gfile->{infile} ne "NONE") {
+    die "ERROR: maketime input file $fexpr for test '$test' not found." 
+      if (! -f "$fexpr" );
+    
+    unlink("$gfile->{outfile}");
+    print "  $cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+  }
+  
+  die "ERROR: GTI creation of $gfile->{outfile} failed"
+    if (! -f "$gfile->{outfile}");
+  $fits = SimpleFITS->open("+<$gfile->{outfile}");
+  die "ERROR: could not open $gfile->{outfile}" if (! $fits );
+  $status = $fits->move(2)->status();
+  $ngti = $fits->readkey('NAXIS2');
+  $mjdrefi = $fits->readkey('MJDREFI');
+  if ($fits->status()) {
+    $fits->setstatus(0);
+    $fits->writekey('MJDREFI',$mjdrefi,"MJD reference day");
+    $fits->writekey('MJDREFF',$mjdreff,"MJD reference (fraction of day)");
+  }
+  
+  $fits->close();
+  
+  die "ERROR: $gfile->{outfile} contained no good times (failed '$test' test)" if ($ngti <= 0);
+
+  my ($gtifile,$rawgtifile);
+  $gtifile = "$gfile->{outfile}";
+
+  # Possibly enlarge this GTI (this is usually due to finite sampling
+  # rate not providing enough data at the edges of an observation).
+  if ($gfile->{pre_enlarge} || $gfile->{post_enlarge}) {
+    my ($gtiexpr);
+    $gtiexpr = "col *";
+    $gtiexpr = "$gtiexpr; START = START - $gfile->{pre_enlarge}" 
+      if ($gfile->{pre_enlarge});
+    $gtiexpr = "$gtiexpr; STOP = STOP + $gfile->{post_enlarge}" 
+      if ($gfile->{post_enlarge});
+
+    # *%(&%(*&% mgtime is to %*(&(*%&& stupid to handle 
+    # in CFITSIO calculator expressions.
+    $rawgtifile = $gtifile . ".raw";
+    rename("$gtifile","$rawgtifile");
+    $cmd = "ftcopy infile='$rawgtifile"."[1][$gtiexpr]' ".
+      "outfile='$gtifile' clobber=YES";
+    print "  $cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+
+    
+    die "ERROR: GTI modification of $rawgtifile failed"
+      if (! -f "$gtifile");
+    unlink("$rawgtifile");
+  }
+  print GTILIST "$gtifile"."[1]\n";
+  print "  passed\n" if ($verbose);
+  printf "       %-20s   %10d\n",$test, $ngti if ($chatter >= 2);
+  
+}
+close(GTILIST);
+
+# ========
+# Merge all sub-GTIs into a single master GTI
+my ($rawgti);
+$rawgti = "$mastergti"."-raw";
+unlink("$rawgti");
+$cmd = "mgtime ingtis='@"."$outdir/gti.lis' outgti='$rawgti' merge='AND' ".
+  "instarts='START' instops='STOP' indates='MJDREF' ".
+  "outstart='START' outstop='STOP' ";
+print "$cmd\n" if ($verbose);
+system("$cmd < /dev/null");
+
+# Copy "raw" to "master"
+system("cp -p '$rawgti' '$mastergti'");
+
+print "----------------------------------------------------------\n" 
+  if ($chatter >= 2);
+
+# Check that mastergti is present and has good times
+$fits = SimpleFITS->open("+<$mastergti");
+die "ERROR: could not open $mastergti" if (! $fits );
+$ngti = $fits->move(2)->nrows();
+$totgoodexpo = 0.0;
+
+# ======
+# Find total good time from master GTI
+#    (also adjust goodtimes if we split each DPH out separately)
+my $ngti_out = $ngti;
+if ($fits->status() == 0 && $ngti > 0) {
+  my ($i, @gstart, @gstop);
+  my (@newgstart, @newgstop);
+  my ($ngaps_removed, $nsmall);
+
+  print "Updating START/STOP values\n" if ($verbose);
+  @gstart = $fits->readcol('START');
+  @gstop  = $fits->readcol('STOP');
+  if ($fits->status() == 0) {
+    foreach $i (0 .. $#gstart) {
+      $gstart[$i] = $gstart[$i] - $dtsep;
+      $gstop[$i]  = $gstop[$i]  + $dtsep;
+    }
+
+    print "Scanning for small gaps\n" if ($verbose);
+    # Scan through and remove gaps smaller than maxgtigap
+    if ($parms{maxgtigap} > 0 && $dtsep == 0) {
+      # Start first GTI...
+      @newgstart = (); @newgstop = ();
+      push @newgstart, $gstart[0];
+      foreach $i (1 .. $#gstart) {
+	if (($gstart[$i]-$gstop[$i-1]) > $parms{maxgtigap}) {
+	  # ... Gap too large, so start a new GTI ...
+	  push @newgstop, $gstop[$i-1];
+	  push @newgstart, $gstart[$i];
+	} else {
+	  $ngaps_removed ++;
+	}
+      }
+      # ... Close last GTI
+      push @newgstop, $gstop[$#gstop];
+
+      @gstart = @newgstart;
+      @gstop  = @newgstop;
+      print "  --> removed $ngaps_removed gaps smaller than $parms{maxgtigap} sec\n" 
+	if ($chatter >= 2 && $ngaps_removed > 0);
+    }
+    
+    # Scan through and remove GTIs smaller than mingti
+    if ($parms{mingti} > 0) {
+      @newgstart = (); @newgstop = ();
+      foreach $i (0 .. $#gstart) {
+	if ($gstop[$i]-$gstart[$i] > $parms{mingti}) {
+	  push @newgstart, $gstart[$i];
+	  push @newgstop, $gstop[$i];
+	} else {
+	  $nsmall ++;
+	}
+      }
+      @gstart = @newgstart;
+      @gstop  = @newgstop;
+      print "  --> removed $nsmall GTIs smaller than $parms{mingti}\n" 
+	if ($chatter >= 2 && $nsmall > 0);
+    }
+
+    # Compute total exposure
+    foreach $i (0 .. $#gstart) {
+      $totgoodexpo += ($gstop[$i] - $gstart[$i]);
+    }
+
+    # Change accounting of number of output GTIs
+    $ngti_out = $#gstart + 1;
+
+    # If we modified the GTI, then store it back in the file
+    if ($dtsep > 0 || $ngaps_removed > 0 || $nsmall > 0) {
+      if ($ngti_out > 0) {
+	$fits->writecol('START',{},\@gstart);
+	$fits->writecol('STOP', {},\@gstop);
+      }
+
+      # Reduce the size of the FITS table if the list shrank, by
+      # removing the final rows
+      if ($ngti != $ngti_out) {
+	$fits->delrows($ngti - $ngti_out);
+      }
+    }
+    
+  }
+}
+$fits->setstatus(0)->close();
+
+# ====
+# Final summary text
+
+printf "       %-20s   %10d\n","COMBINED", $ngti_out if ($chatter >= 2);
+print "----------------------------------------------------------\n" if ($chatter >= 2);
+if ($ngti_out > 0) {
+  system("ftlist infile='$mastergti"."[1][col *;EXPOSURE=STOP-START;]' option=T") 
+    if ($chatter >= 2);
+} else {
+  unlink($mastergti);
+  die "ERROR: master GTI contained no time intervals";
+}
+    
+print "----------------------------------------------------------\n" if ($chatter >= 2);
+print "DONE (status=$status)\n" if ($chatter >= 1);
+PILPutInt('ngti', $ngti_out);
+PILPutReal('goodexpo', $totgoodexpo);
+
+return $status;
+}
+

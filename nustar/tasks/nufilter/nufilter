@@ -1,0 +1,1258 @@
+#!/usr/bin/perl 
+#
+# 
+#	nufilter
+#
+#	INVOCATION:
+#
+#		nufilter [parameter=value ...]
+#
+#	DESCRIPTION:
+#               
+#
+#	DOCUMENTATION:
+#
+#
+#	CHANGE HISTORY:
+#        0.1.0 - NS 14/10/11 - First version
+#        0.1.1 - NS 10/11/11 - Apply 'gtiespr' to orbitfile instead of attfile
+#        0.1.2 - NS 17/04/12 - Added 'psdcorfile' input parameter
+#        0.1.3 - NS 30/08/12 - Handle long file naming
+#        0.1.4 - NS 19/10/12 - Added 'prefilter' ftool call
+#                            - Added new input parameters needed by 'prefilter'
+#        0.1.5 - RF 05/04/16 - Added key 'MJFREFI' and 'MJFREFF'in extension +0 and +1 on 'attfile'
+#        0.1.6 - RF 17/11/16 - Added parameter timeadj=DEFAULT to the call task prefilter
+#        
+#
+#	AUTHORS:
+#
+#       ASDC - ASI Science Data Center
+#
+#
+
+# NuSTAR perl library
+require "libnustarperl.pl";
+
+use strict;
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use File::Basename;
+use vars qw( %Task %Default %Def @Par %TmpInFiles );
+
+
+#
+# Specific of the task
+#
+
+%Task = (
+	 start       => `date`,
+	 name        => "nufilter",
+	 version     => "0.1.6",
+	 releasedate => "2016-11-17",
+	 stem        => "nufilter_0.1.6",
+	 clobber     => 0,  # it means 'clobber=no'
+	 chatter     => 0,
+	 status      => 0,
+	 errmess     => "",
+	 history     => "",
+	 configfile  => "",
+	 tmpoutfile  => "",
+	 tmpdir      => $$."_tmp_nufilter",
+	 instrument  => "",
+	 StartDate   => "",
+	 StartTime   => "",
+	 );
+
+
+#
+#  Defaults
+#
+%Default = (
+	    DEFAULT         => "DEFAULT",
+	    CALDB           => "CALDB",
+	    NONE            => "NONE",
+	    HKFILEEXTENSION => "_fpm.hk",
+	    MISSIONEPOCH    => "2010-01-01T00:00:00.000",
+	    KNM_TSTART      => "TSTART",
+	    KNM_TSTOP       => "TSTOP",
+	    KNM_TELESCOP    => "TELESCOP",
+	    KNM_MJDREFI     => "MJDREFI",
+	    KVL_MJDREFI     => 0,
+	    KCM_MJDREFI     => "Reference MJD Integer part",
+	    KNM_MJDREFF     => "MJDREFF",
+	    KVL_MJDREFF     => 0,
+	    KCM_MJDREFF     => "Reference MJD Fractional",
+	    );
+
+
+#
+#  Temporary Files
+#
+%TmpInFiles = (
+	       attfile         => "",
+	       hkfile          => "",
+	       cebhkfile       => "",
+	       orbitfile       => "",
+	       psdcorfile      => "",
+	       attorbfile      => "",
+	       tlefile         => "",
+	       teldef          => "",
+	       );
+
+
+#
+# Get Input Parameters 
+#
+if ( &GetInputParameters ){
+    $Task{errmess} = "Error: parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+&RunningTask;
+
+#
+# Check input files
+#
+if ( ! -f &GetValPar("hkfile") ) {
+    $Task{errmess} = "Housekeeping FITS File: '" . &GetValPar("hkfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("cebhkfile") ) {
+    $Task{errmess} = "CEB Housekeeping FITS File: '" . &GetValPar("cebhkfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("attfile") ) {
+    $Task{errmess} = "Attitude File: '" . &GetValPar("attfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("orbitfile") ) {
+    $Task{errmess} = "Orbit File: '" . &GetValPar("orbitfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("psdcorfile") ) {
+    $Task{errmess} = "corrected Position Sensing Detector FITS File: '" . &GetValPar("psdcorfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("tlefile") ) {
+    $Task{errmess} = "TLE FITS File: '" . &GetValPar("tlefile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( !&CompUL(&GetValPar("teldef") , $Default{NONE}) && !&CompUL(&GetValPar("teldef") , $Default{CALDB}) && ! -f &GetValPar("teldef") ) {
+    $Task{errmess} = "'coordfits' Alignment FITS File: '" . &GetValPar("teldef") . "' not found";
+    goto EXITWITHERROR;
+}
+
+# my vars 
+my $attfile=&GetValPar("attfile");
+my ($fptr,$status) = (0,0);
+
+# open attfile file
+fits_open_file($fptr,$attfile,READONLY,$status);
+if ($status) 
+{
+    &PrntChty(3, "$Task{stem}: Error: unable to open '$attfile' file.");
+    goto EXITWITHERROR;
+}
+
+# read key 'MJDREFI' on extension+0
+fits_read_key($fptr, TINT, $Default{KNM_MJDREFI}, $Default{KVL_MJDREFI}, $Default{KCM_MJDREFI}, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_MJDREFI} keyword";
+    goto EXITWITHERROR;
+}
+
+# read key 'MJDREFF' on extension+0
+fits_read_key($fptr, TDOUBLE, $Default{KNM_MJDREFF}, $Default{KVL_MJDREFF}, $Default{KCM_MJDREFF}, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_MJDREFF} keyword";
+    goto EXITWITHERROR;
+}  
+    
+#
+# Get Instrument from the input Housekeeping File
+#
+&GetKeyword ( &GetValPar("hkfile"), "HK1FPM", undef, "INSTRUME", \$Task{instrument});
+if ( $Task{status} ) { 
+    goto EXITWITHERROR; 
+}
+
+#
+# Get Observation Start Date from the input Housekeeping File
+#
+my ( $StartDate, $StartTime );
+&GetStartDateFromExt(&GetValPar("hkfile"),"HK1FPM",\$StartDate,\$StartTime);
+if ( $Task{status} ) { 
+    goto EXITWITHERROR; 
+}
+$Task{StartDate} = $StartDate;
+$Task{StartTime} = $StartTime;
+
+
+#
+# Set teldef file name
+#
+if ( &SetTeldefFileName ){
+    &PrntChty(3, "$Task{stem}: Error: unable to set teldef file name.\n");
+    goto EXITWITHERROR; 
+}
+
+
+#
+# Check output directory
+#
+my $od = &GetValPar("outdir");
+$od =~ s/\/$// ;
+&SetValPar("outdir",$od);
+
+if ( ! -d &GetValPar("outdir") ) {
+    if( &CreateDir(&GetValPar("outdir")) ){
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Create a local directory for the temporary input file
+#
+if( -d $Task{tmpdir} ){
+    &PrntChty(2,"$Task{stem}: Error: unable to create temporary directory '$Task{tmpdir}' , already exists!\n");
+    goto EXITWITHERROR;
+}
+
+if( &CreateDir($Task{tmpdir}) ) { goto EXITWITHERROR; }
+
+
+#
+# Create symbolic links to input files
+# in the local directory
+#
+if( &CreateTemporaryLinks ) { 
+    goto EXITWITHERROR; 
+}
+
+
+#
+# Run prefilter ftool
+#
+if ( &RunPrefilter ) { 
+    goto EXITWITHERROR; 
+}
+
+#
+# Create temporary local link to output attorbfile
+#
+$TmpInFiles{attorbfile} = $Task{tmpdir}."/".basename(&GetValPar("attorbfile"));
+
+if ( &CreateAbsSymbolicLink(&GetValPar("attorbfile"), $TmpInFiles{attorbfile}) ){
+    &PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{attorbfile}."' to '".&GetValPar("attorbfile")."'\n");
+    goto EXITWITHERROR; 
+}
+
+
+#
+# Create ASCII Makefilter configuration file
+#
+&MkConfigFile;
+if ( $Task{status} ) {
+    goto EXITWITHERROR;
+}
+
+#
+# Run makefilter ftool
+#
+if ( &RunMakefilter ) { 
+    goto EXITWITHERROR; 
+}
+
+#
+# Run fselect on mkffile if nonulls = yes
+#
+if ( &GetValPar("nonulls") =~ /[yY]/ ) {
+    if ( &CleanMkffile() ) { 
+	goto EXITWITHERROR; 
+    }
+}
+
+
+# If gtiexpr != NONE apply the gti expression on orbit
+# to generate GTIs for mkf screening 
+#
+if ( ! &CompUL( &GetValPar("gtiexpr"),$Default{NONE} )) {
+    if ( !&GetValPar("gtiexpr") ) { 
+	goto EXITWITHERROR; 
+    }
+    if ( &ScreenMkf() ) { 
+	goto EXITWITHERROR; 
+    }
+}
+else {
+    &PrntChty(4,"$Task{stem}: Info: No GTI screening applied on " . &GetValPar("mkffile") . "\n");
+}
+
+
+#
+# Remove 'configfile' file
+#
+if ( -f $Task{configfile} ) {
+    if ( !unlink ( $Task{configfile} ) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Unable to remove '$Task{configfile}' file. $!\n");
+    }
+}
+
+my $mkffile=&GetValPar("mkffile");
+if ( -f $mkffile ) 
+{
+    if ( &UpdateExt($attfile,$mkffile) )
+    {
+	goto EXITWITHERROR;
+    }
+}
+
+#
+# Remove symbolic links to input files
+# in the temporary directory
+#
+&RemoveTemporaryLinks;
+
+
+#
+# Remove symbolic link to output attorbfile
+#
+if ( !unlink($TmpInFiles{attorbfile}) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{attorbfile}."' temporary file\n");
+}
+
+#
+# Remove temporary directory
+#
+if( !rmdir($Task{tmpdir}) ){
+    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$Task{tmpdir}."' temporary directory. $!\n");
+}
+
+
+#
+# End of nufilter task
+#
+
+&Success;
+exit (0);
+
+
+ EXITWITHERROR:
+
+&Error;
+exit(1);
+
+
+
+
+#-------------------------------------------------------------
+#  subroutines section
+#-------------------------------------------------------------
+
+
+sub GetInputParameters {
+
+    use vars qw( %Task  @Par  %Ind);
+  
+    my ( $name, $indref, $p);
+
+    # temporary set of chatter to normal
+    $Task{chatter} = 3;
+
+    # get parameter list from parameter file
+    ($indref,@Par) = &GetParameterList();
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    %Ind = %$indref;
+
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+
+    foreach $p (@Par) {
+	if (($p->{set} == 1) && (!&RequestParameter($p->{name}))) {
+	    &PrntChty(2,"$Task{stem}: Error: input parameter '$p->{name}' not compatible with other input parameters.\n");
+	    return 1;
+	}
+    }
+
+    $Task{errmess} = "";
+    if (! &LoadParameter()) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+    
+    $Task{chatter} = &GetValPar("chatter");
+    $Task{history} = &GetValPar("history");
+
+    if ( &GetValPar("clobber") =~ /[yY]/ ) {
+	$Task{clobber} = 1;
+    }
+       
+    return 0;
+    
+} #GetInputParameters
+
+
+
+sub RequestParameter(){
+    use vars qw (%Default %Task);
+    my ($par_name) = @_;
+
+    return 1;
+} # RequestParameter
+
+
+sub MkConfigFile {
+    use vars qw( %Task %Default %Def );
+    my ( $ConfFileName, $InStem );
+    
+    
+    &PrntChty(3,"$Task{stem}: Info: Create an ASCII Makefilter configuration file\n");
+    ( my $InStem ) = &GetRootStem (  &GetValPar("hkfile") , $Default{HKFILEEXTENSION} );
+    if ( $Task{status} ) {
+	$Task{status} = 0;
+	$Task{message} = "";
+	$Task{configfile} = &GetValPar("outdir") . "/" . $$ .$Def{MKCONFSTEM}.$Def{MKCONFEXT};
+    }
+    else {
+	$Task{configfile} = &GetValPar("outdir") . "/$InStem" .$Def{MKCONFSTEM}.$Def{MKCONFEXT};
+    }
+
+    my( @MkfConfTable ) = &ReadMkfConfigureFile();
+    if ( $Task{status} ) { return 1; }
+
+    if ( !open ( MKCONF, "> " . $Task{configfile} ) ) {
+	    
+	&PrntChty(2,"\n$Task{stem}: Error: Cannot Create '" . $Task{configfile} . "' Makefilter Configuration File\n");
+	$Task{errmess} = "Error: Cannot  Create '" . $Task{configfile} . "'";
+	$Task{status} = 1;
+	return;
+    }
+
+    for (my $i = 0; $i <= $#MkfConfTable ; $i++) {
+
+	my $filename;
+
+	if ( $MkfConfTable[$i]->{ORIGIN} eq "ATTITUDE" ) {
+	    $filename = $TmpInFiles{attfile}; 
+	}
+	elsif ( $MkfConfTable[$i]->{ORIGIN} eq "HK" ) { 
+	    $filename = $TmpInFiles{hkfile}; 
+	}
+	elsif ( $MkfConfTable[$i]->{ORIGIN} eq "HKCEB" ) { 
+	    $filename = $TmpInFiles{cebhkfile}; 
+	}
+	elsif ( $MkfConfTable[$i]->{ORIGIN} eq "ORBIT" ) { 
+	    $filename = $TmpInFiles{orbitfile}; 
+	}
+	elsif ( $MkfConfTable[$i]->{ORIGIN} eq "PSD" ) { 
+	    $filename = $TmpInFiles{psdcorfile}; 
+	}
+	elsif ( $MkfConfTable[$i]->{ORIGIN} eq "ATTORB" ) {
+	    $filename = $TmpInFiles{attorbfile}; 
+	}
+	else {
+	    &PrntChty(2,"\n$Task{stem}: Error: on column 'ORIGIN' row number $i+1 of 'mkconfigfile'\n");
+	    &PrntChty(2,"\n$Task{stem}: Error: value not allowed\n");
+	    $Task{errmess} = "'mkconfigfile' FITS file with not allowed 'ORIGIN' value";
+	    $Task{status} = 1;
+	    return;
+	}   
+
+	print MKCONF "$MkfConfTable[$i]->{PARNAME} $filename $MkfConfTable[$i]->{EXTENSION} $MkfConfTable[$i]->{INTERP} $MkfConfTable[$i]->{CALIB} $MkfConfTable[$i]->{OUTPARNAME}\n"; 
+    }
+    
+    close ( MKCONF );
+    &PrntChty(3,"$Task{stem}: Info: Created '" . $Task{configfile} . "' file\n");
+
+    return;
+
+} # MkConfigFile
+
+
+sub ReadMkfConfigureFile {
+
+    my ( $mkfconfigfile );
+    my ( $mkfconfigext );
+    
+    if ( &CompUL( &GetValPar("mkfconfigfile") , $Default{CALDB} ) ) {
+	
+	# Get CALDB FITS configuration File with datatype 'MKFCONF'
+	my ($refa,$refb)  = &CallQuzcif("MKFCONF","NOW","-","-",1,"FPM","-");
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Error: cannot retieve MKFCONF file name from CALDB\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 MKFCONF CALDB file\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Info: Using FITS Makefilter Configuration File from CALDB:\n");
+	    &PrntChty(2,"$Task{stem}: Info: '@$refa[0]' extension '@$refb[0]'\n");
+	    $mkfconfigfile = @$refa[0];
+	    $mkfconfigext  = @$refb[0];
+	}
+    }
+    else {
+	$mkfconfigfile =  &GetValPar("mkfconfigfile");
+    }
+    
+    $mkfconfigext  = &CheckMkfConfigFile( $mkfconfigfile, $mkfconfigext );
+    if ( $Task{status} ) { return 1; }
+
+    my @columns = (
+		   { name => 'PARNAME' },
+		   { name => 'ORIGIN' },
+		   { name => 'EXTENSION' },
+		   { name => 'INTERP' },
+		   { name => 'CALIB' },
+		   { name => 'OUTPARNAME' },
+		   );
+
+    my (@table) = &LoadBinTable($mkfconfigfile,"",$mkfconfigext,@columns);
+    if ( $Task{status} ) { return 1; }
+
+    return @table;
+    
+} # ReadMkfConfigureFile
+
+
+sub CheckMkfConfigFile {
+
+    my ( $filename, $extnum ) = @_;
+
+    if ( $Task{status} ) { return 1; }
+
+    my $extname = "MKFCONF";
+    my $tmpext = &GetNumExtName( $filename,$extname );
+
+    if ( $tmpext == -1 ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: Not found extension with EXTNAME = $extname\n");
+	return;
+    }
+    elsif ( $Task{status} ) { return; }
+
+    if ( $extnum && $extnum ne $tmpext ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: HDU number '$tmpext' with EXTNAME = '$extname'\n");
+	&PrntChty(2,"$Task{stem}: Error: but currect CALDB dataset in HDU number '$extnum'\n");
+	return;
+    }
+
+    return $tmpext;
+
+} # CheckMkfConfigFile
+
+
+sub RunMakefilter {
+
+    use vars qw( %Task %Default %Def );
+    my ( $command, $ret, $par, %makefilter );
+    
+    # Get output make filter file name
+    if ( &CompUL( &GetValPar("mkffile") , $Default{DEFAULT} ) ) {
+	&PrntChty(3,"$Task{stem}: Info: Get makefilter output file name\n");
+	my ( $filenameroot ) = &GetFileNameRoot( &GetValPar("hkfile") );
+	$filenameroot =~ s/($Def{HKSTEM})$//;
+	$filenameroot = $filenameroot.$Def{MKFSTEM}.$Def{MKFEXT};
+	&SetValPar("mkffile", &GetValPar("outdir") . "/$filenameroot");
+    }
+    else{
+	my ( $filename ) = basename( &GetValPar("mkffile") );
+	&SetValPar("mkffile", &GetValPar("outdir") . "/$filename");
+    }
+    &PrntChty(3,"$Task{stem}: Info: Makefilter output will be " .  &GetValPar("mkffile") . "\n");
+    
+    # Check if mkfile already exists
+    if ( -f &GetValPar("mkffile") ) {
+	&PrntChty(2,"$Task{stem}: Info: '".&GetValPar("mkffile")."' file exists,\n");
+	
+	if ( (&GetValPar("clobber") =~ /[yY]/) ) {
+	    &PrntChty(2,"$Task{stem}: Warning: parameter 'clobber' set, the\n");
+	    &PrntChty(2,"$Task{stem}: Warning: '".&GetValPar("mkffile")."' file will be overwritten.\n");
+	    unlink ( &GetValPar("mkffile") );
+	}
+	else{
+	    &PrntChty(2, "$Task{stem}: Error: input parameter 'clobber' set to 'no'\n");
+	    &PrntChty(2, "$Task{stem}: Error: cannot overwrite '".&GetValPar("mkffile")."' file\n");
+	    $Task{errmess} = "Cannot overwrite '".&GetValPar("mkffile")."' file";
+	    $Task{status} = 1;
+	    return 1;
+	}
+    }
+
+    # Get TELESCOP keyword
+    my $KVL_TELESCOP;
+    &GetKeyword (  &GetValPar("hkfile") , "HK1FPM", undef , $Default{KNM_TELESCOP}, \$KVL_TELESCOP);
+    if ( $Task{status} ){ 
+	&PrntChty(3,"$Task{stem}: Error: Keyword $Default{KNM_TELESCOP} does not exist in " .  &GetValPar("hkfile") . " file.\n");
+	return 1;
+    }
+
+    #
+    # Build the command line to run 'makefilter'
+    #
+    %makefilter = (
+		   configure  =>  $Task{configfile},
+		   infileroot =>  "\"\"",
+		   outfile    =>  &GetValPar("mkffile"),
+		   mission    => $KVL_TELESCOP,
+		   clobber    =>  &GetValPar("clobber"),
+		   chatter    => $Task{chatter},
+		   history    => $Task{history},
+		   );
+
+    $command = "makefilter";
+    for $par ( keys %makefilter ) { $command .= " $par=$makefilter{$par}"; } 
+
+    &RunningSub("Runmakefilter","makefilter");
+    &RunningComm("RunMakefilter",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    if ( $ret != 0 ) {
+	&ErrorComm("RunMakefilter","makefilter",$command);
+	$Task{errmess} = "Error running 'makefilter' with '" . $Task{configfile} . "' file";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub($Task{stem},'makefilter',"'" .  &GetValPar("mkffile") . "' created");
+ 
+    if (&WriteParameterList(&GetValPar("mkffile"),-1,@Par)) {
+	$Task{errmess} = "Error writing parameters list in '" . &GetValPar("mkffile") . "' file";
+	$Task{status} = 1;
+	return 1;
+    }
+   
+#    if (&write_history(&GetValPar("mkffile"),-1,"CALDB mkfconfig file: $mkfconfigfile")){goto EXITWITHERROR;}
+
+    return 0;
+
+} # RunMakefilter
+
+
+sub CleanMkffile {
+
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %fselect );
+    
+    my $TmpMkf = &GetValPar("outdir")."/".$$.".mkf" ;
+
+    if (&CleanTimeNulls(&GetValPar("mkffile"), $TmpMkf,"FILTER")) {
+	if ( $Task{status} ) {
+	    return 1;
+	}
+	else {
+	    &RenameFile($TmpMkf,&GetValPar("mkffile"));
+	    if ( $Task{status} ) {
+		&PrntChty(2,"$Task{stem}: Error: cannot rename $TmpMkf into " . &GetValPar("mkffile"). " \n");
+		$Task{errmess} = "Error: cannot overwrite the 'mkffile' file\n";
+		$Task{status} = 1;
+		return 1;
+	    }
+	}
+    }
+
+    return 0;
+
+} # CleanMkffile
+
+
+sub RunMaketime {
+    
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %maketime );
+
+    my ( $gtifile ) = @_;
+
+    &PrntChty(3,"$Task{stem}: Info: 'maketime' input: '" . &GetValPar("orbitfile")  . "'\n");
+    &PrntChty(3,"$Task{stem}: Info: 'maketime' output: '" .  $gtifile . "'\n");
+
+    &RunningSub("RunMaketime","maketime",".\n$Task{stem}: Info: Creating " .  $gtifile  .
+		" file using '" .  &GetValPar("gtiexpr") . "' expression");
+
+    #
+    # Build the command line to run 'maketime'
+    #
+    %maketime = (
+		 infile   =>  &GetValPar("orbitfile"),
+		 outfile  =>  $gtifile,
+		 expr     =>  "\"" . &GetValPar("gtiexpr") . "\"",
+		 time     =>  "TIME",
+		 prefr    =>  0.0,
+		 postfr   =>  1.0,
+		 compact  => "no",
+		 clobber  =>  &GetValPar("clobber"),
+		 );
+
+    $command = "maketime";
+    for $par ( keys %maketime ) { $command .= " $par=$maketime{$par}"; } 
+
+    &RunningComm("RunMaketime",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+    if ( $ret != 0 ) {
+	&ErrorComm("RunMaketime","maketime",$command);
+        $Task{errmess} = "Error: running 'maketime'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunMaketime","maketime","'" .  $gtifile . "' created");
+    return 0;
+
+} # RunMaketime
+
+
+sub RunFselect {
+
+    my ($mkffile,$gtifile) = @_;
+    my ($ret, $par, $command, %ftselect);
+
+    my ($tmpmkffile) = $$.".mkf2";
+
+    %ftselect = (
+		 infile       => $mkffile,
+		 outfile      => $tmpmkffile,
+		 expression   => "\'gtifilter(\"$gtifile\")\'",
+		 copyall      => "yes",              
+		 clobber      => &GetValPar("clobber"),
+		 chatter      => $Task{chatter},
+		 history      => $Task{history},
+		 );
+	
+    $command = "ftselect";
+    for $par ( keys %ftselect ) { $command .= " $par=$ftselect{$par}"; } 
+    
+    &RunningComm("RunFselect",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    if ( $ret != 0 ) {
+	&ErrorComm("RunFselect","ftselect",$command);
+	$Task{errmess} = "Error: running 'ftselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    # update checksum
+    if ( system("ftchecksum $tmpmkffile update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Error: Error updating checksum on $tmpmkffile\n"); 
+	$Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # Move the temporary copy of output file
+    if ( &RenameFile($tmpmkffile, $mkffile) ) { return 1; }
+
+
+    return 0;
+
+
+} # RunFselect
+
+
+sub RunFtappend {
+
+    my ($mkffile, $gtifile) = @_;
+    my ($ret, $par, $command, %ftappend);
+
+    %ftappend = (
+		 infile       => $gtifile,
+		 outfile      => $mkffile,
+		 chatter      => $Task{chatter},
+		 history      => $Task{history},
+		 );
+	
+    $command = "ftappend";
+    for $par ( keys %ftappend ) { $command .= " $par=$ftappend{$par}"; } 
+    
+    &RunningComm("RunFtappend",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    if ( $ret != 0 ) {
+	&ErrorComm("RunFtappend","ftappend",$command);
+	$Task{errmess} = "Error: running 'ftappend'";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    # update checksum
+    if ( system("ftchecksum ".$mkffile." update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Error: Error updating checksum on ".$mkffile." \n"); 
+	$Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    return 0;
+
+} # RunFtappend
+
+
+sub ScreenMkf {
+
+    my $gtifile = $$."_screenMkf.gti" ;
+    my $loc_mkffile = $$."_screenMkf.mkf" ;
+
+    # Create a temporary local copy of the input mkffile
+    if (!copy(&GetValPar("mkffile"), $loc_mkffile)) {
+	&PrntChty(2,"$Task{stem}: Error: unable to copy '".&GetValPar("mkffile")."' to local '".$loc_mkffile."' ($!)\n");
+	return 1;
+    }
+
+    &PrntChty(2,"$Task{stem}: Info: creating a local copy '".$loc_mkffile."' of input '".&GetValPar("mkffile")."'\n");
+
+
+    # Create gtis on orbit file based on the input 'gtiexpr' expression
+    &RunMaketime($gtifile);
+    if ( $Task{status} ) {
+	return 1;
+    }
+
+    # Filter the mkf file using the $gtifile
+    &RunFselect($loc_mkffile, $gtifile);
+    if ( $Task{status} ) {
+	return 1;
+    }
+
+    &AddKeyword($gtifile."+1", "EXTNAME", "GTI", "name of this binary table extension");
+    if ( $Task{status} ) {return 1;}
+
+    &RunFtappend($loc_mkffile, $gtifile."+1");
+    if ( $Task{status} ) {return 1;}
+
+    
+    # Move the temporary copy of mkffile
+    if ( &RenameFile($loc_mkffile, &GetValPar("mkffile")) ) { return 1; }
+    
+    &PrntChty(2,"$Task{stem}: Info: file '".&GetValPar("mkffile")."' updated.\n");
+
+
+    # Delete temporary gti file
+    if ( -f $gtifile ) { unlink ($gtifile); }
+
+
+    return 0;
+
+} # ScreenMkf
+
+
+sub CreateTemporaryLinks {
+
+    $TmpInFiles{attfile} = $Task{tmpdir}."/".basename(&GetValPar("attfile"));
+    $TmpInFiles{hkfile} = $Task{tmpdir}."/".basename(&GetValPar("hkfile"));
+    $TmpInFiles{cebhkfile} = $Task{tmpdir}."/".basename(&GetValPar("cebhkfile"));
+    $TmpInFiles{orbitfile} = $Task{tmpdir}."/".basename(&GetValPar("orbitfile"));
+    $TmpInFiles{psdcorfile} = $Task{tmpdir}."/".basename(&GetValPar("psdcorfile"));
+    $TmpInFiles{tlefile} = $Task{tmpdir}."/".basename(&GetValPar("tlefile"));
+    $TmpInFiles{teldef} = &GetValPar("teldef");
+
+
+    # attfile link
+    if ( &CreateAbsSymbolicLink(&GetValPar("attfile"), $TmpInFiles{attfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{attfile}."' to '".&GetValPar("attfile")."'\n");
+	return 1;
+    }
+
+    # hkfile link
+    if ( &CreateAbsSymbolicLink(&GetValPar("hkfile"), $TmpInFiles{hkfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{hkfile}."' to '".&GetValPar("hkfile")."'\n");
+	return 1;
+    }
+
+    # cebhkfile link
+    if ( &CreateAbsSymbolicLink(&GetValPar("cebhkfile"), $TmpInFiles{cebhkfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{cebhkfile}."' to '".&GetValPar("cebhkfile")."'\n");
+	return 1;
+    }
+
+    # orbitfile link
+     if ( &CreateAbsSymbolicLink(&GetValPar("orbitfile"), $TmpInFiles{orbitfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{orbitfile}."' to '".&GetValPar("orbitfile")."'\n");
+	return 1;
+    }
+
+    # psdcorfile link
+     if ( &CreateAbsSymbolicLink(&GetValPar("psdcorfile"), $TmpInFiles{psdcorfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{psdcorfile}."' to '".&GetValPar("psdcorfile")."'\n");
+	return 1;
+    }
+
+    # tlefile link
+     if ( &CreateAbsSymbolicLink(&GetValPar("tlefile"), $TmpInFiles{tlefile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{tlefile}."' to '".&GetValPar("tlefile")."'\n");
+	return 1;
+    }
+
+    # teldef link
+    if ( !&CompUL( &GetValPar("teldef") , $Default{NONE} ) && !&CompUL( &GetValPar("teldef") , $Default{CALDB} ) ) {
+	$TmpInFiles{teldef} = $Task{tmpdir}."/".basename(&GetValPar("teldef"));
+	if ( &CreateAbsSymbolicLink(&GetValPar("teldef"), $TmpInFiles{teldef}) ){
+	    &PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{teldef}."' to '".&GetValPar("teldef")."'\n");
+	    return 1;
+	}
+    }
+
+
+    return 0;
+
+} # CreateTemporaryLinks
+
+
+sub RemoveTemporaryLinks {
+
+    if ( !unlink($TmpInFiles{attfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{attfile}."' temporary file\n");
+    }
+
+    if ( !unlink($TmpInFiles{hkfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{hkfile}."' temporary file\n");
+    }
+
+    if ( !unlink($TmpInFiles{cebhkfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{cebhkfile}."' temporary file\n");
+    }
+
+    if ( !unlink($TmpInFiles{orbitfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{orbitfile}."' temporary file\n");
+    }
+
+    if ( !unlink($TmpInFiles{psdcorfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{psdcorfile}."' temporary file\n");
+    }
+
+    if ( !unlink($TmpInFiles{tlefile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{tlefile}."' temporary file\n");
+    }
+    
+    if ( !&CompUL( &GetValPar("teldef") , $Default{NONE} ) && !&CompUL( &GetValPar("teldef") , $Default{CALDB} ) ) {
+	if ( !unlink($TmpInFiles{teldef}) ) {
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{teldef}."' temporary file\n");
+	}
+    }
+    
+
+    return 0;
+
+} # RemoveTemporaryLinks
+
+
+sub RunPrefilter {
+
+    use vars qw( %Task );
+    my ( $command, $ret, $par, %prefilter );
+    my ( $loc_attorbfile );
+
+
+    &RunningSub("RunPrefilter","prefilter");
+
+
+    # Get output Prefilter file name
+    if ( &CompUL( &GetValPar("attorbfile") , $Default{DEFAULT} ) ) {
+	&PrntChty(3,"$Task{stem}: Info: Get Prefilter Attitude Orbit output file name\n");
+	my ( $filenameroot ) = &GetFileNameRoot( &GetValPar("hkfile") );
+	$filenameroot =~ s/($Def{HKSTEM})$//;
+	$filenameroot = $filenameroot.$Def{ATTORBEXT};
+	&SetValPar("attorbfile", &GetValPar("outdir") . "/$filenameroot");
+	$loc_attorbfile = $Task{tmpdir}."/".$filenameroot;
+    }
+    else{
+	my ( $filename ) = basename( &GetValPar("attorbfile") );
+	&SetValPar("attorbfile", &GetValPar("outdir") . "/$filename");
+	$loc_attorbfile = $Task{tmpdir}."/".$filename;
+    }
+
+    &PrntChty(3,"$Task{stem}: Info: Prefilter Attitude Orbit output will be " .  &GetValPar("attorbfile") . "\n");
+  
+    if ( -f &GetValPar("attorbfile") ) {
+	if ( !$Task{clobber} ) {
+	    &PrntChty(3,"$Task{stem}: Error: the '" . &GetValPar("attorbfile") . "' file exists\n");
+	    &PrntChty(3,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	    &PrntChty(3,"$Task{stem}: Error: please delete '" . &GetValPar("attorbfile") . "' or\n");
+	    &PrntChty(3,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Parameter 'clobber' set to 'no'";
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    unlink ( &GetValPar("attorbfile") );
+	}
+    }
+
+    # Get needed keywords from Attitude File header:
+    my $KVL_TSTART;
+    &GetKeyword (  &GetValPar("attfile"), undef, undef,$Default{KNM_TSTART}, \$KVL_TSTART);
+    if ( $Task{status} ) 
+    { 
+	&PrntChty(3,"$Task{stem}: Error: Keyword $Default{KNM_TSTART} does not exist in " .  &GetValPar("attfile") . "  file.\n");
+	return 1;
+    }
+    my $KVL_TSTOP;
+    &GetKeyword (  &GetValPar("attfile"), undef, undef,$Default{KNM_TSTOP}, \$KVL_TSTOP);
+    if ( $Task{status} ) 
+    { 
+	&PrntChty(2,"$Task{stem}: Error: Keyword $Default{KNM_TSTOP} does not exist in " .  &GetValPar("attfile") . " file.\n");
+	return 1;
+    }
+
+    my $stroutcols = &GetColumnFilter();
+    if ($Task{status} || $stroutcols eq "") { goto EXITWITHERROR;}
+
+
+    #
+    # Build the command line to run 'prefilter'
+    #
+
+    %prefilter = (
+		  outname      => $loc_attorbfile,
+		  columns      => "\"" . $stroutcols . "\"",
+		  orbmode      => &GetValPar("tlemode"),
+		  orbname      => $TmpInFiles{tlefile},
+		  attname      => $TmpInFiles{attfile},
+		  leapname     => &GetValPar("leapfile"),
+		  rigname      => &GetValPar("rigfile"),
+		  alignfile    => $TmpInFiles{teldef},
+		  start        => $KVL_TSTART,
+		  end          => $KVL_TSTOP,
+		  interval     => &GetValPar("interval"),
+		  ranom        => &GetValPar("pntra"),
+		  decnom       => &GetValPar("pntdec"),
+		  origin       => &GetValPar("origin"),
+		  missepoch    => $Default{MISSIONEPOCH},
+		  history      => $Task{history},
+		  chatter      => $Task{chatter},
+		  clobber      => &GetValPar("clobber"),
+		  );
+    
+    $command = "prefilter";
+    $command .= " timeadj=DEFAULT";
+    for $par ( keys %prefilter ) { $command .= " $par=$prefilter{$par}"; } 
+
+    &RunningComm("RunPrefilter",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunPrefilter","prefilter",$command);
+        $Task{errmess} = "Error running 'prefilter'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # Update Checksum
+    if ( system("ftchecksum $prefilter{outname} update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Error: Error updating '$prefilter{outname}' checksum\n");
+	$Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # Move the temporary local copy of attorbfile
+    if ( &RenameFile($loc_attorbfile, &GetValPar("attorbfile")) ) { return 1; }
+
+
+    &SuccessSub($Task{stem},"prefilter","'".&GetValPar("attorbfile")."' created");
+    return 0;
+
+} # RunPrefilter
+
+
+sub GetColumnFilter {
+
+    my ( $preconffile,$preconfigext,$strret,$i );
+
+    if ( &CompUL( &GetValPar("preconfigfile") , $Default{CALDB} ) ) {
+
+	# Get CALDB FITS configuration File with datatype 'PRECONF'
+	my ($refa,$refb)  = &CallQuzcif("PRECONF","NOW","-","-",1,"FPM","-");
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Error: cannot retrieve PRECONF file name from CALDB\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 PRECONF CALDB file\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Info: Using FITS  PRECONF File from CALDB:\n");
+	    &PrntChty(2,"$Task{stem}: Info: '@$refa[0]' extension '@$refb[0]'\n");
+	    $preconffile = @$refa[0];
+	    $preconfigext  = @$refb[0];
+	}
+    }
+    else{
+	$preconffile = &GetValPar("preconfigfile");
+
+	my $extname = "PRECONF";
+	$preconfigext = &GetNumExtName( $preconffile,$extname );
+
+	if ( $preconfigext == -1 ) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Format of '$preconffile' not supported";
+	    &PrntChty(2,"$Task{stem}: Error: Format of '$preconffile' not supported\n");
+	    &PrntChty(2,"$Task{stem}: Error: Not found extension with EXTNAME = $extname\n");
+	    return 1;
+	}
+	elsif ( $Task{status} ) { return 1; }
+	
+    }
+
+
+    my @columns = (
+		   { name => 'PARNAME' },
+		   );
+
+    my (@table) = &LoadBinTable($preconffile,"",$preconfigext,@columns);
+    if ( $Task{status} ) { return ""; }
+
+    for ($i = 0; $i <= $#table; $i++) {
+	$strret .= "$table[$i]->{PARNAME} ";
+    }
+
+    return $strret;
+
+
+} # GetColumnFilter
+
+
+sub SetTeldefFileName(){
+   
+    if ( &CompUL(&GetValPar("teldef"), $Default{CALDB}) ) {
+
+	my ($refa,$refb)  = &CallQuzcif("TELDEF",$Task{StartDate},$Task{StartTime},"-",1,$Task{instrument},"-");
+
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Error: cannot retieve Teldef file name from CALDB\n");
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 Teldef CALDB file\n");
+	    return 1;
+	}
+	else {
+	    &SetValPar("teldef", @$refa[0]);
+	}
+    }
+
+    return 0;
+
+} # SetTeldefFileName
+
+sub UpdateExt 
+{
+
+    my ($AttFile,$MkFile) = @_;
+    my ($fptr,$status) = (0,0);
+    
+    # open mkffile file
+    fits_open_file($fptr,$MkFile,READWRITE,$status);
+    if ($status) {
+	&PrntChty(3, "$Task{stem}: Error: unable to open '$MkFile' file.\n");
+	goto UpdateExt_end;
+    }
+    
+    # update 'MJDREFI' keyword on extension+0
+    fits_update_key($fptr,TINT,$Default{KNM_MJDREFI}, $Default{KVL_MJDREFI},$Default{KCM_MJDREFI}, $status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update keyword 'MJDREFI' of '$MkFile' file\n");
+	goto UpdateEvtExt_end;
+    }
+    
+    # update 'MJDREFF' keyword on extension+0
+    fits_update_key($fptr,TDOUBLE,$Default{KNM_MJDREFF}, $Default{KVL_MJDREFF},$Default{KCM_MJDREFF}, $status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update keyword 'MJDREFF' of '$MkFile' file\n");
+	goto UpdateEvtExt_end;
+    }
+    
+    # update current HDU checksum
+    fits_write_chksum($fptr,$status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update HDU checksum of file '$MkFile'\n");
+	 goto UpdateEvtExt_end;
+    }
+    
+    # move to 'FILTER' extension
+    fits_movnam_hdu($fptr,ANY_HDU,"FILTER",0,$status);
+    if ($status) {
+	&PrntChty(3, "$Task{stem}: Error: cannot move into '$MkFile' file, extension 'FILTER'\n");
+	goto UpdateExt_end;
+    }
+    
+    # update 'MJDREFI' keyword on extension+1
+    fits_update_key($fptr,TINT,$Default{KNM_MJDREFI}, $Default{KVL_MJDREFI},$Default{KCM_MJDREFI}, $status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update keyword 'MJDREFI' of '$MkFile' file\n");
+	goto UpdateEvtExt_end;
+    }
+    
+    # update 'MJDREFF' keyword on extension+1
+    fits_update_key($fptr,TDOUBLE,$Default{KNM_MJDREFF}, $Default{KVL_MJDREFF},$Default{KCM_MJDREFF}, $status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update keyword 'MJDREFF' of '$MkFile' file\n");
+	goto UpdateEvtExt_end;
+    }
+    
+    
+    # update current HDU checksum
+    fits_write_chksum($fptr,$status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update HDU checksum of file '$MkFile'\n");
+	 goto UpdateEvtExt_end;
+    }
+
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+	if ( $status ) { 
+	    &PrntChty(3, "$Task{stem}: Error: cannot close '$MkFile' mkf file\n");
+	    return 1;
+	}
+    }
+    
+    
+    return 0;
+
+
+  UpdateExt_end:
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+    }
+
+    return 1;
+
+
+} # UpdateExt
+

@@ -1,0 +1,1563 @@
+#! /usr/bin/env perl
+use strict;
+
+# Use Astro-H logging facilities.
+#use ahlog;
+
+# Trap all die signals so they can be reported with a common, easily spotted format.
+$SIG{__DIE__} = \&handle_die;;
+
+use Cwd;
+use Cwd 'abs_path';
+use File::Path qw(mkpath);
+use IO::File;
+use Scalar::Util qw(looks_like_number);
+
+# Keep stdout and stderr in sync as much as possible.
+autoflush STDOUT 1;
+
+# Globals.
+our @expectedoutputfile;
+our @inputdatafile;
+our $manifest;
+our $runalltests;
+our $headaspfiles;
+our %exists;
+our %isfits;
+our %ahtestpar;
+our %runtime_manifest;
+our $arch;
+our $tar;
+
+# Overall status of unit tests performed by aht. If any tests fail, this will be set to a non-0 value.
+our $teststatus = 0;
+
+# Name of this script, to be used in output messages.
+our $this_script = $0;
+$this_script =~ s{.*/}{};
+
+# Default name for manifest file.
+our $manifestfile = "aht_manifest.pl";
+
+# Directory names.
+our $datadir = 'input';
+our $inputdir = './aht-input';
+our $outputdir = './aht-output';
+our $expectedoutputdir = './aht-expected-output';
+our $inputpfiles = "$inputdir/syspfiles";
+
+# Keep up to date the current directory.
+our $curdir = Cwd::cwd();
+our $startdir = abs_path($curdir);
+
+# Silence most shell commands.
+our $silent = 1;
+
+# Process the command line.
+our ($task, @taskarg, $alternatecmd, $testdescription, $displayenv, $displaymanifest, $noop,
+  $expectedtaskstatus, $ignore_non_fits_diff, $reltol, $tolerance, $update, $valgrind, %cmdline);
+interpret_cmd_line();
+
+# Find all unit test directories being used for this run.
+my @testdir = find_test_dir($manifestfile);
+
+# Set up base runtime environment needed by all the tests.
+our ($headas, $headassyspfiles);
+set_up_base_env();
+
+# Flag indicating current test ran to completion.
+our $testran = 0;
+
+# strip any possible extensions from the task name, and use the base name
+our $taskbase;
+
+# Loop over tests and execute them all.
+run_all_tests(@testdir);
+
+exit $teststatus;
+
+sub interpret_cmd_line {
+  # Handle command line: preprocess; then use Perl standard getopt.
+  # First extract non-option arguments.
+  my @option; # Options/switches.
+  while (scalar(@ARGV) > 0) {
+    # Detect and compile list of switches.
+    if ($ARGV[0] =~ /^-/) {
+      push @option, shift @ARGV;
+    } else {
+      # First non-switch is assumed to be the task name.
+      $task = shift @ARGV; $cmdline{'task'} = $task;
+      last;
+    }
+  }
+
+  # Remaining arguments will be passed to the task being run.
+  @taskarg = @ARGV; @{$cmdline{'taskarg'}} = @taskarg;
+
+  # Reassign argument list to contain just the command line switches (if any).
+  @ARGV = @option;
+
+  # Use Getopt to process options/switches.
+  use Getopt::Long;
+  my ($opt_a, $opt_c, $opt_d, $opt_e, $opt_h, $opt_i, $opt_m, $opt_n, $opt_r, $opt_s, $opt_t, $opt_u, $opt_v);
+  my $cl_ok = GetOptions(
+    'all' => \$opt_a,
+    'command=s' => \$opt_c,
+    'description=s' => \$opt_d,
+    'env' => \$opt_e,
+    'help' => \$opt_h,
+    'ignore' => \$opt_i,
+    'manifest' => \$opt_m,
+    'noop' => \$opt_n,
+    'reltol=f' => \$opt_r,
+    'status=i' => \$opt_s,
+    'tolerance=f' => \$opt_t,
+    'update' => \$opt_u,
+    'valgrind:s' => \$opt_v # Note string argument is optional.
+  );
+  $cl_ok or setstatus(1); # Detect command line problems.
+
+  # Validate command line.
+  my $errormsg;
+  if (defined $task) {
+    # Task name was given: implies the user wishes to generate a new test in this directory. Make sure
+    # this is his/her intention. A new test requires update mode, and expected exit status.
+    defined $opt_a and $errormsg .= "\n\tCannot specify both task-name and --all option";
+    defined $opt_u or $errormsg .= "\n\tSpecify --update option to update the unit test case for $task";
+    defined $opt_d or $errormsg .= "\n\t--descript option (description of the test) is required";
+    defined $opt_s or $errormsg .= "\n\t--status option (expected exit status for task) is required";
+    defined $errormsg and $errormsg = "Invalid command line to generate test case for $task:$errormsg";
+  } else {
+    # No task name was given: implies the user wishes to run the current test or all tests (if -all was specified).
+    defined $opt_a and defined $opt_d and
+      $errormsg .= "\n\t--all option is invalid if --description was also specified";
+    defined $opt_a and defined $opt_s and
+      $errormsg .= "\n\t--all option is invalid if --status was also specified";
+    defined $opt_d and (! defined $opt_u) and
+      $errormsg .= "\n\t--description option has no effect unless -update was also specified";
+    defined $opt_i and (! defined $opt_u) and
+      $errormsg .= "\n\t--ignore option has no effect unless -update was also specified";
+    defined $opt_s and (! defined $opt_u) and
+      $errormsg .= "\n\t--status option has no effect unless -update is also specified";
+    defined $opt_r and (! defined $opt_u) and
+      $errormsg .= "\n\t--reltol option has no effect unless -update is also specified";
+    defined $opt_t and (! defined $opt_u) and
+      $errormsg .= "\n\t--tolerance option has no effect unless -update is also specified";
+    defined $opt_v and defined $opt_u and
+      $errormsg .= "\n\t--valgrind option is invalid if --update was also specified";
+
+    defined $errormsg and $errormsg = "Invalid command line to run test case(s):$errormsg";
+  }
+  defined $opt_n and $errormsg .= "\n\t--noop is not yet implemented.\n";
+  defined $errormsg and setstatus(1);
+
+  # An error at this point signifies user input problems, or --help means display help, so display usage and exit.
+  ($opt_h || $teststatus) and usage($teststatus, $errormsg);
+
+  # No errors in command line, so set up for this run.
+  # Save a copy of all command line parameters in %cmdline.
+  defined $opt_c and $alternatecmd = $opt_c and $cmdline{'alternatecmd'} = $alternatecmd;
+  defined $opt_d and $testdescription = $opt_d and $cmdline{'testdescription'} = $testdescription;
+  defined $opt_e and $displayenv = $opt_e and $cmdline{'displayenv'} = $displayenv;
+  defined $opt_i and $ignore_non_fits_diff = $opt_i and $cmdline{'ignore_non_fits_diff'} = $ignore_non_fits_diff;
+  defined $opt_m and $displaymanifest = $opt_m and $cmdline{'displaymanifest'} = $displaymanifest;
+  defined $opt_n and $noop = $opt_n and $cmdline{'noop'} = $noop;
+  defined $opt_r and $reltol = $opt_r and $cmdline{'reltol'} = $reltol;
+  defined $opt_s and $expectedtaskstatus = $opt_s and $cmdline{'expectedtaskstatus'} = $expectedtaskstatus;
+  defined $opt_t and $tolerance = $opt_t and $cmdline{'tolerance'} = $tolerance;
+  defined $opt_u and $update = $opt_u and $cmdline{'update'} = $update;
+  defined $opt_a and $runalltests = $opt_a and $cmdline{'runalltests'} = $runalltests;
+  # If no (optional) string is supplied, opt_v is blank and the "and" construct from
+  # above does not work, so use this instead.
+  if (defined $opt_v) { $valgrind = $opt_v; $cmdline{'valgrind'} = $valgrind; }
+}
+
+sub find_test_dir {
+  my $testdirmarker = shift;
+  my @dir;
+  if ($runalltests) {
+    # Find all test directories located under this directory.
+    @dir = sort `find . -type f -name $testdirmarker 2> /dev/null`;
+    chomp @dir;
+    grep s/\/$testdirmarker$//, @dir;
+    # The following throws an error if no tests were found here -- correct behavior?
+    # For now it's convenient to continue and allow tests to be absent.
+    # scalar(@dir) or usage(1, "Could not find any $testdirmarker files under directory $curdir.");
+  } else {
+    # Single-directory mode: either a marker file must be present or else running in update mode.
+    ($update or -f "./$testdirmarker") and push @dir, ".";
+    scalar(@dir) or
+      usage(1, "Could not find file $testdirmarker in $curdir.\nRun with -all to recurse.");
+  }
+
+  return @dir;
+}
+
+sub set_up_base_env {
+  my $errmsg;
+  if (!defined $ENV{'HEADAS'}) { $errmsg .= "Set HEADAS before running $this_script\n"; }
+#  if (!defined $ENV{'CALDB'} or !defined $ENV{'CALDBALIAS'} or !defined $ENV{'CALDBCONFIG'})
+#    { $errmsg .= "Set up caldb (CALDB, CALDBALIAS, CALDBCONFIG) before running $this_script\n"; }
+
+  # Failure to set HEADAS is a fatal error.
+  if (defined $errmsg) { chop $errmsg; die "$errmsg\n"; }
+
+  $headas = $ENV{'HEADAS'};
+
+  # Use headas-init to set up environment for the tests.
+  my $headasinit = "$headas/headas-init.sh";
+
+  # The lack of a headas initialization file is a fatal error.
+  die "Cannot find file $headasinit. Make sure HEADAS points to a valid headas installation.\n"
+    unless -f $headasinit;
+
+  # Capture result of having run headas-init in a sub-shell.
+  # +++ 2013-09-11 jp: Revert to original form for now. The switch -0 is not portable.
+  # +++ 2013-09-11 jp: Still need to address the issue of bad line breaks in function definitions in env output.
+  #my @env = split /\000/, `. $headasinit; env -0`;
+  my @env = split /\n/, `. $headasinit; env`;
+
+  # Propagate headas-setup environment into this script's internal environment.
+  # +++ 2014-02-07 jp: changes to the section below address the +++ comments from 2013-09-11 above.
+  # +++ 2014-02-07 jp: safe to remove all 4 +++ comments.
+  foreach my $env (@env) {
+    if($env !~ /=/) { next; }
+    my ($name, $value) = split '=', $env;
+    if($name =~ /\s*({|})/) { next; }
+    if($value =~ /\s*({|})/) { next; }
+    $ENV{$name} = $value;
+  }
+
+  # Set up (remote for now) CALDB. Do this after headasinit was sourced so that LHEA_DATA is most likely
+  # defined correctly.
+  my $caldb = "$headas/lib/perl/aht/aht-caldb";
+  $ENV{'CALDBCONFIG'} = "$caldb/caldb.config";
+  $ENV{'CALDBALIAS'} = "$caldb/alias_config.fits";
+  $ENV{'CALDB'} = "http://heasarc.gsfc.nasa.gov/FTP/caldb";
+
+  # Save pfiles as set by headas-init and use it for ftverify ftdiff etc.
+  $headaspfiles = $ENV{"PFILES"};
+
+  # Never want a prompt.
+  $ENV{"HEADASNOQUERY"} = 1;
+
+  # Set location for headas system parameter files.
+  $headassyspfiles = "$headas/syspfiles";
+
+  # Generally for each tool run, want to use the input directory for "system" and
+  # output directory for "local/user" parameter files.
+  $ENV{"PFILES"} = "./pfiles;./syspfiles:$headassyspfiles";
+
+  # Need the architecture where the test is being run. Used to locate platform-specific
+  # test reference data.
+  # TODO: this does not work in general. More follow-up is needed. Hmake --noexec only
+  # prints information including HD_HOST if there is a Makefile in the current directory.
+  # Most ut* directories do not have a Makefile. Looked at cribbing from configure but it's
+  # too much shell spaghetti code. Could hmake be modified so it always prints? Is there some
+  # other way to get the arch?
+  $arch = `hmake --noexec 2>&1 | sed -ne 's:HD_HOST[ 	]*=[ 	]*::p'`;
+  chop $arch;
+
+  # Pick GNU tar preferentially, if it can be found.
+  my $tarversion;
+  foreach my $taroption (qw(tar gnutar gtar)) {
+    $tarversion = `$taroption --version 2> /dev/null`;
+    if ($tarversion =~ /GNU/) {
+      $tar = $taroption;
+      last;
+    }
+  }
+
+  # If GNU tar was not found, settle for whatever version of tar is there.
+  if (!defined($tar)) {
+    $tar = "tar";
+    $tarversion = `$tar --version 2> /dev/null`;
+  }
+
+  # Truncate version information to just the first line and inform user what we found.
+  $tarversion =~ s:\n.*::s;
+  print "aht: using $tar: $tarversion for tar operations.\n";
+}
+
+sub cd {
+  my $newdir = shift;
+  my $noecho = shift;
+  my $prevdir = Cwd::cwd();
+  # This *could* be made a recoverable error, but it would need a lot of changes and
+  # a lot of testing because "cd" is heavily used. For now, treat failed attempts to recurse
+  # into a directory as fatal. Recovery would be very context-specific. Note that in general
+  # aht gets directories from lists uncovered with a "find", i.e., they probably exist and
+  # have permissions set appropriately.
+  (defined $newdir and (chdir $newdir or die "Unable to enter directory $newdir\n")) or
+    die "cd was passed an empty directory name\n";
+  $curdir = Cwd::cwd();
+  print "In directory $curdir\n" unless $noecho;
+  return $prevdir;
+}
+
+sub run_cmd {
+  my $cmd = shift;
+  my $noecho = shift;
+  defined $noecho or $noecho = 0;
+  my $status = 0;
+  if (defined $noop) {
+    print "No-op enabled: skipping $cmd in directory $curdir\n" unless $noecho;
+  } else {
+    print "Executing $cmd in directory $curdir\n" unless $noecho;
+    $status = system($cmd);
+    ($status < 0 or $status > 255) and $status = 1;
+  }
+  return $status;
+}
+
+sub replace {
+  my $dest = shift;
+  my $src = shift;
+  my $clean = shift;
+
+  my $status = 0;
+
+  # This fatal error is a logic error -- the aht developer has done something wrong if this occurs.
+  (defined $dest and defined $src) or die "aht logic error: function \"replace\" called without one or more required arguments.\n";
+
+  # -d $src or die "Cannot replace directory $dest: source $src does not exist or is not a directory.\n";
+  if (!(-d $src)) {
+    print STDERR "Cannot replace directory $dest: source $src does not exist or is not a directory.\n";
+    $status = 1;
+  }
+
+  if (!$status) {
+    # Clean destination first unless suppressed by caller. Remove everything except CVS files and directories.
+    defined $clean or $clean = 1;
+    if ($clean) {
+      my @file = find_all_files($dest);
+      unlink @file;
+      my @dir = reverse sort find_all_directories($dest); # Reverse lexical order.
+      # Remove directories , but don't worry about failures, which are to be expected because of non-empty CVS directories.
+      rmdir @dir;
+    }
+
+    # Make sure destination exists.
+    # -d $dest or mkpath($dest) or die "Function replace was unable to create directory $dest\n";
+    if (!(-d $dest or mkpath($dest))) {
+      print STDERR "Function replace was unable to create directory $dest\n";
+      $status = 1;
+    }
+  }
+
+  if (!$status) {
+    # Use tar to copy source files; tar makes it easy to exclude CVS directories.
+    # run_cmd("cd $src; tar -c --exclude CVS -f - . | (cd $curdir/$dest; tar xf -)", $silent) and
+    #   die "Function replace is unable to copy $src to $dest.\n";
+    $status = run_cmd("cd $src; $tar -c --exclude CVS -f - . | (cd $curdir/$dest; $tar xf -)", $silent);
+    if ($status) {
+      print STDERR "Function replace was unable to copy $src to $dest.\n";
+    }
+  }
+
+  return $status;
+}
+
+sub unpack_data {
+  my $tarfile = shift;
+  my $status = 0;
+  # Confirm existence of tar file before attempting to unpack.
+  # Usually do not unpack on update so local changes (reason for update) do not get clobbered.
+  # Exception is if either input or expected output directories are actually *missing*.
+  if (-f $tarfile and (! defined $update or ! -d $inputdir or ! -d $expectedoutputdir)) {
+    my $basecmd = "$tar xzf $tarfile";
+    if ($status == 0 and ! -d $expectedoutputdir) {
+      print "\tUnpacking expected output test files.\n";
+      $status = run_cmd("$basecmd $expectedoutputdir");
+    }
+    if ($status == 0 and ! -d $inputdir) {
+      print "\tUnpacking expected input test files.\n";
+      $status = run_cmd("$basecmd $inputdir");
+    }
+  }
+  return $status;
+}
+
+sub update_par_file {
+  my $status = 0;
+  if (defined $task and (-f "$headassyspfiles/$taskbase.par" or -f "$inputpfiles/$taskbase.par")) {
+
+    # Update parameter files. Do this even if --update is not enabled. That would cause changes in
+    # the system parameter file to appear in the inputpfiles parameter file, which in turn would
+    # cause the test to fail, which in turn would signal the developer to update the unit test.
+    print "\tUpdating unit test parameter file in $inputpfiles.\n";
+
+    # Save current PFILES variable to restore after this function completes.
+    my $pfiles_save = $ENV{"PFILES"};
+
+    # Point to the current installation for system parameter files, to the local input directory
+    # for local.
+    $ENV{"PFILES"} = "$inputpfiles;$headassyspfiles";
+
+    # Make sure input area exists. Do *not* clear it out if it does already exist.
+    # run_cmd("mkdir -p $inputpfiles", $silent) and die "Unable to mkdir $inputpfiles\n";
+    $status = run_cmd("mkdir -p $inputpfiles", $silent);
+    if ($status) {
+      print STDERR "Unable to mkdir $inputpfiles\n";
+    }
+
+    # Do not punlearn the task: that causes the command line settings from previous --update to be completely forgotten.
+    # Now that the command line is written into the manifest, punlearn is actually safe to use.
+    # However, the current form also works, is harmless and is backwards compatible with manifest files
+    # that do not have the command line written.
+    # run_cmd("punlearn $task", $silent) and die "punlearn $task failed\n";
+    #
+    # Issue with pset/ape: pset (more generally ape) uses this algorithm:
+    # if (system par file mod time is later than local par file mod time) { unlearn hidden params }
+    # else { merge system par file changes into local par file }
+    #
+    # We want the "else" case so that if one selects --update but does not re-enter all the parameters,
+    # the test will remember the previously-set parameter values. Only parameters that are completely new
+    # or have changed their type will be inserted from the system parameter file.
+    # Therefore, touch the "local" parameter file before invoking pset. This will prevent pset from resetting
+    # hidden parameters based only on the time stamp of the "system" parameter file.
+    # run_cmd("touch $inputpfiles/$taskbase.par", $silent) and die "touch $inputpfiles/$taskbase.par failed\n";
+    if (!$status) {
+      $status = run_cmd("touch $inputpfiles/$taskbase.par", $silent);
+      if ($status) {
+        print STDERR "touch $inputpfiles/$taskbase.par failed\n";
+      }
+    }
+
+    if (!$status) {
+      # Use pset to learn this test case.
+      if (scalar(@taskarg)) {
+        my $cmdline = "pset $task \"".join ("\" \"", @taskarg)."\"";
+        # run_cmd($cmdline, $silent) and die "$cmdline failed\n";
+        $status = run_cmd($cmdline, $silent);
+        if ($status) {
+          print STDERR "$cmdline failed\n";
+        }
+      } else {
+        # Need to run pset even when no arguments were supplied so that system parameter file changes are properly merged.
+        my $mode = `pget $task mode`;
+        my $cmdline = "pset $task mode=\"$mode\"";
+        # run_cmd($cmdline, $silent) and die "$cmdline failed\n";
+        $status = run_cmd($cmdline, $silent);
+        if ($status) {
+          print STDERR "$cmdline failed\n";
+        }
+      }
+    }
+
+    # Restore previous PFILES setting.
+    $ENV{"PFILES"} = $pfiles_save;
+  }
+  return $status;
+}
+
+sub update_input {
+  my $status = update_par_file();
+
+  if (!$status) {
+    if (defined $update) {
+      print "\tUpdating unit test input directory $inputdir.\n";
+
+      # Update input area to contain copy of current input data (data subdirectory).
+      if (-d $datadir) {
+        # replace("$inputdir/$datadir", $datadir, 0) or die "Unable to update input data directory $inputdir/$datadir.\n";
+        $status = replace("$inputdir/$datadir", $datadir, 0);
+        if ($status) {
+          print STDERR "Unable to update input data directory $inputdir/$datadir.\n";
+        }
+      }
+
+      if (!$status) {
+        # Make sure required input directory exists, even if it ends up empty.
+        # -d $inputdir or mkpath($inputdir) or die "Unable to create input directory $inputdir\n";
+        if (!(-d $inputdir or mkpath($inputdir))) {
+          print STDERR "Unable to create input directory $inputdir\n";
+          $status = 1;
+        }
+      }
+
+      if (!$status) {
+        # Take note of files that are required for this test to succeed.
+        my $prevdir = cd($inputdir, $silent);
+        @inputdatafile = find_all_files('*');
+        print STDERR "WARNING: no files found in $inputdir.\n" unless (@inputdatafile);
+        cd($prevdir, $silent);
+        chomp @inputdatafile;
+        $status = update_manifest();
+      }
+    }
+  }
+  return $status;
+}
+
+sub update_expected_output {
+  my $status = 0;
+  if (defined $update) {
+    print "\tUpdating expected output directory $expectedoutputdir.\n";
+
+    # Update expected output area to contain copy of current output data (output subdirectory).
+    # replace($expectedoutputdir, $outputdir) and die "Unable to update expected output data directory $expectedoutputdir.\n";
+    if (replace($expectedoutputdir, $outputdir)) {
+      print STDERR "Unable to update expected output data directory $expectedoutputdir.\n";
+      $status = 1;
+    }
+
+    if (!$status) {
+      # Take note of files that are required for this test to succeed.
+      my $prevdir = cd($expectedoutputdir, $silent);
+      @expectedoutputfile = find_all_files('*');
+
+      # Issue a warning if running this test case produced no output other than log files and parameter files.
+      # Input files are copied to the output directory before running the test case, so the expected output
+      # files is a superset of the input files.
+      # Make a list here of the input files plus the log file:
+      my @minimaloutput = sort (@inputdatafile, get_log_file_name());
+      # Next make a list of expected output, and remove from it all local parameter files (produced by the run).
+      my @significantoutput = @expectedoutputfile;
+      # Can't figure out how to get perl to discard matches to the regex, so first make local par files
+      # blank, then remove blank lines.
+      grep s:^pfiles/.*::, @significantoutput;
+      @significantoutput = grep /\S/, @significantoutput;
+      # Show the warning unless the output is more than the minimal output.
+      print STDERR "WARNING: test produced no output other than log files and parameter files.\n"
+        unless (@significantoutput != @minimaloutput);
+
+      # Return to previous directory.
+      cd($prevdir, $silent);
+      chomp @expectedoutputfile;
+
+      update_manifest();
+    }
+  }
+  return $status;
+}
+
+sub create_tar_file {
+  my $tarfile = shift;
+  my $status = 0;
+  if (defined $update) {
+    print "\tUpdating tar file containing aht test files in $tarfile.\n";
+    # TODO exclude CVS directories and any other undesirable files.
+    my $cmd = "$tar czf $tarfile $inputdir $expectedoutputdir";
+    $status = run_cmd($cmd, $silent);
+    if ($status) {
+      print STDERR "\tError while attempting to create tar file $tarfile.\n";
+    }
+  }
+  return $status;
+}
+
+sub source_manifest {
+  $manifest = "";
+
+  # Read manifest file if present.
+  $manifest = read_manifest_file($manifestfile);
+
+  # Evaluate manifest to set up "our" test variables (ahtestpar or runtime_manifest).
+  eval $manifest;
+
+  # If runtime_manifest is defined, this was an old style manifest, so use its content to create ahtestpar.
+  if (exists $runtime_manifest{'toolname'}) {
+    print STDERR "\tConverting old-style aht manifest file.\n";
+
+    # Update blank manifest with values from old-style manifest.
+    exists ${$runtime_manifest{'toolname'}}{'default'} and
+      $ahtestpar{'task'} = ${$runtime_manifest{'toolname'}}{'default'};
+    exists ${$runtime_manifest{'exitstatus'}}{'default'} and
+      $ahtestpar{'expectedtaskstatus'} = ${$runtime_manifest{'exitstatus'}}{'default'};
+    exists ${$runtime_manifest{'expected_output'}}{'default'} and
+      @{$ahtestpar{'expectedoutputfile'}} = @{$runtime_manifest{'expected_output'}}{'default'};
+    exists ${$runtime_manifest{'input'}}{'default'} and
+      @{$ahtestpar{'inputdatafile'}} = @{$runtime_manifest{'input'}}{'default'};
+
+    # Special case: old style manifest had no text analog to the description.
+    exists $ahtestpar{'testdescription'} or
+      $ahtestpar{'testdescription'} = "Test of $ahtestpar{task}, updated from original aht test manifest.";
+  }
+
+  # Update test parameters.
+  return update_manifest();
+}
+
+sub read_manifest_file {
+  my $filename = shift;
+  my @manifest;
+  if (open INFILE, $filename) {
+    @manifest = <INFILE>; close INFILE;
+    $manifest = join "", @manifest;
+  }
+  return $manifest;
+}
+
+sub update_manifest {
+  if ($update) {
+    # Override manifest with user-supplied variables; in any case make sure all globals are defined.
+    if (defined $task) { $ahtestpar{'task'} = $task; }
+    if (@taskarg) { @{$ahtestpar{'taskarg'}} = @taskarg; }
+    if (defined $testdescription) { $ahtestpar{'testdescription'} = $testdescription; }
+    if (defined $expectedtaskstatus) { $ahtestpar{'expectedtaskstatus'} = $expectedtaskstatus; }
+    # Special handling for --ignore: if developer did not supply this switch, turn ignore OFF on update.
+    if (defined $ignore_non_fits_diff) { $ahtestpar{'ignore_non_fits_diff'} = $ignore_non_fits_diff; }
+    else { $ahtestpar{'ignore_non_fits_diff'} = 0; }
+    if (defined $reltol) { $ahtestpar{'reltol'} = $reltol; }
+    if (defined $tolerance) { $ahtestpar{'tolerance'} = $tolerance; }
+    if (@expectedoutputfile) { @{$ahtestpar{'expectedoutputfile'}} = @expectedoutputfile; }
+    if (@inputdatafile) { @{$ahtestpar{'inputdatafile'}} = @inputdatafile; }
+  }
+
+  if (exists $ahtestpar{'task'}) { $task = $ahtestpar{'task'}; }
+  if (exists $ahtestpar{'taskarg'}) { @taskarg = @{$ahtestpar{'taskarg'}}; }
+  if (exists $ahtestpar{'testdescription'}) { $testdescription = $ahtestpar{'testdescription'}; }
+  if (exists $ahtestpar{'expectedtaskstatus'}) { $expectedtaskstatus = $ahtestpar{'expectedtaskstatus'}; }
+  # +++ 2014-01-08 jp:
+  # Special handling for --ignore: if manifest does not include this switch (ignore_non_fits_diff),
+  # turn ignore ON for backward compatibility with Astro-H unit tests. When all Astro-H unit tests
+  # manifests have been updated to include this setting, change all 1s in the else
+  # clause to be 0s -- or perhaps remove the else clause here and above and add an initializer (= 0) to
+  # $ignore_non_fits_diff where it is declared at the top of the script.
+  if (exists $ahtestpar{'ignore_non_fits_diff'}) { $ignore_non_fits_diff = $ahtestpar{'ignore_non_fits_diff'}; }
+  else { $ignore_non_fits_diff = 1; $ahtestpar{'ignore_non_fits_diff'} = 1; }
+  if (exists $ahtestpar{'reltol'}) { $reltol= $ahtestpar{'reltol'}; }
+  if (exists $ahtestpar{'tolerance'}) { $tolerance= $ahtestpar{'tolerance'}; }
+  if (exists $ahtestpar{'expectedoutputfile'}) { @expectedoutputfile = @{$ahtestpar{'expectedoutputfile'}}; }
+  if (exists $ahtestpar{'inputdatafile'}) { @inputdatafile = @{$ahtestpar{'inputdatafile'}}; }
+
+  return 0;
+}
+
+sub reset_unit_test {
+  undef $task; exists $cmdline{'task'} and $task = $cmdline{'task'};
+  undef @taskarg; exists $cmdline{'taskarg'} and @taskarg = @{$cmdline{'taskarg'}};
+  undef $testdescription; exists $cmdline{'testdescription'} and $testdescription = $cmdline{'testdescription'};
+  undef $expectedtaskstatus; exists $cmdline{'expectedtaskstatus'} and $expectedtaskstatus = $cmdline{'expectedtaskstatus'};
+  undef @expectedoutputfile; # From manifest or find command, not command line.
+  undef @inputdatafile; # From manifest or find command, not command line.
+  undef $ignore_non_fits_diff; exists $cmdline{'ignore_non_fits_diff'} and $ignore_non_fits_diff = $cmdline{'ignore_non_fits_diff'};
+  undef $reltol; exists $cmdline{'reltol'} and $reltol = $cmdline{'reltol'};
+  undef $tolerance; exists $cmdline{'tolerance'} and $tolerance = $cmdline{'tolerance'};
+  undef $valgrind; exists $cmdline{'valgrind'} and $valgrind = $cmdline{'valgrind'};
+  $testran = 0;
+}
+
+sub run_all_tests {
+  my @testdir = @_;
+  if (1 < scalar(@testdir)) {
+    print "Running multiple unit tests starting in $curdir.\n";
+  } elsif (0 == scalar(@testdir)) {
+    print STDERR "WARNING: NOT running tests in $curdir: no test cases ($manifestfile files).\n";
+  }
+  foreach my $dir (@testdir) {
+    1 < scalar(@testdir) and print "\n"; # Cosmetic extra newline between multiple tests.
+    1 < scalar(@testdir) and reset_unit_test(); # Clear out all variables between multiple tests.
+    run_unit_test($dir);
+  }
+}
+
+sub run_unit_test {
+  my $topdir = shift;
+
+  # Reset necessary globals before running test.
+  %ahtestpar = ();
+  %runtime_manifest = ();
+  %exists = ();
+  %isfits = ();
+
+  print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n";
+  # Keep track of where we started.
+  my $prevdir = cd($topdir);
+
+  my $status = 0;
+
+  # Source (i.e., "eval") the manifest to set up initial "our" variables associated with this test case.
+  if (!$status) { $status = source_manifest($manifestfile); }
+
+  # now that we've gotten the task name, we can get the basename
+  $taskbase = $task;
+  # regex to remove everything including and after a period:
+  # \. look for a period (need to escape it with the \)
+  # .  represents any character after the preceding one (which was a period)
+  # *  search for that character (any character) 0 or more times
+  $taskbase =~ s/\..*//;
+
+  # Set name of tarfile for data in this test directory. Check for an architecture-specific variant.
+  # Make sure the name is set no matter what so that tarfile-related functions below always work.
+  my $tarfile = (-f "$taskbase-data-$arch.tgz") ? "$taskbase-data-$arch.tgz": "$taskbase-data.tgz";
+
+  # Unpack data files if necessary.
+  if (!$status) { $status = unpack_data($tarfile); }
+
+  # Update input directories. This only does something if --update was supplied.
+  if (!$status) { $status = update_input(); }
+
+  #write_manifest(*STDOUT); # for debugging if needed.
+
+  # Verify that all variables required to run the test are set correctly.
+  if (!$status) { $status = verify_var(); }
+
+  # Check input directory against the manifest.
+  if (!$status) { $status = confirm_manifest_content('inputdatafile', $inputdir); }
+
+  # If not updating, also check the expected output directory.
+  if (!$status and !$update) { $status = confirm_manifest_content('expectedoutputfile', $expectedoutputdir); }
+
+  if (!$status) {
+    # Identify test case in output.
+    print "Tool $ahtestpar{task}: test case \"$ahtestpar{testdescription}\"\n";
+
+    # Remove everything in the output directory and make it ready.
+    # run_cmd("rm -rf $outputdir", $silent) and die "Unable to clear out the output directory $outputdir\n";
+    $status = run_cmd("rm -rf $outputdir", $silent);
+    if ($status) {
+      print STDERR "Unable to clear out the output directory $outputdir\n";
+    }
+  }
+
+  if (!$status) {
+    # Copy the whole input directory into the output directory.
+    # run_cmd("cp -rp $inputdir $outputdir", $silent) and die "Unable to copy from input data directory $inputdir to output directory\n";
+    $status = run_cmd("cp -rp $inputdir $outputdir", $silent);
+    if ($status) {
+      print STDERR "Unable to copy from input data directory $inputdir to output directory\n";
+    }
+  }
+
+  if (!$status) {
+    # Create other expected output directories (pfiles).
+    # run_cmd("mkdir -p $outputdir/pfiles", $silent) and die "Unable to create output pfiles directory $outputdir/pfiles\n";
+    $status = run_cmd("mkdir -p $outputdir/pfiles", $silent);
+    if ($status) {
+      print STDERR "Unable to create output pfiles directory $outputdir/pfiles\n";
+    }
+  }
+
+  if (!$status) {
+    # Create other expected output directories.
+    # run_cmd("mkdir -p $outputdir/output", $silent) and die "Unable to create output directory $outputdir/output\n";
+    $status = run_cmd("mkdir -p $outputdir/output", $silent);
+    if ($status) {
+      print STDERR "Unable to create output directory $outputdir/output\n";
+    }
+  }
+
+  if (!$status) {
+    # Go into the newly-cleaned and re-populated output directory.
+    $topdir = cd($outputdir, $silent);
+
+    # Inform user of the environment. Ignore status; only pathological errors expected.
+    if (defined $displayenv) {
+      print "Environment variable settings immediately before run:\n";
+      print "--------------------------------------------------------------------------------\n";
+      run_cmd("env | sort", $silent);
+      print "--------------------------------------------------------------------------------\n";
+    }
+
+    # Assemble command line if one is defined and there is no alternative command given.
+    my $runarg = (defined $alternatecmd or ! exists $ahtestpar{'taskarg'}) ? "" : join('" "', @{$ahtestpar{'taskarg'}});
+    $runarg =~ /\S/ and $runarg = " \"$runarg\"";
+
+    # Display manifest if user wants to see it.
+    if (defined $displaymanifest) {
+      print "Summary of manifest:\n";
+      print "Tool to test: $ahtestpar{task}\n";
+      print "Command line to test: $ahtestpar{task}$runarg\n";
+      print "Test description: $ahtestpar{testdescription}\n";
+      print "Expected status: $ahtestpar{expectedtaskstatus}\n";
+      print ($ahtestpar{'ignore_non_fits_diff'} ? "Ignoring" : "Not ignoring");
+      print " differences in non-FITS files\n";
+      if (exists $ahtestpar{'reltol'} ) { print "Relative tolerance: $ahtestpar{reltol}\n"; }
+      if (exists $ahtestpar{'tolerance'} ) { print "Tolerance: $ahtestpar{tolerance}\n"; }
+      # For now, skip the rest of this function. When the user can use
+      # --noop (when it is implemented), might want not to skip this.
+      setstatus(1);
+      cd($prevdir, $silent);
+      print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n";
+      return;
+    }
+
+    # Either run the task or run explicitly-supplied shell command.
+    my $actualcmd = defined $alternatecmd ? $alternatecmd : "$ahtestpar{task}";
+    my $logfile = get_log_file_name();
+
+    # Check whether this command is found and issue a warning if it isn't.
+    my $executable = $actualcmd;
+    $executable =~ s/\s.*//;
+    my $notfound = system("type $executable > /dev/null 2>&1")>>8;
+    $notfound and print STDERR "WARNING: did not find executable $executable in path!\n";
+
+    # Prepend valgrind incantation, if any.
+    if (defined $valgrind) {
+      # Non-blank valgrind variable indicates user supplied command line switches.
+      if ($valgrind =~ /\S/) { $actualcmd = "valgrind $valgrind $actualcmd"; }
+      else { $actualcmd = "valgrind $actualcmd"; }
+    }
+
+    # Tell runner of aht what is about to happen, including command line arguments.
+    print "Running $actualcmd$runarg in subdirectory $outputdir\n";
+
+    # Finally run the task in this output directory.
+    my $taskstatus = run_cmd("$actualcmd$runarg > $logfile 2>&1", $silent);
+
+    # Flag that the test ran, whether or not it was successful.
+    $testran = 1;
+
+    # Return to previous location.
+    cd($topdir, $silent);
+
+    if (defined $alternatecmd) {
+      # Use the exit status of the alternate command as-is. No basis for comparing to expected behavior.
+      print "\tNOTE: alternate command supplied. Skipping assessment of test results.\n";
+      $status = $taskstatus;
+    } else {
+      # Get list of actual files produced from the file system.
+      my @actualoutput = find_all_files($outputdir);
+
+      # If the task returned the expected status, proceed with remaining updates.
+      if ($taskstatus == $ahtestpar{'expectedtaskstatus'}) {
+        # Update expected output directories. This only does something if --update was supplied.
+        $status = update_expected_output();
+
+        if (!$status) {
+          # Write final manifest used for test. This only does something if --update was supplied.
+          if ($update) {
+            print "\tWriting manifest file $manifestfile.\n";
+            # open OUTFILE, ">$manifestfile" or die "Unable to write file $manifestfile\n";
+            if (open OUTFILE, ">$manifestfile") {
+              write_manifest(*OUTFILE); close OUTFILE;
+            } else {
+              print STDERR "Unable to write file $manifestfile\n";
+              $status = 1;
+            }
+          }
+
+          if (!$status) {
+            # Create new tar file with all aht products.
+            $status = create_tar_file($tarfile);
+          }
+        }
+        # Record failures here, because $status is reused after this block closes.
+        setstatus($status);
+      }
+
+      # Compare actual with expected behavior of tool. Don't run this command if $noop is defined.
+      $status = assess_behavior($topdir, $taskstatus, \%ahtestpar, \@actualoutput);
+    }
+  }
+
+  # If an error occurred above, record it as well.
+  setstatus($status);
+
+  # Describe final status.
+  report_final_status($status);
+
+  # Finally return to the very first location.
+  cd($prevdir, $silent);
+}
+
+sub write_manifest {
+  my $fh = shift;
+  print $fh "%ahtestpar = (\n";
+  print $fh "  'task' => '$ahtestpar{task}',\n";
+  # Write out the command line if one is defined. Do not add an empty definition to prevent
+  # spurious differences with older manifests that lack the taskarg field.
+  if (exists $ahtestpar{'taskarg'}) {
+    print $fh "  'taskarg' => [\n    '".join("',\n    '", @{mq($ahtestpar{'taskarg'})})."'\n  ],\n";
+  }
+  print $fh "  'testdescription' => '".join("',\n    '", mq($ahtestpar{testdescription}))."',\n";
+  print $fh "  'expectedtaskstatus' => $ahtestpar{expectedtaskstatus},\n";
+  # Write the input data file list. Leave blank if no files are selected.
+  if (exists $ahtestpar{'inputdatafile'}) {
+    print $fh "  'inputdatafile' => [\n    '".join("',\n    '", @{mq($ahtestpar{'inputdatafile'})})."'\n  ],\n";
+  } else {
+    print $fh "  'inputdatafile' => [\n  ],\n";
+  }
+  if (exists $ahtestpar{'expectedoutputfile'}) {
+    print $fh "  'expectedoutputfile' => [\n    '".join("',\n    '", @{mq($ahtestpar{'expectedoutputfile'})})."'\n  ]";
+  } else {
+    print $fh "  'expectedoutputfile' => [\n  ]";
+  }
+  print $fh ",\n  'ignore_non_fits_diff' => $ahtestpar{'ignore_non_fits_diff'}";
+  if (exists $ahtestpar{'reltol'}) { print $fh ",\n  'reltol' => $ahtestpar{reltol}"; }
+  if (exists $ahtestpar{'tolerance'}) { print $fh ",\n  'tolerance' => $ahtestpar{tolerance}"; }
+  print $fh "\n);\n";
+}
+
+sub setstatus {
+  my $status = shift;
+  defined $status or return;
+  defined $teststatus or $teststatus = 0;
+  (0 == $teststatus) and $teststatus = $status;
+}
+
+sub find_all_directories {
+  my @root = @_;
+  my @result;
+  foreach my $root (@root) {
+    my @found = `find $root -type d ! -name CVS 2> /dev/null`;
+    push @result, @found;
+  }
+  chomp @result;
+  return @result;
+}
+
+sub find_all_files {
+  my @root = @_;
+  my @result;
+  foreach my $root (@root) {
+    my @found = `find $root -type f 2> /dev/null`;
+    push @result, @found;
+  }
+  chomp @result;
+  # Exclude files found in CVS directories.
+  my @newresult;
+  foreach my $found (@result) {
+    if ($found !~ /^CVS\// and $found !~ /\/CVS$/ and $found !~ /\/CVS\//) { push(@newresult, $found); }
+  }
+  # Sort the files to reduce spurious differences.
+  return sort @newresult;
+}
+
+sub get_log_file_name {
+  return defined $alternatecmd ? "command-log" : "$ahtestpar{task}-log";
+}
+
+sub assess_behavior {
+  my $topdir = shift;
+  my $taskstatus = shift; # Exit status of the task when it ran.
+  my $ahtestpar = shift;
+  my $actualoutput = shift;
+  my $status; # Status of individual shell command within this function.
+
+  # This is a logic error -- fatal.
+  (defined $taskstatus and defined $ahtestpar and defined $actualoutput) or
+    die "Function assess_behavior called without required argument(s)\n";
+
+  # Compare task's actual to expected exit status.
+  my %ahtestpar = %{$ahtestpar}; # NOTE: THIS MAKES A COPY -- READ-ONLY!
+  if ($taskstatus != $ahtestpar{'expectedtaskstatus'}) {
+    $status = 1;
+    print STDERR "Task $ahtestpar{task} exited with status $taskstatus, not $ahtestpar{expectedtaskstatus}, as expected.\n";
+    $update and print STDERR "Expected output etc. was *not* updated.\n";
+  }
+
+  # Check the expected output and input directories *again*, to ensure no changes occurred there.
+  confirm_manifest_content('inputdatafile', $inputdir) and $status = 1;
+  confirm_manifest_content('expectedoutputfile', $expectedoutputdir) and $status = 1;
+
+  # Compare actual output to expected output.
+  compare_directory($expectedoutputdir, $outputdir) and $status = 1;
+
+  # Confirm output files pass verifications like ftverify.
+  verify_files($outputdir, $silent);
+
+  # If any discrepancy was found, set global status.
+  setstatus($status);
+
+  return $status;
+}
+
+sub handle_die {
+  report_final_status(1);
+}
+
+sub report_final_status {
+  my $status = shift;
+
+  my $topdir = abs_path(getcwd());
+
+  # Derive identifier for this test from the name of the test directory. This will be used in the final message below.
+  my $testid = $topdir;
+
+  # Usual convention is for unit tests to be under a directory named for the tool being tested:
+  # <pkg>/<subpkg>/ut/<tool>/<testid>.
+  # In this case, extract everything up to and including the tool name, but leave the rest of the
+  # path intact, just in case someone used a hierarchy of unit test directories.
+  $testid =~ s:.*/$taskbase/::;
+
+  # If the match above did not shorten the testid, it must mean the convention tried above was not used.
+  # In this case, make the testid into the last part of the directory rather than using the whole
+  # path, which is probably not what the developer wants to see.
+  ($testid eq $topdir) and $testid =~ s:.*/::;
+
+  # Report on this specific comparison, using local status of this comparison to treat it as pass/fail.
+  if ($status) {
+    if ($testran) {
+      print STDERR "\tSee log of tool run: $outputdir/$ahtestpar{task}-log\n";
+      print STDERR "Unit test $task $testid FAILED.\n";
+    } else {
+      print STDERR "Problem with test input. Check $manifestfile, $inputdir and/or $expectedoutputdir.\n";
+      print STDERR "Unit test $task $testid ABORTED.\n";
+    }
+  } else {
+    if ($update) {
+      print "\tUnit test was updated -- please inspect $manifestfile, $inputdir and $expectedoutputdir",
+        " to verify correct behavior\n";
+    }
+    print "Unit test $task $testid PASSED.\n";
+  }
+  print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n";
+}
+
+sub verify_var {
+  my $status = 0;
+  my $msg = "In test case";
+  exists $ahtestpar{'task'} and $msg .= " for task $ahtestpar{task}";
+  $msg .= ":";
+  exists $ahtestpar{'testdescription'} and $msg .= " \"$ahtestpar{testdescription}\"";
+  if (!exists $ahtestpar{'task'}) {
+    $msg .= "\n\tName of task to test was not defined on command line or in manifest file:";
+    $msg .= "\n\t\tTo rectify, supply the task argument on the command line.";
+    $status = 1;
+  }
+  if (!exists $ahtestpar{'expectedtaskstatus'}) {
+    $msg .= "\n\tExpected exit status of task in test case was not defined on command line or in manifest file:";
+    $msg .= "\n\t\tTo add expected status use the --status option.";
+    $status = 1;
+  }
+  if (!exists $ahtestpar{'testdescription'}) {
+    $msg .= "\n\tDescription of test case was not defined on command line or in manifest file:";
+    $msg .= "\n\t\tTo add a description use the --descript option.";
+    $status = 1;
+  }
+# No longer *required* to have input files.
+#  if (!exists $ahtestpar{'inputdatafile'}) {
+#    $msg .= "\n\tExpected input files were not defined in manifest file; update required.";
+#    $status = 1;
+#  }
+  if (!exists $ahtestpar{'expectedoutputfile'}) {
+    # This is OK if update selected; expectedoutputfile is updated later.
+    if (!$update) {
+      $msg .= "\n\tExpected output files were not defined in manifest file; update required.";
+      $status = 1;
+    }
+  }
+  $status and $msg .= "\nRun aht in update mode (--update) to correct errors.";
+  $status and usage($status, $msg);
+  return $status;
+}
+
+sub confirm_manifest_content {
+  my $testpar = shift;
+  my $dir = shift;
+  my $fitsverify = shift;
+  my $status = 0;
+
+  defined $fitsverify or $fitsverify = 0;
+
+  # Get list of expected files from manifest. These are assumed to be relative paths from inside the supplied directory.
+  my @expected = (exists $ahtestpar{$testpar}) ? @{$ahtestpar{$testpar}} : (); # NOTE: THIS MAKES A COPY -- READ-ONLY!
+
+  # Make list of actual files found and classify them.
+  my @actual = find_all_files($dir);
+  classify_file(@actual);
+
+  # See which expected files exist and verify them if appropriate.
+  my $report = 0;
+  foreach my $file (@expected) {
+    my $actual = "$dir/$file";
+
+    # If expected and actual files are both present, compare them.
+    if (!$exists{$actual}) {
+      $status = 1;
+      $report = 1;
+      print STDERR "\tFile expected from manifest \"$file\" was not found in directory \"$dir\":\n";
+    }
+  }
+  $report and print STDERR "Confirm task and/or test is behaving correctly.\n";
+
+  # Now check files that exist but are not in the manifest. Do not check their validity.
+  $report = 0;
+  foreach my $file (@actual) {
+    my $shortfile = $file;
+    $shortfile =~ s/^$dir\///;
+    if (!grep /^${shortfile}$/, @expected) {
+      $status = 1;
+      $report = 1;
+      print STDERR "\tActual file $file is not in manifest file (see ahtestpar{$testpar}):\n";
+    }
+  }
+  $report and print STDERR "Confirm test manifest $manifestfile and content of $dir are correct.\n";
+
+  # If any discrepancy was found, set global status.
+  setstatus($status);
+
+  return $status;
+}
+
+sub verify_files {
+  my $dir = shift;
+  my $silent = shift;
+  my $status = 0;
+
+  # Make list of actual files found and classify them.
+  my @actual = find_all_files($dir);
+  classify_file(@actual);
+
+  # Tweaks to environment.
+  my $pfiles_save = $ENV{"PFILES"}; # Preserve and restore at end.
+
+  # Set so ftverify runs correctly for this test, including any customization in input directories.
+  # Save a local parameter file - this also prevents any attempt to write to the system
+  # parameter file directory.
+  $ENV{"PFILES"} = "$dir/pfiles;$dir/syspfiles:$headassyspfiles";
+
+  # See which expected files exist and verify them if appropriate.
+  foreach my $actual (@actual) {
+    if ($isfits{$actual}) {
+      # Failure to verify is, for the moment, a warning only, so ignore return of fits_verify function:
+      # global test status is not affected.
+      if (fits_verify ($actual, "$actual-ftverify-log", $silent)) {
+        print STDERR "\tWARNING: file $actual failed ftverify. See $actual-ftverify-log\n";
+        $status = 1;
+      }
+    }
+  }
+
+  $ENV{"PFILES"} = $pfiles_save; # Put it back the way it was.
+
+  return $status;
+}
+
+sub fits_verify {
+  # Return true if fits file is OK.
+  my $file = shift;
+  my $log = shift;
+  my $noecho = shift;
+
+  # This is a logic error -- fatal.
+  (defined $file and defined $log) or die "Function fitsverify called with undefined file and/or log file name\n";
+  my $is_ok = 0;
+
+  my $status = run_cmd("ftverify $file > $log 2>&1", $noecho);
+
+  if (0 == $status) {
+    if (open LOGFILE, $log) {
+      my @report = <LOGFILE>; close LOGFILE;
+      my $finalmsg = pop @report;
+      $is_ok = ($finalmsg =~ /\s+0\s+error\(s\)/);
+    }
+  }
+  return !$is_ok;
+}
+
+sub classify_file {
+  foreach my $file (@_) {
+    # Flag whether file exists.
+    $exists{$file} = (-f $file);
+
+    if ($exists{"$file"}) {
+      # See if this existent file is in FITS format.
+      my $filetype = `file $file`;
+      $isfits{"$file"} = ($filetype =~ /FITS/);
+    }
+  }
+}
+
+sub compare_directory {
+  my $dir1 = shift;
+  my $dir2 = shift;
+  my $status = 0;
+
+  # Find all files under the directory.
+  my @file1 = find_all_files($dir1);
+  my @file2 = find_all_files($dir2);
+  my @report; # Contains descriptions of differences.
+
+  # Determine their natures (presumably all exist since they were just found above).
+  classify_file(@file1, @file2);
+
+  # Tweaks to environment.
+  my $pfiles_save = $ENV{"PFILES"}; # Preserve and restore at end.
+  $ENV{"PFILES"} = "$dir2/pfiles;$dir2/syspfiles:$headassyspfiles"; # Set so ftverify etc. run correctly for this test.
+
+  # Review files in first list.
+  foreach my $file1 (@file1) {
+    # Look for the file in the second list.
+    my $file2 = $file1;
+    $file2 =~ s/^$dir1\//$dir2\//;
+    if ($exists{$file2}) {
+      compare_file($file1, $file2, \@report) and $status = 1;
+    } else {
+      $status = 1;
+      push @report, "File $file1 exists, but $file2 does not.";
+    }
+  }
+
+  # Review files in second list.
+  foreach my $file2 (@file2) {
+    # Look for the file in the first list.
+    my $file1 = $file2;
+    $file1 =~ s/^$dir2\//$dir1\//;
+    if ($exists{$file1}) {
+      # Do not compare -- this should have been found and compared already in the loop above.
+      # compare_file($file1, $file2, \@report) and $status = 1;
+    } else {
+      $status = 1;
+      push @report, "File $file1 does not exist, but $file2 does.";
+    }
+  }
+
+  $ENV{"PFILES"} = $pfiles_save; # Put it back the way it was.
+
+  # If any discrepancy was found, set global status.
+  setstatus($status);
+
+  # Report on this specific comparison, using local status of this comparison.
+  if (scalar(@report)) { print STDERR "\t".join("\n\t", @report)."\n"; }
+
+  return $status;
+}
+
+sub compare_file {
+  my $file1 = shift;
+  my $file2 = shift;
+  my $report = shift;
+  my $status;
+
+  # First see if they are by chance exactly the same. Weed out patterns known to give spurious
+  # differences (start and end times of run).
+  if (run_cmd("diff -I STARTLOG -I ENDLOG -I RUNPATH $file1 $file2 > $file2-diff-log 2>&1", $silent)) {
+  #if (run_cmd("diff $file1 $file2 > $file2-diff-log 2>&1", $silent)) {
+    # Diff returned non-zero status; there are apparently differences: learn a little more.
+    if ($isfits{$file1} and $isfits{$file2}) {
+      my $ftdiffcommand = "ftdiff $file1 $file2";
+      if(exists $ahtestpar{'reltol'}) { $ftdiffcommand .= " reltol=$ahtestpar{reltol}"; }
+      if(exists $ahtestpar{'tolerance'}) { $ftdiffcommand .= " tolerance=$ahtestpar{tolerance}"; }
+      $ftdiffcommand .= " > $file2-ftdiff-log 2>&1";
+# todo location of log files produced by aht and shell commands into standard place?
+      #if ($status = run_cmd("ftdiff $file1 $file2 > $file2-ftdiff-log 2>&1", $silent)) {
+      if ($status = run_cmd($ftdiffcommand, $silent)) {
+        push @{$report}, "Ftdiff found differences between $file1 and $file2 (see $file2-ftdiff-log).";
+      }
+    } elsif ($isfits{$file1}) {
+      $status = 1;
+      push @{$report}, "File $file1 is in FITS format, but file $file2 is not.";
+    } elsif ($isfits{$file2}) {
+      $status = 1;
+      push @{$report}, "File $file1 is not in FITS format, but file $file2 is.";
+    } elsif ($file1 =~ /\.par$/ or $file2 =~ /\.par$/) {
+      $status = compare_par_file($file1, $file2);
+      $status and push @{$report}, "Parameter file $file1 differs from file $file2 (see $file2-diff-log).";
+    } else {
+      # Handle a special case of log file diffences.
+      my $logfile = get_log_file_name();
+      if($ahtestpar{'ignore_non_fits_diff'}) {
+        push @{$report}, "WARNING: file $file1 differs from file $file2 (ignored -- see $file2-diff-log).";
+      } elsif(defined $valgrind and $file2 =~ /\/$logfile$/) {
+        push @{$report}, "WARNING: file $file1 differs from file $file2 (ignored in valgrind mode -- see $file2-diff-log).";
+      } else {
+        $status = 1;
+        push @{$report}, "File $file1 differs from file $file2 (see $file2-diff-log).";
+      }
+    }
+  }
+  return $status;
+}
+
+sub compare_par_file {
+  my $parfile1 = shift;
+  my $parfile2 = shift;
+  my $status = 1;
+
+  # If test case has a defined tolerance or relative tolerance, use that when comparing
+  # parameter files.
+  if (exists $ahtestpar{'reltol'} or exists $ahtestpar{'tolerance'}) {
+    # Slurp up the parameter files.
+    # open PF1, $parfile1 or die "Unable to open parameter file $parfile1 for comparison\n";
+    if (!open PF1, $parfile1) {
+      print STDERR "Unable to open parameter file $parfile1 for comparison\n";
+      return $status;
+    }
+    # open PF2, $parfile2 or die "Unable to open parameter file $parfile2 for comparison\n";
+    if (!open PF2, $parfile2) {
+      close PF1;
+      print STDERR "Unable to open parameter file $parfile2 for comparison\n";
+      return $status;
+    }
+    my @parfile1 = <PF1>; my @parfile2 = <PF2>;
+    close PF2; close PF1;
+
+    # Check first whether the parameter files even have the same number of lines.
+    # If not, even a tolerance can't make them "close enough".
+    if (scalar(@parfile1) == scalar(@parfile2)) {
+      $status = 0; # At this point, assume they are the same until a difference is found.
+      # Use symbolic names to dereference the fields of the parameters.
+      my $name = 0; my $type = 1; my $mode = 2; my $value = 3; my $min = 4; my $max = 5; my $prompt = 6;
+      while (scalar(@parfile1) and 0 == $status) {
+        my $line1 = shift @parfile1;
+        my $line2 = shift @parfile2;
+        $line1 eq $line2 and next; # Exact equality still works and is preferable.
+
+        # Pick apart the parameters and compare them field by field.
+        my @par1 = split ',', $line1;
+        my @par2 = split ',', $line2;
+        if (scalar(@par1) != scalar(@par2)) {
+          # If they don't have the same number of fields, even tolerance can't make them "close enough".
+          $status = 1; next;
+        }
+
+        # Flag differences.
+        my %diff;
+        foreach my $ii (0..$#par1) {
+          ($par1[$ii] ne $par2[$ii]) and $diff{$ii} = 1;
+        }
+
+        # If any differences were found, assume the parameters are not equal -- unless some
+        # downstream test proves otherwise.
+        (0 != scalar(keys %diff)) and $status = 1; # But keep going, this may be reversed below.
+
+        # If the only difference is in the value, keep checking.
+        if (1 == scalar(keys %diff) and 1 == $diff{$value}) {
+          my $partype = $par1[$type];
+          # Strip the white space.
+          $partype =~ s:^\s+::; $partype =~ s:\s+$::;
+          # Real valued parameters need to be checked with tolerance and/or reltol.
+          if ("r" eq $partype or "R" eq $partype) {
+            if (looks_like_number($par1[$value]) and looks_like_number($par2[$value])) {
+              my $pardiff = abs($par1[$value] - $par2[$value]);
+              # If the values are within the (absolute) tolerance, that is close enough.
+              if (exists $ahtestpar{'tolerance'} and (abs($pardiff) <= abs($ahtestpar{'tolerance'}))) {
+                $status = 0;
+              }
+
+              # If the values are within the (relative) tolerance, that is close enough.
+              if (exists $ahtestpar{'reltol'}) {
+                my $parsum = $par1[$value] + $par2[$value];
+                if ($pardiff <= abs($parsum / 2. * $ahtestpar{'reltol'})) {
+                  $status = 0;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return $status;
+}
+
+sub usage {
+  my $status = shift;
+  my $msg = shift;
+  my $fh = $status ? *STDERR : *STDOUT;
+  my $usage =
+"$this_script is a test utility for defining and running unit tests.
+
+Usage: $this_script [options] [task-name] [task-arguments]
+
+       [options]: note all options must precede task-name; everything after
+                  the task name is assumed to be a task argument.
+         -a | --all                   Recurse to run all unit tests found
+                                      below this directory level.
+         -c=text | --command=text     Execute command specified by text in
+                                      lieu of task, (for debugging).
+         -d=text | --descript=text    Description of unit test (required
+                                      if task name given).
+         -e | --env                   Display the environment as set
+                                      immediately prior to running the task.
+         -h | --help                  Display this message.
+         -i | --ignore                Ignore differences in non-FITS output
+                                      files. This is used only for creating
+                                      or updating test cases in which
+                                      differences in the log files are
+                                      unavoidable.
+         -m | --manifest              Display the manifest data for this test.
+         -n | --noop                  Echo commands only -- do not execute.
+         -s=status | --status=status  Expected status of a new or updated test
+                                      (required if task name given).
+         -t=tolerance | --tolerance=tolerance
+                                      Absolute tolerance for differences in
+                                      floating point values in FITS/par files.
+         -r=reltol | --reltol=reltol  Relative tolerance for differences in
+                                      floating point values in FITS/par files.
+         -u | --update                Update the unit test (required if
+                                      task name specified).
+         -v=valopt | --valgrind=valopt
+                                      Use valgrind to run test with memory checks.
+                                      valopt are options passed to valgrind.
+                                      If no options are specified, valgrind is
+                                      run with defaults. Ignores non-FITS file
+                                      differences for duration of run.
+
+       With no arguments, $this_script will simply run the unit test
+       as previously specfied in the file $manifestfile. Following the tool
+       run, if exit status was not as expected, updates to expected output
+       will not be made and an updated manifest file will not be written.";
+  print $fh "$usage\n";
+  defined $msg and print $fh "
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+$msg
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+";
+  exit $status;
+}
+
+sub mq {
+  # Find and replace single quotes with escaped single quotes within string
+  my $str = shift;
+  $str =~ s/'/\\'/g;
+  return $str;
+}
+
+# $Log: aht,v $
+# Revision 1.52  2015/08/18 13:25:07  peachey
+# Install and use the internal caldb in the lib/perl/aht directory rather than refdata.
+#
+# Revision 1.51  2015/04/15 03:00:16  peachey
+# Fix a bug that prevented -a -v from working.
+#
+# Revision 1.50  2015/04/14 23:33:35  peachey
+# Per Astro-H Redmine issue #352, add option to run valgrind on any unit test case.
+#
+# Revision 1.49  2015/04/10 17:45:20  peachey
+# Re Astro-H Redmine Issue #355, report just the first line of version information,
+# and give the actual executable name in the message as well.
+#
+# Revision 1.48  2015/04/10 17:36:22  peachey
+# Per Astro-H Redmine issue #355, pick GNU tar preferentially, if it can be found.
+#
+# Revision 1.47  2015/04/10 12:12:17  peachey
+# Per Astro-H Redmine issue #499, revamped aht to minimize use of 'die', thus allowing
+# aht to continue processing unit tests and reporting outcomes for multiple test cases
+# rather than aborting completely at the first sign of trouble.
+#
+# Revision 1.46  2015/01/23 19:24:34  klrutkow
+# added variable taskbase in order to strip any possible extensions from task name: needed for perl tools par files
+#
+# Revision 1.45  2014/07/25 15:17:19  peachey
+# Per Astro-H redmine issue #251, make the warning smarter: warn if and
+# only if the expected output includes only a copy of the input plus
+# parameter files and the log file.
+#
+# Revision 1.44  2014/07/25 13:58:57  peachey
+# Per Astro-H redmine issue #251, warn if no output files found, or if
+# the only output file is the log file.
+#
+# Revision 1.43  2014/07/25 01:06:19  peachey
+# Per astroh redmine bug #416, avoid using glob to copy aht-input to aht-output.
+#
+# Revision 1.42  2014/07/14 17:34:05  peachey
+# Per Astro-H redmine issue #251, check for possible developer error:
+# warn if no input files are found, and/or no output files are produced.
+# Note that currently output is always produced, (the log of the tool
+# being run).
+# Also cleaned up some logic related to the updating of input directories
+# and the correct copying to aht-expected-output directories.
+#
+# Revision 1.41  2014/07/08 16:14:20  peachey
+# Per astroh issue #342, changed aht such that anytime execution stops,
+# a greppable standard output message appears with the words 'Unit test' and either ABORTED, FAILED or PASSED.
+# This is to make it easier to find unit test outcomes.
+#
+# Revision 1.40  2014/04/08 15:46:43  peachey
+# Remove deprecated usages of 'defined' for arrays. Change to using 'exists'
+# for checking hash values, which was the intention all along.
+#
+# Revision 1.39  2014/02/07 19:41:22  peachey
+# Use the caldb installed in the refdata/aht-caldb area.
+#
+# Revision 1.38  2014/01/14 15:58:51  peachey
+# Preserve and restore command line settings during recursive test (--all).
+# This is to facilitate bulk updates under appropriate conditions.
+#
+# Revision 1.37  2014/01/10 16:25:25  peachey
+# Per Redmine issue #330, remove manifest from tarfile.
+#
+# Revision 1.36  2014/01/08 15:15:02  peachey
+# Per Redmine issue #328, added ignore switch (--ignore on command line,
+# and/or ignore_non_fits_diff in aht_manifest.pl), that determines
+# whether log file differences are significant.
+#
+# Revision 1.35  2014/01/08 13:42:35  peachey
+# Revise usage message: explain tolerance and reltol more
+# thoroughly and shrink to fit message in 80 characters.
+#
+# Revision 1.34  2014/01/08 13:35:36  peachey
+# Per Redmine issue #319, added function compare_par_file, which
+# ignores differences in real (r) type parameters that are within
+# tolerance or reltol of the expected values.
+# Cosmetic changes:
+# 1) Changed "ABORT" message to one line.
+# 2) In usage, changed many * to many + so it doesn't look like an error.
+#
+# Revision 1.33  2014/01/07 20:44:37  peachey
+# Per Redmine issue #320: Revamp aht output, add identifier of the test
+# to the PASS/FAIL message shown at the end of the test.
+#
+# Revision 1.32  2013/12/13 13:36:17  peachey
+# Add check for, and warning about, missing executables.
+#
+# Revision 1.31  2013/12/09 20:30:22  peachey
+# Match any number of spaces when looking for functions in environment.
+#
+# Revision 1.30  2013/12/09 18:09:20  asargent
+# fixed a bug where aht didn't correctly process a bash environment containing a function - skipping env variables with functions. See issue 287.
+#
+# Revision 1.29  2013/12/05 14:39:28  asargent
+# Converted qw, qq, and " to single quotes in manifest writing. Added a function to escape single quotes in strings for manifest. Removed noop option - see issue 320.
+#
+# Revision 1.28  2013/11/20 15:05:27  asargent
+# Added ability to use the --noop option.
+#
+# Revision 1.27  2013/10/23 15:54:39  peachey
+# Restructure ftverify usage, per issue #271. Before this change, ftverify
+# was in principle being run during the step of comparing the actual files
+# present to files predicted by the manifest file
+# (confirm_manifest_content). Not only did this not really fit there, but
+# it was being disabled by the lack of the "$fitsverify" flag.
+#
+# Now there is a single function verify_files, which calls ftverify for
+# all FITS files in a given directory, and is called explicitly
+# during the assess_behavior step for the aht-output directory.
+#
+# Revision 1.26  2013/10/15 21:03:10  peachey
+# (On behalf of Andy Sargent): add --reltol and --tolerance options for
+# tools that are passed to ftdiff. This should make it easier to create
+# custom tolerances for each test case. This is a new and more convenient
+# version of the implementation in issue #212. However, it does not
+# deliver on the goal of issue #253 for a fully customizable ftdiff
+# script for each directory.
+#
+# Revision 1.25  2013/09/24 19:33:11  peachey
+# Make input files optional.
+#
+# Revision 1.24  2013/09/12 02:09:22  peachey
+# Correct the way the arguments are assembled to have spaces and quotes in the right places.
+#
+# Revision 1.23  2013/09/11 20:53:47  peachey
+# 1. Redmine issue #156: aht now stores command line, if any,
+#    in manifest file.
+# 2. Function find_all_files sorts its output now.
+# 3. Fix a bug which led to attempts to create a tar file with a blank name.
+# 4. Back out temporarily the change made recently to support more complex
+#    env outputs.
+#
+# Revision 1.22  2013/09/04 21:56:11  rshill
+# Fixed environment parsing for case where the environment
+# contains a function with an embedded newline.
+#
+# Revision 1.21  2013/08/12 12:12:32  peachey
+# Begin to add support for architecture-specific reference data tarballs.
+# This is not complete because aht can't always get the architecture name due to hmake behavior.
+#
+# Revision 1.20  2013/08/06 18:50:53  peachey
+# Relax error conditions: differences in log files are warnings for now.
+#
+# Revision 1.19  2013/08/06 18:41:14  peachey
+# Reset between tests in different directories. Allows -a -u to work.
+#
+# Revision 1.18  2013/07/25 01:02:25  peachey
+# Fix a bug: the tar file should always be located in the same directory as the manifest file.
+#
+# Revision 1.17  2013/07/24 21:02:03  peachey
+# Sort lists of directories during --all/-a/recursive option.
+#
+# Revision 1.16  2013/05/30 22:42:42  peachey
+# Update now creates a tarfile to hold aht's stuff, and unpacks the tarfile if aht's stuff is missing.
+#
+# Revision 1.15  2013/03/06 16:36:35  peachey
+# If no input files are present, skip the update.
+#
+# Revision 1.14  2013/03/06 14:48:28  peachey
+# Update parameter files even if --update is not selected. This will expose
+# changes in parameter files that require test cases to be updated.

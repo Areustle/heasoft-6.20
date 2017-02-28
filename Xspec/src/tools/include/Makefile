@@ -1,0 +1,7 @@
+HD_COMPONENT_NAME	= Xspec
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_HEADERS	= modelSetup.h
+
+include ${HD_STD_MAKEFILE}

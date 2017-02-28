@@ -1,0 +1,1157 @@
+#!/usr/bin/perl
+# $Revision: 1.60 $
+# $Source: /headas/headas/swift/uvot/tasks/uvottfc/uvottfc,v $
+# $Date: 2008/10/15 21:22:56 $
+#
+# $Log: uvottfc,v $
+# Revision 1.60  2008/10/15 21:22:56  rwiegand
+# Updated default exposure durations for new AT sequence.
+#
+# Revision 1.59  2008/10/10 22:00:22  rwiegand
+# Support raw images larger than 1024x1024.
+#
+# Revision 1.58  2006/04/06 15:06:59  rwiegand
+# Only include pixels with positive counts with parameterized source.  The V
+# SRCLIST for trigger 203755 had corrupt positions and counts including a
+# source with 0 counts which caused a division by zero error when centroiding.
+#
+# Revision 1.57  2006/03/23 21:31:54  rwiegand
+# Implemented support for FILTER dependent nominal exposure durations as of
+# trigger 202035 and use default 100s for WHITE and 400s for V.
+#
+# Revision 1.56  2005/11/02 15:19:33  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.55  2005/10/12 13:29:11  rwiegand
+# Use Frank Marshall's postage stamp counts to total counts conversions.
+# Enhanced exposure parameter to allow value~error and DEFAULT where
+# DEFAULT looks up the finding chart exposure duration in a table.
+# When smoothing sparse image, use real numbers to avoid smoothing faint
+# sources out of existence.
+#
+# Revision 1.54  2005/09/16 22:09:42  rwiegand
+# Apply the rate error scale factor locally.
+#
+# Revision 1.53  2005/09/16 21:47:39  rwiegand
+# Added an exposure parameter.  Updated help file.
+#
+# Revision 1.52  2005/09/16 12:17:28  rwiegand
+# Allow user to qualify CALDB queries.
+#
+# Revision 1.51  2005/08/05 15:03:30  rwiegand
+# Propagate proper keywords to header of smoothed sparse image.
+#
+# Revision 1.50  2005/06/07 13:30:53  rwiegand
+# Write notes for CALDB parameters.
+#
+# Revision 1.49  2005/04/25 18:21:32  rwiegand
+# Terser source description at low verbosity, but access to individual
+# source fields when run at higher chatter levels.
+#
+# Revision 1.48  2005/04/07 18:38:10  rwiegand
+# Implemented optional smoothing of the sparse image.
+#
+# Revision 1.47  2005/03/21 18:35:41  rwiegand
+# Only store medium and low priority data if some non-null pixels exist.
+#
+# Revision 1.46  2005/03/11 19:52:46  rwiegand
+# Was not saving the bad pixel file path when it was not retrieved from CALDB.
+#
+# Revision 1.45  2005/03/04 23:19:02  rwiegand
+# Remember path of bad pixel list after retrieving from CALDB.
+#
+# Revision 1.44  2005/03/04 19:03:59  rwiegand
+# Generate sparse image in C sub-process.
+#
+# Revision 1.43  2005/02/01 16:25:48  rwiegand
+# Made special value CALDB case-insensitive.
+#
+# Revision 1.42  2004/10/15 21:52:24  rwiegand
+# Updated codename of bad pixel table.
+#
+# Revision 1.41  2004/08/26 19:47:41  rwiegand
+# Was improperly converting from RAW to SKY: already had TELDEF pix coords.
+#
+# Revision 1.40  2004/07/12 20:27:39  miket
+# Merging build 8 branch back onto main trunk
+#
+# Revision 1.39  2004/07/09 16:21:39  rwiegand
+# Implemented CALDB support.
+#
+# Revision 1.38  2004/06/17 21:33:50  rwiegand
+# Updated parameter names for Martin.  Use new HEAdas perl task support.
+# Partitioned catalog loading placed in UVOT/xxx modules.
+#
+# Revision 1.37  2004/05/28 17:45:13  rwiegand
+# Prefer MJDREFI/MJDREFF to MJDREF.
+#
+# Revision 1.36  2004/05/10 17:58:11  rwiegand
+# Use Task::FITS support for transferring key classes.  Default reference
+# position given by {RA,DEC}_PNT keywords.
+#
+# Revision 1.35  2004/05/03 21:57:36  rwiegand
+# Propagate windowing keywords.
+#
+# Revision 1.34  2004/04/30 15:21:21  rwiegand
+# Calculate source count rate errors.
+#
+# Revision 1.33  2004/04/30 15:03:50  rwiegand
+# Added TELDEF parameter to pass to UVOT::Convert which now uses applyxform.
+#
+# Revision 1.32  2004/04/28 21:11:33  rwiegand
+# Implemented bad pixel list support.
+#
+# Revision 1.31  2004/04/19 13:58:44  rwiegand
+# Only perform FITS packet [tdrss2fits output] to source table conversion.
+#
+# Revision 1.30  2004/01/30 23:02:41  rwiegand
+# Have to use rates (not counts) when calculating magnitude.
+#
+# Revision 1.29  2004/01/13 16:27:34  rwiegand
+# Write blank pixels as -1.  Corrected constraints on raw y values and MJDREF.
+#
+# Revision 1.28  2004/01/05 16:43:12  rwiegand
+# Missed an instance of the UNIT, WINDOWX0, and WINDOWY0 fields when renaming.
+#
+# Revision 1.27  2003/11/26 20:43:12  rwiegand
+# There are now 4 outputs: FITS-ified packet, sparse image, source list, and
+# pretty picture.  The source list is now in a FITS table and has much more
+# information.
+#
+# Revision 1.26  2003/11/10 16:06:09  rwiegand
+# Renamed parameters for consistency with other heatools.
+#
+# Revision 1.25  2003/11/10 14:52:11  rwiegand
+# Store sources and postage stamps in RAW coordinates instead of offsets into
+# finding chart window.  Use external module for converting from RAW to SKY
+# coordinates.  Fit 2d Gaussian to pixelated sources to determine magnitude.
+#
+# Revision 1.24  2003/11/03 19:38:05  rwiegand
+# Updated zero points calibration file format.  Refined logging.
+#
+# Revision 1.23  2003/08/26 21:20:37  rwiegand
+# Changed tolerance parameters to be in units of arcseconds.  If a later
+# postage stamp overlaps an earlier one, ignore any zero pixel values.
+#
+# Revision 1.22  2003/08/12 15:20:23  rwiegand
+# Resolve star position from either unit vector or RA, DEC.  Form star
+# identifier from all keys beginning with 'id'.
+#
+# Revision 1.21  2003/08/08 17:21:15  rwiegand
+# Corrected image dimensions (confusion between extent and max).  Added a
+# bunch of keywords.
+#
+# Revision 1.20  2003/08/07 22:15:27  rwiegand
+# Corrected unpacking of counts for medium/low priority pixels.
+#
+# Revision 1.19  2003/08/04 15:01:27  rwiegand
+# Added parameter tfc2fits.  When tfc2fits is not equal to 'NONE', a FITS
+# file with the given name is created and the finding chart packet is saved
+# in the primary array.
+#
+# Revision 1.18  2003/06/11 21:38:36  miket
+# global name changes from tfc/starid to uvottfc/uvotstarid
+#
+# Revision 1.17  2003/04/04 21:21:14  miket
+# merging changes from swift_bld4_0 branch
+#
+# Revision 1.16.2.1  2003/03/20 16:45:03  miket
+# Lack of hash-bang line prevents standard LHEAPERL header during installation
+#
+# Revision 1.16  2003/02/10 15:34:29  rwiegand
+# Modified syntax in a couple places to work with perl 5.5.2
+#
+# Revision 1.15  2002/12/12 21:00:06  rwiegand
+# Updated to use PIL parameter files (via pquery2).
+#
+# Revision 1.14  2002/11/26 16:05:23  rwiegand
+# Set executable bit on the drivers
+#
+# Revision 1.13  2002/11/25 22:20:12  rwiegand
+# Corrected angle calculation based on detector coordinates.  Of course we
+# still don't know the action coordinate frame, but now it is correct within
+# a rotation.
+#
+# Revision 1.12  2002/11/25 16:13:15  rwiegand
+# Renamed Task::fatal to error.  Updated handling of StarID results.  Include
+# a final direct match to report unmatched sources.
+#
+# Revision 1.11  2002/09/30 18:27:14  wiegand
+# Added header keywords to FITS sparse image output.  Handle star catalogs
+# without proper motion information.  Continue whether or not star ID
+# succeeds.  Store final ra, dec, roll for output.
+#
+# Revision 1.10  2002/08/26 18:04:07  wiegand
+# Use new Astro TLE, SGP, Julian, GTDS modules instead of shelling out for
+# Swift and sun position at epoch
+#
+# Revision 1.9  2002/08/12 18:29:47  wiegand
+# Shell out for Swift around Earth and Earth around Sun velocity (to
+# determine velocity aberration).
+#
+# Revision 1.8  2002/07/26 21:38:22  wiegand
+# Determine ra, dec, roll in radians.  Implemented location of sources
+# in astrometric frame.
+#
+# Revision 1.7  2002/07/25 13:24:38  wiegand
+# Added method for initialization.  Use Task argument interface
+#
+# Revision 1.6  2002/07/24 12:53:54  wiegand
+# Removed attempt to use imagexform and ximage for transforming detector
+# image to sky and detecting sources in the sparse image since it wasn't
+# working out.  Fixed compilation errors.
+#
+# Revision 1.5  2002/07/24 12:48:51  wiegand
+# Implemented findRoughAstrometricFrame
+#
+# Revision 1.4  2002/07/23 17:22:15  wiegand
+# Reworked parameter interface.  Added identifySources and updated
+# centroid estimation.
+#
+# Revision 1.3  2002/07/18 13:45:07  wiegand
+# Tested and cleaned up parsing finding chart packet and writing sparse image.
+#
+# Revision 1.2  2002/07/17 13:47:12  wiegand
+# Alternative path which uses ximage and imagexform.  Cleaned up compilation.
+#
+# Revision 1.1  2002/06/27 20:18:16  wiegand
+# Initial revision
+#
+
+use strict;
+
+package UVOT::FindingChart;
+use base qw(Task::HEAdas);
+
+use FileHandle;
+
+use Math;
+use Task qw(:codes);
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+
+use UVOT::BadPixels;
+use UVOT::Convert;
+
+
+use constant EXTNAME => 'SOURCES';
+
+use constant UVOT_arcsec_per_pixel => 0.502;
+use constant FWHM_arcsec => 1.8;
+use constant FWHM_pixels => FWHM_arcsec / UVOT_arcsec_per_pixel;
+
+use constant PIX_NULL => -1;
+use constant REF_NULL => -1;
+use constant ID_NULL => '';
+use constant RATE_NULL => -1;
+
+# size constants for stamps
+use constant STAMP_HIGH	=> 1;
+use constant STAMP_MEDIUM  => 2;
+use constant STAMP_LOW	 => 3;
+
+# indices into pixel arrays
+use constant PIXEL_X => 0;
+use constant PIXEL_Y => 1;
+use constant PIXEL_COUNT => 2;
+
+
+my @DEFAULT_EXPOSURE = (
+	# at launch the nominal exposure was 100s
+	{ TSTART => 0, EXPOSURE => 100 },
+
+	# the first 200 second finding chart was 2005 Oct 3
+	{ TSTART => 150_000_000, EXPOSURE => 200 },
+
+	# the first 100/400 second finding chart was 2006 Mar 19
+	{ TSTART => 164_400_000, EXPOSURE => 200,
+			EXPOSURE_WHITE => 100, EXPOSURE_V => 400 },
+
+	# AT sequence 14.2 data were first received on 2008 Oct 8
+	#	http://mssls7.mssl.ucl.ac.uk/swift/at_pt.html
+	{ TSTART => 245_188_000, EXPOSURE => 250,
+			EXPOSURE_WHITE => 150, EXPOSURE_VGRISM => 50 },
+);
+
+
+sub arcsecsToRadians ($)
+{
+	my ($arcsecs) = @_;
+	my $radians = Math::degreesToRadians($arcsecs / 3600);
+	return $radians;
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(infile=file outfile=file sparsefile=file
+				teldeffile=file badpixlist=file smooth=bool exposure=string
+				clobber=bool cleanup=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadPacketFITS
+		if $self->isValid;
+
+	$self->loadBadPixels
+		if $self->isValid;
+
+	$self->constructSparseImage
+		if $self->isValid;
+
+	$self->estimateDetectorPositionOfPointSources
+		if $self->isValid;
+
+	$self->findRoughAstrometricFrame
+		if $self->isValid;
+
+	$self->estimateInstrumentalFluxOfPointSources
+		if $self->isValid;
+
+	$self->writeSourceSummary
+		if $self->isValid and $self->chatter(3);
+
+	{
+		my $name = $args->{outfile};
+		$self->writeSourceList($name)
+			if $self->isValid and $name !~ /^NONE$/i;
+	}
+
+	{
+		my $name = $args->{sparsefile};
+		if ($name !~ /^NONE$/i) {
+			$self->writeSparseImage
+				if $self->isValid;
+
+			$self->smoothSparseImage
+				if $self->isValid and $args->{smoothFlag};
+		}
+	}
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile sparsefile)) {
+			my $value = $args->{$key};
+			if ($value !~ /NONE/i and -e $value) {
+				$self->error(BAD_OUTPUT,
+					"output $value exists and clobber not set");
+			}
+		}
+	}
+
+	my $datestr = ' ' x 32;
+	my $local = 0;
+	my $status = 0;
+	Astro::FITS::CFITSIO::fits_get_system_time($datestr, $local, $status);
+	if ($local) {
+		$self->warning('unable to get UTC system time');
+	}
+	$self->{datestr} = $datestr;
+}
+
+
+sub loadPacketFITS
+{
+	my ($self) = @_;
+
+	my $path = $self->args->{infile};
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+	}
+
+	if ($fits->movnam_hdu(BINARY_TBL, 'TDRSS_FC', 0, $status)) {
+		$self->error(BAD_INPUT,
+				"unable to move to TDRSS_FC extension [$status]");
+	}
+
+	$self->{cards} = [ ];
+	$self->storeHeaderCards($fits,
+			types => [ TYP_HDUID_KEY, TYP_COMM_KEY, TYP_CONT_KEY,
+						TYP_USER_KEY, TYP_REFSYS_KEY ],
+			array => $self->{cards},
+			exclude => [ qw(EXTNAME CREATOR DATE) ],
+			);
+
+	$self->parseFindingChart($fits);
+
+	if ($fits) {
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+
+}
+
+
+sub parseFindingChart
+{
+	my ($self, $fits) = @_;
+
+# finding chart postage stamp
+#
+#	- s t u -
+#	o p e q r
+#	m c a d n
+#	i j b k l
+#	- f g h -
+#
+#	[starXbase, starYbase] corresponds to lower left corner of image
+#	so [starXbase + 2, starYbase + 2] corresponds to central pixel (a)
+#
+#
+# this is implemented based on the software requirements specification for
+# UVOT DPU Build 5 (appendix A) and the packet field definitions in the
+# spreadsheet.  The Build 6 scheme would attempt to compress the packet data,
+# and require this function to be updated.
+
+	my $header = $fits->read_header;
+
+	# in case we want an object later
+	my $chart = { };
+	$self->storeHeaderKeywords($header,
+			keys => [ qw(
+					TELESCOP INSTRUME DATE-OBS
+					RA_PNT DEC_PNT PA_PNT FILTER
+					WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY
+					PKTSEC PKTSUBS TSTART TSTOP) ],
+			hash => $chart,
+			);
+
+	my ($exposure, $scale) = split('~', $self->args->{exposure});
+	my $reMantissa = qr(\d+|\d*\.\d+|\d+\.\d*);
+	my $reExponent = qr([Ee][-+]?\d+);
+	if ($exposure =~ /^$reMantissa$reExponent?$/) {
+		$self->{EXPOSURE} = $exposure;
+	}
+	else {
+		if ($exposure !~ /^DEFAULT$/) {
+			$self->warning("unexpected exposure $exposure, will use DEFAULT");
+		}
+		foreach my $entry (@DEFAULT_EXPOSURE) {
+			if ($chart->{TSTART} > $entry->{TSTART}) {
+				my $expfiltkey = "EXPOSURE_$chart->{FILTER}";
+				if ($entry->{$expfiltkey}) {
+					$self->{EXPOSURE} = $entry->{$expfiltkey};
+				}
+				else {
+					$self->{EXPOSURE} = $entry->{EXPOSURE};
+				}
+			}
+		}
+	}
+	$self->{SCALE_ERR} = $scale || 2;
+	$self->report("using exposure $self->{EXPOSURE}");
+	$self->report("scaling rate errors by $self->{SCALE_ERR}");
+
+	$self->storeHeaderKeywords($header,
+			keys => [ qw(MJDREF MJDREFF MJDREFI) ],
+			hash => $chart,
+			optional => 1,
+			);
+
+	if (defined($chart->{MJDREFI}) and defined($chart->{MJDREFF})) {
+		$chart->{MJDREF} = $chart->{MJDREFI} + $chart->{MJDREFF};
+	}
+	elsif (not defined($chart->{MJDREF})) {
+		$chart->{MJDREF} = 51910;
+		$self->warning('missing MJDREF and MJDREFI/MJDREFF, using 51910');
+	}
+
+	$chart->{BINX} = 1;
+	$chart->{BINY} = 1;
+
+	$chart->{xMax} = $chart->{WINDOWX0} + $chart->{WINDOWDX} - 1;
+	$chart->{yMax} = $chart->{WINDOWY0} + $chart->{WINDOWDY} - 1;
+
+	$chart->{ra} = $chart->{RA_PNT};
+	$chart->{dec} = $chart->{DEC_PNT};
+	$chart->{roll} = $chart->{PA_PNT};
+
+	$chart->{startSeconds} = $chart->{PKTSEC};
+
+	my @columns = (
+		{ name => 'RAWX' },
+		{ name => 'RAWY' },
+		{ name => 'HIGH' },
+		{ name => 'MEDIUM', array => 4 },
+		{ name => 'LOW', array => 16 },
+	);
+
+	my %columns = map { $_->{name} => $_ } @columns;
+
+	my $status = 0;
+	my $rows;
+	if ($fits->get_num_rows($rows, $status)) {
+		$self->error(BAD_INPUT,
+				"unable to get number of rows in finding chart table");
+	}
+	else {
+		$self->report("finding chart table has $rows rows");
+	}
+
+	foreach my $c (@columns) {
+		my ($colnum, $anynul);
+		my @data;
+		$c->{array} ||= 1;
+		my $count = $rows * $c->{array};
+		if ($fits->get_colnum(CASEINSEN, $c->{name}, $colnum, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to get input $c->{name} column index [$status]");
+		}
+		elsif ($fits->read_col_lng($colnum, 1, 1, $count, PIX_NULL,
+				\@data, $anynul, $status)) {
+		}
+		else {
+			$c->{data} = \@data;
+		}
+	}
+
+	my @stamps;
+
+	for (my $i = 0; $i < $rows; ++$i) {
+
+		my %stamp = (
+			ID => $i + 1,
+			REFID => $i + 1,
+			xBrightest => $columns{RAWX}{data}[$i],
+			yBrightest => $columns{RAWY}{data}[$i],
+			cBrightest => $columns{HIGH}{data}[$i],
+		);
+
+		foreach my $name (qw(MEDIUM LOW)) {
+			my $c = $columns{$name};
+			my $n = $c->{array};
+			my $i0 = $i * $n;
+			my $i1 = $i0 + $n - 1;
+			my @tmp = @{ $c->{data} }[$i0 .. $i1];
+			foreach my $x (@tmp) {
+				if ($x != PIX_NULL) {
+					$stamp{$name} = \@tmp;
+					last;
+				}
+			}
+		}
+
+		push(@stamps, \%stamp);
+	}
+
+	$self->{sources} = \@stamps;
+
+	$self->{chart} = $chart;
+}
+
+
+sub loadBadPixels
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{badpixlist};
+
+	my $path = '';
+	if ($arg =~ /^CALDB/i) {
+		$path = $self->queryCALDB('BADPIX',
+				header => $self->{chart},
+				qualifiers => $arg,
+				asString => 1,
+				);
+		$self->{badpixpath} = $path;
+		$self->parameterNote(badpixlist => $path)
+			if $path;
+	}
+	else {
+		$self->{badpixpath} = $arg;
+	}
+
+	my $badpixels = $self->{badpixels} = UVOT::BadPixels->new;
+
+	$badpixels->loadPath($path, time => $self->{chart}{TSTOP});
+
+	if (not $badpixels->isValid) {
+		# continue anyway
+		$self->warning("unable to load bad pixel list");
+	}
+}
+
+
+# pixels are numbered from lower left hand corner for consistency with
+# FITS and UVOT definitions
+
+# indices into XXX_DELTA arrays
+use constant DELTA_Y => 0;
+use constant DELTA_X => 1;
+
+my @MEDIUM_DELTA = (
+	# [ deltaRow = deltaY, deltaCol = deltaX ]
+	#	for pixels b c d e (relative to pixel a)
+	[ -1,  0 ],
+	[  0, -1 ],
+	[  0,  1 ],
+	[  1,  0 ],
+);
+
+my @LOW_DELTA = (
+	# [ deltaRow = deltaY, deltaCol = deltaX ]
+	#	for pixels f - u (relative to pixel a)
+	[ -2, -1 ], # f g h
+	[ -2,  0 ],
+	[ -2,  1 ],
+	[ -1, -2 ], # i j
+	[ -1, -1 ],
+	[ -1,  1 ], # k l
+	[ -1,  2 ],
+	[  0, -2 ], # m
+	[  0,  2 ], # n
+	[  1, -2 ], # o p
+	[  1, -1 ],
+	[  1,  1 ], # q r
+	[  1,  2 ],
+	[  2, -1 ], # s t u
+	[  2,  0 ],
+	[  2,  1 ],
+);
+
+
+sub constructSparseImage
+{
+	my ($self) = @_;
+
+	my $chart = $self->{chart};
+
+	my $minx = $chart->{WINDOWX0};
+	my $miny = $chart->{WINDOWY0};
+	my $maxx = $chart->{xMax};
+	my $maxy = $chart->{yMax};
+
+	my %pixels;
+	my $badpixels = $self->{badpixels};
+
+
+	$self->applyToSources(sub {
+		my ($s) = @_;
+
+		my @pixels;
+
+		my $testset = sub {
+			my ($rawx, $rawy, $c) = @_;
+
+			return if $c == PIX_NULL;
+
+			if ($badpixels->isBad($rawx, $rawy)) {
+				$self->warning("ignoring bad pixel at $rawx, $rawy");
+			}
+			elsif ($c < 1) {
+				# $self->warning("ignoring $c counts at $rawx, $rawy");
+			}
+			elsif ($rawx >= $minx and $rawx <= $maxx
+					and $rawy >= $miny and $rawy <= $maxy) {
+				my $key = "$rawx,$rawy";
+				# if the same pixel is downlinked more than once,
+				# only the first value is valid
+				if (not exists($pixels{$key})) {
+					$pixels{$key} = $c;
+				}
+				else {
+					# duplicate pixel
+				}
+				push(@pixels, [ $rawx, $rawy, $c ]);
+			}
+		};
+
+		# add each high priority pixel to the image
+
+		my $xCenter = $s->{xBrightest};
+		my $yCenter = $s->{yBrightest};
+
+		$testset->($xCenter, $yCenter, $s->{cBrightest});
+
+		# add medium priority pixels to image (if known)
+		if (my $medium = $s->{MEDIUM}) {
+			for (my $j = 0; $j < @$medium; ++$j) {
+				my $delta = $MEDIUM_DELTA[$j];
+				my $xp = $xCenter + $delta->[DELTA_X];
+				my $yp = $yCenter + $delta->[DELTA_Y];
+				$testset->($xp, $yp, $medium->[$j]);
+			}
+		}
+
+		# add low priority pixels to image (if known)
+		if (my $low = $s->{LOW}) {
+			for (my $j = 0; $j < @$low; ++$j) {
+				my $delta = $LOW_DELTA[$j];
+				my $xp = $xCenter + $delta->[DELTA_X];
+				my $yp = $yCenter + $delta->[DELTA_Y];
+				$testset->($xp, $yp, $low->[$j]);
+			}
+		}
+
+		$s->{PIXELS} = \@pixels;
+
+		if (not @pixels) {
+			# could happen if all pixels are on bad pixel list...
+			$self->warning("source $s->{ID} contains no good pixels");
+			$s->{BAD} = 1;
+		}
+	});
+
+	$self->{SPARSE} = \%pixels;
+
+	my @good;
+	my @bad;
+
+	$self->applyToSources(sub {
+			my ($s) = @_;
+			if ($s->{BAD}) {
+				push(@bad, $s);
+			}
+			else {
+				push(@good, $s);
+			}
+		});
+
+	if (@bad) {
+		my $count = @bad;
+		$self->warning("filtered out $count sources");
+	}
+
+	$self->{sources} = \@good;
+}
+
+
+
+sub writeSparseImage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{sparsefile} = $self->temporary('sparse');
+
+	my $command = $self->buildCommand('uvottfc1',
+			infile => $args->{infile},
+			outfile => $self->{sparsefile},
+			badpixlist => $self->{badpixpath},
+
+			history => $args->{history},
+			clobber => $args->{clobber},
+			chatter => $args->{chatter},
+			);
+
+	$self->shell($command);
+}
+
+
+sub smoothSparseImage
+{
+	my ($self) = @_;
+
+	my $stampsparse = $self->{sparsefile};
+
+	$self->{sparsefile} = $self->temporary('smooth');
+
+	my $template = $self->temporary('sparse', ext => '.hdr');
+	my $fh = FileHandle->new($template, 'w');
+	$fh->print(q(
+# ximage short header without WCS
+FILE     / Filename
+# OBJECT   / Field identification
+TELESCOP / Telescope
+INSTRUME / Instrument
+# DETNAM   / Detector name
+FILTER   / Filter
+
+\\wcs nowrite
+));
+	$fh->close;
+
+	my $chart = $self->{chart};
+	my $width = $chart->{WINDOWDX} / $chart->{BINX};
+	my $height = $chart->{WINDOWDY} / $chart->{BINY};
+
+	my $command = 'ximage'
+			. " 'set exit_on_startfail 1;"
+			. qq( read/szx=$width/szy=$height "$stampsparse";)
+			. ' smooth/real/sigma=2;'
+			. qq( write/template="$template" "$self->{sparsefile}";)
+			. " exit;' 2>&1"
+			;
+
+	$self->shell($command);
+
+	$command = $self->buildCommand('cphead',
+			infile => $stampsparse . '[1]',
+			outfile => $self->{sparsefile},
+			scale => 'yes',
+			);
+	$self->shell($command);
+}
+
+
+sub writeSourceList
+{
+	my ($self, $path) = @_;
+
+	my $args = $self->args;
+
+	$self->applyToSources(sub {
+			my ($s) = @_;
+			my $packet;
+			if ($s->{LOW}) {
+				$packet = '5x5 stamp';
+			}
+			elsif ($s->{MEDIUM}) {
+				$packet = '3x3 stamp';
+			}
+			else {
+				$packet = '1x1 stamp';
+			}
+			$s->{PACKET} = $packet;
+		});
+
+	if (-e $path and $args->{clobberFlag}) {
+		unlink($path)
+			or $self->warning("unable to remove $path [$!]");
+	}
+
+	my $command = $self->buildCommand('ftcopy',
+			infile => "$args->{infile}+0",
+			outfile => $path,
+			copyall => 'no',
+			clobber => 'yes',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READWRITE, $status);
+	if (not $fits) {
+		$self->error(BAD_OUTPUT,
+			"unable to open $path for writing: $!");
+		return;
+	}
+
+	my $extname = $self->{extname} || EXTNAME;
+
+	if ($fits->create_tbl(BINARY_TBL, 0, 0, 0, 0, 0, $extname, $status)) {
+		$self->error(BAD_OUTPUT,
+			"unable to create binary table");
+	}
+
+	foreach my $card (@{ $self->{cards} }) {
+		$fits->write_record($card, $status);
+	}
+
+	my @keywords = (
+		CREATOR => [ "$self->{tool} $self->{version}", 'File creation software' ],
+		EXPOSURE => [ $self->{EXPOSURE}, 'Estimate exposure [s]' ],
+		EXPGUESS => [ $self->{SCALE_ERR}, 'Rate error scale factor for exposure uncertainty' ],
+	);
+
+	$self->putKeywords($fits, @keywords);
+
+	$fits->write_date($status);
+
+	my @columns = (
+		{ name => 'REFID',
+			form => 'I',
+			comment => 'Source number',
+			null => REF_NULL,
+		},
+		{ name => 'RAWX',
+			form => 'E',
+			units => 'pixels',
+			display => 'F6.1',
+		},
+		{ name => 'RAWY',
+			form => 'E',
+			units => 'pixels',
+			display => 'F6.1',
+		},
+		{ name => 'RA',
+			form => 'D',
+			comment => 'Right Ascension',
+			units => 'deg',
+			display => 'F8.4',
+		},
+		{ name => 'DEC',
+			form => 'D',
+			comment => 'Declination',
+			units => 'deg',
+			display => 'F8.4',
+		},
+		{ name => 'PACKET',
+			form => '12A',
+			comment => 'Source packet indicator',
+			null => ID_NULL,
+		},
+		{ name => 'RATE',
+			form => 'E',
+			comment => 'Count rate',
+			units => 'counts/s',
+			null => RATE_NULL,
+		},
+		{ name => 'RATE_ERR',
+			form => 'E',
+			comment => 'Count rate error',
+			units => 'counts/s',
+			null => RATE_NULL,
+		},
+	);
+
+	foreach my $c (@columns) {
+		my @data = map { $_->{$c->{name}} } @{ $self->{sources} };
+		$self->writeColumn($fits, $c, \@data);
+	}
+
+	if ($fits->close_file($status)) {
+		$self->error(BAD_OUTPUT,
+			"unable to close source list");
+	}
+	else {
+		$self->report("wrote source list to $path");
+	}
+
+}
+
+
+sub applyToSources
+{
+	my ($self, $code) = @_;
+	foreach my $s (@{ $self->{sources} }) {
+		$code->($s);
+	}
+}
+
+
+sub estimateDetectorPositionOfPointSources
+{
+	my ($self) = @_;
+
+	$self->applyToSources(sub {
+
+			my ($s) = @_;
+
+			my $xSum = 0;
+			my $ySum = 0;
+			my $counts = 0;
+
+			foreach my $p (@{ $s->{PIXELS} }) {
+				my ($x, $y, $c) = @$p;
+				$xSum += $x * $c;
+				$ySum += $y * $c;
+				$counts += $c;
+			}
+
+			$s->{RAWX} = $xSum / $counts;
+			$s->{RAWY} = $ySum / $counts;
+
+			if ($self->chatter(4)) {
+				my $sx = sprintf('%.1f', $s->{RAWX});
+				my $sy = sprintf('%.1f', $s->{RAWY});
+				$self->report("source $s->{ID} centroid is $sx, $sy");
+			}
+		});
+}
+
+
+sub findRoughAstrometricFrame
+{
+	my ($self) = @_;
+
+	# place source positions in a rough astrometric frame using RA, DEC, ROLL
+	# and calibration data on the boresight alignment between UVOT and the
+	# star tracker
+	#
+	# complication: this alignment varies over time by at least
+	# several arc seconds, due mainly to thermal effects:
+	# XRT tube bending; optical bench warping; UVOT tube bending
+
+	my $chart = $self->{chart};
+
+	my $arg = $self->args->{teldeffile};
+	my $teldef = '';
+	if ($arg =~ /^CALDB/i) {
+		$teldef = $self->queryCALDB('TELDEF',
+				header => $chart,
+				qualifiers => $arg,
+				# expression => "FILTER.eq.$filter.and.WHEELPOS.eq.$wheelpos",
+				asString => 1,
+				);
+		$self->parameterNote(teldeffile => $teldef)
+			if $teldef;
+	}
+	else {
+		$teldef = $arg;
+	}
+
+	my $converter = UVOT::Convert->new(
+		task => $self,
+		teldef => $teldef,
+		ra => $chart->{ra},
+		dec => $chart->{dec},
+		roll => $chart->{roll},
+		mjdref => $chart->{MJDREF},
+		misstime => $chart->{TSTART},
+		toWorld1 => 'RA',
+		toWorld2 => 'DEC',
+		);
+
+	# from RAWX/RAWY and attitude to RA, DEC
+	$converter->convertRawToSky(
+			objects => $self->{sources},
+			toWorld => 1,
+			);
+
+	if (not $converter->isValid) {
+		$self->error(BAD_EXECUTE,
+				"unable to determine RA/DEC of sources");
+	}
+	else {
+		$self->applyToSources(sub {
+				my ($s) = @_;
+
+				my $rawp = sprintf('%.1f,%.1f', $s->{RAWX}, $s->{RAWY});
+				my $skyp = sprintf('%.2f,%.2f', $s->{RA}, $s->{DEC});
+
+				$self->report("source $s->{ID}: RAW=$rawp SKY=$skyp")
+					if $self->chatter(4);
+			});
+	}
+}
+
+
+sub estimateInstrumentalFluxOfPointSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# roughly estimate the instrumental flux of point sources (to help
+	# catalog search)
+	my $chart = $self->{chart};
+
+	# we are uncertain if the PSF calibration file will be used here
+	$self->{FWHM} = FWHM_pixels;
+	my $oo2 = $self->{FWHM} ** 2 / 4 / log(2);
+	my $duration = $self->{EXPOSURE};
+
+	$self->applyToSources(sub {
+			my ($s) = @_;
+
+			my $counts = 0;
+			my $expsum = 0;
+			foreach my $pixel (@{ $s->{PIXELS} }) {
+				$counts += $pixel->[PIXEL_COUNT];
+				my $r2 = ($pixel->[PIXEL_X] - $s->{RAWX}) ** 2
+						+ ($pixel->[PIXEL_Y] - $s->{RAWY}) ** 2;
+				$expsum += exp(-$r2 / $oo2);
+			}
+			$s->{PEAK} = $counts / $expsum;
+
+			$s->{RATE_FWHM} = $s->{PEAK} * Math::PI * $oo2 / $duration;
+
+#	Date: Wed, 5 Oct 2005 16:06:48 -0400
+#	From: Frank Marshall <marshall@milkyway.gsfc.nasa.gov>
+#	Subject: srclist calibration (part 2)
+#	
+#	* estimates are unreliable for total counts < 200
+#	  There also appear to be problems at total counts > ~10,000
+#	  (or probably really 100/s)
+#	* total counts should be computed using the following formulas
+#	  > total = 23.4  x  "1x1"
+#	  > total =  6.10 x  "3x3"
+#	  > total =  2.02 x  "5x5"
+#	* above 200 total counts, the following ranges in the linear
+#	  coefficient cover ~90% of the entries
+#	  1x1  0.032 to 0.060  -- a total range of 0.68 mag
+#	  3x3  0.11  to 0.20   -- a total range of 0.65 mag
+#	  5x5  0.36  to 0.60   -- a total range of 0.55 mag
+#	  So, assuming we can convert from total counts to V-mag perfectly,
+#	  this produces an uncertainty of about +/- 0.35 mag. (90% confidence)
+			my $total;
+			if ($s->{LOW}) {
+				$total = 2.02 * $counts;
+			}
+			elsif ($s->{MEDIUM}) {
+				$total = 6.10 * $counts;
+			}
+			else {
+				$total = 23.4 * $counts;
+			}
+
+			$s->{RATE_FRANK} = $total / $duration;
+
+			$s->{RATE} = $s->{RATE_FRANK};
+			$s->{RATE_ERR} = sqrt($counts) / $duration * $self->{SCALE_ERR};
+
+			my $ratestr = sprintf('%.2f +/- %.2f', $s->{RATE}, $s->{RATE_ERR});
+			$self->report("estimated source $s->{ID} rate as $ratestr")
+				if $self->chatter(4);
+		});
+}
+
+
+sub writeSourceSummary
+{
+	my ($self) = @_;
+
+	$self->applyToSources(sub {
+			my ($s) = @_;
+
+			my $rawp = sprintf('%.1f,%.1f', $s->{RAWX}, $s->{RAWY});
+			my $skyp = sprintf('%.2f,%.2f', $s->{RA}, $s->{DEC});
+
+			my $rates = sprintf('%.2f +/- %.2f', $s->{RATE}, $s->{RATE_ERR});
+
+			$self->report("source $s->{ID}: RAW=$rawp SKY=$skyp, RATE=$rates");
+		});
+}
+
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		if ($self->{sparsefile} and -f $self->{sparsefile}) {
+			rename($self->{sparsefile}, $args->{sparsefile})
+				or $self->error(BAD_OUTPUT,
+						"unable to rename $self->{sparsefile} [$!]");
+		}
+	}
+}
+
+
+# main
+{
+	my $task = UVOT::FindingChart->new(
+			tool => 'uvottfc',
+			version => 'v2.4',
+			);
+
+	$task->run;
+
+	exit($task->{code});
+}
+

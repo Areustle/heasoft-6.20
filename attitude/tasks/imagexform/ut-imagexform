@@ -1,0 +1,153 @@
+#!/usr/bin/perl
+#
+#	ut-imagexform
+#
+#		compare imagexform output against test case
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => 'ut-imagexform',
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(input output chatter) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runImageXform
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	$self->report("validating set up") if $self->chatter;
+
+	# validate environment
+	foreach my $var (qw(HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $x = $self->args->{$key};
+		if (not -d $x) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $x");
+		}
+	}
+}
+
+
+sub runImageXform
+{
+	my ($self) = @_;
+
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+
+	my @task = (
+		# imagexform (test case) parameters
+		infile	 => "$input/IMAGEXFORM_IN.fits",
+		outfile  => "$output/IMAGEXFORM_OUT.fits",
+		attfile  => "$input/IMAGEXFORM_ATTITUDE.fits",
+		teldef	 => "$input/IMAGEXFORM_TELDEF.fits",
+		from	 => 'RAW',
+		to	 => 'SKY',
+		segment  => 0,
+		ra	 => 278.693939,
+		dec	 => -8.042166,
+		seed	 => -1956,
+		# clobber  => 'yes',
+		chatter  => 3,
+		history  => 'yes',
+		method   => 'events',
+		zeronulls=> 'yes',
+	);
+
+	my %task = @task;
+	$task{template} = "$input/IMAGEXFORM_TEMPLATE.fits";
+
+	# validate input files
+	foreach my $key (qw(infile attfile teldef template)) {
+		my $input = $task{$key};
+		if (not defined($input)) {
+			$self->fatal(BAD_INPUT,
+				"missing input key: $key");
+		}
+		elsif (not -f $input) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $input");
+		}
+	}
+
+	if (-f $task{outfile}) {
+		unlink($task{outfile})
+			or $self->fatal(BAD_OUTPUT,
+				"unable to remove $task{outfile}: $!");
+	}
+
+	{
+		# build imagexform command line
+		my $command = $self->buildCommand('imagexform', @task);
+		my $result = $self->doCommand($command);
+		if ($result->{error}) {
+			$self->error(BAD_OUTPUT,
+				"ftdiff complained:\n$result->{output}");
+		}
+	}
+
+	# ensure created image passes fverify
+	{
+		my $command = qq(ftverify infile=$task{outfile} outfile=STDOUT);
+		my $result = $self->doCommand($command);
+		if ($result->{error}) {
+			$self->error(BAD_OUTPUT,
+				"ftdiff complained:\n$result->{output}");
+		}
+	}
+ 
+	{
+		my $command = "ftdiff $task{outfile} $task{template}";
+		my $result = $self->doCommand($command);
+		if ($result->{error}) {
+			$self->error(BAD_OUTPUT,
+				"ftdiff complained:\n$result->{output}");
+		}
+	}
+}
+

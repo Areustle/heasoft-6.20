@@ -1,0 +1,196 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/ut/build2/ut-udetect-0.2,v $
+# $Revision: 1.2 $
+# $Date: 2002/09/05 18:35:58 $
+#
+#	udetect-0.2
+#		validate udetect operation
+#
+#	options
+#		input=<directory>
+#			set the input directory
+#		output=<directory>
+#			set the output directory
+#		verbose
+#			more logging
+#		quiet
+#			less logging
+#
+#
+# $Log: ut-udetect-0.2,v $
+# Revision 1.2  2002/09/05 18:35:58  rwiegand
+# Tell diff subprocess to ignore whitespace
+#
+# Revision 1.1  2002/08/15 15:42:14  rwiegand
+# Unit tests for SSC build 2 tools udetect and umag.
+#
+
+use strict;
+
+use FileHandle;
+
+
+use constant TOOL => 'udetect-0.2';
+
+
+sub report
+{
+	print(TOOL . ': ', @_);
+}
+
+
+sub fatal
+{
+	&report;
+	die(TOOL . ': ' . "aborted\n");
+}
+
+
+sub doCommand
+{
+	my ($command, %args) = @_;
+
+	my ($first) = split(/\s+/, $command);
+
+	if ($args{verbose}) {
+		report("doCommand $command\n");
+	}
+	elsif (not $args{quiet}) {
+		report("running $first\n");
+	}
+
+	my $result = { };
+
+	if ($args{pipeFrom}) {
+		$result->{handle} = FileHandle->new("$command|");
+	}
+	else {
+		$result->{output} = qx($command);
+		$result->{lines} = [ split(/\n/, $result->{output}) ];
+	}
+
+	if ($?) {
+		my $s = $args{verbose} ? $first : $command;
+		fatal("error running $s [$?]: $!\n");
+	}
+
+	return $result;
+}
+
+
+{
+	my $code = 0;
+
+	my %options = (
+		input => '.',
+		output => '.',
+	);
+
+	foreach my $arg (@ARGV) {
+		if ($arg eq 'quiet') {
+			$options{quiet} = 1;
+		}
+		elsif ($arg eq 'verbose') {
+			$options{verbose} = 1;
+		}
+		elsif ($arg =~ /^input=(.+)/) {
+			$options{input} = $1;
+		}
+		elsif ($arg =~ /^output=(.+)/) {
+			$options{output} = $1;
+		}
+		else {
+			fatal("invalid option: $arg\n");
+		}
+	}
+
+	report("validating set up\n") if not $options{quiet};
+
+	# validate environment
+	foreach my $var (qw(HEADAS FTOOLS)) {
+		if (not defined($ENV{$var})) {
+			fatal("environment variable $var not set\n");
+		}
+		elsif (not -d $ENV{$var}) {
+			fatal("invalid $var directory $ENV{$var}\n");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $options{$key}) {
+			fatal("invalid $key directory: $options{$key}\n");
+		}
+	}
+
+        my $headas = $ENV{HEADAS};
+	my $input = $options{input};
+	my $output = $options{output};
+
+	my %task = (
+		input         => "$input/UDETECT_INPUT.fits",
+		output        => "$output/UDETECT_OUTPUT.txt",
+		chatter       => 5,
+		clobber       => 'yes',
+		template      => "$input/UDETECT_OUTPUT.template",
+	);
+
+	# validate required files
+	foreach my $key (qw(input template)) {
+		if (not -f $task{$key}) {
+			fatal("invalid $key file: $task{$key}\n");
+		}
+	}
+
+	# build command line
+	my $command = 'udetect';
+
+	foreach my $p (qw(input output chatter clobber)) {
+		if (not defined($task{$p})) {
+			fatal("missing parameter $p\n");
+		}
+		else {
+			$command .= qq( "$p=$task{$p}");
+		}
+	}
+
+	my $result = doCommand($command, %options);
+	$command = "diff -w $task{template} $task{output}";
+	$result = doCommand($command, %options, pipeFrom => 1);
+	my $fh = $result->{handle};
+
+	while (<$fh>) {
+		if (/^(\d+(?:,\d+)?)c(\d+(?:,\d+)?)/) {
+			report("change: $_");
+			$code = 1;
+		}
+		elsif (/^(\d+)a/) {
+			report("addition: $_") if $options{verbose};
+		}
+		elsif (/^(\d+)d/) {
+			report("deletion: $_") if $options{verbose};
+		}
+		elsif (/^[<>]/) {
+			# diff contents
+			report($_) if $options{verbose}
+		}
+		elsif (/^---/) {
+			# mark
+		}
+		else {
+			report("diff?!: $_");
+		}
+	}
+	close($fh);
+
+	if ($code) {
+		report("test failed\n");
+	}
+	else {
+		report("test passed\n");
+	}
+
+	exit($code);
+}
+

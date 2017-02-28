@@ -1,0 +1,389 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+    body { margin-left: 5%; margin-right: 5%; }
+    h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+
+<body>
+
+<h2>NAME</h2>
+
+xrtgrblcspec - Swift XRT GRB light curve fitting/spectral analysis task
+
+<h2>SYNOPSIS</h2>
+<code>xrtgrblcspec indir=&lt;output&nbsp;from&nbsp;xrtgrblc&gt;
+    instem=&lt;stem name&gt; outdir=&lt;output&nbsp;dir&gt;
+    outstem=&lt;stem&nbsp;for&nbsp;output&nbsp;files&gt; srcra=&lt;source RA&gt;
+    srcdec=&lt;source Dec&gt;
+</code>
+
+<h2>DESCRIPTION</h2>
+
+<p>This task is a direct follow-up task for xrtgrblc. It is designed to work
+with the output files from that task, when the option
+<code>cleanspec='no'</code> (intermediate spectra, events, and ARF
+files are not cleaned). This task does basically has two stages: 1 - Determine
+time intervals to extract spectra from; 2 - Extract and possibly fit those spectra.
+
+<p>The first stage is done by attempting to fit the output light curves from
+xrtgrblc. Three models are tried in Xspec - power, bknpower, and bkn2po using
+initial guesses determined from the light curves themselves. The best fit is
+chosen by way of a series of F-tests. If running with interactive='yes', then
+the user is prompted whether they like the fit, and are allowed to fit the
+light curve manually if not, or just enter time intervals for spectrum
+extractions.
+
+<p>The second stage takes the time intervals from the first stage, determines
+how to extract a source and background spectrum, then does so. If requested,
+the extracted spectra are fit with an absorbed power-law model, and plotted to
+the requested plot device (file-devices only).
+
+<h2>OUTPUTS</h2>
+<p>The output from this task is a set of source PHA files, one for each time
+interval found (and split on XRTVSUB changes if neccessary), and the
+corresponding background PHA and PSF corrected ARF. They are named as follows:
+
+<dl>
+    <dt><code>outdir/OUTSTEM_xpcetsrt[1-3].pha</code>
+    <dd>PC mode interval source spectra for intervals 1-3 (maximally)
+
+    <dt><code>outdir/OUTSTEM_xpcetbgt[1-3].pha</code>
+    <dd>PC mode interval background spectra for intervals 1-3 (maximally)
+
+    <dt><code>outdir/OUTSTEM_xpcetsrt[1-3].arf</code>
+    <dd>PC mode interval ARF for intervals 1-3 (maximally)
+
+    <dt><code>outdir/OUTSTEM_xpcetsrtt.pha</code>
+    <dd>PC mode total source spectrum (excluding any user excluded time intervals)
+    
+    <dt><code>outdir/OUTSTEM_xpcetbgtt.pha</code>
+    <dd>PC mode total background spectrum (excluding any user excluded time intervals)
+    
+    <dt><code>outdir/OUTSTEM_xpcetsrtt.arf</code>
+    <dd>PC mode total ARF
+</dl>
+
+<p>where OUTSTEM is the value of the parameter <code>outstem</code>. There
+would be a similar set of files for WT mode, although this depends on which
+modes are active during which intervals (and if there are "enough" counts - see
+<code>minpcphacts</code> and <code>minwtphacts</code> params). If there are
+different RMF requirements for a single mode (PC/WT) during an interval, the
+PHA's will be split accordingly, with the last character before the file
+extension being [a-z].
+
+<p>For example, if the first PC interval requires two RMFs (say, due to a
+change in the substrate voltage), there would be the following set of PHA's for
+the first interval (not shown are the corresponding bkg spectra and the ARFS):
+
+<dl>
+    <dt><code>outdir/OUTSTEM_xpcetsrt1.pha</code>
+    <dd>PC mode interval source spectra for interval 1, first RMF
+
+    <dt><code>outdir/OUTSTEM_xpcetsrt1a.pha</code>
+    <dd>PC mode interval source spectra for interval 1, second RMF
+</dl>
+
+<p>In addition, if <code>autospecfit='yes'</code>, for each interval (including
+the total), there will be a plot generated of the fitted spectrum:
+
+<dl>
+    <dt><code>outdir/OUTSTEM_xpwetsrt[1-3t]_ph.gif</code>
+    <dd>PC/WT mode interval spectrum plot. The file extension will be based on
+    the <code>plotftype</code> parameter.
+</dl>
+
+<p>Lastly, there will be a plot of the fitted light curve, either the best
+automatically fitted light curve, or the user fit light curve:
+
+<dl>
+    <dt><code>outdir/OUTSTEM_xpwetsrmb_lc.gif</code>
+    <dd>PC/WT mode fitted light curve plot. The file extension will be based on
+    the <code>plotftype</code> parameter.
+</dl>
+
+<h2>INTERACTIVE MODE</h2>
+<p>If <code>interactive='yes'</code>, the light curve automatic fitting is
+performed, and the best fit is chosen by way of a series of F-tests. The user
+is then prompted for a QDP plot device, and the best-fit light curve is plotted
+there. The user is then prompted if they think the fit is acceptable. If they
+do not, an interactive Xspec session (Xspec v12) is started with the PC and WT
+fittable light curves preloaded (PC is dataset 1, and WT is dataset 2, if both
+are extant).
+
+<p>At this point the user has three options. First, they can fit the light
+curve using one of the three default models, trying to get a better fit through
+whatever means. In this case, when the Xspec session is ended, the fitted time
+breaks from the model parameters will be read out, and used to define spectral
+intervals. 
+
+<p><strong>NOTE:</strong>If using a standard power-law type model(powerlaw,
+bknpower, or bkn2po), and both PC and WT data are used, then all model
+parameters must be linked, with the exception of the normalization. If they are
+not, the behavior of this task is undefined. Run "help newpar" within Xspec for
+more information about linking parameters.
+
+<p>Second, the user can choose to fit a different model to the light curve
+data. In this case, the time breaks for the spectral intervals can be manually
+entered from the Xspec prompt by running the tcl procedure
+<code>set_timebreaks</code> and following the prompts. It should be noted that
+the total start and stop times for each mode will define the absolute edges of
+the spectral intervals. Any times that are excluded by using the
+<code>ignore</code> command in Xspec will be excluded from any and all spectra.
+If no time breaks are set using the <code>set_timebreaks</code> procedure, then
+there will only be a single interval considered.
+
+<p>Lastly, the user can choose to simply enter the time breaks manually using
+the above <code>set_timebreaks</code> procedure, and not fit any model to the
+data. Or simply, exit Xspec with no model defined to consider the entire light
+curve as the only interval.
+
+<p>In all three of the above cases, GRB flares and any intervals that the user
+does not want included in the output spectra, can be excluded using the
+<code>ignore</code> command in Xspec.
+
+<p>In the following simple example, the total light curve will be considered as
+a single interval, excluding any times before 1000s after the BAT trigger.
+
+<pre>
+    .
+    .
+    .
+    !XSPEC12&gt;set xs_echo_script 0;
+
+    ***********************************************************************
+    *                                                                     *
+    * Fit the light curve using ONLY powerlaw, bknpower or bkn2pow models *
+    * Exclude any flares that you don't want included in the spectral fit *
+    * by using the ignore command. When you are finished quit Xspec.      *
+    *                                                                     *
+    * If you have both PC and WT data, then the parameters MUST be linked *
+    * for the rest of the script to function as expected. The exeption to *
+    * this is the normalization parameter - this can be independent for   *
+    * each mode.                                                          *
+    *                                                                     *
+    * If you are unable to get a decent fit with these models, do:        *
+    *                                                                     *
+    * XSPEC12&gt; set_timebreaks [ MST | MET ]                            *
+    *                                                                     *
+    * and follow the prompts to manually enter the time breaks            *
+    * to use for spectral fitting intervals. Then quit as usual.          *
+    *                                                                     *
+    *                                                                     *
+    * NOTE: If time breaks are entered manually, the fit is assumed not   *
+    *       to give valid time breaks, and the user-entered values will   *
+    *       be used instead.                                              *
+    *                                                                     *
+    * NOTE: If you are unable to exit Xspec, use:                         *
+    *                                                                     *
+    * XSPEC12&gt; xs_old::exit                                            *
+    *                                                                     *
+    ***********************************************************************
+
+    XSPEC12&gt;ignore 1:**-1000.0 2:**-1000.0
+       339 channels (1-339) ignored in spectrum #     1
+       6 channels (1-6) ignored in spectrum #     2
+       
+    XSPEC12&gt;exit
+    Finishing up...
+    Do you really want to exit? (y) 
+</pre>
+
+<p>No time breaks were set, so the entire light curve is considered a single
+interval, but without the first 1000s in either mode.
+
+<p>In the following simple example, the total light curve will be considered as
+two intervals, excluding any times before 1000s after the BAT trigger in the
+first interval. The first interval will be from 1000s after the trigger to
+10000s after the trigger, and the second interval will be from 10000s to the
+end of the light curve.
+
+<pre>
+    .
+    .
+    .
+    !XSPEC12&gt;set xs_echo_script 0;
+
+    ***********************************************************************
+    *                                                                     *
+    * Fit the light curve using ONLY powerlaw, bknpower or bkn2pow models *
+    * Exclude any flares that you don't want included in the spectral fit *
+    * by using the ignore command. When you are finished quit Xspec.      *
+    *                                                                     *
+    * If you have both PC and WT data, then the parameters MUST be linked *
+    * for the rest of the script to function as expected. The exeption to *
+    * this is the normalization parameter - this can be independent for   *
+    * each mode.                                                          *
+    *                                                                     *
+    * If you are unable to get a decent fit with these models, do:        *
+    *                                                                     *
+    * XSPEC12&gt; set_timebreaks [ MST | MET ]                            *
+    *                                                                     *
+    * and follow the prompts to manually enter the time breaks            *
+    * to use for spectral fitting intervals. Then quit as usual.          *
+    *                                                                     *
+    *                                                                     *
+    * NOTE: If time breaks are entered manually, the fit is assumed not   *
+    *       to give valid time breaks, and the user-entered values will   *
+    *       be used instead.                                              *
+    *                                                                     *
+    * NOTE: If you are unable to exit Xspec, use:                         *
+    *                                                                     *
+    * XSPEC12&gt; xs_old::exit                                            *
+    *                                                                     *
+    ***********************************************************************
+
+    XSPEC12&gt;ignore 1:**-1000.0 2:**-1000.0
+       339 channels (1-339) ignored in spectrum #     1
+       6 channels (1-6) ignored in spectrum #     2
+       
+    XSPEC12&gt;set_timebreaks
+    Have you excluded the flares that you want to (y or n)? y
+    Enter the time ([s] since Trigger) of break 1 (-1 to end): 10000
+    Enter the time ([s] since Trigger) of break 2 (-1 to end): -1
+    XSPEC12&gt;exit
+    Finishing up...
+    Do you really want to exit? (y) 
+</pre>
+
+
+<p>Passing the option 'MET' to the <code>set_timebreaks</code> procedure will
+enable you to use MET time instead of the time since the BAT trigger (MST =&gt;
+MET Since Trigger, in this context).
+
+<h2>PARAMETERS</h2>
+
+<dl>
+    <dt>indir [string]
+
+    <dd>Input directory. This should be the base output directory from
+    xrtgrblc. It should contain the binned light curves output from that task,
+    as well as the intermediate source/background event, pha and PSF corrected
+    ARFs. This is most easily accomplished by setting
+    <code>cleanspec='no'</code> in <code>xrtgrblc</code>.
+
+    <p><dt>instem [string]
+
+    <dd>Stem for input files. Again this should be the same as the
+    <code>outstem</code> parameter from xrtgrblc.
+
+    <p><dt>outdir [string]
+
+    <dd>Directory to use for outputs
+
+    <p><dt>outstem [string]
+
+    <dd>Stem for all output files
+
+    <p><dt>trigtime [real]
+
+    <dd>BAT Trigger time (see <code>trigfrombat</code> parameter) of the burst
+    (MET[s]). If &lt;= 0.0, then the value from one of the input light curve
+    headers is used.
+
+    <p><dt>trigfrombat [bool]
+
+    <dd>If set to 'yes', trigtime (or TRIGTIME keywords) are assumed to be from
+    the BAT. Otherwise, they are assumed to be from another observatory.
+    Affects plotting.
+
+    <p><dt>minwtphacts [int]
+
+    <dd>Minimum number of WT mode counts required to consider an input PHA
+
+    <p><dt>minpcphacts [int]
+
+    <dd>Minimum number of PC mode counts required to consider an input PHA
+
+    <p><dt>interactive [bool]
+
+    <dd>Run in interactive mode? If set to 'yes', then the user will be
+    prompted whether they believe the light curve fit, and if not, allowed to
+    fit it manually.
+
+    <p><dt>displaycmd [string]
+
+    <dd>Shell command to display plots. Must be able to display 'plotftype'
+    files and must exist in the user's $PATH environment variable. E.g. for
+    <code>plotftype='/gif'</code>, <code>displaycmd='xv'</code> would work
+    (provided xv is installed).
+
+    <p><dt>autospecfit [bool]
+
+    <dd>Try to automatically fit extracted spectra using Xspec model wabs(wabs(po))?
+
+    <p><dt>nhmap [-1,0,1]
+
+    <dd>Which HI map to use for nh (0 = LAB Map, 1 = D&amp;L Map, -1 = Specify NH)
+
+    <p><dt>usernh [real]
+
+    <dd>Specify the source's NH (cm^-2)
+    
+    <p><dt>srcra [HH:MM:SS.SS, HH MM SS.SS or DDD.DD]
+
+    <dd>RA of target (needed for nh)
+
+    <p><dt>srcdec [DD:MM:SS.SS, DD MM SS.SS or DDD.DD]
+
+    <dd>Dec of target (needed for nh)
+
+    <p><dt>minenergy [real]
+
+    <dd>Minimum energy to consider (keV) in spectral fitting
+
+    <p><dt>maxenergy [real]
+
+    <dd>Maximum energy to consider (keV) in spectral fitting
+
+    <p><dt>plotftype [string]
+
+    <dd>Type of plot file to create. This must be a variant of the following
+    PGPLOT file devices: GIF (e.g. '/gif'), Postscript (e.g. '/ps'), X-window
+    plot file (e.g. '/wd'), or PPM (e.g. '/ppm'). The sub-types of these are
+    also supprted (e.g.  '/vgif', '/cps', 'vwd', etc.)
+
+    <p><dt>brkfrac1 [0.0-1.0]
+
+    <dd>Relative fractional drop from maximum rate corresponding to bknpower time-break
+
+    <p><dt>brkfrac2 [0.0-1.0]
+
+    <dd>Relative fractional drop from maximum rate corresponding to bkn2pow time-break #1
+
+    <p><dt>brkfrac3 [0.0-1.0]
+
+    <dd>Relative fractional drop from maximum rate corresponding to bkn2pow time-break #2
+
+    <p><dt>chatter [0-5]
+
+    <dd>Chattiness level. 0 =&gt; no chatting. 5 =&gt; debugging
+
+    <p><dt>clobber [bool]
+
+    <dd>Clobber existing output files?
+
+    <p><dt>cleanup [bool]
+
+    <dd>Cleanup temporary files?
+
+    <p><dt>history [bool]
+
+    <dd>Add HISTORY keywords?
+
+</dl>
+
+<h2>NOTES</h2>
+
+<h2>LAST MODIFIED</h2>
+<p>July 2009
+
+</body>
+
+</html>

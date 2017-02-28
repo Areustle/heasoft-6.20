@@ -1,0 +1,1129 @@
+#!/usr1/local/bin/perl5
+
+#  Basic script to perform extraction and background subtraction for 
+#  all observations in a given proposal level directory.  
+
+#  Uses aux directory, found in aux.tar on our ftp area.  
+#  Extraction script makes file lists, GTIs, filter files, background files;
+#  then extracts products for each obsid and for all together
+
+
+use Getopt::Std;
+
+
+getopts('d:c:l:r:p:t:x:fnsbhq');
+
+if (defined $opt_h) {  # help flag
+    print <<EOHELP1;
+
+NAME
+    rex - Makes preliminary products and then extracts data;
+          i.e. creates filter files, GTIs, lists of data files, 
+	  background data files and lists, lc and pha files.  
+
+
+USAGE
+
+    rex    -d "Input path to proposal level data directory"
+	   -c "Channel range to extract for light curves;  0-27 by default"
+	   -l "Layers to extract:  1 (default), 2, 3, or all."
+           -r "Root name for output"
+	   -p "Printmode:  l for light curves, s for spectra; (default both)."
+           -t "Target:  give two digit target number for extraction."
+           -x "To reduce HEXTE Archive mode instead, give cluster(0 1,a b)"
+	   -s "Flag to process slews instead;  default is to ignore slews."
+           -f "Flag to turn off filter file generation"
+	   -b "Flag to turn off background generation"
+           -q "Flag to quell prompting for unspecified options."
+           -n "Flag to use no saahfile (for bright source models)"
+	  
+	   -h "Print help"
+
+DESCRIPTION
+
+    Rex is a script designed to run through the basic data reduction steps for
+    multiple observations of a given target.  It can run with minimum input, but 
+    retains the flexibility to change the defaults for most basic options.  
+
+    The user need only give the tool the path to the FITS database proposal
+    level directory;  the default procedure is then to extract both light curves 
+    and spectra from layer 1 using channels 0-27 (lc's only) and PCUs 0, 1, and 2.  
+    The script will create a set of subdirectories in the aux directory, one for 
+    for each observation's intermediate products (file lists, GTI files, 
+    background data files, logs, etc.), and another set in the working directory 
+    for the resulting lightcurves and/or spectra.  For each obsid, the script will:
+    
+	1)  run xtefilt using the appidlist in the aux 
+            directory;  -f option over-rides this;   
+
+        2)  run maketime to create a standard list of Good Time Intervals
+            using expression found in aux/expression.txt;
+
+        4)  run pcabackest to create modeled background data for PCA
+            using models found in aux/model.files and aux/pca_saa_history;
+            -b option over-rides;  for HEXTE data, runs hxtback to separate
+            source from offset data;
+
+        5)  create lists of both the data and background files;
+
+        6)  run saextrct to produce individual light curves and/or spectra;
+
+        7)  run hxtdead to correct HEXTE spectra/light curves for deadtime;
+
+        8)  subtract background light curve from data, and write background
+            spectrum into BACKFILE keyword of data spectrum;
+            
+    Additionally, the script will create merged products from all the
+    observations in the given directory.
+
+    This script can be run from the command line using all default options 
+    (except the data directory) by specifying the -q flag to quell the prompting.
+    If the -q flag is omitted, any option not specified on the command line 
+    will be prompted for, with the default taken if no value is then given. 
+     
+    Rex must be run from a working directory that contains the 
+    "aux" directory found on the RXTE ftp site at 
+      ftp://legacy.gsfc.nasa.gov/xte/software/rex/aux.tar
+    In this tar file are the miscellaneous files that will be used by the script, 
+    namely the goodtime expression used in maketime, the column lists to be 
+    extracted, and the background model files.  The text files can be edited, but
+    the names of the text files must remain the same in order for the script 
+    to find them.  
+
+    While this script is designed for ease of use rather than flexibility, 
+    the existence of several optional inputs and the ability to  
+    edit the tools in the aux directory give the user some control.  To use 
+    use different model files, edit the model.files text list to point
+    to the new files;  to change the number of PCUs extracted, add to the column
+    list files, etc. Time consuming steps which may have already been performed 
+    such as xtefilt and pcabackest can be bypassed using the flags -f and -b 
+    respectively.  Changes to the channel boundaries and layers can be 
+    made using the -c and -l options, respectively.  To limit extraction 
+    to only lightcurves or only spectra, us the -p option.  Changes to the 
+    criteria for determining Good Time Intervals (GTIs) can be made by 
+    editing the expression in aux/expression.txt.  By default, the 
+    script will only extract data from PCUs 0, 1, and 2, as PCUs 3 and 
+    4 usually go on and off in the course of a long series of 
+    observations.  To add PCUs 3 and 4 to the extraction, the user can 
+    edit the column files in the aux directory to add the additional 
+    columns.  (The selection expression should then be modified to include
+    a test to make sure these two PCUs are on.)
+
+    In a script this long, the possibilities for errors are numerous.  Most should
+    be trapped by the script, which will give a warning, write any error messages
+    from the FTOOLS into a log in the aux directory, and either continue if possible
+    or quit.  When a warning appears, check the log file for the error message from
+    the FTOOL;  if this message does not enlighten, send the log file on to 
+    xtehelp\@athena.gsfc.nasa.gov along with the inputs you gave to Rex 
+    originally and any information about what you may have changed in the 
+    aux directory.
+    
+
+
+PARAMETERS (SWITCHES/FLAGS)
+
+          -d [path]  - Input the path to the proposal level of your FITS 
+                       database, e.g. /local/data/P30402. 
+
+          -c [l-u]   - Give the desired channel range for the resulting light 
+                       curves, e.g. 5-30.  If nothing is specified, 0-27 
+                       will be extracted.
+
+          -l [layer] - Specify the layer to be extracted:  1, 2, 3, or all 
+                       are the possible entries.  Anything else will be 
+                       ignored and the default used.  If nothing is 
+                       specified, layer 1 only will be extracted.  
+
+          -r [root]  - Root name for output.  Files will be named with this 
+                       root, if specified, followed by layerN, chX-Y (lc's 
+                       only), and bkg for background files.  
+
+          -p [mode]  - Specify printmode, l for light curves only, s for 
+                       spectra only.  Default is both.  
+
+          -t [targ]  - Give two digit target number, e.g. "03".  Default 
+                       is all found.
+
+          -x [cl]    - To reduce HEXTE Archive mode data instead of PCA Standard2,
+                       give the cluster you wish to analyze.  This option works
+                       with all options except the layer option.
+
+          -s         - Flag to include processing of slew data.  By default, 
+                       the  script will ignore slew observations, i.e. those 
+                       whose ObsIds end in A, Z, C, or D.
+
+          -f         - Flag to skip filter file regeneration.  If the filter 
+                       files have already been made and include all the 
+                       necessary columns in aux/expression.txt and those 
+                       needed by pcabackest (PCUn_ON, BKGD_THETA, BKGD_PHI), 
+                       this time consuming step can  be avoided by specifying 
+                       this flag.  The filter files must exist in the FITS 
+                       database, in the stdprod directories for each obsid, 
+                       and they must be refered to by the FIST index file.  
+                       (If made by xtefilt with the -s option, all should be 
+                       well.)
+
+          -b         - Flag to bypass the making of the background files.  
+                       Use this option only if the script has already been 
+                       run successfully  and you simply want to re-extract 
+                       light curves and spectra.  
+
+          -n         - Flag to use no SAA history file in pcabackest;  this 
+                       is only for use with other models than the Faint L7 
+                       models.  It is only necessary when there is no current
+                       SAA history for the data.  
+  
+          -q         - Flag to quell prompting for options not specified on the
+                       command line.  Anything not specified will be set to the 
+                       default.
+
+EXAMPLES
+
+    1)  rex
+
+        Prompts for data, target, printmode, channel, layer, and root name.  
+
+    2)  rex -d /local/data/P30402 -q
+
+        Runs using all defaults.
+
+    3)  rex -bfd /local/data/P30402 -p l -l 3 -c 30-50 -q
+
+        Runs without generating new filter files, using existing background
+        files, printing only light curves, and extracting only layer 3 and
+        channels 30-50.  
+
+SEE ALSO
+
+        SAEXTRCT, PCABACKEST, XTEFILT, MAKETIME, LCMATH, HXTBACK, HXTDEAD, REBINLC, MATHPHA 
+
+EOHELP1
+
+
+exit;
+    }
+
+$| = 1;   ## "print buffer flag" to print everything immediately, rather 
+          ##  than store output until it's ready
+
+print "\n************************************************\n";
+print "    Rex script for RXTE Data Reduction v.0.3\n";
+print "************************************************\n\n";
+
+die "Directory aux not found;  please read fhelp and then get and untar \nthe auxiliary files Rex needs from: \n\n ftp://legacy.gsfc.nasa.gov/xte/software/rex/aux.tar\nRex quitting.\n" unless (-d "aux");
+
+
+#############################################################################
+## PRELIMINARIES:
+## get command line options or prompt
+#############################################################################
+
+# get data dir
+if (defined $opt_d) {
+    $data = $opt_d;
+}
+else {
+    print "\nPath to proposal level directory containing FMI: ";
+    chomp($data=<STDIN>);
+    $data =~ s/\s+//g;
+}
+
+# get target (OK for $target not defined)
+if (defined $opt_t) {
+    $target = $opt_t;
+}
+elsif (!defined($opt_q)) {
+    print "Target [all]: ";
+    chomp($target=<STDIN>);
+    $target =~ s/\s+//g;
+    $target = "" unless ($target =~ /\d\d/);
+}
+
+#get printmode (OK if $opt_p undefined)
+if (!defined($opt_p) && !defined($opt_q)) {
+    print "Printmode, l (ligh curve), s (spectra) [both]: ";
+    chomp($opt_p = <STDIN>);
+    $opt_p =~ s/\s+//g;
+    $opt_p = "both" unless ($opt_p);
+}
+
+#get channels
+if (defined $opt_c) {
+    $channels = $opt_c;
+}
+elsif (!defined($opt_q)) {
+    print "Channels for light curve extraction [0-27]: ";
+    chomp($channels = <STDIN>);
+    $channels =~ s/\s+//g;
+    $channels = "0-27" unless ($channels =~ /\d+-\d+/);
+}
+else {
+    $channels = "0-27";
+}
+
+# get layer
+if ((defined $opt_l) && !defined($opt_x)) {
+  # if PCA and layer is given correctly, use it
+    if ($opt_l =~ /^[123]$/) {
+	$colfile = "layer${opt_l}.cols";
+        $layer = $opt_l;
+    }
+    elsif ($opt_l eq "all") {
+	$colfile = "allayers.cols";
+        $layer = $opt_l;
+    }
+    else {
+	$colfile = "layer1.cols";
+        $layer = "1";
+    }
+}
+elsif (!defined($opt_q) && !defined($opt_x)) {
+  # if PCA and not quelled, then prompt
+    print "Layers to be extracted (1,2,3, or all) [1]: ";
+    chomp($layer = <STDIN>);
+    $layer =~ s/\s+//g;
+    if (!$layer) {
+	$colfile = "layer1.cols";
+	$layer = "1";
+    }
+    elsif ($layer =~ /^[123]$/) {
+	$colfile = "layer${layer}.cols";
+    }
+    elsif ($layer eq "all") {
+	$colfile = "allayers.cols";
+    }
+    else {
+	$colfile = "layer1.cols";
+        $layer = "1";
+    }
+
+}
+elsif (!defined($opt_x)) { 
+  # if PCA and quelled, use layer 1
+    $layer = "1";
+    $colfile = "layer1.cols";
+}
+else {
+  # otherwise use basic HEXTE column list
+  $colfile = "hexte.cols";
+}
+
+# get root name
+if (defined($opt_r)) {
+    $root = "${opt_r}";
+}
+elsif (!defined($opt_q)) {
+    print "Root name for products []: ";
+    chomp($root = <STDIN>);
+    $root =~ s/\s+//g;
+}
+
+##
+## print out inputs/options
+##
+
+if (-e "${data}/FMI") {
+    print "\nDATA:\t\t$data\n";
+}
+else {
+    die "\nFMI not found in ${data}.\nPlease give path to proposal level directory containing FMI.\n";
+}
+print "TARGET:\t\t$target\n" if ($target);
+print "TARGET:\t\tall\n" unless ($target);
+
+if ($opt_p eq "l") {
+    print "PRINTMODE:\tlight curves\n";
+}
+elsif ($opt_p eq "s") {
+    print "PRINTMODE:\tspectra\n";
+}
+else {
+    print "PRINTMODE:\tboth\n";
+}
+
+print "CHANNELS:\t$channels\n";
+
+print "LAYER:\t\t$layer\n" unless (defined($opt_x));
+
+print "ROOT NAME:\t$root\n" if ($root);
+
+$root .= "_" if ($root);
+
+#this is the change to make Rex accept a and b's (resets them to 0 and 1)
+if (defined($opt_x)) {
+  if ($opt_x =~ /a|A/) {
+    $opt_x = 0;
+  }
+  if ($opt_x =~ /b|B/) {
+    $opt_x = 1;
+  }
+}
+
+# set output filenames using root
+
+if (defined($opt_x)) {
+  $pharoot = "$root"."hxt${opt_x}";
+  $lcroot = "$root"."hxt${opt_x}_ch${channels}";
+}
+else {
+  $pharoot = "$root"."layer${layer}";
+  $lcroot = "$root"."layer${layer}_ch${channels}";
+}
+
+$expr = `cat aux/expression.txt`;
+chomp $expr;
+print "EXPRESSION:\t$expr\n\n";
+
+if (defined $opt_s) {
+    print "Using slew observations only.\n";
+}
+
+print "Making filter files for all obsids in $data \n" unless (defined($opt_f));
+print "Skipping filter file generation. \n" if (defined($opt_f));
+
+print "Skipping background generation. \n" if (defined($opt_b) && !defined($opt_x));
+print "Skipping hxtback step. \n" if (defined($opt_b) && defined($opt_x));
+
+print "Analayzing HEXTE Archive mode data for cluster $opt_x\n" if (defined($opt_x));
+
+print "\n";
+
+#############################################################################
+## SETUP:
+## fdump the FMI file and open full lists of PCA Std2 or HEXTE archive data, 
+## filter files, and bkgd; 
+## initialize everything
+#############################################################################
+
+## define what you're doing, PCA or HEXTE
+
+if (defined($opt_x)) { ## define HEXTE 
+  $indat = "hxtsrc";
+  $bakdat = "hxtbkg";
+  $sys = "hexte";
+}
+else {  ## define PCA
+  $indat = "std2";
+  $bakdat = "bkg";
+  $sys = "pca";
+}
+
+## dump appropriate FMI columns
+$fmistring = &fdmp("${data}/FMI","obsid PCA_Index_File Std_Prod_Index_File StopDate") unless (defined($opt_x));
+$fmistring = &fdmp("${data}/FMI","obsid HEXTE_Index_File Std_Prod_Index_File") if (defined($opt_x));
+
+if ($fmistring) {
+    @fmiline = split('\n',$fmistring);
+}
+else {
+    die "\nProblem with ${data}/FMI:  $!\nRex quitting.\n";
+}
+
+$path = `pwd`;  ## storing path for prepending to ${bakdat}d file lists
+chomp $path;
+
+$saexpar = " gtiorfile=APPLY accumulate=ONE timecol=TIME binsz=16 lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF timeint=INDEF chmin=INDEF chmax=INDEF  chbin=INDEF bailout=yes clobber=yes ";
+
+
+################################################################################
+##  MAIN LOOP through obsids
+################################################################################
+
+foreach $line (@fmiline){  #  for each row in FMI, get FI and FIST
+  if ($line =~ /\w/){  ## for each (non-blank) line, i.e. obsid in FMI
+
+    @entries = split(' ',$line);
+    $obsid = $entries[0];
+
+    ##
+    ## testing
+    ##
+
+    ## skip this one if the obsid is a slew and -s not flagged
+    next if (!defined($opt_s) && ($obsid =~ /[AZCD]$/));
+
+    ## skip this one if the obsids is not a slew and -s is flagged
+    next if (defined($opt_s) && !($obsid =~ /[AZCD]$/));
+
+    ## skip this one if it's not the specified target
+    next if ( $target && !($obsid =~ /^\d\d\d\d\d-$target/) );
+    
+    if (!(-d "${data}/$obsid")) {  ## run only if obsid exists
+      print "Obisd $obsid not present in $data;  skipping.\n";
+      next;
+    }
+
+    $fi = $entries[1];
+    $fist = $entries[2];
+
+    ##
+    ##  Check date of Observation versus SAA history validity
+    ##
+
+    if (!(defined($opt_x)) && !(defined($opt_b))) {  
+
+      $obsend = $entries[3];
+      $obsend =~ s/(\d{2})\/(\d{2})\/(\d{2})/$3$2$1/g;
+      # MJT 19Jan2000 -- pivot on 1990 for Y2K!
+      if ($3 > 90) {
+	$obsend = $obsend + 19000000
+      } else {
+	$obsend = $obsend + 20000000
+      }
+      
+      $saah = `fkeyprint aux/pca_saa_history CVED0001 | grep =`;
+      $saah =~ s/^.*'(\d{2})(\d{2})-(\d{2})-(\d{2})'.*$/$1$2$3$4/g;
+      chomp($saah);
+      
+      if ($saah < $obsend) {
+	
+	print "SAA history file does not cover obsid $obsid;  skipping.\n";
+	next;
+      }
+    }
+
+    ##
+    ##  Make Std2 file list and run xtefilt for each obsid.  
+    ##
+
+    if (-e "${data}/${fi}") {
+      system("mkdir aux/${obsid}") unless (-e "aux/${obsid}");
+    }
+    else {
+      print "Cannot find subsytem index file for $obsid;  skipping\n";
+      next;
+    }
+    # dump appropriate columns from subsystem index file
+    $fidump = &fdmp("${data}/${fi}","EA6Data") unless (defined($opt_x));
+    $fidump = &fdmp("${data}/${fi}","Cl${opt_x}ArchData") if (defined($opt_x));
+    @fijunk = split('\s*\n',$fidump);
+
+    ##
+    ## make a hash using the file name as key, which will overwrite  
+    ## redundant terms;  then print them in order in the ${indat}.xdf file
+    ## in aux/${obsid} using the path ${data}/${obsid}/${sys} 
+    ##
+    foreach (keys(%indathash)) {  ## remove entries in ${indat} hash from
+      delete $indathash{$_};     ## previous obsid runs
+    }
+
+  foreach (@fijunk) {  
+    @temp = split('/');
+    $indathash{$temp[1]}++ if $_;
+  }
+  if (!(defined($opt_x))) { ## make data file list for PCA
+    unlink "aux/${obsid}/${indat}.xdf";
+    open(DATA,">>aux/${obsid}/${indat}.xdf") or die "\nCannot open aux/${obsid}/${indat}.xdf to write:  $! \nRex quitting.\n";
+
+    foreach (sort(keys(%indathash))) {
+      print DATA "${data}/${obsid}/pca/$_\n";
+    }
+    close(DATA);
+  }
+    # for HEXTE, wait until after hxtback to write out any data file names
+    # instead, get the 16s Hk file
+  else {
+    $hkjunk = &fdmp("${data}/${fi}","Cl${opt_x}Hk_16");
+    @junk = split(' ',$hkjunk);
+    $hk16 = $junk[0]; # first non-empty row entry
+  }
+
+    ##
+    ## run xtefilt for the obsid, placing in stdprod directory
+    ## then dump index file to get current filter
+    ## (skips xtefilt if -f flagged for filters already made)
+    ##
+
+    if (!defined($opt_f)) {  ## unless flagged to skip xtefilt
+
+      $args = "xtefilt -s -c -a aux/appidlist -o $obsid -p $data -t 16.0";
+      unlink "aux/${obsid}/filt.log";
+      open(LOG,">aux/${obsid}/filt.log");
+      print "Running xtefilt for $obsid \n";
+      @log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/filt.log");
+
+      $filtstat = shift(@log);
+      print LOG @log;
+      close(LOG);
+      ## check status of filer file run;  skip obsid if error
+      if ($filtstat) {
+	print "Skipping obsid $obsid\n";
+	next;
+      }
+
+    } # end of filter file 
+
+    ## dump FIST file to get filter file name for maketime call 
+    ## and merge list
+
+    if (-e "${data}/${fist}") {
+      $fistdump = &fdmp("${data}/${fist}","Filter_File");      
+      @fistjunk = split(' ',$fistdump);
+      $fistjunk[0] =~ s/stdprod\///;
+      $filter = $fistjunk[0];
+    }
+    else {
+      print "Cannot find Stdprod Index File for $obsid;  skipping\n";
+      next;
+    }
+
+    ##
+    ## loop through ${indat} files, running pcabackest or hxtback on each, and entering
+    ## resulting background file in aux/obsid/${bakdat}.xdf 
+    ## only if $opt_b not defined;  will skip if flagged
+    ##
+
+
+    if (!defined($opt_x) && !(defined($opt_b))) { ## PCA background generation
+
+      print "Running pcabackest on all standard2 files in $obsid\n";
+      unlink "aux/${obsid}/${bakdat}.xdf";
+      open(BKG,">>aux/${obsid}/${bakdat}.xdf") or die "\nCannot open ${bakdat}.xdf to write:  $!\nRex quitting.\n";
+      unlink "aux/${obsid}/${bakdat}.log";
+      open(LOG,">>aux/${obsid}/${bakdat}.log") or die "\nCannot open ${bakdat}.log to write:  $!\nRex quitting.\n";
+
+      foreach (sort(keys(%indathash))) {
+	# run pcabackest for each standard2 data file
+	$std2file = $_;
+	$bkgfile = "aux/${obsid}/${std2file}_bkg"; 
+	$args = "pcabackest infile=${data}/${obsid}/pca/${std2file} outfile=${bkgfile} ";
+	$args .= " filterfile=${data}/${obsid}/stdprod/${filter} ";
+	$args .= " modelfile=\@aux/model.files ";
+	$args .= " modeltype=both interval=16";
+	$args .= " saahfile=aux/pca_saa_history" unless (defined($opt_n));
+	$args .= " saahfile=none" if (defined($opt_n));
+	$args .= " propane=no layers=yes gaincorr=no ";
+	$args .= " gcorrfile=- fullspec=no  syserr=no clobber=yes timeslop=128 ";
+	
+	@log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/bkg.log");
+
+	##
+	## check status of pcabackest before writing the resulting file into the lists
+	##
+	print LOG "@log \n";
+	if (!shift(@log)) {  ## check error status;  if 0, add to lists
+	  print LOG "@log \n";
+	  print BKG "${path}/${bkgfile}\n";
+	} 
+
+      }  ##  end of loop through std2.xdf files
+      close(BKG);
+      close(LOG);
+    }  ##  end of PCA bkgd loop if $opt_b not defined
+
+    elsif (!(defined($opt_b))) {  
+    ## run hxtback on all input HEXTE FILES
+
+      print "Running hxtback on all HEXTE archive mode files in $obsid\n";
+      unlink "aux/${obsid}/${bakdat}.xdf";
+      open(BKG,">>aux/${obsid}/${bakdat}.xdf") or die "\nCannot open ${bakdat}.xdf to write:  $!\nRex quitting.\n";
+      unlink "aux/${obsid}/${bakdat}.log";
+      open(LOG,">>aux/${obsid}/${bakdat}.log") or die "\nCannot open ${bakdat}.log to write:  $!\nRex quitting.\n";
+      
+      unlink "aux/${obsid}/${indat}.xdf";
+      open(DATA,">>aux/${obsid}/${indat}.xdf") or die "\nCannot open aux/${obsid}/${indat}.xdf to write:  $! \nRex quitting.\n";
+
+      foreach (sort(keys(%indathash))) {
+	# for each input data file, run hxtback and enter src and bkg files in lists
+	$file = $_;
+	if (!(-e "${path}/aux/${obsid}/${file}_src")) {
+	  # check that it hasn't already been run (it doesn't fail the way pcabackest might;  can't see why you'd want to overwrite an existing version)
+	  $args = "hxtback -b -i ${data}/${obsid}/hexte/$file";
+	  @log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/hxtbkg.log");
+	  print LOG "@log\n";
+	  $stat = shift(@log);
+	  if (!($stat)) {
+	    # since hxtback writes output here, move into aux/obsid
+	    system("mv ${file}_src ${path}/aux/${obsid}/");
+	    system("mv ${file}_bkg ${path}/aux/${obsid}/");
+	  }
+	} # end of if not already run
+	# lists recompiled anyway
+	print DATA "${path}/aux/${obsid}/${file}_src\n";
+	print BKG "${path}/aux/${obsid}/${file}_bkg\n";
+      } ## end of hxtback run
+      close(DATA);
+      close(BKG);
+      close(LOG);
+    } # end of hxtback
+
+    ##
+    ## run maketime for individual obsids, each with log aux/obsid/maketime.log
+    ## 
+
+    $args = "maketime infile=${data}/${obsid}/stdprod/${filter} outfile=aux/${obsid}/basic.gti expr=\"${expr}\" name=NAME value=VALUE time=TIME compact=no clobber=yes ";
+    unlink "aux/${obsid}/basic.gti";
+
+    @log = &call($args,"warn","Problem running:\n$args\n\tSkipping extraction of obsid $obsid.\n","aux/${obsid}/maketime.log");
+    $gtistat = shift(@log);
+    ## write log only if there is an error
+    if ($gtistat) {
+      print "Error running maketime on $obsid;  skipping\n";
+      unlink "aux/${obsid}/maketime.log";
+      open(LOG,">aux/${obsid}/maketime.log") or die "\nCannot open aux/${obsid}/maketime.log to write:  $!\nRex quitting.\n";
+      print LOG @log;
+      close(LOG);
+      next;
+    }
+
+    ## test for rows before extracting;  if not, skip to next obsid with warning
+    $gti = &fdmp("aux/${obsid}/basic.gti","-");
+    if (!($gti =~ /\w/)) {
+      print "Observation $obsid has no good time using this expression; \n\t skipping extraction.\n";
+      next;
+    }
+    ## test for good bgfiles
+    $bgnum = (-s "aux/${obsid}/${bakdat}.xdf");  
+    print "No background files produced sucessfully for $obsid; \n\t skipping extraction of background.\n" unless ($bgnum);
+
+    # create output obsid directory
+    system("mkdir $obsid") unless (-e "$obsid");
+
+    print "Running saextrct for $obsid\n" unless (defined($opt_x));
+    print "Running saextrct, hxtdead, and merging for $obsid\n" if (defined($opt_x));
+    unlink "aux/${obsid}/extract.log";
+    open(LOG,">>aux/${obsid}/extract.log") or die "\nCannot open aux/${obsid}/extract.log to write:  $!\nRex quitting.\n";
+    
+    if (!defined($opt_x)) {
+
+    ############################################################################
+    ## PCA extraction
+    ## run saextrct for individual obsids, each with log aux/obsid/extract.log
+    ############################################################################
+
+      if (!($opt_p eq "l")) {  ## unless flagged for lc only
+
+	$args = "saextrct infile=\@aux/${obsid}/${indat}.xdf gtiandfile=aux/${obsid}/basic.gti outroot=${obsid}/${pharoot} columns=\@aux/${colfile}  printmode=SPECTRUM chint=INDEF ";
+	$args .= $saexpar;
+
+	@log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/extract.log");
+	$phstat1 = shift(@log);
+	$allphas .= "${obsid}/${pharoot}.pha " unless ($phstat1);
+	print LOG @log;
+
+	if ($bgnum) {
+	  $args = "saextrct infile=\@aux/${obsid}/${bakdat}.xdf gtiandfile=aux/${obsid}/basic.gti outroot=${obsid}/${pharoot}_bkg columns=\@aux/${colfile} printmode=SPECTRUM chint=INDEF";
+	  $args .= $saexpar;
+	  
+	  @log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/extract.log");
+	  $phstat2 = shift(@log);
+	  print LOG @log;
+	    
+	  $args = "fparkey value=${obsid}/${pharoot}_bkg.pha fitsfile=${obsid}/${pharoot}.pha keyword=BACKFILE";
+
+	  ## added check that not only are there no errors (phstat) but also
+	  ## that the products exhist;  saextrct can die very quietly
+	  system($args) unless (($phstat1 + $phstat2) || !((-e "${obsid}/${pharoot}.pha") && (-e "${obsid}/${pharoot}_bkg.pha")));
+	  $allphasbkg .= "${obsid}/${pharoot}_bkg.pha " unless ($phstat2);
+
+	} ## if bgnum good
+
+      }  ## spectra 
+
+      if (!($opt_p eq "s")) { ## unless flagged for spectra only
+	
+	$args = "saextrct infile=\@aux/${obsid}/${indat}.xdf gtiandfile=aux/${obsid}/basic.gti outroot=${obsid}/${lcroot} columns=\@aux/${colfile} printmode=LIGHTCURVE chint=${channels} ";
+	$args .= $saexpar;
+	@log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/extract.log");
+	$lcstat1 = shift(@log);
+	print LOG @log;
+	$alllcs .= "${obsid}/${lcroot}.lc " unless ($lcstat1);
+	    
+	if ($bgnum) {
+	  $args = "saextrct infile=\@aux/${obsid}/${bakdat}.xdf  gtiandfile=aux/${obsid}/basic.gti outroot=${obsid}/${lcroot}_bkg  columns=\@aux/${colfile} printmode=LIGHTCURVE chint=${channels} ";
+	  $args .= $saexpar;
+
+	  @log = &call($args,"warn","Problem running:\n $args","aux/${obsid}/extract.log");
+	  $lcstat2 = shift(@log);
+	  print LOG @log;
+	  close(LOG);
+	  $alllcsbkg .= "${obsid}/${lcroot}_bkg.lc " unless ($lcstat2);
+	  
+	  ## subtract background lc from data using lcmath
+		
+	  $args = "lcmath infile=${obsid}/${lcroot}.lc bgfile=${obsid}/${lcroot}_bkg.lc outfile=${obsid}/${lcroot}_net.lc multi=1 multb=1 addsubr=no ";
+	  
+	  ## because lcmath won't clobber
+	  unlink "${obsid}/${lcroot}_net.lc";
+	  ## added check that not only are there no errors (lcstat) but 
+	  ## also that the products exhist;  saextrct can die quietly
+	  @log = `$args` unless (($lcstat1 + $lcstat2) || !((-e "${obsid}/${lcroot}.lc") && (-e "${obsid}/${lcroot}_bkg.lc")));
+	  
+	}  ## if bgnum good
+	
+      }  ## unless flagged for spectra
+
+    } ## end of PCA extraction
+
+    ############################################################################
+    ## HEXTE extraction
+    ## run saextrct for individual obsids, each with log aux/obsid/extract.log
+    ############################################################################
+    else {
+      unlink("aux/${obsid}/hxtdead.log");
+      open(DLOG,">>aux/${obsid}/hxtdead.log") or die "Cannot open aux/${obsid}/hxtdead.log to write:$!\n";
+
+      # same code for source and background
+      foreach $dat ("src","bkg") {
+	open(DATA,"aux/${obsid}/hxt${dat}.xdf") or die "Cannot open aux/${obsid}/hxt${dat}.xdf to read:  $!\n";
+	##
+	## looping through data files one at a time because hxtdead only handles one 
+	##  at a time;  extract, deadtime correct, merge results
+	##
+	$n = 0;
+	$lclist = "";
+	$phalist = "";
+	while(<DATA>) {
+	  $file = $_;
+	  chomp $file;
+	  if (!($opt_p eq "l")) {
+	    $args = "saextrct infile=$file gtiandfile=aux/${obsid}/basic.gti outroot=${dat}_${n} columns=\@aux/${colfile} printmode=SPECTRUM chint=INDEF ";
+	    $args .= $saexpar;
+	    @log =  &call($args,"warn","Problem running:\n $args","aux/${obsid}/extract.log");
+	    $phstat1 = shift(@log);
+
+	    print LOG @log;
+	    if (!$phstat1 && (-e "${dat}_${n}.pha")) {
+	      $args = "hxtdead calvalf=caldb engvalf=${data}/${obsid}/$hk16 eventarcf=$file phalcf=${dat}_${n}.pha";
+	      @log = &call($args,"warn","Problem running:\n $args\n","aux/${obsid}/hxtdead.log");
+	      print DLOG @log;
+	      $phalist .= "${dat}_${n}.pha ";
+	    } # test
+	  } # end of source spectra
+	  if (!($opt_p eq "s")) {
+	    $args = "saextrct infile=$file gtiandfile=aux/${obsid}/basic.gti outroot=${dat}_${n} columns=\@aux/${colfile} printmode=LIGHTCURVE chint=${channels} ";
+	    $args .= $saexpar;
+	    @log =  &call($args,"warn","Problem running:\n $args","aux/${obsid}/extract.log");
+	    $lcstat1 = shift(@log);
+	    print LOG @log;
+	    if (!$lcstat1 && (-e "${dat}_${n}.lc")) {
+	      $args = "hxtdead calvalf=caldb engvalf=${data}/${obsid}/$hk16 eventarcf=$file phalcf=${dat}_${n}.lc";
+	      @log = &call($args,"warn","Problem running: \n$args\n","aux/${obsid}/hxtdead.log");
+	      print DLOG @log;
+	      $lclist .= "${dat}_${n}.lc ";
+	    } # test
+	  } # end of source lightcurves
+	    $n++;
+	} # while <DATA>
+	
+	# fmerge and lcmath lightcurves, mathpha spectra etc.
+
+	if (!($opt_p eq "l") && (scalar(split(' ',$phalist)) > 0) ) {
+
+	  if (scalar(split(' ',$phalist)) > 1) {
+	    
+	    # merge spectra
+	    unlink("aux/${obsid}/mathpha.log");
+	    &mergepha("$phalist","${obsid}/${pharoot}_bkg.pha","aux/${obsid}/mathpha.log") if ($dat eq "bkg");
+	    &mergepha("$phalist","${obsid}/${pharoot}.pha","aux/${obsid}/mathpha.log") if ($dat eq "src");
+	  }
+	  elsif (scalar(split(' ',$phalist)) == 1) {
+	    # or rename one spectrum 
+	    system("mv $phalist ${obsid}/${pharoot}.pha") if ($dat eq "src");
+	    system("mv $phalist ${obsid}/${pharoot}_bkg.pha") if ($dat eq "bkg");
+	  }
+	  # add this obsids spectra to master list for merging at the end
+	  $allphas .= "${obsid}/${pharoot}.pha " if ($dat eq "src");
+	  $allphasbkg .= "${obsid}/${pharoot}_bkg.pha " if ($dat eq "bkg");
+	  # remove individual spectra
+	  unlink split(' ',$phalist);
+	}
+	if (!($opt_p eq "s") && (scalar(split(' ',$lclist)) > 0 ) ) { 
+
+	  if (scalar(split(' ',$lclist)) > 1 ) {
+	    # merge light curves
+	    @log = &mergelcs("$lclist","${obsid}/${lcroot}_bkg.lc","aux/${obsid}/merge.log") if ($dat eq "bkg");
+	    @log = &mergelcs("$lclist","${obsid}/${lcroot}.lc","aux/${obsid}/merge.log") if ($dat eq "src");
+
+	    if (shift(@log)) {
+	      open(LOG,">aux/${obsid}/merge.log") or die "Cannot open aux/${obsid}/merge.log to write:  $!\n";
+	      print LOG "@log";
+	      close(LOG);
+	      next;
+	    }
+	  }
+	  elsif (scalar(split(' ',$lclist)) == 1 ) {
+	    # or rename one light curve 
+	    system("mv $lclist ${obsid}/${lcroot}.lc") if ($dat eq "src");
+	    system("mv $lclist ${obsid}/${lcroot}_bkg.lc") if ($dat eq "bkg");
+	  } # end of if only one
+
+	  $alllcs .= "${obsid}/${lcroot}.lc " if ($dat eq "src");
+	  $alllcsbkg .= "${obsid}/${lcroot}_${dat}.lc " if ($dat eq "bkg");	  
+	  # remove individual light curves
+	  unlink split(' ',$lclist);
+
+	} # end of merging light curves
+
+      } # end of foreach src and bkg
+
+      # rebin background lightcurve to 64 seconds so it can be subtracted from source
+      if (!($opt_p eq "s") && (-e "${obsid}/${lcroot}_bkg.lc")) {
+	$args = "rebinlc infile=${obsid}/${lcroot}_bkg.lc multiple=4 outfile=\!${obsid}/${lcroot}_bkg.lc";
+	@log = `$args`;
+	# ... and subtract
+	$args = "lcmath infile=${obsid}/${lcroot}.lc bgfile=${obsid}/${lcroot}_bkg.lc outfile=${obsid}/${lcroot}_net.lc multi=1 multb=1 addsubr=no";
+	unlink("${obsid}/${lcroot}_net.lc");
+	@log = `$args`;
+      }
+      if (!($opt_p eq "l") && (-e "${obsid}/$pharoot}_bkg")) {
+	$args = "fparkey value=${obsid}/${pharoot}_bkg.pha fitsfile=${obsid}/${pharoot}.pha keyword=BACKFILE";
+	system("$args") unless (($phstat1 + $phstat2) || !((-e "${obsid}/${pharoot}.pha") && (-e "${obsid}/${pharoot}_bkg.pha")));
+      }
+    } # else end of hexte
+    
+  }  ## if the line isn't blank
+}  ## foreach line in FMI dump, i.e for each obsid
+
+
+#############################################################################
+##  End of loop through obsids.  Now, 
+##  Make merged products for all obsids together
+#############################################################################
+
+if (scalar(@fmiline) == 1) {  ## only one obsid ( @fmiline has 3 returns before 1st entry)
+    print "Rex finished.\n";
+    exit;
+}
+
+## first, test for #files < 100 and # obsids > 1
+
+$wc = scalar(split(' ',$allphas)) unless ($opt_p eq "l");
+$wc = scalar(split(' ',$alllcs)) if ($opt_p eq "l");
+if ($wc == 0) {
+    print "No obsids found.\n";
+    print "Rex finished.\n";
+    exit;
+}
+
+print "Merging all obsids\n"; # old 100 file limit is avoided by using sumpha
+
+print "No good background files created;  skipping background for all obsids.\n" unless (scalar(split(' ',"$alllcsbkg")) or (scalar(split(' ',"$allphasbkg"))) );
+
+##
+## merge spectra
+##
+
+if (!($opt_p eq "l")) {  
+## unless flagged for lc's only
+
+  # merge
+  unlink("aux/mathpha.log");
+  &mergepha("$allphas","${pharoot}.pha","aux/mathpha.log");
+
+  ## same for background spectra
+  if (scalar(split(' ',"$allphasbkg"))) { 
+
+      &mergepha("$allphasbkg","${pharoot}_bkg.pha","aux/mathpha.log");
+      
+      # insert background spectrum into BACKFILE keyword of source spectrum
+      if ((-e "${pharoot}_bkg.pha") and (-e "${pharoot}.pha")){
+	$args = "fparkey value=${pharoot}_bkg.pha fitsfile=${pharoot}.pha keyword=BACKFILE";
+	system($args);
+	$args = "fchecksum infile=${pharoot}.pha update=yes datasum=yes";
+	system($args);
+      }
+      
+    }  ##  background files 
+}  ## end of spectra
+
+##
+## merge light curves
+##
+
+if (!($opt_p eq "s")) {  ## unless flagged for pha's only
+  # fmerge all the light curves
+  @log = &mergelcs("$alllcs","$lcroot.lc","aux/merge.log");
+  if (shift(@log)) {
+    open(LOG,">>aux/merge.log") or die "Cannot open aux/merge.log to write:  $!\n";
+    print LOG @log;
+    close LOG;
+  }
+  
+  if (scalar(split(' ',"$alllcsbkg"))) {  ## background
+    @log = &mergelcs("${alllcsbkg}","${lcroot}_bkg.lc","aux/merge.log");
+    
+    if (shift(@log)) {
+      open(LOG,">>aux/merge.log") or die "Cannot open aux/merge.log to write:  $!\n";
+     print LOG @log;
+      close LOG;
+    }
+    else {
+         
+      $args = "lcmath infile=${lcroot}.lc bgfile=${lcroot}_bkg.lc outfile=${lcroot}_net.lc multi=1 multb=1 addsubr=no";
+      unlink("${lcroot}_net.lc");
+      @log = `$args` if ((-e "${lcroot}.lc") && (-e "${lcroot}_bkg.lc"));
+    
+    }
+  }  ## background
+}  ## end of light curves
+
+close(LOG);
+
+print "Rex finished.\n";
+
+#################################################################################
+#  END OF MAIN 
+#################################################################################
+
+
+sub call {
+
+## based on runcom, but keeps the output from the ftool even in the case
+## of an error;  give command, error routine, error string, error log;
+## returns array:  1st value is 0 if good or $? or 1 if system or ftool error; 
+## then command; then error messages sent by ftool or system to 
+## STDERR; then any other output from tool;  retains suppress option.
+
+    local($command) = $_[0];
+    local($err_routine) = $_[1];
+    local($err_string) = $_[2];
+    local($err_log) = $_[3];
+    local($ERRFIL,@result,$CURHANDLE,$errormsg);
+
+    if($command =~ s/^-// ) {local($suppress) = 1;}
+    
+    $ERRFIL = "/tmp/error$$";
+    unlink $ERRFIL;
+    $command .= " 2> $ERRFIL";
+    @result = `$command`;
+
+    if ( ! open(ERRFIL) ) {  ## if no ERRFIL created, return with $? status
+        unlink $ERRFIL;
+    }
+    else {
+      while ( ($_ = <ERRFIL>) =~ /(ld\.so|^\s*\n$)/ ) { ;} 
+      if ( ! $_ ) {  ## if ERRFIL created but empty, return
+	  unlink $ERRFIL;
+      }
+      else {  ##  there is an error message
+	  unless ($suppress) {
+	    $errormsg = $_;
+            unlink $ERRFIL;
+            }
+      }  ## else there's an error message
+    } ##  else there's an ERRFIL created
+
+    if ($? || ($errormsg)) {  ## call err_routine if either $? or $errormsg
+	if ($err_routine) {
+	    &$err_routine($err_string,$err_log);
+	}
+	unshift @result, 1, "Problem running:\n $command:\n\n$errormsg\n" if ($errormsg);
+	unshift @result, $?, "Problem running:\n $command\n" if (!$errormsg);
+    } ## if any errors
+    else {
+	unshift @result, $?, "$command\n";
+    }
+    return @result;
+
+} ## sub call
+
+sub warn {
+
+    local($string) = $_[0];
+    local($log) = $_[1];
+    $CURHANDLE = select(STDERR);
+    print "-------------------------------------------------------------\n";
+    print "WARNING:  $string\n";
+    print "See full log in $log\n" if $log;
+    print "-------------------------------------------------------------\n";
+    select($CURHANDLE);
+}
+
+sub fdmp {
+  local($infile) = $_[0];
+  local($columns) = $_[1];
+  return `fdump prhead=no infile=${infile} outfile=STDOUT columns=\"${columns}\" showcol=no showrow=no showunit=no rows=- more=yes wrap=yes pagewidth=200`;
+}
+
+# far fewer contortions to use the wonderful sumpha :-)
+sub mergepha {
+  local($inlist) = $_[0];
+  local($outfile) = $_[1];
+  local($log) = $_[2];
+  local($com,@mergelist,@out);
+
+  @mergelist = split(' ',$inlist);
+  # better use '@filename' syntax in case of 
+  # really long names and/or lots of files
+  open(FLST,">aux/sumphalist") || die "\nCannot open aux/filelist to write:  $!\nRex quitting.\n";
+  foreach $file (@mergelist){print FLST "$file\n"}
+  close(FLST);
+  $com = "sumpha filelist=\@aux/sumphalist outfile=$outfile clobber=yes";
+  @out = &call($com,"warn","Problem running: \n$com\n","$log");
+  unlink("aux/sumphalist");
+  return;
+}
+
+
+# contortions to use the annoying mathpha on up to 100 files
+sub mergepha_old {
+  local($inlist) = $_[0];
+  local($outfile) = $_[1];
+  local($log) = $_[2];
+  local($com,$expr,$bigexpr,$n,$m,@out,@mergelist);
+  
+  @mergelist = split(' ',$inlist);
+  $m = 0; # count middle level of merged files
+  while ($m < (scalar(@mergelist)/10) ) {
+    $n = 0;  # count bottom level of original spectra 
+    $expr = "";
+    # add ten spectra at a time into ${m}.pha 
+    while (($n < 10) && ($n < (scalar(@mergelist) - $m*10 ) )) {
+      $expr .= "$mergelist[$n+10*$m] + "; 
+      $n++;
+    }
+    $expr =~ s/ \+ $//g;  # remove trailing " + "
+    $com = "mathpha expr=\"$expr\" units=C outfil=r${m}.pha exposure=CALC areascal=\% ncomments=0 clobber=yes";
+    
+    @out = &call($com,"warn","Problem running: \n$com\n","$log");
+    if (shift(@out)) { # if the merge failed
+      open(MLOG,">>$log") or die "Cannot open $log to write: $!\n";
+      print MLOG @out;
+      close(MLOG);
+    }
+    else { # start making sencond round expression
+      $bigexpr .= "r${m}.pha + ";
+    }
+    $m++;
+  }
+  # if there were more than 10 originally, add up all temp spectra 
+  # (assumed to be fewer than 10;  no obsid has > 100 data files
+  if ($m > 1) {
+    $bigexpr =~ s/ \+ $//g;  # remove trailing " + "
+
+    $com = "mathpha expr=\"$bigexpr\" units=C outfil=$outfile exposure=CALC areascal=\% ncomments=0 clobber=yes";
+    @out = &call($com,"warn","Problem running: \n$com\n","$log");
+    if (shift(@out)) {
+      open(MLOG,">>$log") or die "Cannot open $log to write: $!\n";
+      print MLOG @out;
+      close(MLOG);
+    }
+    foreach ($i=0; $i < (scalar(@mergelist)/10); $i++) {
+      unlink "r${i}.pha";
+    }
+  }
+  else { # if there were fewer than 10 originally, you're done
+    system("mv r0.pha $outfile");
+  }
+  system("cphead infile=$mergelist[0]+1 outfile=${outfile}+1 keyfil=aux/keyfile.txt"); 
+  return;
+}
+
+sub mergelcs {
+  local($inlist) = $_[0];
+  local($outfile) = $_[1];
+  local($log) = $_[2];
+  local($com,@out);
+  @mergelist = split(' ',$inlist);
+  unlink("lc.list");
+  open(LIST,">lc.list") or die "Cannot open lc.list to write:  $!\n";
+  foreach (@mergelist) {
+    print LIST "$_ \n";
+  }
+  close(LIST);
+  $com = "fmerge lastkey=TSTOPI infiles=\@lc.list outfile=${outfile} columns=- clobber=yes ";
+  @out = &call("$com","warn","Problem running: \n $com\n","$log");
+  unlink("lc.list");
+  return @out;
+}

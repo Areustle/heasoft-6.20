@@ -1,0 +1,6 @@
+PROJECT(pset)
+
+ADD_EXECUTABLE(pset pset.c)
+TARGET_LINK_LIBRARIES(pset ape)
+
+INSTALL_TARGETS(/bin pset)

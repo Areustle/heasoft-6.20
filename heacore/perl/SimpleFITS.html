@@ -1,0 +1,878 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<style type="text/css">
+body { margin-left: 5%; margin-right: 5%; }
+h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>SimpleFITS HEADAS help file</title>
+</head>
+<body>
+
+
+<h2><a name="sec-NAME">NAME</a></h2>
+
+SimpleFITS - Perl library for manipulating FITS files
+
+<h2><a name="sec-USAGE">USAGE</a></h2>
+<pre>
+use SimpleFITS;
+</pre>
+
+<h2>TABLE of CONTENTS</h2>
+<ol>
+  <li><a href="#sec-NAME">NAME</a>
+  <li><a href="#sec-USAGE">USAGE</a>
+  <li><a href="#sec-DESCRIPTION">DESCRIPTION</a>
+  <li><a href="#sec-METHOD-REFERENCE">METHOD REFERENCE</a>
+  <li><a href="#sec-EXAMPLES">EXAMPLES</a>
+  <li><a href="#sec-LAST-MODIFIED">LAST MODIFIED</a>
+</ol>
+
+<h2><a name="sec-DESCRIPTION">DESCRIPTION</a></h2>
+
+<p>
+SimpleFITS is a perl library which simplifies using the Perl-CFITSIO
+interface.  It is basically an object which wraps around the
+cumbersome CFITSIO library calls to make mundane things simpler.  It
+supports creating, writing and reading FITS tables and images.  This
+module requires that Astro::FITS::CFITSIO already be installed.
+
+<p>
+SimpleFITS focusses on handling the basic FITS operations so that the
+Perl programmer can work at a higher level.  Methods for opening a
+file use standard Perl notation, and can be used to perform common
+operations at once such as skipping to a desired FITS extension.
+Methods for reading and writing columns, for example, allow the
+programmer to specify the column name, and internally SimpleFITS
+determines which column number to use. SimpleFITS also automatically
+determines data types for column and keyword values, unless overridden
+by the programmer.
+
+<p>
+SimpleFITS calls should start with the SimpleFITS-&gt;open() method
+call to open an existing file or create a new one.  Files can be
+created, opened read-write or opened read-only.  SimpleFITS-&gt;open()
+returns a SimpleFITS object reference that can be used in subsequent
+method calls.  The object lifecycle should end with a close() method
+call.  Here is a simple example of opening and closing a FITS file, with 
+basic error checking.
+<pre>
+   # Open myfile.fits read-only
+   $fits = SimpleFITS-&gt;open("&lt;myfile.fits");
+   die "ERROR" if (! $fits );
+   ... operations on $fits ...
+   $fits-&gt;close();
+</pre>
+
+<p>
+SimpleFITS function calls can be chained together for compact
+programming notation.  For example, to write several keywords at once
+to the <tt>$fits</tt> object,
+<pre> 
+   $fits-&gt;writekey("MJDREF",54910,"Reference time in MJD")
+        -&gt;writekey("TIMESYS","TT","Time system of file")
+        -&gt;writekey("TIMEUNIT","s","Time unit of file");
+</pre>
+Each method call returns self, allowing chaining to occur.  Like
+CFITSIO, SimpleFITS maintains an internal status variable for each object.  If
+a function call fails, then this internal variable will be set, and
+further function calls will not take effect.  The method call
+$fits-&gt;status() will return the CFITSIO status code.  Thus, the above
+example of chaining keywords should really end like this,
+<pre> 
+   $fits-&gt;writekey("MJDREF",54910,"Reference time in MJD")
+        -&gt;writekey("TIMESYS","TT","Time system of file")
+        -&gt;writekey("TIMEUNIT","s","Time unit of file");
+   die "ERROR: could not write time keywords" if ($fits-&gt;status());
+</pre>
+The FITS I/O operations will proceed until there is an error, and
+subsequent operations will not execute.  For non-fatal errors, the
+programmer can reset the status variable to zero with
+$fits-&gt;setstatus(0).
+
+<p>
+See below for examples of how to use SimpleFITS.
+
+<h2><a name="sec-METHOD-REFERENCE">METHOD REFERENCE</a></h2>
+
+<h3>SimpleFITS File and HDU Access Routines</h3>
+<ol>
+<li><a href="#ref-open">open</a> - open or create a file</li>
+<li><a href="#ref-close">close</a> - close an already-opened file</li>
+<li><a href="#ref-move">move</a> - Move to a new HDU</li>
+<li><a href="#ref-createtab">createtab</a> - Create empty table extension</li>
+</ol>
+
+<h3>SimpleFITS Informational Routines</h3>
+<ol>
+<li><a href="#ref-status">status</a> - return CFITSIO status</li>
+<li><a href="#ref-setstatus">setstatus</a> - reset CFITSIO status</li>
+<li><a href="#ref-handle">handle</a> - return CFITSIO file handle</li>
+<li><a href="#ref-nhdu">nhdu</a> - return the number of HDUs in the file</li>
+<li><a href="#ref-curhdu">curhdu</a> - Return the current HDU number (1=primary HDU)</li>
+<li><a href="#ref-curhdutype">curhdutype</a> - Return HDU type code of the current HDU</li>
+
+<li><a href="#ref-nrows">nrows</a> - return the number of rows in a table or 2D image</li>
+<li><a href="#ref-ncols">ncols</a> - return the number of columns in a table or 2D image</li>
+<li><a href="#ref-imgdims">imgdims</a> - return the dimensions of an image</li>
+<li><a href="#ref-colnum">colnum</a> - return the column number corresponding to the given name</li>
+<li><a href="#ref-colname">colname</a> - return the name corresponding to a given column number</li>
+</ol>
+
+<h3>SimpleFITS Header and Keyword Access Routines</h3>
+<ol>
+<li><a href="#ref-readkey">readkey</a> - Read keyword value</li>
+<li><a href="#ref-writekey">writekey</a> - write keyword value</li>
+<li><a href="#ref-delkey">delkey</a> - delete a keyword</li>
+<li><a href="#ref-readheader">readheader</a> - read entire header and return it</li>
+</ol>
+
+<h3>SimpleFITS Table and Image Data Access Routines</h3>
+<ol>
+<li><a href="#ref-readcol">readcol</a> - read FITS table column data</li>
+<li><a href="#ref-writecol">writecol</a> - write FITS table column data</li>
+<li><a href="#ref-insertcol">insertcol</a> - Insert new column</li>
+<li><a href="#ref-delcol">delcol</a> - Delete existing column</li>
+<li><a href="#ref-insertrows">insertrows</a> - Insert new rows into a FITS table</li>
+<li><a href="#ref-delrows">delrows</a> - Delete rows of a FITS table</li>
+<li><a href="#ref-calculate">calculate</a> - calculate column-based expression</li>
+<li><a href="#ref-loadtable">loadtable</a> - load a FITS table into an array of hash references</li>
+</ol>
+
+<p>
+The following subsections describe each method in more detail.
+
+<h3><a name="ref-open">open</a> - open or create a file</h3>
+
+<pre>
+   open($inspec,%args) - open a file
+</pre>
+
+<ul>
+ <li>$inspec = "&lt;file" open existing file for reading
+ <li>$inspec = "&gt;file" create file for writing
+ <li>$inspec = "+&lt;file" open existing file for read/write
+ <li>%args = hash containing optional named arguments, one of<ul>
+                <li>type =&gt; "file"
+                <li>type =&gt; "diskfile"
+                <li>type =&gt; "data"
+                <li>type =&gt; "table"
+                <li>type =&gt; "image"<br>
+                   indicates the desired type of file or extension to
+                   open.
+                <li>ext =&gt; "NAME"
+                <li>ext =&gt; 5
+                <li>ext =&gt; +2<br>
+                   move to the requested HDU (see move() method).  If
+                   the extension does not exist, then the file is
+                   closed before return.
+                <li>access =&gt; "create"   create a new file;
+                <li>access =&gt; "readonly" or READONLY   open a file for reading;
+                <li>access =&gt; "readwrite" or READWRITE open a file for update;
+           </ul>
+</ul>
+
+<p>
+<b>RETURNS:</b> new SimpleFITS object, or zero upon failure.
+
+<p>
+The method call open() opens an existing file for reading and/or
+writing, or creates a new file.  Use standard Perl open() notation for
+opening or creating files, or use the access 
+
+<pre>
+  readonly("filename")   - open file read-only
+  readwrite("filename")  - open a file for reading and writing
+  create("filename")     - create a new file
+</pre>
+
+<p>
+These are short-cut routines that do not require the "<" or ">"
+syntax for opening files.
+
+<p>
+<b>RETURNS:</b> a SimpleFITS object reference.
+
+<h3><a name="ref-close">close</a> - close an already-opened file</h3>
+
+<pre>
+  close() - close an already-opened file
+</pre>
+
+<p>
+This file closes a file.  The current CFITSIO status is
+always ignored, so the file is always closed.
+
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-createtab">createtab</a> - Create empty table extension</h3>
+<pre>
+  createtab($extname) - Create empty extension
+</pre>
+<ul>
+  <li>$extname - string "NAME" of extension
+</ul>
+
+<p>
+The extension initially is empty, with no rows or columns.
+
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-status">status</a> - return CFITSIO status</h3>
+<pre>
+  status() - return CFITSIO status
+</pre>
+ 
+<p>
+<b>RETURNS:</b> the most recent CFITSIO error status code.
+
+<h3><a name="ref-setstatus">setstatus</a> - reset CFITSIO status</h3>
+
+<pre>
+  setstatus($value) - reset CFITSIO status
+</pre>
+
+<ul>
+   <li>$value - new value of status code
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-handle">handle</a> - return CFITSIO file handle</h3>
+<pre>
+  handle() - return CFITSIO file handle.
+</pre>
+
+<p>
+Retrieving the CFITSIO handle can be useful when the programmer needs
+to access any underlying Astro::FITS::CFITSIO subroutines.
+  
+<b>RETURNS:</b> the CFITSIO file handle.
+
+<h3><a name="ref-nhdu">nhdu</a> - return the number of HDUs in the file</h3>
+
+<pre>
+  nhdu($n) - return the number of HDUs in the file
+</pre>
+
+<ul>
+  <li>$n - (optional) upon return, $n has number of HDUs
+</ul>
+
+<p>
+<b>RETURNS:</b><ul>
+   <li>if $n is passed, then function returns self
+   <li>if no arguments are passed, function returns number of HDUs
+</ul>
+
+<h3><a name="ref-curhdu">curhdu</a> - Return the current HDU number (1=primary HDU)</h3>
+<pre>
+  curhdu($n) - Return the current HDU number (1=primary HDU)
+</pre>
+
+<ul>
+  <li>$n - (optional) upon return, $n has current HDU number
+</ul>
+
+<p>
+<b>RETURNS</b><ul>
+  <li>* if $n is passed, then function returns self
+  <li>* if no arguments are passed, function returns current HDU number
+</ul>
+
+<h3><a name="ref-curhdutype">curhdutype</a> - Return HDU type code of the current HDU</h3>
+<pre>
+  curhdutype($n) - Return HDU type code of the current HDU
+</pre>
+
+<ul>
+  <li>$n - (optional) upon return, $n has type code (e.g. IMAGE_HDU, etc)
+</ul>
+
+<p>
+<b>RETURNS</b><ul>
+  <li>if $n is passed, then function returns self
+  <li>if no arguments are passed, function returns type code
+  <li>-1 indicates error condition
+</ul>
+
+<h3><a name="ref-nrows">nrows</a> - return the number of rows in a table or 2D image</h3>
+<pre>
+  nrows($n) - return the number of rows in a table or 2D image
+</pre>
+
+<ul>
+  <li>$n - (optional) upon return, $n has number of rows
+</ul>
+
+
+<p>
+<b>RETURNS</b><ul>
+  <li>if $n is passed, then function returns self
+  <li>if no arguments are passed, function returns number of rows
+</ul>
+
+
+<h3><a name="ref-ncols">ncols</a> - return the number of columns in a table or 2D image</h3>
+<pre>
+  ncols($n) - return the number of columns in a table or 2D image
+</pre>
+
+<ul>
+  <li>$n - (optional) upon return, $n has number of columns
+</ul>
+
+<p>
+<b>RETURNS</b><ul>
+  <li>if $n is passed, then function returns self
+  <li>if no arguments are passed, function returns number of columns
+</ul>
+
+<h3><a name="ref-imgdims">imgdims</a> - return the dimensions of an image</h3>
+<pre>
+  imgdims() - return the dimensions of an image
+</pre>
+
+
+<p>
+<b>RETURNS</b><ul>
+  <li>an array giving the dimensions of the image
+  <li>an empty array () upon error
+</ul>
+
+<h3><a name="ref-colnum">colnum</a> - return the column number corresponding to the given name</h3>
+<pre>
+  colnum($colname) - return the column number corresponding to the given name
+</pre>
+
+<ul>
+  <li>$colname - name of the column, or -1 if not found
+</ul>
+
+<p>
+<b>RETURNS:</b> integer FITS column number.
+
+<h3><a name="ref-colname">colname</a> - return the name corresponding to a given column number</h3>
+<pre>
+  colname($colnum) - return the name corresponding to a given column number
+</pre>
+
+<ul>
+  <li>$colnum - FITS column number
+</ul>
+
+<p>
+<b>RETURNS:</b> column name, or undef if not found.
+
+<h3><a name="ref-move">move</a> - Move to a new HDU</h3>
+
+<pre>
+  move($hdu) - Move to a new HDU
+</pre>
+
+<ul>
+  <li>$hdu - HDU indicator, one of following possibilities:<ul>
+    <li>$hdu = "NAME" - move to extension named "NAME"
+    <li>$hdu =  5     - move to absolute extension number 5
+    <li>$hdu =  "+2"  - move forward by two HDUs</ul>
+</ul>
+
+<p>
+Note that $hdus are numberd starting with 1 as the primary HDU.
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-readheader">readheader</a> - read entire header and return it</h3>
+<pre>
+  readheader($header) - read entire header and return it
+</pre>
+
+<ul>
+  <li>$header - upon return, a reference to an array of strings
+                containing the current HDU's header
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-readkey">readkey</a> - Read keyword value</h3>
+<pre>
+  readkey($keyname,$value,$comment,$type) - Read keyword value
+</pre>
+
+<ul>
+  <li>$keyname - scalar string containing keyword name
+  <li>$value - (optional) upon return, contains keyword value
+  <li>$comment - (optional) upon return, contains comment string
+  <li>$type - (optional) contains desired type for value returned in $value.
+              (a suitable default is used otherwise)
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.  Note that if the read fails, then $value
+and/or $comment are not changed upon return.
+
+<p>
+Alternate calling sequence:<br>
+<pre>
+  $value = readkey($keyname)
+</pre>
+
+<p>
+In this alternate sequence, the data value is returned explicitly.
+The comments are ignored.  This form cannot be chained.
+
+<h3><a name="ref-writekey">writekey</a> - write keyword value</h3>
+<pre>
+  writekey($keyname,$value,$comment,$type) - write keyword value
+</pre>
+
+<ul>
+  <li>$keyname - scalar string containing keyword name
+                 'HISTORY' and 'COMMENT' are treated specially
+                 to add a new history or comment card.
+  <li>$value - new keyword value;<br>
+           any scalar value is permitted;<br>
+           if you want to set a logical value ('T'rue or 'F'alse)
+           then either pass \1 or \0, respectively; or 
+           pass 1 or 0, respectively and set $type=TLOGICAL
+  <li>$comment - (optional) comment string
+  <li>$type - (optional) desired type for the stored form of $value.
+          (a suitable default is used otherwise)
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-delkey">delkey</a> - delete a keyword</h3>
+<pre>
+  delkey($keyname) - delete a keyword
+</pre>
+
+<ul>
+  <li>$keyname - scalar string containing keyword name
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-readpix">readpix</a> - read pixel data</h3>
+<pre>
+  readpix($options,$data) - read pixel data
+</pre>
+
+<p>
+Read pixel values from image HDU.  The user can specify the range of
+each dimension. The default is to read the entire image.  Pixel values
+use the FITS convention where the first pixel is labeled as 1.
+
+<ul>
+  <li>$options is a hash reference  (e.g. {option1 =&gt; value1, option2 =&gt; value2});<br>
+      options include:<ul>
+        <li>axis&lt;n&gt; =&gt; [a,b]      # For axis #n, take pixel range a-b
+        <li>axis&lt;n&gt; =&gt; [a]        # For axis #n, take pixel a only
+        <li>axes    =&gt; [[a1,b1],[a2,b2],..] # Pixel ranges for each axis
+        <li> EXAMPLE: axes =&gt; [[1,10], undef, [2]]<br>
+            (for first dimension, take pixel range 1-10;<br>
+             for second dimension, take all pixels (the default);<br>
+             for third dimension, take pixel 2 only)<br>
+        <li>type =&gt; (any CFITSIO data type)
+        <li>nulval =&gt; null value (must same data type as data)</ul>
+  <li>$data - upon return, an array reference to the data
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<p>
+Alternate calling sequence:
+<pre>
+  @data = $fits-&gt;readcol($options)
+</pre>
+where @data is the data array.  This form cannot be chained.
+
+<h3><a name="ref-readcol">readcol</a> - read FITS table column data</h3>
+<pre>
+  readcol($column,$options,$dataref) - read FITS table column data
+</pre>
+
+<ul>
+  <li>$column - column "NAME" or SCALAR number
+  <li>$options is a hash reference  (e.g. {option1 =&gt; value1, option2 =&gt; value2})<br>
+     options include:<ul>
+         <li>rows =&gt; <ul>
+           <li>[] - read all rows
+           <li>SCALAR - read single row (row numbers start with 1)
+           <li>[$start,$stop] - read from row $start to $stop
+           <li>DEFAULT: [] (all rows)</ul>
+         <li>nulval =&gt; null value (must be same type as data being read)
+         <li>type =&gt; (any CFITSIO data type)</ul>
+  <li>$dataref - upon return, an array reference to the data
+</ul>
+  
+
+<p>
+<b>RETURNS:</b> $self.
+
+<p>
+Alternate calling sequence:
+<pre>
+  @data = $fits-&gt;readcol("NAME",$options)
+</pre>
+where @data is the data array.  This form cannot be chained.
+
+<h3><a name="ref-writecol">writecol</a> - write FITS table column data</h3>
+<pre>
+  writecol($column,$options,$data) - write FITS table column data
+</pre>
+<ul>
+  <li>$column - column "NAME" or SCALAR number
+  <li>$options is a hash reference  (e.g. {option1 =&gt; value1, option2 =&gt; value2})<br>
+      options include:<ul>
+         <li>rows =&gt; <ul>
+           <li>[] - write all rows
+           <li>SCALAR - write single row (row numbers start with 1)
+           <li>[$start,$stop] - write from row $start to $stop
+           <li>DEFAULT: [] (all rows)</ul>
+         <li>type =&gt; (any CFITSIO data type)
+         <li>nulval =&gt; null value of values in $data
+                   (translated to TNULLn upon output)
+         <li>grow =&gt; 0 or 1 - grow table beyond nrows?</ul>
+   <li>$data - an array reference to the data
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-insertcol">insertcol</a> - Insert new column</h3>
+<pre>
+  insertcol($colkeys,$column) - Insert new column
+</pre>
+<ul>
+  <li>$colkeys - hash reference to column keywords
+  <li>$column - (optional) column number to insert at<br>
+             (default: last column of table)
+  <li>$colkeys = {<br>
+            TTYPE =&gt; $keydesc,<br>
+            TFORM =&gt; $keydesc,<br>
+            "="   =&gt; $expression, # (optional) initialization expression<br>
+            &lt;other keys&gt; =&gt; $keydesc}
+</ul>
+
+<p>
+where
+<ul>
+  <li>$keydesc = $value for the keyword value<br>
+                 (and default comment and data type)
+  <li>$keydesc = [$value, $comment, $type]<br>
+                 where $comment is a scalar string
+                 and $type is the CFITSIO data type
+                 either $comment or $type can be undef
+  <li>$expression = optional initialization expression.
+                 This should be a scalar string expression
+                 defined according to the CFITSIO calculator
+                 syntax (see 'fhelp calc_express').
+                 Default: initialized with null values.
+</ul>
+
+<p>
+At least TTYPE and TFORM are required, but other keywords
+like TUNIT, TLMAX can be specified.  The task automatically
+adds the column number.  See the example at the top of this
+module on how to add columns.
+
+<p>
+The user may optionally specify an initialization expression for the
+column using the special descriptor "=".  See 'fhelp calc_express' for
+allowed calculator expressions.
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-delcol">delcol</a> - Delete existing column</h3>
+<pre>
+  delcol($column) - Delete existing column
+</pre>
+
+<ul>
+  <li>$column - column number or name to delete
+</ul>
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-insertrows">insertrows</a> - Insert new rows into a FITS table</h3>
+<pre>
+  insertrows($nrows,$firstrow) - Insert new rows into a FITS table
+</pre>
+
+<ul>
+  <li>$nrows - number of rows to insert
+  <li>$firstrow - (optional) row number to insert rows after
+               (default: last row of table)
+</ul>
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-delrows">delrows</a> - Delete rows of a FITS table</h3>
+<pre>
+  delrows($nrows,$firstrow) - Delete rows of a FITS table
+  delrows([a,b]) - delete row range [a,b] (inclusive)
+  delrows([a])   - delete row a only
+</pre>
+
+<ul>
+  <li>$nrows - number of rows to delete
+  <li>$firstrow - (optional) first row to delete (first row is 1)
+              (default: delete last rows of table)
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<h3><a name="ref-calculate">calculate</a> - calculate column-based expression</h3>
+<pre>
+  calculate($expr,$options,$dataref) - calculate column-based expression
+</pre>
+
+<ul>
+   <li>$expr - column-based expression to calculate
+   <li>$options is a hash reference  (e.g. {option1 =&gt; value1, option2 =&gt; value2})<br>
+      options include:<ul>
+         <li>rows =&gt; <ul>
+           <li>[] - read all rows
+           <li>SCALAR - read single row (row numbers start with 1)
+           <li>[$start,$stop] - read from row $start to $stop
+           <li>DEFAULT: [] (all rows)</ul>
+         <li>nulval =&gt; null value (must be same type as data being read)
+         <li>type =&gt; (any CFITSIO data type)</ul>
+   <li>$dataref - upon return, an array reference to the calculated data
+</ul>
+
+<p>
+<b>RETURNS:</b> $self.
+
+<p>
+Alternate calling sequence:
+<pre>
+  @data = $fits-&gt;calculate("expr",$options)
+</pre>
+where @data is the calculated data array.
+
+<h3><a name="ref-loadtable">loadtable</a> - load a FITS table into an array of hash references</h3>
+<pre>
+  loadtable($dataref) - load a FITS table into an array of hash references
+</pre>
+
+<p>
+The keys of the hashes are the upper cased column names.
+Example: given a FITS table
+<pre>
+	NAME	RA	DEC
+	Alpha	13.3	-4.3
+	Beta	150.1	5.6
+</pre>
+The passed array reference will have these two hash references
+<pre>
+	{ NAME =&gt; 'Alpha', RA =&gt; 13.3, DEC =&gt; -4.3 },
+	{ NAME =&gt; 'Beta', RA =&gt; 150.1, DEC =&gt; 5.6 },
+added on output.
+</pre>
+
+<h2><a name="sec-EXAMPLES">EXAMPLES</a></h2>
+
+<h3>Complete Example: Create a file</h3>
+
+This example creates a FITS binary table containing two columns, START
+and STOP.  It is assumed that the user already has two arrays, @start
+and @stop which contain the desired table values.
+
+<pre>
+      $fits = SimpleFITS-&gt;open("myfile.gti", access=&gt;"create");
+      die "ERROR: could not create file" if ( ! $fits );
+      $fits
+ 	-&gt;createtab("GTI")
+	-&gt;writekey("MJDREF", 54910.000135)
+ 	-&gt;insertcol({TTYPE =&gt; ["START", "GTI Start Time"], 
+ 		     TFORM =&gt; "1D", TUNIT =&gt; "s"})
+ 	-&gt;insertcol({TTYPE =&gt; ["STOP",  "GTI Stop Time"],
+ 		     TFORM =&gt; "1D", TUNIT =&gt; "s"})
+ 	-&gt;writecol("START",{grow=&gt;1},\@start)
+ 	-&gt;writecol("STOP", {},\@stop)
+      die "ERROR: could not write file" if ( $fits-&gt;status() );
+      $fits-&gt;close();
+</pre>
+The method createtab() creates an empty table, and two columns are
+created.  Note that "grow=&gt;1" is required to enlarge the empty table.
+Instead of using grow, one can use insertrows() to insert the required
+number of rows, and then fill them (see next example).
+
+<h3>Complete Example: append rows to existing table</h3>
+This example takes the existing table above, and appends more rows to
+the end of the table.  The new data is taken from the arrays @newstart
+and @newstop.
+<pre>
+      $fits = SimpleFITS-&gt;open("myfile.gti", access=&gt;"readwrite", ext=&gt;"GTI");
+      die "ERROR: could not open file" if ( ! $fits );
+      
+      $nrows = $fits-&gt;nrows();      # Old number of rows
+      $newrows = scalar(@newstart); # Number of rows to append
+
+      $fits
+         -&gt;insertrows($newrows)
+         -&gt;writecol("START", {rows=&gt;[$nrows+1,$nrows+$newrows]}, \@newstart)
+         -&gt;writecol("STOP", {rows=&gt;[$nrows+1,$nrows+$newrows]}, \@newstop);
+      die "ERROR: could not write file" if ( $fits-&gt;status() );
+      $fits-&gt;close();
+</pre>
+In this case, insertrows() is used to preallocate the required number
+of rows.  Then writecol() is used with explicit row numbers to fill in
+those new rows.
+
+<h3>Complete Example: Read tabular data</h3>
+In this example, we open the file as described above and read the
+data.  We also calculate a derived quantity, the average of START and
+STOP, using the CFITSIO expression calculator.
+<pre>
+      $fits = SimpleFITS-&gt;open("myfile.gti", access=&gt;"read", type=&gt;"table");
+      die "ERROR: could not open file" if (! $fits); 
+      $fits -&gt; readcol( "START", {}, $rstart );  # $rstart is array ref
+      @start = @$rstart;                     # Dereference to get array
+      @stop = $fits -&gt; readcol( "STOP" );
+
+      @cent = $fits -&gt; calculate("(START+STOP)/2");
+      $fits-&gt;close();
+</pre>
+<p>
+This example demonstrates the alternate syntaxes for readcol().  The
+first syntax returns a Perl array reference in $rstart, which can be
+dereferenced to get the full array.  This syntax can be useful when
+retrieving a large number of columns at one time because multiple
+readcols() can be chained in one statement.  The second usage of
+readcol() uses the alternate syntax which returns a Perl array
+directly.
+<p>
+The calculator expression, "(START+STOP)/2" is computed on the fly and
+the value is returned in the @cent array.
+
+<h3>Open a file</h3>
+<pre>
+      $fits = SimpleFITS-&gt;open("&lt;file");  # read-only access to existing file
+      $fits = SimpleFITS-&gt;open("&gt;file");  # create a file
+      $fits = SimpleFITS-&gt;open("+&lt;file"); # read-write access to existing file
+</pre>
+
+<h3>Moving to an extension</h3>
+<pre>
+      $fits -&gt; move("NAME")  # Move to named extension
+      $fits -&gt; move(1)       # Move to extension number 1 (absolute)
+      $fits -&gt; move("+1")    # Move to next extension (relative)
+      $fits -&gt; move("-1")    # Move to previous extension (relative)
+</pre>
+
+<h3>Create a new table</h3>
+<pre>
+      $fits -&gt; createtab("extname")  
+</pre>
+<h3>Add column to table</h3>
+<pre>
+      $fits -&gt; insertcol({TTYPE =&gt; ["NAME", "Description"], # TTYPEn keyword
+                          TFORM =&gt; "1D",                    # TFORMn keyword
+                          Tkey  =&gt; [value, "Comment", TYPE]}) # Tkeyn keywords
+</pre>
+<p>
+All keywords will have the column number appended.  TYPE is the
+(optional) CFITSIO data type of the *keyword*, such as TDOUBLE.
+The data type of the column is given by the TFORMn keyword.
+
+<h3>Insert column using a calculator expression</h3>
+<pre>
+      $fits -&gt; insertcol({TTYPE =&gt; "RADIUS", # TTYPEn keyword
+                          TFORM =&gt; "1D",     # TFORMn keyword
+			  TUNIT =&gt; "m",
+			  '='   =&gt; "X^2 + Y^2"});
+</pre>
+In this case, RADIUS is calculated from the existing columns X and Y,
+and given units of meters.
+
+
+<h3>Delete column from table</h3>
+<pre>
+      $fits -&gt; delcol("colname");
+</pre>
+
+<h3>Read column from table</h3>
+<pre>
+      $fits -&gt; readcol("NAME",{rows=&gt;$rowrange,type=&gt;TYPE},$data) 
+            ($data is a reference to the data array)               # or
+      @data = $fits-&gt;readcol("NAME",{rows=&gt;$rowrange,type=&gt;TYPE})
+            (@data is the data array)
+</pre>
+Both "rows" and "type" are optional and can be omitted (see <a
+href="#ref-readcol">readcol</a> for more detailed documentation).
+
+<h3>Calculate any derived quantity using CFITSIO calculator</h3>
+<pre>
+     $fits -&gt; calculate("expression",$options,$data)  #or
+      @data = $fits-&gt;calculate("expression",$options)
+</pre>
+where "expression" is any CFITSIO calculator expression.  (see <a
+href="calc_express.html">calc_express</a>)
+<h3>Write column to FITS table</h3>
+<pre>
+      $fits -&gt; writecol("NAME",{rows=&gt;$rowrange,type=&gt;TYPE},$data)
+</pre>
+where $data is a reference to the array of data. (i.e. $data=\@myarray)
+
+<h3>Read keywords</h3>
+<pre>
+      $fits -&gt; readkey("KEYWORD",$value,$comment,TYPE) # or
+      $value = $fits -&gt; readkey("KEYWORD")
+</pre>
+$value is the keyword value, $comment is the comment string
+TYPE is optional; and allows typecasting from the native keyword type.
+
+<h3>Write keywords</h3>
+<pre>
+      $fits -&gt; writekey("KEYWORD",$value,$comment,TYPE)
+</pre>
+The meanings are the same as for readkey().
+
+<h3>Read pixel value from an image HDU</h3>
+<pre>
+      $fits -&gt; readpix(...options..., $data)
+            ($data is a reference to the data array)               # or
+      @data = $fits-&gt;readpix(...options...)
+            (@data is the data array)
+</pre>
+where the "...options..." is a hash which gives pixel ranges
+for each dimension, optional data type, optional null value. 
+See documentation below for more detailed information.
+The default, if no pixel ranges are specified, is to read the
+entire image.
+
+
+<h2><a name="sec-LAST-MODIFIED">LAST MODIFIED</a></h2>
+
+Sep 2013
+
+<br>
+<br>
+<ol>
+  <li><a href="#sec-NAME">NAME</a>
+  <li><a href="#sec-USAGE">USAGE</a>
+  <li><a href="#sec-DESCRIPTION">DESCRIPTION</a>
+  <li><a href="#sec-METHOD-REFERENCE">METHOD REFERENCE</a>
+  <li><a href="#sec-EXAMPLES">EXAMPLES</a>
+  <li><a href="#sec-LAST-MODIFIED">LAST MODIFIED</a>
+</ol>
+
+</body>
+</html>
+
+
+
+

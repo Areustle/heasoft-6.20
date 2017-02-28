@@ -1,0 +1,2361 @@
+#!/usr/bin/perl 
+# File name: xrttdrss
+# 
+# Task name: xrttdrss
+# 
+# Description:  
+#                  
+# 
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 :  RP 02/02/2004 - First version
+#      0.1.1 :  BS 01/03/2004 - Bugs fixed 
+#      0.1.2 :  RP 16/03/2004 - Added call to UpdateCheckSum
+#                               Added control if datamode is LR+WT
+#                               Added control zipped input file
+#      0.1.3 :  RP 01/04/2004 - Added keyword CONVFACT and parameter hidden convfact
+#      0.1.4 :  RP 27/04/2004 - Added function subtract bias 
+#                               Calculate image position error
+#      0.1.5 :  FT 27/04/2004 - Changed parameters query order 
+#      0.1.6 :  RP 28/04/2004 -  Bug fixed
+#      0.1.7:   RP 28/04/2004 -   Remove inputdir parameter
+#                               Bugs fixed
+#      0.1.8 :  RP 28/04/2004 -  Bug fixed
+#                               Change name output file if packet1 is false
+#      0.1.9 :  RP 29/04/2004 -  Change to SubtractionBias (set value to zero if value is negative)
+#                               Print spectrum output file
+#      0.1.10:  RP 29/04/2004 - Change to SubtractionBias (check if value is null)
+#                               Print warning if packet1,2,3 is false  
+#                               Invert value of image matrix
+#                               Erase call to ImageXForm
+#                               Change parameter name
+#      0.2.0:   FT 17/05/2004 - Bugs fixed in CalcImgError routine (TIME column missing 
+#                               and wrong formula                               
+#                             - Bugs fixed in SubtractBias routine (wrong output image written and
+#                               erased forgotten comment to allow the bias subtraction)
+#                             - Changed input parameters biasim -> imbias and biaspd-> pdbias
+#                               to fix the 'GetBiasValue' bug 
+#                             - Changed name of subroutine SubtractBias -> SubtractBiasAndRawToDet
+#                             - Added update of CTYPE keywords on Detector coordinates image
+#      0.2.1:   FT 17/05/2004 - Added DETX/Y CTYPE keywords and bug fixed on total DN calculation
+#                             - bug fixed on image flip
+#      0.2.2:   BS 17/05/2004 - Bug fixed in RunPha when "LR+WT" and "LOWRATE" datamodes are input:
+#                               added Bias() routine call to process lowrate spectrum  
+#      0.2.3:   FT 18/05/2004 - Changed comment
+#      0.2.4:   RP 19/05/2004 - Remove stemout and outdir parameter
+#                               Change parameter name to imgfile,pha1file,pha2file in imagefile,spec1file,spec2file
+#                               Added parameter outimagefile,outspec1file,outspec2file
+#      0.2.5:   RP 20/05/2004 - Added path to det temporary file
+#      0.2.6:   FT 20/05/2004 - Changed imaging keywords GRB_RA into XRA_OBJ 
+#                               and XRT_DEC into XDEC_OBJ
+#                             - Do not write into the SKY coordinate image the 'CROTA1' set to 0
+#                             - Added the XRTBIAS keyword with the bias value subtracted to
+#                               the image and to the lowrate spetrum
+#      0.2.7:   FT 25/06/2004 - Added check on 'spec2file' DATAMODE
+#                             - take 'imagefile' amplifier from 'imagefile' WAVEFORM keyword
+#                               (AMP set to 1 if WAVEFORM <= 128)
+#                             - chek if the 'spec2file' is (LOWRATE+WINDOWED) from TSTART keyword
+#                               if TSTART is less then 'spec1file' TSTART + EXPOSURE we have merged data
+#                             - multiply the Postage Stamp image values for INVGAIN keyword value 
+#                               value (June 23th,2004 Fink EMail)
+#                             - added XRTTDRSS keywords on all outputs files set to 'Y'
+#                             - added XRTORGMD With the original datamode of the spectrum 2
+#                               before data processing
+#      0.2.8:   RP 19/07/2004 - Minor changes to control name of parameter (=~ > eq)
+#      0.2.9:   FT 27/07/2004 - chek if the 'spec2file' is (LOWRATE+WINDOWED) from the 
+#                               telemetred trmination condition TERMMODE keyword. It is
+#                               an integer with the telemetred termination condition
+#                               bit sequence: LW000TTT (see XRT-PSU-028 document)
+#                               we need to check the LW bits with the meaning:
+#                                   Only L bit set => LOWRATE Spectrum
+#                                   Only W bit set => WINDOWED Spectrum
+#                                   LW bits set => mixed LR and WT Spectrum   
+#                             - handle cleanup input parameter (CleanupList) 
+#                               and create temporary files to work on
+#                             - changes inplemented to support a new format
+#                               of the 'poserr' calibration file
+#                             - added check on BIASLVL keyword for spectrum 1
+#                               to support telemetry changes (see e-mail to Fink 
+#                               27/07/2004)
+#      0.2.10:  BS 30/08/2004 - Changed keywords name:
+#                               DN -> TOTALDN
+#                               FLUX -> SRCFLUX
+#                               and CONVFACT keyword comment.
+#      0.2.11: RP  30/09/2004 -- Modify function UpdateBias
+#      0.2.12: RP  05/10/2004 -- Changed calculation of bias from CALDB file. No interpolation applied but last valid value taken
+#      0.2.13: FT  07/10/2004 - Added initialization of $fptr and $status to 0,
+#                               this change has been suggested by Bob Wiegand
+#                               (undefined variables give warnings with
+#                               Astro::FITS::CFITSIO library)
+#                             - some changes due to warnings
+#      0.3.0: FT  03/02/2005 - Changed Coordinates transformation from raw to sky to take
+#                              into account the disalignment of the XRT axes from the
+#                              S/C ones and to set DET coordinates look up.
+#      0.3.1: FT 04/02/2005  - Do not invert x/y axis before put the DET coordinates
+#                              in look-up mode and bug fixed in detector image generation
+#      0.3.2: FT 04/02/2005  - CROTA bug fixed 
+#      0.3.3: MP 18/03/2005  - CROTA2 bug fixed
+#      0.3.4: FT 15/09/2005  - Correct the pixel value telemetred with Postage Stamp 
+#                              Messages after when telemetry version (TELVER) is 2
+#                              Formula: CorrectedPixVal = 
+#                                    ((PS_PixValue -256+ bias_level) * gain - bias_level)
+#                                       If the CorrectedPixVal is a negative number the forula is:
+#                                       CorrectedPixVal = 
+#                                    ((PS_PixValue + bias_level) * gain - bias_level) 
+#                              Where: bias_level = bias subtracted on-board (set to 131,
+#                                                  no telemetruy value available)
+#                                     gain = Value from Postage Stamp header 
+#                                            keyword (INVGAIN) 
+#                           - For telemetry version > 2 the Postage stamp image
+#                             has only to be multiply for gain (no bias subtraction
+#                             and no pixel correction)
+#      0.3.5: LA 17/09/2005 - Correction applied to the pixel correction formula
+#                             to correct a problem with Postage Stamp images
+#                             with gain = 16
+#                           - Calculate the Postage Image flux taking into
+#                             account only pixels over 9 DN
+#                           - Do not set to 0 Postage Stamp Image negative pixels
+#      0.3.6: BS 20/10/2005 - Added 'dnthr' new input parameter for DN threshold
+#                           - Use FLUXFACT keyword value if 'convfact' input parameter
+#                             is set to 0. If FLUXFACT == 1 the task uses the default value 1/5.7e11
+#      0.3.7: BS 01/02/2006 - Added messages to display the beginning and 
+#                             the end time of the script execution
+#      0.3.8: BS 02/03/2006 - Modified as suggested by Lorella Angelini (feb 28 2006)
+#                           * when the version=2 and the gain was > 1 
+#                             bug fixed when set the 0 values
+#                           * when the version < 2  and the gain > 1 
+#                             added check on pixel value
+#                           * used IMPOSERR HDU instead of TDPOSERROR to 
+#                             calculate error "XRT Imaging Mode Centroiding Error Update"
+#      0.3.9: FT 16/03/2006 - Read IMPOSERR extension from the input POSERR file
+#                           - added a check on the POSERR calibration file format (needed IMPOSERR
+#                             extension)
+#
+#
+#
+# Notes        
+# 
+#   type "fhelp xrttdrss" for parameters description
+#
+# Usage:     
+# 
+#   xrttdrss imagefile=<file event name> [parameter=value ... ]
+#
+# Input files:  
+#
+#   
+# Output files: 
+#
+#
+#
+# HEADAS tasks needed:
+#     imagexform         
+#
+# LHEASOFT tasks needed:
+#        
+#        
+#        
+#============================================================#
+
+require "libswxrtperl.pl";
+
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+use strict;
+
+use vars qw( %Task %Default %Spec1 %Spec2 @filelist @Par %Ind $imgtmpfile $amp $imagefile $dmimg 
+	     $outfileimg $outfiledet 
+	     $rmspec1 $rmspec2 $rmimg $poserrfilename $dn $dm2wt $usetmpspec 
+	     @CleanupList);
+
+
+my ($packet1, $packet2, $packet3);
+my $MIX = "LR+WT";
+my $waveform ;
+
+$dm2wt = 0;
+
+#my $constconv = 1.2;
+
+
+#my $extname = "EXTNAME";
+
+
+$Task{status} = 0;
+#
+# Specific of the task
+#
+%Task = (
+         start   => `date`,
+         name    => "xrttdrss",
+         version => "0.3.9",
+         releasedate => "2006-03-16",
+         stem    => "xrttdrss_0.3.9",
+         emptystem => "               ",
+         clobber => 0,  # it means 'clobber=no'
+         chatter => 3,
+         status  => 0,
+         errmess => "",
+	 message => "",
+	 TERMMODE_LR   => 128,
+	 TERMMODE_WT   =>  64,
+	 TERMMODE_LRWT =>  192,
+	 TERMMODE_MASK =>  192,
+	 IMGTLMVERNAME => "TLMVER",
+	 IMGTLMVERNUMB => 2,
+	 IMGTLMBIAS    => 131,
+	 KNM_FLUXFACT  => "FLUXFACT",
+	 KVL_FLUXFACT  => 5.7E11,
+
+         );
+
+%Spec1 = (
+	  exists   => 0,
+	  proc     => 0,
+	  filename => "",
+	  out      => "",
+	  start    => 0.0,
+	  end      => 0.0,
+	  dm       => "",
+	  termmode => "",
+	  pack1    => 0,
+	  pack2    => 0,
+	  pack3    => 0,
+	  );
+
+%Spec2 = (
+	  exists       => 0,
+	  proc         => 0,
+	  filename     => "",
+	  usetempfile  => 0,
+	  spec1        => 0,
+	  out  => "",
+	  start    => 0.0,
+	  end      => 0.0,
+	  dm       => "",
+	  termmode => "",
+	  pack1    => 0,
+	  pack2    => 0,
+	  pack3    => 0,
+	  );
+
+
+#
+#  Defaults
+#
+
+%Default = (
+            DEFAULT => "DEFAULT",
+            NONE    => "NONE",
+	    sens     => 0.0000001,
+            );
+
+
+
+&PrntChty(3,"---------------------------------------------------------------------\n");
+&PrntChty(3," \t\tRunning '$Task{stem}'\n");
+&PrntChty(3,"---------------------------------------------------------------------\n");
+
+print '-' x 69, "\n";
+print '=' x 20, ' XRTTDRSS STARTING AT ', scalar(gmtime()), "\n";
+print '-' x 69, "\n";
+ 
+
+#
+# Get Input Parameters 
+#
+
+if ( &GetInputParameters ) {
+    $Task{errmess} = "Error parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+#
+# Check input parameters
+# 
+
+if ( (&CompUL(&GetValPar("imagefile"),$Default{NONE})) && (&CompUL(&GetValPar("spec1file"),$Default{NONE}))
+    && (&CompUL(&GetValPar("spec2file"),$Default{NONE})))
+{
+    $Task{errmess} = "No input files specified";
+    goto EXITWITHERROR;
+}
+
+#
+# Check if input files exist and perform some preliminary checks
+#
+
+
+if (!&CompUL(&GetValPar("imagefile"),$Default{NONE}) ) {
+
+    $imagefile = &GetValPar("imagefile");
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- CHECK ON IMAGE MESSAGE\n");
+
+    if (! -f $imagefile) {
+	$Task{errmess} = "Input image File: '$imagefile' not found";
+	goto EXITWITHERROR;
+    }
+
+    if (!&CheckZip(&GetValPar("imagefile"),\$imagefile,\$rmimg)) { goto EXITWITHERROR;}    
+
+    
+    if (!&CheckNamingConvention(&GetValPar("imagefile")))
+    {
+	&PrntChty(2,"$Task{stem}: Error: The input image file name does not match standard naming convention\n");
+	$Task{errmess} = "Unable to apply standard naming convention";
+	goto EXITWITHERROR;
+    }
+
+    &GetKeyword($imagefile,undef,undef,"datamode",\$dmimg);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    
+    elsif ( $dmimg ne "TDRSS_PS" && $dmimg ne "SHORTIMA" && $dmimg ne "LONGIMA" ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Not allowed datamode '$dmimg' in '" . &GetValPar("imagefile"). "' file";
+	goto EXITWITHERROR;
+    }
+}
+
+if (!&CompUL(&GetValPar("imagefile"),$Default{NONE}) ) {
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- PROCESSING IMAGE MESSAGE\n");
+
+    if (((&GetValPar("imbias") < 0)) && !&CompUL(&GetValPar("imbiasfile"),"CALDB")) {
+	my $imbiasfile = &GetValPar("imbiasfile");
+	&PrntChty(3,"$Task{stem}: Info: Using '".  &GetValPar("imbiasfile") . "' to apply,\n");
+	&PrntChty(3,"$Task{stem}: Info: the bias correction to '".  &GetValPar("imagefile") . "'  file \n");
+	if (! -f $imbiasfile ) {
+	    $Task{errmess} = "CALDB IMBIAS File: '$imbiasfile' not found";
+	    goto EXITWITHERROR;
+	}
+    } 
+
+    # check if the XRTTDRSS keyword is set to 'T'
+
+    if (  &CheckXRTTDRSS($imagefile,undef) ) { 
+	$Task{errmess} = "The image '$imagefile' has just been processed";
+	goto EXITWITHERROR; }
+
+    # check if the 'XRTBIAS' has been subtracted
+
+    if (  &CheckXRTBIAS($imagefile,undef) ) { 
+	$Task{errmess} = "The image '$imagefile' has just been processed";
+	goto EXITWITHERROR; }
+
+    # check packets integrity and datamode
+
+    &GetKeyword($imagefile,undef,undef,"PACKET1",\$packet1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword($imagefile,undef,undef,"PACKET2",\$packet2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword($imagefile,undef,undef,"PACKET3",\$packet3);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    if ( $dmimg eq "TDRSS_PS" && $packet1 ne "F" ) {
+	&PrntChty(3,"$Task{stem}: Error: Found datamode '$dmimg' for the input '" . &GetValPar("imagefile"). "' file,\n");
+	&PrntChty(3,"$Task{stem}: Error: but the first packet seems to be not corrupted (PACKET1 keyword set to T) \n"); 
+	$Task{errmess} = "Not allowed datamode '$dmimg' in '" . &GetValPar("imagefile"). "' file";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+
+    if ( $packet1 eq "F" ) { 
+	&PrntChty(3,"$Task{stem}: Warning: First Packet of the input '" . &GetValPar("imagefile"). "' file,\n");
+	&PrntChty(3,"$Task{stem}: Warning: corrupted (PACKET1 keyword set to F) no image processing made\n"); 
+	&PrntChty(3,"$Task{stem}: Warning: no '" . &GetValPar("outimagefile"). "' file created\n"); 
+	goto SKIP; 
+    }
+
+    $outfiledet = &GetPath(&GetValPar("outimagefile")) . "/" . &GetFileNameRoot(&GetValPar("imagefile")) . "det.fits";
+    $outfileimg = &GetValPar("outimagefile");
+		
+
+    if ($packet1 eq "F") { 
+	 &PrntChty(3,"$Task{stem}: Warning: The packet 1 of Image File " . &GetValPar("imagefile") . " is corrupted\n");
+     }
+    else {
+        # Get the Waveform number ( "WAVEFORM" keyword )
+	&GetKeyword( $imagefile, undef,undef,"WAVEFORM",\$waveform);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	$amp = 1;
+	if ( $waveform > 128 ) { $amp = 2 };
+    }
+
+    if ($packet2 eq "F") { 
+	 &PrntChty(3,"$Task{stem}: Warning: The packet 2 of Image File " . &GetValPar("imagefile") . " is corrupted\n");
+     }
+    if ($packet3 eq "F") { 
+	&PrntChty(3,"$Task{stem}: Warning: The packet 3 of Image File " . &GetValPar("imagefile") . " is corrupted\n");
+    }
+
+    if($packet1 eq "T")
+    {
+	if ( &CheckExistFile($outfileimg)) {goto EXITWITHERROR;}
+	&PrntChty(3,"$Task{stem}: Info: The Image File will be '$outfileimg'\n"); 
+
+	if ( -f $outfiledet ) {&DeleteFile( $outfiledet );}
+	&PrntChty(4,"$Task{stem}: Info: The Image Det File will be '$outfiledet'\n"); 
+
+	my ($poserrfileext) = -1;
+	if (!&CompUL(&GetValPar("posfile"),"CALDB")) {
+	    $poserrfilename = &GetValPar("posfile");
+	    if (! -f $poserrfilename ) {
+		$Task{errmess} = "CALDB Position error File: '$poserrfilename' not found";
+		$Task{status} = 1;
+		goto EXITWITHERROR;
+	    }
+	} else {
+#
+# 	Changed by lorella feb 28 2006
+#       my ($posreffile,$refext) = &CallQuzcif ("TDPOSERR", "now","now","-",1);
+#
+	    my ($key_db);
+	    if (!&CompUL($dmimg, "TDRSS_PS")) {
+		$key_db = "datamode.eq.LONGIMA";
+	    }
+	    else
+	    {
+		$key_db = "datamode.eq.$dmimg";
+	    }
+ 	    my ($posreffile,$refext) = &CallQuzcif ("POSERR", "now","now",$key_db,1);
+
+
+	    my @posfile = @$posreffile;
+	    my @extfile = @$refext;
+	    
+	    if ($Task{status}) { goto EXITWITHERROR;} 
+	    else {
+		$poserrfilename =  $posfile[0] . "+" . $extfile[0];
+		$poserrfileext = $extfile[0];
+	    }
+	    
+	}
+
+# Changed by lorella feb 28 2006	
+#	&PrntChty(3,"$Task{stem}: Info: Using $poserrfilename caldb TDPOSERR file\n");
+	&PrntChty(3,"$Task{stem}: Info: Using $poserrfilename caldb POSERR file\n");
+       
+        # check the calibration file format (needed IMPOSERR extension);
+	&CheckPoserrFile( $poserrfilename, $poserrfileext );
+	if ( $Task{status}) { goto EXITWITHERROR;} 
+
+    }
+
+    
+
+    &RunImage();
+    &SuccessSub($Task{stem},"RunImage","Created '" .  &GetValPar("outimagefile") . "'");
+
+}
+
+SKIP:
+
+
+if (!&CompUL(&GetValPar("spec1file"),$Default{NONE}) ) {
+
+    $Spec1{exists} = 1;
+    $Spec1{proc}   = 1;
+    $Spec1{filename} = &GetValPar("spec1file");
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- CHECK ON SPECTRUM 1\n");
+
+    if (! -f &GetValPar("spec1file") ) {
+	$Task{errmess} = "Input  spectrum file: '" . &GetValPar("spec1file") . "' not found";
+	goto EXITWITHERROR;
+    }
+
+    if (!&CheckZip(&GetValPar("spec1file"),\$Spec1{filename},\$rmspec1)) { goto EXITWITHERROR;}
+
+    if (!&CheckNamingConvention(&GetValPar("spec1file"))) 
+    {
+	&PrntChty(2,"$Task{stem}: Error: The first input spectrum file name does not match standard naming convention\n");
+	$Task{errmess} = "Unable to apply standard naming convention";
+	goto EXITWITHERROR;
+    }
+
+    # check if the XRTTDRSS keyword is set to 'T'
+
+    if ( &CheckXRTTDRSS($Spec1{filename},"SPECTRUM") ) { 
+	$Task{errmess} = "The LR spectrum '$Spec1{filename}' has just been processed";
+	goto EXITWITHERROR; }
+
+    # check if the 'XRTBIAS' has been subtracted
+
+    if (  &CheckXRTBIAS($Spec1{filename},"SPECTRUM") ) { 
+	$Task{errmess} = "The LR spectrum '$Spec1{filename}'  has just been processed";
+	goto EXITWITHERROR; }
+
+    &CheckPackets($Spec1{filename},\$Spec1{pack1},\$Spec1{pack2},\$Spec1{pack3});
+
+    &GetKeyword($Spec1{filename}, "SPECTRUM",undef,"datamode",\$Spec1{dm});
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    if ( $Spec1{pack1} eq "F" ) {
+	&PrntChty(3,"$Task{stem}: Warning: First Packet of the input '" . &GetValPar("spec1file"). "' file,\n");
+	&PrntChty(3,"$Task{stem}: Warning: corrupted (PACKET1 keyword set to F) no '" . &GetValPar("spec1file"). "' processing made\n"); 
+	&PrntChty(3,"$Task{stem}: Warning: no '" . &GetValPar("outspec1file"). "' file created and\n"); 
+	&PrntChty(3,"$Task{stem}: Warning: no '" . &GetValPar("tmpspec1file"). "' file created.\n"); 	    
+	$Spec1{proc} = 0;
+    }
+    
+    if ( $Spec1{dm} eq "TDRSS_SP" ) {
+	if ( $Spec1{pack1} ne "F" ) {
+	    &PrntChty(3,"$Task{stem}: Error: Found datamode '$Spec1{dm}' for the input '".&GetValPar("spec1file")."' file,\n");
+	    &PrntChty(3,"$Task{stem}: Error: but the first packet seems to be not corrupted (PACKET1 keyword set to '$Spec1{pack1}')\n"); 
+	    $Task{errmess} = "Not allowed datamode '$Spec1{dm}' in '" . &GetValPar("spec1file"). "' file";
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	}
+    }
+    elsif ($Spec1{dm} !~ "LOWRATE") { 
+	&PrntChty(3,"$Task{stem}: Error: Found datamode '$Spec1{dm}' for the input '" . &GetValPar("spec1file"). "' file\n");
+	&PrntChty(3,"$Task{stem}: Error: The input 'spec1file' file should be LOWRATE \n"); 
+	$Task{errmess} = "Wrong datamode '$Spec1{dm}' for the input 'spec1file'";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+    
+    # Check the termination condition
+    &GetKeyword($Spec1{filename}, "SPECTRUM",undef,"TERMMODE",\$Spec1{termmode});
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    if ( ($Spec1{termmode} & $Task{TERMMODE_MASK}) != $Task{TERMMODE_LR} ) {
+	&PrntChty(3,"$Task{stem}: Error: Termination Condition '$Spec1{termmode}' from\n");
+	&PrntChty(3,"$Task{stem}: Error: " . &GetValPar("spec1file"). "' file\n");
+	&PrntChty(3,"$Task{stem}: Error: not compatible with TDRSS Spectrum 1 (LOWRATE)\n"); 
+	$Task{errmess} = "Wrong termination condition '$Spec1{termmode}' for the LOWRATE spectrum: '$Spec1{filename}'";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+}
+else {
+    $Spec2{usetempfile} = 1;
+}
+
+if (!&CompUL(&GetValPar("spec2file"),$Default{NONE}) ) {
+
+    $Spec2{exists} = 1;
+    $Spec2{proc} = 1;
+    $Spec2{filename} = &GetValPar("spec2file");
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- CHECK ON SPECTRUM 2\n");
+
+    if (! -f &GetValPar("spec2file") ) {
+	$Task{errmess} = "Input spectrum file: '" . &GetValPar("spec2file") . "' not found";
+	goto EXITWITHERROR;
+    }
+    
+    if (!&CheckZip(&GetValPar("spec2file"),\$Spec2{filename},\$rmspec2)) { goto EXITWITHERROR;}
+
+    if (!&CheckNamingConvention(&GetValPar("spec2file"))) 
+    {
+	&PrntChty(2,"$Task{stem}: Error: The second input spectrum file name does not match standard naming convention\n");
+	$Task{errmess} = "Unable to apply standard naming convention";
+	goto EXITWITHERROR;
+    }
+
+    &CheckPackets($Spec2{filename},\$Spec2{pack1},\$Spec2{pack2},\$Spec2{pack3});
+
+    &GetKeyword(&GetValPar("spec2file"),"SPECTRUM",undef,"datamode",\$Spec2{dm});
+
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    if ( $Spec2{pack1} eq "F" ) {
+	&PrntChty(3,"$Task{stem}: Warning: First Packet of the input '" . &GetValPar("spec2file"). "' file,\n");
+	&PrntChty(3,"$Task{stem}: Warning: corrupted (PACKET1 keyword set to F) no '" . &GetValPar("spec2file"). "' processing made,\n"); 
+	&PrntChty(3,"$Task{stem}: Warning: no '" . &GetValPar("outspec2file"). "' file created\n"); 
+	$Spec2{proc} = 0;
+    } # do not process spectrum 2 if packet 1 corrupted
+    else {
+
+	if ( $Spec2{dm} eq "WINDOWED" ) { 
+
+	    # Check the termination condition
+	    &GetKeyword($Spec2{filename}, "SPECTRUM",undef,"TERMMODE",\$Spec2{termmode});
+	    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+	    if ( ($Spec2{termmode} & $Task{TERMMODE_MASK}) != $Task{TERMMODE_WT} &&
+		 ($Spec2{termmode} & $Task{TERMMODE_MASK}) != $Task{TERMMODE_LRWT} ) {
+		&PrntChty(3,"$Task{stem}: Error: Termination Condition '$Spec2{termmode}' from");
+		&PrntChty(3,"$Task{stem}: Error: " . &GetValPar("spec2file"). "' file\n");
+		&PrntChty(3,"$Task{stem}: Error: not compatible with TDRSS Spectrum 2 (WINDOWED or MIXED)\n"); 
+		$Task{errmess} = "Wrong termination condition '$Spec2{termmode}' for the input 'spec2file'";
+		$Task{status} = 1;
+		goto EXITWITHERROR;
+	    }
+
+	    # Determin form the termination condition if the spectrum is WT or mixed WT+LR
+
+	    if ( ($Spec2{termmode} & $Task{TERMMODE_MASK}) ==  $Task{TERMMODE_WT} ) {
+		# it is a WINDOWD spectrum, no processing needed
+		$dm2wt =1;
+	    }
+
+	    if ( !$dm2wt ) {
+		&PrntChty(2,"$Task{stem}: Info: The spectrum 2 is mixed (LOWRATE + WINDOWED)\n");
+		$Spec2{dm} = $MIX;
+	    }
+	    else {
+		&PrntChty(3,"$Task{stem}: Info: The spectrum 2 is WINDOWED, no processing needed\n");
+		&PrntChty(3,"$Task{stem}: Info: The output spectrum 2 is the copy of the input one\n");
+	    }
+
+
+	    #
+	    # If the spectrum 2 is MIXED we need the spectrum 1 to process it
+	    #
+	    if ( $Spec2{dm} eq $MIX ) {
+		if ($Spec2{usetempfile}) {
+		    &PrntChty(3,"$Task{stem}: Info: Input 'spec1file' set to NONE, using '". &GetValPar("tmpspec1file"). "' file to process spectrum 2\n"); 
+	    
+		    $Spec2{spec1} = &GetValPar("tmpspec1file");
+		}
+		else { $Spec2{spec1} = &GetValPar("spec1file"); }
+
+		if (! -f $Spec2{spec1} ) {
+		    &PrntChty(2,"$Task{stem}: Error: Input LOWRATE spectrum file: '$Spec2{spec1}' not found\n");
+		    &PrntChty(2,"$Task{stem}: Error: Unable to process the spectrum 2 '" . &GetValPar("spec2file") . "' file\n");
+		    $Task{errmess} = "input spec1file '$Spec2{spec1}' not found";
+		    $Task{status} = 1;
+		    goto EXITWITHERROR;
+		}
+
+		if ($Spec2{usetempfile}) {
+		    &CheckPackets($Spec2{spec1},\$Spec1{pack1},\$Spec1{pack2},\$Spec1{pack3});
+		}
+	    }
+
+	}
+	elsif ( $Spec2{dm} eq "TDRSS_SP" ) {
+	    &PrntChty(2,"$Task{stem}: Error: Found datamode '$Spec2{dm}' for the input '".&GetValPar("spec2file")."' file,\n");
+	    &PrntChty(2,"$Task{stem}: Error: but the first packet seems to be not corrupted (PACKET1 keyword set to '$Spec2{pack1}')\n"); 
+	    $Task{errmess} = "Not allowed datamode '$Spec2{dm}' in '" . &GetValPar("spec2file"). "' file";
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	} # check on $Spec2{dm}
+	else {
+	    &PrntChty(3,"$Task{stem}: Error: The input 'spec2file' file should be WINDOWED\n"); 
+	    $Task{errmess} = "Wrong datamode '$Spec2{dm}' for the input 'spec2file'";
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	} # error on $Spec2{dm}
+    } # packet 1 of spectrum 2 not corrupted
+} # process spectrum 2
+
+if ( $Spec1{proc} ) {
+    # Get pdbias file to process spectrum 1 if needed
+    if (((&GetValPar("pdbias") < 0)) && !&CompUL(&GetValPar("pdbiasfile"),"CALDB")) {
+	my $pdbiasfile = &GetValPar("pdbiasfile");
+	&PrntChty(3,"$Task{stem}: Info: Using '".  &GetValPar("pdbiasfile") . "' to apply,\n");
+	&PrntChty(3,"$Task{stem}: Info: the bias correction to '$Spec1{filename}' file \n");
+	if (! -f $pdbiasfile ) {
+	    $Task{errmess} = "CALDB PDBIAS File: '$pdbiasfile' not found";
+	    goto EXITWITHERROR;
+	}
+    } 
+} 
+
+
+
+my $checklr = 0;
+my $checkwt = 0;
+
+if ($Spec1{proc}) {
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- SPECTRUM 1\n");
+
+    $Spec1{out} =  &GetValPar("outspec1file");
+    if (&CheckExistFile($Spec1{out})) {goto EXITWITHERROR;}
+    &PrntChty(3,"$Task{stem}: Info: The LOWRATE spectrum file will be '$Spec1{out}'\n"); 
+    &ProcSpec1();
+    if (&AddKeyword("$Spec1{out}+1","XRTTDRSS","T","TDRSS message processed by $Task{stem} task")) 
+    {goto EXITWITHERROR; }
+    if (!&UpdateCheckSum($Spec1{out})) { goto EXITWITHERROR;}
+    &SuccessSub($Task{stem},"ProcSpec1","Processed '" .  &GetValPar("spec1file") . "'");
+}
+
+if ($Spec2{proc}) {
+
+    &PrntChty(2,"$Task{stem}: Info: ----------------------------- SPECTRUM 2\n");
+
+    $Spec2{out} =  &GetValPar("outspec2file");
+    if ( &CheckExistFile($Spec2{out})) {goto EXITWITHERROR;}
+    &PrntChty(3,"$Task{stem}: Info: The WINDOWED spectrum file will be '$Spec2{out}'\n"); 
+    &ProcSpec2();
+    &SuccessSub($Task{stem},"ProcSpec2","Processed '" .  &GetValPar("spec2file") . "'");
+}
+
+if ($rmspec1) { &DeleteFile($Spec1{filename});} 
+if ($rmspec2) { &DeleteFile($Spec2{filename});} 
+if ($rmimg) { &DeleteFile($imagefile);} 
+
+if ( &CompUL( &GetValPar("cleanup"), "yes" ) ) {&Cleanup(@CleanupList);}
+
+&Success($Task{message});
+print '-' x 69, "\n";
+print '=' x 20, ' XRTTDRSS COMPLETE AT ', scalar(gmtime()), "\n";
+print '-' x 69, "\n";
+exit(0);
+
+ EXITWITHERROR:
+    if ( &CompUL( &GetValPar("cleanup"), "yes" ) ) {&Cleanup(@CleanupList);}
+    &Error;
+print '-' x 69, "\n";
+print '=' x 20, ' XRTTDRSS COMPLETE AT ', scalar(gmtime()), "\n";
+print '-' x 69, "\n";
+exit (1);
+
+
+#
+#   Subroutines
+#
+
+#
+# CheckNamingConvention
+#
+sub CheckNamingConvention {
+    my ($file) = @_;
+
+    $Task{errmess} = "File '$file' is incompatible with naming convention\n";
+    
+ #  if ( substr($file,0,2) ne "sw") {
+#	 return 0;
+#    }
+  #  my $obs = substr($file,3,11) ;
+  #  if ($obs + 0 !=  $obs) {
+#	return 0;
+ #   } 
+    $Task{errmess} = "";
+    return 1;
+
+} # CheckNamingConvention
+
+
+sub ProcSpec2 {
+
+    my @columns = (  { name => "counts" } );
+    
+    my ($status,$str) = (0);
+
+    my $TmpSpec2Out = $Spec2{out} . ".tmp" . $$;
+    push @CleanupList, $TmpSpec2Out;
+
+    # 'WINDOWED' spectrum 2 Datamode
+
+    if ($dm2wt) {
+
+	# temporary output file not needed
+
+      	if (!copy($Spec2{filename},$Spec2{out})) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to copy file: $Spec2{filename} in $Spec2{out}";
+	    goto EXITWITHERROR;
+	}
+	&AddSpec2WTKeywords($Spec2{out});
+	unlink(&GetValPar("tmpspec1file"));
+    } 
+
+    # 'MIXED' spectrum 2 Datamode
+
+    else {
+
+	my ($filemix,$filelr);
+	my ($fptr1,$fptr2) = (0,0);
+
+	# Perform some checks on the two spectra
+	if ( &CheckOnSpectra($Spec2{spec1},$Spec2{filename}) ) {
+	    goto EXITWITHERROR;
+	}
+
+
+	$fptr1 = &GetFitsPointer($Spec2{spec1},"SPECTRUM");
+	if ($Task{status}) { 
+	    &PrntChty(2, "$Task{stem}: Error: Unable to open '$Spec2{spec1}' file\n");
+	    goto EXITWITHERROR;
+	}
+
+
+
+	$fptr2 = &GetFitsPointer($Spec2{filename},"SPECTRUM");
+	if ($Task{status}) { 
+	    &PrntChty(2, "$Task{stem}: Error: Unable to open '$Spec2{filename}' file \n");
+	    goto EXITWITHERROR;
+	}
+
+
+	# Check if the files have the same Observation Identifier Number
+
+	my ( $obsid1, $obsid2 );
+
+	&GetKeyword(undef,undef,$fptr1,"OBS_ID",\$obsid1);
+	if ( $Task{status} ) { 
+	    $Task{errmess} .= " from '$Spec1{filename}' file";
+	    goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr2,"OBS_ID",\$obsid2);
+	if ( $Task{status} ) { 
+	    $Task{errmess} .= " from '$Spec2{filename}' file";
+	    goto EXITWITHERROR; }
+
+
+	if ($obsid1 ne $obsid2) {
+	    &PrntChty(2, "$Task{stem}: Error: The observation id of spectrum files are different ($Spec1{filename}=$obsid1 - $Spec2{filename}=$obsid2)\n");
+	    $Task{errmess} = "Observation id are different\n";
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	    
+	}
+
+	my ( $fptrmix, $fptrlr );
+
+	$filemix = $Spec2{filename}; $fptrmix = $fptr2; 
+	$filelr = $Spec2{spec1}; $fptrlr = $fptr1;
+
+	my ($exp1,$exp2);
+	&GetKeyword(undef,undef,$fptrmix,"EXPOSURE",\$exp1);
+	if ( $Task{status} ) { 
+	    $Task{errmess} .= " form '$filemix' file"; 
+	    goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptrlr,"EXPOSURE",\$exp2);
+	if ( $Task{status} ) { 
+	    $Task{errmess} .= " form '$filelr' file"; 
+	    goto EXITWITHERROR; }
+	
+	my @tablemix = &LoadBinTable( $filemix,"",1,@columns);
+	my @tablelr = &LoadBinTable( $filelr,"",1,@columns);
+
+	if (!copy($Spec2{filename},$TmpSpec2Out)) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to copy file: '$Spec2{filename}' in '$TmpSpec2Out'";
+	    goto EXITWITHERROR;
+	}
+
+	if (&WriteParameterList($TmpSpec2Out,-1,@Par)) {
+	    goto EXITWITHERROR;}
+
+	my (@res,$i) ;
+				
+	# Subtract the two spectra
+
+	if (($Spec1{pack1} eq "T") && ($Spec2{pack1} eq "T")) {
+	    for ($i = 0; $i < 450; $i++) {
+		$res[$i] = $tablemix[$i]->{counts} - $tablelr[$i]->{counts};
+	    }
+	} else {
+	    for ($i = 0; $i < 450; $i++) {
+		$res[$i] = 0;
+	    }
+	    &PrntChty(2, "$Task{stem}: Warning: '$Spec2{out}' packet 1: (0-449) channes set to 0\n");		    
+	    if (&AddKeyword("$TmpSpec2Out+1","PACKET1","F")) {
+		goto EXITWITHERROR; } 
+	    
+	}
+	
+	if (($Spec1{pack2} eq "T") && ($Spec2{pack2} eq "T")) {
+	    for ($i = 450; $i < 900; $i++) {
+		$res[$i] = $tablemix[$i]->{counts} - $tablelr[$i]->{counts};
+	    }
+	} else {
+	    for ($i = 450; $i < 900; $i++) {
+		$res[$i] = 0;
+	    }
+	    &PrntChty(2, "$Task{stem}: Warning: '$Spec2{out}' packet 2: (450-899) channes set to 0\n");		    
+	    if (&AddKeyword("$TmpSpec2Out+1","PACKET2","F")) {goto EXITWITHERROR; } 
+	}
+
+	if (($Spec1{pack3} eq "T") && ($Spec2{pack3} eq "T")) {
+	    
+	    for ($i = 900; $i < 1024; $i++) {
+		$res[$i] = $tablemix[$i]->{counts} - $tablelr[$i]->{counts};
+	    }
+	} else {
+	    for ($i = 900; $i < 1024 ; $i++) {
+		$res[$i] = 0;
+	    }
+	    &PrntChty(2, "$Task{stem}: Warning: '$Spec2{out}' packet 3: (900-1023) channes set to 0\n");		    
+	    if (&AddKeyword("$TmpSpec2Out+1","PACKET3","F")) {goto EXITWITHERROR; } 
+	}
+	
+	fits_close_file($fptr2,$status);
+	if ($status) {
+	    $Task{status} = $status;
+	    fits_get_errstatus($status,$str);
+	    $Task{errmess} = $str;
+	    goto EXITWITHERROR;
+	}
+
+	fits_close_file($fptr1,$status);
+	if ($status) {
+	    $Task{status} = $status;
+	    fits_get_errstatus($status,$str);
+	    $Task{errmess} = $str;
+	    goto EXITWITHERROR;
+	}
+
+	if (&AddKeyword("$TmpSpec2Out+1","exposure",($exp1-$exp2))) {goto EXITWITHERROR; }
+	
+	if (&AddKeyword("$TmpSpec2Out+1","datamode","WINDOWED")) {goto EXITWITHERROR; } 
+	
+	if(!&WriteCol($TmpSpec2Out,1,@res)) {goto EXITWITHERROR;}
+	
+	&AddSpec2MIXKeywords($TmpSpec2Out);	
+	    
+	if (!&UpdateCheckSum($TmpSpec2Out)) { goto EXITWITHERROR;}
+
+	# processed with success, copy the temporary output file in the output file
+
+	&RenameFile($TmpSpec2Out,$Spec2{out});
+	if ( $Task{status} ) { goto EXITWITHERROR;}
+
+    } #mixed spectrum
+} # ProcSpec2
+
+sub CheckZip {
+
+#If input file is zipped copy into outdir and unzip file
+
+    my ($inputfile,$outfile,$rmfile) = @_;
+
+    my ( @splitfields ) = split ( /\./,$inputfile);
+    if ( $splitfields[$#splitfields] eq "gz" || $splitfields[$#splitfields] eq "Z" ) {
+	&PrntChty(2, "$Task{stem}: Error: The input file is compressed\n");
+	&PrntChty(2, "$Task{stem}: Error: cannot process the file '$inputfile'\n");
+	$Task{errmess} = "Unable to process the compressed '$inputfile' file";
+	return 0;
+    }
+    $$outfile = $inputfile;
+    $$rmfile = 0;
+    return 1;
+
+##  if ( $splitfields[$#splitfields] eq "gz" || $splitfields[$#splitfields] eq "Z" ) {
+##
+##	  my $outdir = &GetPath($inputfile);
+##
+##	  my $outzip = substr($inputfile,0,rindex( $inputfile, '.' ));
+##
+###	 if (!copy($inputfile,$outzip)) {
+###	     $Task{status} = 1;
+###	     $Task{errmess} = "Unable to copy file: $inputfile in $outzip";
+###	     goto EXITWITHERROR;
+###	 }
+##
+##	  if ( system("zcat $inputfile > $outzip") ) 
+##	  {
+##	      &PrntChty(2, "$Task{stem}: Error: unable to unzip the file\n");
+##	      &PrntChty(2, "$Task{stem}: Error: command: gunzip $outzip\n");
+##	      $Task{errmess} = "Unable to unzip the file $outzip";
+##	      return 0;
+##	  }
+##	  $$outfile = $outdir . "/" . &EraseLastExtension($inputfile);
+##	  $$rmfile = 1;
+##
+##    }
+##    else
+##    {
+##	  
+##	  $$outfile = $inputfile;
+##	  $$rmfile = 0;
+##	  return 1;
+##    }  
+## }
+
+} # CheckZip
+
+
+
+
+
+sub Bias {
+
+    my ($infile,$out,$datamode) = @_ ;
+    
+    my ($biasv,$tstart);
+
+    &GetKeyword($out,"SPECTRUM",undef,"TSTART",\$tstart);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    my $biasfile;
+
+    if (! &GetBiasValue($datamode,\$biasv,\$biasfile,$tstart,"pdbias")) {goto EXITWITHERROR;}
+    
+
+    my ( $inbias ) = $biasv;
+    $biasv = int($biasv /4);
+
+    &PrntChty(3,"$Task{stem}: Info: Subtracting Spectrum bias value: $inbias ($biasv channels)\n");
+    &PrntChty(3,"$Task{stem}: Info: from '$infile' spectrum\n");
+
+   
+    if(($biasv > 1024) || ($biasv < 0)) {
+	$Task{errmess} = "The calculated bias value is out of range.";
+	goto EXITWITHERROR;
+    }
+    
+    
+    if (&WriteParameterList($out,-1,@Par)) {goto EXITWITHERROR;}
+    
+    if (!&UpdateBias($out,1,$biasv)) { goto EXITWITHERROR;}
+    
+    if (&AddKeyword("$out+1","XRTBIAS",$inbias,"Bias used to correct PHA")) {goto EXITWITHERROR; }
+    if (&write_history($out,-1,"CALDB Bias file: $biasfile")){goto EXITWITHERROR;}
+    if (&write_history($out,-1,"Deleted the '$biasv' first channels from the input spectrum")){goto EXITWITHERROR;}
+
+
+        
+} # Bias
+
+
+
+
+sub GetBiasValue {
+    
+    my ($datamode,$bias,$biasfilename,$tstart,$biaspar) = @_;
+    
+    if (&GetValPar($biaspar) >= 0) {
+	$$bias = &GetValPar($biaspar);
+	return 1;
+    } else {
+
+	if (&CompUL(&GetValPar($biaspar . "file"),"CALDB")) {
+	    my ($biasreffile,$refext) = &CallQuzcif ("bias", "now","now","datamode.eq.$datamode",1);
+	    my @biasfile = @$biasreffile;
+	    my @extfile = @$refext;
+	    
+	    if ($Task{status}) { goto EXITWITHERROR;} 
+	    else {
+		$$biasfilename =  $biasfile[0] . "+" . $extfile[0];
+	    }
+	    
+	    &PrntChty(3,"$Task{stem}: Info: Using $$biasfilename caldb bias file\n");
+	
+	} else {
+	    $$biasfilename = &GetValPar($biaspar . "file");
+	}
+    
+	my @columns = (  { name => "time" },{name=> "bias"} );
+	my @biasval = &LoadBinTable( $$biasfilename,"",1,@columns);
+	
+	my $found = 0;
+	
+
+	if ($#biasval <0) {
+	    $Task{errmess} =  "The bias input file $$biasfilename is empty";
+	    $Task{status} = 1 ;
+	    goto EXITWITHERROR;
+
+	}
+
+
+	if($#biasval == 0){ 
+	   $$bias = $biasval[0]->{bias}; }
+	elsif($tstart <= $biasval[0]->{time}) {
+	    $$bias = $biasval[0]->{bias};
+	}  else {
+	    for (my $i=1; ($i <= $#biasval && $found == 0); $i++){
+		if ($biasval[$i]->{time} > $tstart)
+		{
+		#    if ($tstart == $biasval[$i-1]->{time}) {
+		#	$$bias=$biasval[$i-1]->{bias};
+		#    }
+		#    else
+		#    {
+		#	my $deltat= $biasval[$i]->{time} - $biasval[$i-1]->{time};
+		#	my $frac1= ($biasval[$i]->{time} - $tstart)/$deltat;
+		#	my $frac2= ($tstart - $biasval[$i-1]->{time})/$deltat;
+		#	$$bias= $biasval[$i-1]->{bias} * $frac1 + $biasval[$i]->{bias} * $frac2 ;
+		#   }
+		#    $found=1;
+
+		    $$bias = $$bias=$biasval[$i-1]->{bias};
+		    $found =1;
+		}
+	    }
+	    
+	    if ($found == 0) {
+		$$bias=$biasval[$#biasval]->{bias};
+	    }
+	}    
+    }
+      	    
+    return 1;
+}
+
+sub WriteCol {
+    my ($filefits,$numext,@res) = @_;
+
+    use vars qw ( %Task );
+
+    my $status = 0;
+    my $fits = Astro::FITS::CFITSIO::open_file($filefits, READWRITE, $status);
+    if (not $fits) {
+	 &PrntChty(2,"$Task{stem}: Error: Unable to open '$filefits' file\n");
+	 $Task{status} = 1;
+	 return 0;
+    }
+    
+    $fits->movabs_hdu($numext+1,undef, $status);
+    if ( $status ) {
+	&PrntChty(2,"$Task{stem}: Error: movabs_hdu: error on '$filefits' file move to ext num: $numext\n");
+	$Task{status} = 1;
+	return 0;
+    }
+    
+    $fits->write_col(TINT,2,1,1,1024,\@res,$status);
+
+    if ($status) {
+	$Task{status} = 1;
+	return 0;
+	
+    }
+
+    $fits->close_file($status);
+    return 1;
+
+}
+
+sub UpdateBias {
+    my ($filefits,$numext,$numrow) = @_;
+
+    use vars qw ( %Task );
+
+    my ( $bval ) = $numrow*4;
+
+    my $status = 0;
+    my $fits = Astro::FITS::CFITSIO::open_file($filefits, READWRITE, $status);
+    if (not $fits) {
+	 &PrntChty(2,"$Task{stem}: Error: Unable to open '$filefits' file\n");
+	 $Task{status} = 1;
+	 return 0;
+    }
+    
+    $fits->movabs_hdu($numext+1,undef, $status);
+    if ( $status ) {
+	&PrntChty(2,"$Task{stem}: Error: movabs_hdu: error on '$filefits' file move to ext num: $numext\n");
+	$Task{status} = 1;
+	return 0;
+    }
+    
+    $fits->delete_rows(1,$numrow,$status);
+
+    if ($status) {
+	$Task{status} = 1;
+	return 0;
+	
+    }
+
+    $fits->insert_rows(1024-$numrow,$numrow,$status);
+
+    if ($status) {
+	print "$status\n";
+	$Task{status} = 1;
+	return 0;
+	
+    }
+
+
+    my @a = (0..1023);
+
+    $fits->write_col(TINT,1,1,1,1024,\@a,$status);
+    if ($status) {
+	print "$status\n";
+	$Task{status} = 1;
+	return 0;
+	
+    }    
+
+    $fits->close_file($status);
+    return 1;
+
+}#UpdateBias
+
+
+
+
+sub RunImage {
+    
+    my $TmpOutfiledet = $outfiledet . ".tmp" . $$;
+    my $TmpOutfileimg = $outfileimg . ".tmp" . $$;
+
+    push @CleanupList, $TmpOutfiledet;
+    push @CleanupList, $TmpOutfileimg;
+    push @CleanupList, $outfiledet;
+
+    if ($packet1 eq "T") { 
+	
+    	if (!copy($imagefile,$TmpOutfiledet)) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to copy file: $imagefile in $TmpOutfiledet";
+	    goto EXITWITHERROR;
+	}
+
+	if (&SubtractBiasAndRawToDet($TmpOutfiledet,$dmimg)) {goto EXITWITHERROR;}
+
+	if (&AddKeyword("$TmpOutfiledet+0","XRTTDRSS","T","TDRSS message processed by $Task{stem} task")) 
+	{goto EXITWITHERROR; }
+
+	if (!&UpdateCheckSum($TmpOutfiledet)) { goto EXITWITHERROR;}
+
+	# end of detector image processing, copy the tenporary file in the output file
+        # and remove temporary file
+
+	&RenameFile($TmpOutfiledet,$outfiledet);
+	if ( $Task{status} ) { goto EXITWITHERROR;}
+
+	&PrntChty(4, "$Task{stem}: Info: Created Detector Coordinates Image: $outfiledet\n");    	
+
+	my ($detxctrd ,$detyctrd );
+
+	if (!copy($outfiledet,$TmpOutfileimg)) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to copy file: $outfiledet in $TmpOutfileimg";
+	    goto EXITWITHERROR;
+	}
+
+	my ($fptr,$status) = (0,0);
+	fits_open_file($fptr,$TmpOutfileimg,READWRITE,$status);
+	if ($status) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to open '$TmpOutfileimg' temporary file";
+	    goto EXITWITHERROR;
+	}
+
+	my ($rawxctrd, $rawyctrd, $crval1, $crval2, $cdelt1, $cdelt2, $crpix1, 
+	    $crpix2, $xgrb_ra, $xgrb_dec, $pa_pnt, $str);
+
+	my $status = 0;
+
+	my ( $naxis1, $naxis2, $blank );
+
+	&GetKeyword(undef,undef,$fptr,"RAWXCTRD",\$rawxctrd);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"RAWYCTRD",\$rawyctrd);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"CRVAL1",\$crval1);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"CRVAL2",\$crval2);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"CDELT1",\$cdelt1);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"CDELT2",\$cdelt2);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"CRPIX1",\$crpix1);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"CRPIX2",\$crpix2);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"XRA_OBJ",\$xgrb_ra);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"XDEC_OBJ",\$xgrb_dec);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"NAXIS1",\$naxis1);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"NAXIS2",\$naxis2);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"PA_PNT",\$pa_pnt);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	&GetKeyword(undef,undef,$fptr,"BLANK",\$blank);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+
+
+
+	my ( $imgmatrix, $matrix, $anynull );
+	my $npixels = $naxis1*$naxis2;
+
+	@{$imgmatrix} = map(0,(0..$npixels-1));
+	@{$matrix} = map(0,(0..$npixels-1));
+
+	fits_read_img_lng($fptr,0,1,$npixels,$blank,$imgmatrix,$anynull,$status); 
+	if ($status) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to read image from $TmpOutfileimg file";
+	    return 1;
+	}
+
+	# Flip Image x axis to make the detector coordinates 
+	# image look-up
+
+	my ($old,$new);
+	
+	for (my $x2 = 0; $x2 < $naxis2; $x2++) {
+	    $old = $x2*$naxis2;
+	    $new = $old + $naxis1 - 1 ;
+	    for (my $x1 = 0; $x1 < $naxis1; $x1++) {
+		$matrix->[$new] = $imgmatrix->[$old];
+		$old++;
+		$new--;
+	    }
+	}
+
+	fits_write_img_lng($fptr,0,1,$npixels,$matrix,$status); 
+	if ($status) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to write image in $TmpOutfileimg file";
+	    return 1;
+	}
+
+
+	fits_close_file($fptr,$status);
+	if ($status) {
+	    my ( $str );
+	    $Task{status} = $status;
+	    fits_get_errstatus($status,$str);
+	    $Task{errmess} = $str;
+	    goto EXITWITHERROR;
+	}
+
+	# Calculate Centroid Detector Coordinates
+	if ($amp == 1) {
+	    $detxctrd = $rawxctrd+1;
+	} else {
+	    $detxctrd = 600 - $rawxctrd + 1;
+	}
+	$detyctrd = $rawyctrd+1;	
+
+	# Flip detx reference pixel and centroid position
+	$crval1 = 600 - $crval1;       # This is in the 600x600
+	$detxctrd = 600 - $detxctrd;   # This is in the 600x600
+
+	# Calculate the reference pixel coordinates
+        # centered on the centroid
+	my $newdetx = ($detxctrd - $crval1) / $cdelt1 + $crpix1;
+	my $newdety = ($detyctrd - $crval2) / $cdelt2 + $crpix2;
+
+#	print "REF X $newdetx OLDREF $crpix1 OGRB $detxctrd OLDVAL $crval1\n";
+#	print "REF Y $newdety OLDREF $crpix2 OGRB $detyctrd OLDVAL $crval2\n";
+
+	my $outfileimgex = $TmpOutfileimg . "+0"; 
+
+	if (&AddKeyword($outfileimgex,"CRPIX1",int($newdetx))) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CRPIX2",int($newdety))) {goto EXITWITHERROR; }
+
+	if (&AddKeyword($outfileimgex,"CTYPE1","RA---TAN")) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CTYPE2","DEC--TAN")) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CUNIT1","deg")) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CUNIT2","deg")) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CDELT1","-6.548089087209E-04")) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CDELT2","6.548089087209E-04")) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CRVAL1",$xgrb_ra)) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CRVAL2",$xgrb_dec)) {goto EXITWITHERROR; }
+	if (&AddKeyword($outfileimgex,"CROTA2",90.-$pa_pnt)) {goto EXITWITHERROR; }
+
+	if (!&UpdateCheckSum($TmpOutfileimg)) { goto EXITWITHERROR;}
+
+
+	if (&RunImgMess($TmpOutfileimg)) { goto EXITWITHERROR;}
+
+	# processed with success, copy the temporary output file in the output file
+
+	&RenameFile($TmpOutfileimg,$outfileimg);
+	if ( $Task{status} ) { goto EXITWITHERROR;}
+	
+	&SuccessSub($Task{stem},"RunImgMess","Processed '" .  &GetValPar("imagefile") . "'");
+
+    }
+    else {
+
+	&PrntChty(2, "$Task{stem}: Warning: The Packet 1 is corrupted, no processing made\n");
+	&PrntChty(2, "$Task{stem}: Warning: The output '$outfileimg' is the copy of the\n");
+	&PrntChty(2, "$Task{stem}: Warning: input '$imagefile' file\n");
+	
+	$Task{message} = ": Corrupt file '$imagefile' , no processing made\n";
+       
+	if (!copy($imagefile,$outfileimg)) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Unable to copy file: $imagefile in $outfileimg";
+	    goto EXITWITHERROR;
+	}
+    }	
+
+#if (!&UpdateCheckSum($imgtmpfile)) { goto EXITWITHERROR;}
+	#&DeleteFile($imgtmpile);
+} # RunImage()
+
+sub DeleteFile {
+    my ($namefile) = @_;
+    if (! unlink($namefile)) {
+	$Task{errmess} = "Unable to Remove '$namefile' file. $!";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+}
+
+#Return 1 in case of errors
+sub CheckExistFile {
+    my ($file) = @_;
+    if ( -f $file) {
+	if (!$Task{clobber} ) {
+	    &PrntChty(2, "$Task{stem}: Error: the '$file' exists\n");
+	    &PrntChty(2, "$Task{stem}: Error: please delete '$file' or\n");
+	    &PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Cannot overwrite '$file' file";
+	    $Task{status} = 1;
+	    return 1;
+	} else { 
+	    &DeleteFile($file);
+	    return 0;
+	}
+    }
+    return 0;
+
+}
+
+
+sub GetInputParameters {
+
+
+    use vars qw( %Task $datamode @Par %Ind);
+  
+    my ( $name, $indref, $p);
+
+
+    $Task{chatter} = 3;
+
+    ($indref,@Par) = &GetParameterList();
+
+
+    if ($Task{status}) { goto EXITWITHERROR;}
+    
+    %Ind = %$indref;
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+    
+    if (&GetValPar("imagefile","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 xrttdrss imagefile`);
+	if ( !$String) {
+	    &PrntChty(2,"$Task{stem}: Error: error running: 'pquery2 xrttdrss imagefile'\n");
+	    return 1;
+	}
+	&SetValPar("imagefile",$String);
+	&SetValPar("imagefile",2,"set");
+    }
+
+      
+    if ( &GetValPar("imbias","set") == 0 ) {
+	my $String = "";
+	chop($String = qx(pquery2 xrttdrss imbias));
+	if ( !$String ) {
+	    &PrntChty(2,"$Task{stem}: Error: error running: 'pquery2 xrttdrss imbias'\n");
+	    return 1;
+	}
+	&SetValPar("imbias", $String);
+	&SetValPar("imbias",2,"set");
+    }
+
+    if ( &GetValPar("pdbias","set") == 0 ) {
+	my $String = "";
+	chop($String = qx(pquery2 xrttdrss pdbias));
+	if ( !$String ) {
+	    &PrntChty(2,"$Task{stem}: Error: error running: 'pquery2 xrttdrss pdbias'\n");
+	    return 1;
+	}
+	&SetValPar("pdbias", $String);
+	&SetValPar("pdbias",2,"set");
+    }
+
+    if ( $Task{status} ) { return 1; }
+
+    foreach $p (@Par) {
+	if (($p->{set} == 1) && (!&RequestParameter($p->{name}))) {
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    return 1;
+	}
+    }
+
+   if (! &LoadParameter()) {
+       &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+       return 1;
+   }
+
+
+    $Task{chatter} = &GetValPar("chatter");
+
+    if ( &GetValPar("clobber") =~ /[yY]/ ) {
+	$Task{clobber} = 1;
+    }
+
+    return 0;
+} # GetInputParameters
+
+
+sub RequestParameter {
+    use vars qw ($datamode %Default %Task);
+    my ($par_name) = @_;
+   
+    $Task{errmess} = "Input parameters error";
+
+    if (($par_name eq "posfile") || ($par_name eq "convfact") || ($par_name eq "imbias")) {
+	if ( &GetValPar("imagefile","set") != 0) {
+	    if (!&CompUL(&GetValPar("imagefile"),$Default{NONE})) {
+		return 1;
+	    } else { 
+		$Task{errmess} = "Cannot insert $par_name when imagefile=NONE";
+		return 0;
+	    }
+	}
+    }
+    
+    if (($par_name eq "imbiasfile")) {
+	if (&GetValPar("imbias")<0) {
+	    return 1;
+	} else { 
+	    $Task{errmess} = "Cannot insert $par_name when imbias >=0";
+	    return 0;
+	}
+    }
+    if (($par_name eq "pdbiasfile")) {
+	if (&GetValPar("pdbias")<0) {
+	    return 1;
+	} else { 
+	    $Task{errmess} = "Cannot insert $par_name when pdbias >=0";
+	    return 0;
+	}
+    }
+    
+    $Task{errmess} = "";
+
+    return 1;
+} # RequestParameter
+
+
+
+sub SubtractBiasAndRawToDet {
+   
+    my ($infile,$datamode) = @_ ;
+
+    my ( $par, $ret );
+    my ( $command, %xrtimage );
+
+    my ($biascaldb);
+
+        
+    my ($biasv,$tstart,$biasfile);
+    my ($crpix1,$crpix2,$crval1,$crval2,$cdelt1,$cdelt2);
+    my ($invgain);
+
+    my $thr=&GetValPar("dnthr");
+
+    &GetKeyword($infile,undef,undef,"TSTART",\$tstart);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    &GetKeyword($infile,undef,undef,"INVGAIN",\$invgain);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &PrntChty(3,"$Task{stem}: Info: Postage Stamp gain (INVGAIN keyword) value: '$invgain'\n"); 
+
+    if (&WriteParameterList($infile,-1,@Par)) {goto EXITWITHERROR;}
+
+    my ($version) = 0;
+    $version = &GetTLMVER($infile,undef);
+    if ( $version == 2 ) {
+	$biasv = $Task{IMGTLMBIAS};
+	if ( $invgain > 1 ) {
+	    &PrntChty(3,"$Task{stem}: Info: Applying correction to the pixel value in the\n");
+	    &PrntChty(3,"$Task{stem}: Info: '$infile' image,\n");
+	    &PrntChty(3,"$Task{stem}: Info: using the bias level value '$biasv'\n");
+	    &PrntChty(4,"$Task{stem}: Info: Correction needed when telemetry version = $Task{IMGTLMVERNUMB}\n");
+	    &PrntChty(4,"$Task{stem}: Info: and 'INVGAIN' value > 1\n");
+	}
+    }
+    elsif ( $version < 2 ) {
+	if (! &GetBiasValue($datamode,\$biasv,\$biasfile,$tstart,"imbias")) {goto EXITWITHERROR;}
+	if(($biasv > 4096) || ($biasv < 0)) {
+	    $Task{errmess} = "The bias value is out of range";
+	    goto EXITWITHERROR;
+	}
+	&PrntChty(3,"$Task{stem}: Info: Subtracting bias value: $biasv,\n");
+	&PrntChty(3,"$Task{stem}: Info: from '$infile' image file\n");
+	&PrntChty(3,"$Task{stem}: Info: and multiply the image for gain.\n");
+    }
+    else {
+	&PrntChty(3,"$Task{stem}: Info: Telemetry version > 2, no bias subtraction needed for\n");
+	&PrntChty(3,"$Task{stem}: Info: '$infile' image file\n");
+	&PrntChty(3,"$Task{stem}: Info: Apply image gain multiplication.\n");
+	$biasv=0;
+    }
+
+    my ($naxis1,$naxis2,$comm,$anynull,$lnul,$imgmatrix,$imgmatrixamp2,$blank,$matrix);
+
+    my ($fptr,$status) = (0,0);
+    fits_open_file($fptr,$infile,READWRITE,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $infile";
+	return 1;
+    }
+
+    &GetKeyword(undef,undef,$fptr,"CRPIX1",\$crpix1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CRPIX2",\$crpix2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CRVAL1",\$crval1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CRVAL2",\$crval2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CDELT1",\$cdelt1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CDELT2",\$cdelt2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"NAXIS1",\$naxis1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"NAXIS2",\$naxis2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"BLANK",\$blank);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    my $npixels = $naxis1*$naxis2;
+    @{$imgmatrix} = map(0,(0..$npixels-1));
+
+    fits_read_img_lng($fptr,0,1,$npixels,$blank,$imgmatrix,$anynull,$status); 
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to read image from $infile file";
+	return 1;
+    }
+
+    $dn = 0;
+
+    # Bias subtraction from image read
+
+    my $pixval;
+    for (my $i = 0; $i <= $npixels-1; $i++) { 
+	#Check if value is not null
+	if ($imgmatrix->[$i] != $blank) {
+	    # Correct pixel value if telemetry version 2 and gain > 1
+#
+# Changed by Lorella on 28 Feb 2006
+#  if ( $version==2 && $invgain > 1 ) {
+
+	    if ( $version==2 && $invgain > 1 && $imgmatrix->[$i] != 0) {
+		$pixval = (($imgmatrix->[$i]-256+$biasv) * $invgain) - $biasv;
+# lorella change 
+#		if ($pixval< 0) {
+		if ($pixval<-20) {
+		    $pixval = (($imgmatrix->[$i]+$biasv) * $invgain) - $biasv;
+		}
+		$imgmatrix->[$i] = $pixval;
+	    }
+	    # Subtract bias and multiply for gain if
+            # telemetry version < 2
+#
+# Changed by lorella on Feb 2006 
+# elsif ( $version < 2 ) {
+	    elsif ( $version < 2 && $imgmatrix->[$i] != 0) {
+		$imgmatrix->[$i]*=$invgain;
+		$imgmatrix->[$i]-=$biasv;
+	    }
+	    # Multiply only for gain if telemetry version > 2
+	    elsif ( $version > 2 ) {
+		$imgmatrix->[$i]*=$invgain;
+	    }
+# lorella change 
+#	    if ($imgmatrix->[$i] > 0) {
+
+	    
+	    if ($imgmatrix->[$i] > $thr) {
+		$dn += $imgmatrix->[$i];
+	    }
+#	    } else { 
+#		$imgmatrix->[$i] = 0;
+#	    }
+	}
+    }
+
+    # Detector coordinates transformation (flip image if needed)
+
+    if ($amp == 2) {
+
+	my ($old,$new);
+	@{$imgmatrixamp2} = map(0,(0..$npixels-1));
+
+	for (my $x2 = 0; $x2 < $naxis2; $x2++) {
+	    $old = $x2*$naxis2;
+	    $new = $old + $naxis1 - 1 ;
+	    for (my $x1 = 0; $x1 < $naxis1; $x1++) {
+		$imgmatrixamp2->[$new] = $imgmatrix->[$old];
+		$old++;
+		$new--;
+	    }
+	}
+	$matrix = $imgmatrixamp2;
+    } else { 
+	$matrix = $imgmatrix;
+    }
+
+    fits_write_img_lng($fptr,0,1,$npixels,$matrix,$status); 
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write image in $infile file";
+	return 1;
+    }
+
+    fits_update_key($fptr,TINT, "DNTHR", $thr,"DN threshold to calculate flux",$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write DNTHR keyword to ".&GetValPar("imagefile")." file";
+	return 1;
+    }
+
+    my $hist = "Keyword DNTHR write by $Task{stem} at " . &getHistoryTime();
+    fits_write_history($fptr,$hist,$status);
+    if ($status) {  
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+    
+    fits_close_file($fptr,$status);
+    if ($status) {
+	my ( $str );
+	$Task{status} = $status;
+	fits_get_errstatus($status,$str);
+	$Task{errmess} = $str;
+	goto EXITWITHERROR;
+    }
+
+    if (&write_history($infile,-1,"CALDB Bias file: $biasfile")){goto EXITWITHERROR;}
+    if (&write_history($infile,-1,"Used Bias value: $biasv")){goto EXITWITHERROR;}
+
+    # Transform the reference pisel and the revference value
+    # in detector coordinates 
+
+    $crval2 = $crval2+1;
+    if ($amp == 1) { $crval1 = $crval1+1; } 
+    else { $crval1 = 600 - $crval1+1; }
+
+    if (&AddKeyword("$infile+0","CRPIX1",$crpix1)) {goto EXITWITHERROR;} 
+    if (&AddKeyword("$infile+0","CRPIX2",$crpix2)) {goto EXITWITHERROR;} 
+    if (&AddKeyword("$infile+0","CRVAL1",$crval1)) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","CRVAL2",$crval2)) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","CDELT1",$cdelt1)) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","CDELT2",$cdelt2)) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","CTYPE1","DETX")) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","CTYPE2","DETY")) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","XRTBIAS",$biasv,"Bias calculated on ground [always applied]")) {goto EXITWITHERROR; }
+    if (&AddKeyword("$infile+0","AMP",$amp,"Amplifier node used for readout")) {goto EXITWITHERROR; }
+		
+    if ( $Task{status} ) {goto EXITWITHERROR;}
+
+    return 0;
+    
+} # SubtractBiasAndRawToDet
+
+ 
+sub RunImageXForm {
+
+    my ($infile , $outfile , $teldeffile ) = @_;
+
+    my ( $par,$ret,$str,$crpix1,$crpix2,$crval1,$crval2,$cdelt1,$cdelt2,$naxis1,$naxis2 );
+    my ( $command, %imagexform );
+    
+    my ($fptr,$status) = (0,0);
+    $fptr = &GetFitsPointer ($imagefile );
+    if ($Task{status}) { 
+	&PrntChty(2, "$Task{stem}: Error: Unable to open file $imagefile\n");
+	goto EXITWITHERROR;
+    }
+    
+    &GetKeyword(undef,undef,$fptr,"CRPIX1",\$crpix1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CRPIX2",\$crpix2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CRVAL1",\$crval1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CRVAL2",\$crval2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CDELT1",\$cdelt1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"CDELT2",\$cdelt2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"NAXIS1",\$naxis1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword(undef,undef,$fptr,"NAXIS2",\$naxis2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    
+    fits_close_file($fptr,$status);
+    if ($status) {
+	$Task{status} = $status;
+	fits_get_errstatus($status,$str);
+	$Task{errmess} = $str;
+	goto EXITWITHERROR;
+    }
+
+
+    my $to_offx ;
+
+    if ($amp == 1) {
+	$to_offx = $crval1 - $crpix1;
+    } else {
+	$to_offx = 600 - $crval1 - $crpix1 + 1;
+    }
+
+
+    %imagexform = (
+		 infile       => $infile ,
+		 outfile      => $outfile,
+		 teldef       => $teldeffile,   
+		 from         => "RAW",
+		 to           => "DET",
+		 method       => "center",
+		 segment      => $amp,
+		 from_offx    => $crval1 - $crpix1,
+		 from_offy    => $crval2 - $crpix2,
+		 to_offx      => $to_offx,
+		 to_offy      => $crval2 - $crpix2,
+		 to_sizex     => $naxis1,  
+		 to_sizey     => $naxis2  
+		 );
+    
+
+    $command = "imagexform";
+    for $par ( keys %imagexform ) { 
+	$command .= " $par=$imagexform{$par}"; 
+    } 
+
+    &RunningSub("$Task{stem}","imagexform");
+    &RunningComm("$Task{stem}",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+    
+    if ( $ret != 0 ) {
+	&ErrorComm("$Task{stem}","imagexform",$command);
+        $Task{errmess} = "Error running 'imagexform'";
+	$Task{status} = 1;
+	return 0;
+    }
+
+    $outfile = $outfile . "+0";
+
+    if (&AddKeyword($outfile,"CRPIX1",$crpix1)) {goto EXITWITHERROR;} 
+    if (&AddKeyword($outfile,"CRPIX2",$crpix2)) {goto EXITWITHERROR;} 
+    if (&AddKeyword($outfile,"CRVAL2",($crval2+1))) {goto EXITWITHERROR; }
+    if (&AddKeyword($outfile,"CDELT1",$cdelt1)) {goto EXITWITHERROR; }
+    if (&AddKeyword($outfile,"CDELT2",$cdelt2)) {goto EXITWITHERROR; }
+		
+    if ($amp == 1) {
+	if (&AddKeyword($outfile,"CRVAL1",($crval1+1))) {goto EXITWITHERROR; }
+    } else {
+	if (&AddKeyword($outfile,"CRVAL1",(600 - $crval1))) {goto EXITWITHERROR; }
+    }
+
+
+    #&DeleteFile($imgtmpfile);
+  
+    return 1;
+
+} # RunImageXForm
+
+
+sub RunImgMess {
+
+    my ($ImageFile) = @_;
+
+#    use vars qw( %Default); 
+
+
+    my ($err,$comm,$datamode,$tstart,$exposure,$ratedn, $tmp_convfact); 
+    my ($fptr, $status) = (0, 0);
+
+
+    fits_open_file($fptr,$ImageFile,READWRITE,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $ImageFile";
+	return 1;
+    }
+    
+    fits_read_keyword($fptr,"TSTART",$tstart,$comm,$status); 
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to read keyword TSTART from $ImageFile file";
+	return 1;
+    }
+
+    if ( $dn > 0 ) {
+	if (&CalcImgError($tstart,\$err)) { goto EXITWITHERROR;}
+    }
+    else {
+	&PrntChty(2, "$Task{stem}: Warning: No DN counts available\n");
+	&PrntChty(2, "$Task{stem}: Warning: The 'Centroiding Error' cannot be computed\n");
+    }
+
+    fits_update_key($fptr,TDOUBLE, "ERRCTRD", $err ,"error on the XRT centroid position",$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write ERRCTRD ($err) to file $ImageFile";
+	return 1;
+    }
+
+
+    my $hist = "Keyword ERRCTRD write by $Task{stem} at " . &getHistoryTime();
+    fits_write_history($fptr,$hist,$status);
+    if ($status) {  
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+
+    fits_read_key_str($fptr,"DATAMODE",$datamode,$comm,$status); 
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to read keyword RATEDN from $ImageFile file";
+	return 1;
+    }
+
+
+    if (uc($datamode) eq "SHORTIMA") { $exposure = 0.1;}
+    elsif ($datamode eq "LONGIMA") {$exposure = 2.5;}
+    else {
+	$Task{status} = 1;
+	$Task{errmess} = "Not allowed datamode '$datamode' in '$ImageFile' file";
+	return 1;
+    }
+
+    $ratedn = $dn / $exposure;
+
+
+    $tmp_convfact=&GetValPar("convfact");
+
+    if(($tmp_convfact == 0.0)) 
+    {
+	&GetKeyword(undef,undef,$fptr,$Task{KNM_FLUXFACT},\$tmp_convfact);
+	
+	if ( $Task{status} ) { goto EXITWITHERROR;}
+
+	if($tmp_convfact == 1.)
+	{
+	
+	    $tmp_convfact=(1./$Task{KVL_FLUXFACT});
+	}
+	elsif($tmp_convfact == 0.0)
+	{
+	    
+	    $Task{status} = 1;
+	    $Task{errmess} = "problem with $Task{KNM_FLUXFACT} keyword value";
+	    &PrntChty(2,"$Task{stem}: Error: the $Task{KNM_FLUXFACT} keyword is set to $tmp_convfact\n");
+	    &PrntChty(2,"$Task{stem}: Error: please check the ". &GetValPar("imagefile")." file\n");
+	    &PrntChty(2,"$Task{stem}: Error: or use the 'convfact' input parameter\n");
+	    return 1;
+	}
+	else
+	{
+	    $tmp_convfact=(1./$tmp_convfact);
+	}
+    }
+
+    fits_update_key($fptr,TDOUBLE, "SRCFLUX", $ratedn*$tmp_convfact ,"[erg/cm**2/s] source flux (0.3-10 keV)",$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write SRCFLUX to file $ImageFile";
+	return 1;
+    }
+
+
+    fits_update_key($fptr,TDOUBLE, "TOTALDN", $dn,"Total DN value after bias subtraction",$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write TOTALDN to file $ImageFile";
+	return 1;
+    }
+
+    $hist = "Keyword DN write by $Task{stem} at " . &getHistoryTime();
+    fits_write_history($fptr,$hist,$status);
+    if ($status) {  
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+
+    fits_update_key($fptr,TDOUBLE, "RATEDN", $ratedn,"DN rate value (DN/EXPOSURE)",$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write RATEDN to file $ImageFile";
+	return 1;
+    }
+
+    $hist = "Keyword RATEDN write by $Task{stem} at " . &getHistoryTime();
+    fits_write_history($fptr,$hist,$status);
+    if ($status) {  
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+
+    $hist = "Keyword FLUX write by $Task{stem} at " . &getHistoryTime();
+    fits_write_history($fptr,$hist,$status);
+    if ($status) {  
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+
+    fits_update_key($fptr,TDOUBLE, "CONVFACT", $tmp_convfact,"Conversion factor DN/s to 0.3-10keV flux",$status);
+    if ($status) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write CONVFACT keyword to file $ImageFile";
+	return 1;
+    }
+
+    $hist = "Keyword CONVFACT write by $Task{stem} at " . &getHistoryTime();
+    fits_write_history($fptr,$hist,$status);
+    if ($status) {  
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+
+
+
+    fits_write_chksum($fptr,$status);
+
+    fits_close_file($fptr,$status);
+
+    return 0;
+
+} #RunImgMess
+
+sub CalcImgError {
+    my ($tstart,$err) = @_;
+
+#    use vars qw ($poserrfilename);
+
+    my @columns = (  { name => "TIME" },
+		     { name => "ERRMIS" },
+		     { name => "ERRATT" },
+		     { name => "ERRSYS" },
+		     { name => "PAR1" },
+		     { name => "PAR2" }
+		     );
+    
+    my @tableposerr = &LoadBinTable( $poserrfilename,"IMPOSERR",undef,@columns);
+    if ($Task{status}) { goto EXITWITHERROR;}
+
+    my $i = -1;
+    my $found = 0;
+
+
+    for ($i = 0; ($i <= $#tableposerr) && ($found == 0); $i++) {
+	if ($tableposerr[$i]->{TIME}> $tstart) {
+	    $found = 1;
+	}
+    }
+
+    $$err = sqrt(($tableposerr[$i-1]->{ERRMIS}**2) + 
+		 ($tableposerr[$i-1]->{ERRATT}**2) + 
+		 ($tableposerr[$i-1]->{ERRSYS}**2) +
+		 (($tableposerr[$i-1]->{PAR1}*($dn**(-$tableposerr[$i-1]->{PAR2})))**2)
+		);
+
+    return 0;
+
+} #CalcImgError
+
+
+sub CheckOnSpectra {
+
+    # If the spectrum 2 is MIXED we have some cross condition 
+    # between the two spectra that must be verified
+
+    my ( $spec1, $spec2 ) = @_;
+    
+    my ( $tstart1, $tstart2 );
+    my ( $exposure1, $exposure2 );
+
+    &GetKeyword($spec1,"SPECTRUM",undef,"TSTART",\$tstart1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword($spec2,"SPECTRUM",undef,"TSTART",\$tstart2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword($spec1,"SPECTRUM",undef,"EXPOSURE",\$exposure1);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+    &GetKeyword($spec2,"SPECTRUM",undef,"EXPOSURE",\$exposure2);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+#    printf " $tstart1, $tstart2 , $exposure1\n";
+
+    if ( abs($tstart2 - $tstart1) > 0.01 ) { 
+	# The two spectra do not have the same start time
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: The spectrum 2 TSTART ($tstart2)s differs from\n");
+	&PrntChty(2,"$Task{stem}: Error: the spectrum 1 TSTART ($tstart1)s more than 0.01s\n");
+	&PrntChty(2,"$Task{stem}: Error: the TSTART of the LOWRATE and the MIXED spectra\n");
+	&PrntChty(2,"$Task{stem}: Error: must be the same\n");
+	$Task{errmess} = "The LR and MIXED spectra do not have the same TSTART";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if ( $exposure2 <= $exposure1 ) {
+	&PrntChty(2,"$Task{stem}: Error: the esposure time ($exposure2)s of the MIXED spectrum 2\n");
+	&PrntChty(2,"$Task{stem}: Error: is not grater than the LOWRATE spectrum 1 exposure time ($exposure1)s\n");
+	&PrntChty(2,"$Task{stem}: Error: cannot process the spectrum 2 '$spec2'\n");
+	$Task{errmess} = "The exposure times of the two spectra are not compatible";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    return 0;
+
+} # CheckIfSpec2IsWT
+
+sub AddSpec2WTKeywords {
+
+    my ( $filename ) = @_;
+
+    if (&AddKeyword("$filename+1","XRTORGMD","WINDOWED","Original Spectrum Data form Windowed Timing Mode")) {goto EXITWITHERROR; }
+    if (&AddKeyword("$filename+1","XRTTDRSS","T","TDRSS message processed by $Task{stem} task")) {goto EXITWITHERROR; }
+
+} # AddSpec2WTKeywords
+
+sub AddSpec2MIXKeywords {
+
+    my ( $filename ) = @_;
+
+    if (&AddKeyword("$filename+1","XRTORGMD","MIXED","Original Spectrum Data form mixed Windowed and Lowrate")) 
+    {goto EXITWITHERROR; }
+    if (&AddKeyword("$filename+1","XRTTDRSS","T","TDRSS message processed by $Task{stem} task")) 
+    {goto EXITWITHERROR; }
+
+} # AddSpec2WTKeywords
+
+sub CheckPackets {
+
+    my ( $filename, $pack1, $pack2, $pack3 ) = @_;
+
+    &GetKeyword($filename,"SPECTRUM",undef,"PACKET1",$pack1);
+    if ( $Task{status} ) { 
+	goto EXITWITHERROR; }
+
+    &GetKeyword($filename,"SPECTRUM",undef,"PACKET2",$pack2);
+    if ( $Task{status} ) { 
+	goto EITWITHERROR; }
+
+    &GetKeyword($filename,"SPECTRUM",undef,"PACKET3",$pack3);
+    if ( $Task{status} ) { 
+	goto EITWITHERROR; }
+
+    if ($$pack1 eq "F") { 
+	&PrntChty(3,"$Task{stem}: Warning: The packet 1 of spectrum file '$filename' is corrupted\n");
+    }
+    if ($$pack2 eq "F") { 
+	&PrntChty(3,"$Task{stem}: Warning: The packet 2 of spectrum file '$filename' is corrupted\n");
+    }
+    if ($$pack3 eq "F") { 
+	&PrntChty(3,"$Task{stem}: Warning: The packet 3 of spectrum file '$filename' is corrupted\n");
+    }
+
+} # CheckPackets
+
+
+sub ProcSpec1 {
+
+    if ( !$Spec2{exists} ) {
+
+	# create the temporary file for the spectrum 2 processing
+        # when available
+
+	if (!copy($Spec1{filename},&GetValPar("tmpspec1file")) ) {
+	    $Task{errmess} = "Unable to copy file: $Spec1{filename} in '" . &GetValPar("tmpspec1file") . "'\n";
+	    goto EXITWITHERROR;
+	}
+    }
+
+    # Check if the bias has been subtracted on board
+    
+    if ( &CheckBIASLVL($Spec1{filename},"SPECTRUM") ) {
+
+	# No processing needed for LOWRATE spectrum
+	&PrntChty(3,"$Task{stem}: Info: The output spectrum 2 is the copy of the input one\n");
+	if ( !copy($Spec1{filename},$Spec1{out}) ) {
+	    PrntChty(2,"$Task{stem}: Error: Unable to create a temporary Spectrum 1 output file\n");
+	    PrntChty(2,"$Task{stem}: Error: Unable to copy file: $Spec1{filename} in '$Spec1{out}\n");
+	    $Task{errmess} = "Unable to copy file: $Spec1{filename} in '$Spec1{out}'";
+	    goto EXITWITHERROR;
+	}	    
+	
+    }
+    else {
+	my $TmpSpec1Out = $Spec1{out} . ".tmp" . $$;
+	push @CleanupList, $TmpSpec1Out;
+	
+	if ( !copy($Spec1{filename},$TmpSpec1Out) ) {
+	    PrntChty(2,"$Task{stem}: Error: Unable to create a temporary Spectrum 1 output file\n");
+	    PrntChty(2,"$Task{stem}: Error: Unable to copy file: $Spec1{filename} in '$TmpSpec1Out\n");
+	    $Task{errmess} = "Unable to copy file: $Spec1{filename} in '$TmpSpec1Out'";
+	    goto EXITWITHERROR;
+	}	    
+	
+	if (&WriteParameterList($TmpSpec1Out,-1,@Par)) {goto EXITWITHERROR;}
+	if (&Bias($Spec1{filename},$TmpSpec1Out,$Spec1{dm})) { goto EXITWITHWERROR; }
+	# processed with success, copy the temporary output file in the output file
+	
+	&RenameFile($TmpSpec1Out,$Spec1{out});
+	if ( $Task{status} ) { goto EXITWITHERROR;}
+    }
+} # ProcSpec1
+
+
+sub CheckXRTTDRSS {
+
+    my ( $file, $extname ) = @_;
+
+    my $xrttdrss = "";
+    my $checkexist = 1;
+
+    &GetKeyword($file ,$extname ,undef,"XRTTDRSS",\$xrttdrss,$checkexist);
+
+    if (( $Task{status} != 0) && ($Task{status} != KEY_NO_EXIST) ) {
+	goto EXITWITHERROR;
+    }
+    elsif ( $xrttdrss eq "T" ) {
+	&PrntChty(2,"$Task{stem}: Error: Keyword 'XRTTDRSS' set to 'T'\n");
+	&PrntChty(2,"$Task{stem}: Error: The file '$file' has just been processed\n");
+	&PrntChty(2,"$Task{stem}: Error: by the 'xrttdrss' task\n");
+	$Task{status} = 1;
+	return 1;
+    }
+
+    $Task{status} = 0;
+    $Task{errmess} = " ";
+
+    return 0;
+
+} # CheckXRTTDRSS
+
+sub CheckXRTBIAS {
+
+    my ( $file, $extname ) = @_;
+
+    my $xrtbias = 0;
+    my $checkexist = 1;
+
+    &GetKeyword($file ,$extname ,undef,"XRTBIAS",\$xrtbias,$checkexist);
+
+    if ( ($Task{status} != 0) && ($Task{status} != KEY_NO_EXIST) ) {
+	goto EXITWITHERROR;
+    }
+    elsif ( $xrtbias != 0 ) {
+	&PrntChty(2,"$Task{stem}: Error: Keyword 'XRTBIAS' set to '$xrtbias'\n");
+	&PrntChty(2,"$Task{stem}: Error: the bias has just been subtracted in '$file'\n");
+	return 1;
+    }
+
+    $Task{status} = 0;
+    $Task{errmess} = " ";
+
+    return 0;
+
+} # CheckXRTBIAS
+
+sub CheckBIASLVL {
+    
+    my ( $file, $extname ) = @_;
+
+    my $biaslvl = 0;
+    my $checkexist = 1;
+
+    &GetKeyword($file ,$extname ,undef,"BIASLVL",\$biaslvl,$checkexist);
+
+    if (($Task{status} != 0) && ($Task{status} != KEY_NO_EXIST)) {
+	goto EXITWITHERROR;
+    }
+    elsif ( $biaslvl != 0 ) {
+	&PrntChty(3,"$Task{stem}: Info: Keyword 'BIASLVL' set to '$biaslvl'\n");
+	&PrntChty(3,"$Task{stem}: Info: bias subtracted on board for LOWRATE '$file' spectrum\n");
+	return 1;
+    }
+
+    if ( $Task{status} ) { 
+	&PrntChty(2,"$Task{stem}: Warning: keyword 'BIASLVL' not found, assuming\n");
+    }
+    else {
+	&PrntChty(2,"$Task{stem}: Warning: keyword 'BIASLVL' set to '$biaslvl'\n");
+    }
+
+    &PrntChty(3,"$Task{stem}: Info: no bias subtracted on board for LOWRATE '$file' spectrum\n");
+    &PrntChty(3,"$Task{stem}: Info: the bias will be subtracted on ground\n");
+
+    $Task{status} = 0;
+    $Task{errmess} = " ";
+
+    return 0;
+
+} # CheckBIASLVL
+
+
+#
+# This subroutine give the value of the Postage
+# Stamp Message Keyword TLMVER
+#            
+
+sub GetTLMVER {
+    
+    my ( $file, $extname ) = @_;
+
+    my $tlmver = 0;
+    my $checkexist = 1;
+
+    &GetKeyword($file ,$extname ,undef,$Task{IMGTLMVERNAME},\$tlmver,$checkexist);
+
+    if (($Task{status} != 0) && ($Task{status} != KEY_NO_EXIST)) {
+	goto EXITWITHERROR;
+    }
+    elsif ( $Task{status} == KEY_NO_EXIST ) {
+	&PrntChty(2,"$Task{stem}: Warning: Keyword '$Task{IMGTLMVERNAME}' not found,\n");
+	&PrntChty(2,"$Task{stem}: Warning: assuming Postage stamp Message with old telemetry format (v1)\n");
+	$Task{status} = 0;
+	$Task{errmess} = " ";
+	return 1;
+    }
+    else {
+	&PrntChty(4,"$Task{stem}: Info: Keyword '$Task{IMGTLMVERNAME}' set to '$tlmver',\n");
+	&PrntChty(4,"$Task{stem}: Info: Postage Stamp Message with telemetry format version $tlmver\n");
+	$Task{status} = 0;
+	$Task{errmess} = " ";
+	return $tlmver;
+    }
+
+} # GetTLMVER
+
+
+
+sub SwapXY {
+
+    my ( $x, $y ) = @_;
+    my ($tmpval );
+
+    $tmpval = $$x;
+    $$x = $$y;
+    $$y = $tmpval;
+
+} # SwapXY
+
+sub CheckPoserrFile {
+
+    my ( $filename, $extnum ) = @_;
+
+
+    &PrntChty(4,"$Task{stem}: Info: Check the format of the POSERR '$filename' file\n");
+
+    my ( $imposerrext ) = &GetNumExtName( $filename, "IMPOSERR" );
+    if ( $imposerrext == -1 ) {
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: Not found 'IMPOSERR' extension in the\n");
+	&PrntChty(2,"$Task{stem}: Error: '$filename' file\n");
+	$Task{errmess} = "Not correct format of the POSERR '$filename' calibration file";
+	return 1;
+    }
+
+    if ( $extnum > -1 ) {
+	if ( $extnum != $imposerrext ) {
+	    &PrntChty(2,"$Task{stem}: Worning: Not correct extension found in the CALDB database\n");
+	    &PrntChty(2,"$Task{stem}: Warning: The extension used for data processing will be the\n");
+	    &PrntChty(2,"$Task{stem}: Warning: 'IMPOSERR' one\n");
+	}
+    }
+
+    &PrntChty(4,"$Task{stem}: Info: The POSERR file format is correct\n");
+
+    return 0;
+}

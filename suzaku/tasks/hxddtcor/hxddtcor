@@ -1,0 +1,251 @@
+#! /usr/bin/perl
+
+#
+# HXD deadtime correction tool
+#
+# Feburary 3, 2006 Takashi Okajima
+#                 (okajima@milkyway.gsfc.nasa.gov)
+# June 27, 2006    Yukikatsu Terada
+#    hxddtcor, v1.0 (ftools release, for version 1.2 process)
+# June 27, 2006    Yukikatsu Terada
+#    ver1.1,  change extension name, STDGTI --> GTI
+# Sep   7, 2006    Yukikatsu Terada
+#    ver1.2,  support STDGTI and GTI
+# Jan  22, 2007    Yukikatsu Terada
+#    ver1.3,  multiple inputs of PHA files and EVT files.
+# Jan  30, 2007    Yukikatsu Terada
+#    ver1.4,  fverify after revising PI file(s)
+# May  06, 2007    Yukikatsu Terada
+#    ver1.5,  pseud criteria (DET_TYPE==2) if HXD_FVER==2.
+#             bug fix in file name in saving pseudo. (reported by A.Bamba)
+#             bug fix in reading event files. (reported by S.Uno)
+#             
+$hxddtcor_version = "1.50" ;
+
+# temporal files for ftools
+$temp_file1 = "tmp" . $$ . "_pse_uf";
+$temp_file2 = "tmp" . $$ . "_pse_cl";
+$temp_file3 = "tmp" . $$ . "_03";
+$temp_file4 = "tmp" . $$ . "_04";
+
+##### parse arguments #############################################
+if(@ARGV) {
+    foreach $i (0 .. $#ARGV) {
+        $ARGV[$i] = "\"".$ARGV[$i]."\"";
+    }
+    $invokestring = join(' ',@ARGV);
+}
+
+$evt_files = `pquery2 hxddtcor event_fname $invokestring`;
+chop($evt_files);
+
+$spec_files = `pquery2 hxddtcor pi_fname $invokestring`;
+chop($spec_files);
+
+$save_pseudo  = `pquery2 hxddtcor save_pseudo $invokestring`;
+chop($save_pseudo);
+
+$chatter  = `pquery2 hxddtcor chatter $invokestring`;
+chop($chatter);
+
+###### expand evt_files #########################################
+if ($evt_files =~ /\@/){
+    $evt_files =~ s/\@//g;
+    open(EVT_FILES, $evt_files);
+#    @evt_file = <EVT_FILES>;
+#    ${n_evt}=@evt_file;
+    while (<EVT_FILES>){
+	my $file= $_;
+	next if ($file =~ /^\s*$/);
+	$file =~ s/\s*//g;
+	push (@evt_file,$file);
+    }
+    close(EVT_FILES);
+    ${n_evt}=@evt_file;
+    for ($xx=0; $xx<$n_evt; $xx++) { chomp($evt_file[$xx]); }
+} else {
+    ${n_evt}=1;
+    $evt_file[0]=$evt_files;
+}
+
+###### expand spec_files #########################################
+if ($spec_files =~ /\@/){
+    $spec_files =~ s/\@//g;
+    open(SPEC_FILES, $spec_files);
+#    @spec_file = <SPEC_FILES>;
+#    ${n_spec}=@spec_file;
+    while (<SPEC_FILES>){
+      my $file= $_;
+      next if ($file =~ /^\s*$/);
+      $file =~ s/\s*//g;
+      push (@spec_file,$file);
+    }
+    close(SPEC_FILES);
+    ${n_spec}=@spec_file;
+    for ($yy=0; $yy<$n_spec; $yy++) { chomp($spec_file[$yy]); }
+} else {
+    ${n_spec}=1;
+    $spec_file[0]=$spec_files;
+}
+
+######## verbose parameters #####################################
+if($chatter){
+  printf("hxddtcor: hxddtcor version %s \n",$hxddtcor_version); 
+  printf("hxddtcor: Inputs are %d evt file(s) and %d spec file(s).\n", 
+	 $n_evt, $n_spec);
+  if($n_evt == 1) {
+      printf("hxddtcor:   event_fname = %s\n", $evt_file[0]);
+  } else {
+      for($jj=0;$jj<$n_evt;$jj++){
+	  printf("hxddtcor:   event No.%d = %s\n", $jj+1, $evt_file[$jj]);
+      }
+  }
+  if($n_spec == 1) {
+	  printf("hxddtcor:   spec  = %s\n", $spec_file[0]);
+  } else {
+      for($kk=0;$kk<$n_spec;$kk++){
+	  printf("hxddtcor:   spec  No.%d = %s\n", $kk+1, $spec_file[$kk]);
+      }
+  }
+  printf("hxddtcor:   save pseudo = %s \n", $save_pseudo);
+}
+
+##### check files ################################################
+if ($evt_file =~ /\@/){
+    printf("hxddtcor: multiple input (with \@LIST) is not supported yet.\n");
+    exit;
+}
+
+if (!-e $evt_file[0]){
+    printf("hxddtcor: No event file!: %s\n", $evt_file[0]);
+    exit;
+}
+for ($ii=0; $ii<$n_spec; $ii++){
+    if (!-e $spec_file[$ii]){
+	printf("hxddtcor: No spectrum file!: %s\n", $spec_file[$ii]);
+	exit;
+    }
+}
+
+###### create pseudo events ##################################################
+for ($evtid=0; $evtid<$n_evt; $evtid++){
+    # check format version
+    open(HXDFORMATV, "fkeyprint infile=$evt_file[$evtid]+1 outfile=STDOUT keynam=HXD_FVER exact=yes | grep HXD_FVER= | awk '{print $2}'|");
+    chop($hxdformatv = <HXDFORMATV>);
+    close HXDFORMATV;
+    printf("hxddtcor: format version %d\n", $hxdformatv);
+
+    # create pseudo event file
+    system("fselect infile=$evt_file[$evtid]+1 outfile=\"${temp_file1}_${evtid}.evt\" expr=\"(TRIG&b0000001)==b0000001\" histkw=yes");
+    printf("hxddtcor:  extract pse_uf events.\n");
+
+    # grade selection for pseudo event file
+    if($hxdformatv == 2){
+	system("fselect infile=\"${temp_file1}_${evtid}.evt+1\" outfile=\"${temp_file2}_${evtid}.evt\" expr =\"DET_TYPE==2\" histkw=yes");
+	printf("hxddtcor:  extract pse_cl events with DET_TYPE.\n");
+    } else {
+	system("fselect infile=\"${temp_file1}_${evtid}.evt+1\" outfile=\"${temp_file2}_${evtid}.evt\" expr =\"GRADE_HITPAT<=1&&GRADE_QUALTY==0\" histkw=yes");
+	printf("hxddtcor:  extract pse_cl events with GRADE_HITMAT and QUALITY.\n");
+    }
+}
+
+##### process for each spectrum file #########################################
+for ($ii=0; $ii<$n_spec; $ii++){
+    if($chatter){print "hxddtcor: process $spec_file[$ii] ==========================\n";}
+    # get current exposure in the spectrum file
+    system("fkeypar fitsfile=$spec_file[$ii] keyword=EXPOSURE");
+    open(OLDEXP, "pget fkeypar value |");
+    chop($old_exp = <OLDEXP>);
+    close OLDEXP;
+    if($chatter){ printf("hxddtcor:   current exposure = %6.2f\n",$old_exp);}
+
+
+    # calc new exposure
+    $new_exp = 0;
+    for ($evtid=0; $evtid<$n_evt; $evtid++){
+	if($chatter){ print "hxddtcor:   make pseudo list $evt_file[$evtid] ";}
+	# apply GTI in the spectrum file
+	system("fcopy infile=\"${temp_file2}_${evtid}.evt\[gtifilter('$spec_file[$ii]+2')\]\" outfile=\"${temp_file3}_${evtid}.evt\" ");
+	
+	# count events in the created file above
+	system("fkeypar fitsfile=\"${temp_file3}_${evtid}.evt\" keyword=NAXIS2");
+	open(EVENTS, "pget fkeypar value |");
+	chop($evt = <EVENTS>);
+	close EVENTS;
+
+	# calculate new exposure (sum of pseudo evts)
+	$new_exp_list[$evtid] = $evt / 4.0;
+	$new_exp += $evt / 4.0;
+	if($chatter){ printf("(%6.2f sec)\n",$new_exp_list[$evtid]);}
+    }
+
+    # create a header file to be applied
+    open(fmodhead, ">$temp_file4") || die "Cannot make temporary file.";
+    printf(fmodhead "EXPOSURE %f / Exposure time\n", $new_exp);
+    printf(fmodhead "HISTORY ------ %s version %s------\n", 
+	   $0, $hxddtcor_version);
+    for ($evtid=0; $evtid<$n_evt; $evtid++){
+	printf(fmodhead "HISTORY   event file[%d]= %s\n", 
+	       $evtid, $evt_file[$evtid]);
+    }
+    printf(fmodhead "HISTORY   save pseudo = %s\n", $save_pseudo);
+    printf(fmodhead "HISTORY   EXPOSURE changed from %6.2f to ", $old_exp);
+    if($n_evt==1){
+	printf(fmodhead "%6.2f\n", $new_exp);
+    } else {
+	for ($evtid=0; $evtid<($n_evt-1); $evtid++){
+	    printf(fmodhead "%6.2f+", $new_exp_list[$evtid]);
+	}
+	printf(fmodhead "%6.2f", $new_exp_list[$evtid]);
+	printf(fmodhead "= %6.2f\n", $new_exp);
+    }
+    printf(fmodhead "HISTORY   Live time is %3.1f %.\n", 
+	   (100.0*$new_exp/$old_exp));
+    close(fmodhead);
+    if($chatter){
+#	print fmodhead;
+	system("cat $temp_file4 | sed s/HISTORY/\"hxddtcor: \"/g\n");
+    }
+
+    # apply the header file created above to the spectrum file
+    system("fmodhead $spec_file[$ii]+0 $temp_file4");
+    system("fmodhead $spec_file[$ii]+1 $temp_file4");
+    system("fmodhead $spec_file[$ii]+2 $temp_file4");
+    system("fchecksum update=yes infile=\"$spec_file[$ii]\"");
+
+    # remove the temporal files
+    for ($evtid=0; $evtid<$n_evt; $evtid++){
+	system("rm -f ${temp_file3}_${evtid}.evt");
+    }
+    system("rm -f $temp_file4");
+}
+
+# remove the temporal files
+for ($evtid=0; $evtid<$n_evt; $evtid++){
+    system("rm -f ${temp_file2}_${evtid}.evt");
+}
+
+# remove/rename the pseudo event file if needed
+if(($save_pseudo eq 'yes') or ($save_pseudo eq 'y')) {
+
+    for ($evtid=0; $evtid<$n_evt; $evtid++){
+	$pseudo_evt_base = $evt_file[$evtid];
+	$pseudo_evt_base =~ s/\.\//\/\//g;           # delete ./
+	1 while $pseudo_evt_base =~ s/\/[^()]*\///g; # delete dir name
+	$pseudo_evt_base =~ s/_uf\.evt//g; 
+	$pseudo_evt_base =~ s/\.evt//g; 
+	$pseudo_evt_base =~ s/\.gz//g; 
+	$pseudo_evt_file = $pseudo_evt_base . "_pse_uf.evt";
+	system("mv -f ${temp_file1}_${evtid}.evt $pseudo_evt_file");
+	system("fchecksum update=yes infile=\"$pseudo_evt_file\"");
+	if($chatter){
+	    printf("hxddtcor: save pseudo event (%s)\n",$pseudo_evt_file);
+	}
+    }
+}else{
+    for ($evtid=0; $evtid<$n_evt; $evtid++){
+	system("rm -f ${temp_file1}_${evtid}.evt");
+    }
+}
+
+if($chatter){printf("hxddtcor: process done.\n");}

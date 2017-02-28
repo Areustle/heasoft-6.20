@@ -1,0 +1,119 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotshiftpha/ut-uvotshiftpha,v $
+# $Revision: 1.1 $
+# $Date: 2007/02/22 21:02:03 $
+#
+#	ut-uvotshiftpha
+#
+#
+# $Log: ut-uvotshiftpha,v $
+# Revision 1.1  2007/02/22 21:02:03  rwiegand
+# New unit test.
+#
+
+use strict;
+
+package Test::UVOTShiftPHA;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = Test::UVOTShiftPHA->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotshiftpha
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotshiftpha
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		infile	=> "$input/vv_src.pha",
+		intime	=> 7335,
+		outfile	=> "$output/vv_shifted.pha",
+		outtime	=> 5594,
+		alpha	=> -1,
+
+		chatter	=> 5,
+	);
+
+	{
+		my $command = $self->buildCommand('uvotshiftpha', @args);
+		$self->shell($command);
+	}
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my $template = "$input/template.fits";
+	my $result = "$output/vv_shifted.pha";
+
+	my $command = $self->buildCommand('ftdiff',
+			infile1 => $template,
+			infile2 => $result,
+			# tolerance => 1e-3,
+			reltol => 0.01,
+			exclude => 'DTELDEF',
+			);
+	$self->shell($command);
+}
+

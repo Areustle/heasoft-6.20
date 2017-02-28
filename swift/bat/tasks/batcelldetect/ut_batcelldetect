@@ -1,0 +1,279 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batcelldetect/ut_batcelldetect,v $
+# $Revision: 1.35 $
+# $Date: 2009/06/11 02:01:48 $
+#
+#	ut_batcelldetect
+#		validate batcelldetect task (detecting,refining imaged srcs)
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "batcelldetect";
+$ut_taskname   = "ut_batcelldetect";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance distfile fudgemap
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+	my $distfile = $self->args->{distfile};
+	my $fudgemap = $self->args->{fudgemap};
+	$fudgemap =~ s/\@INPUT\@/$input/;
+
+	$distsuff = "";
+	if ($distfile eq "INDEF") {
+	    $distfile = "$input/batcelldetect_swbdistort.fits";
+	    $distsuff = "_distort";
+	}
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	my %task = (
+		    infile        => "$input/batcelldetect.img.in",
+		    outfile       => "$output/batcelldetect.catalog.output",
+		    snrthresh     => 4.0,
+		    incatalog     => "$input/batcelldetect.incatalog.in",
+		    pcodefile     => "$input/batcelldetect.pcodemap.in",
+		    pcodethresh   => 0.01,
+		    signifmap     => "$output/batcelldetect.signifmap.output",
+		    bkgmap        => "$output/batcelldetect.bkgmap.output",
+		    bkgvarmap     => "$output/batcelldetect.bkgvarmap.output",
+		    newsrcind     => 1,
+		    newsrcname    => "monpoint_20050100022_%02d",
+		    hduclasses    => "-VIGNETTING,-BKG_VARIANCE,-BKG_STDDEV,-SIGNIFICANCE",
+		    distfile      => "$distfile",
+		    # This is not the right BAT PSF, but it allows
+		    # the old unit test to work, and it is still a 
+		    # valid test of the functioning of the task.
+		    psfshape      => "GAUSSIAN", 
+		    keepbits      => 7,
+		    posfit        => "NO",
+		    posfitwindow  => 0.0,
+		    keepbadsources=> "YES",
+		    chatter       => 0,
+		    clobber       => "Yes",
+		    ptcorrel      => "NONE",
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("infile", "incatalog", "pcodefile");
+	
+	my %template = (
+			signifmap     => "$input/batcelldetect.signifmap.template",
+			bkgmap        => "$input/batcelldetect.bkgmap.template",
+			bkgvarmap     => "$input/batcelldetect.bkgvarmap.template",
+			outfile       => "$input/batcelldetect.catalog$distsuff.template"
+			);
+
+	# Sorry, hard-coded image tolerances
+	my %reltol = (
+		      signifmap => 0.01,
+		      bkgmap    => 0.05,
+		      bkgvarmap => 0.02
+		      );
+
+	my %abstol = (
+		      signifmap => 0.01,
+		      bkgmap    => 5e-6
+		      );
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	if (not -f "$fudgemap") {
+	    $self->fatal(BAD_INPUT,
+			 "input 'fudge map' $fudgemap was not found");
+	    return -1;
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	unlink("$task->outfile");
+	my $result = $self->doCommand($command);
+	return $result->{status} if ($result->{status});
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	$command = qq(ftverify infile=$task{outfile} outfile=STDOUT heasarc=yes);
+	$self->doCommand($command);
+
+
+	# Check template files are present
+	foreach my $key (keys %template) {
+		if (not -f $template{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid template $key file: $template{$key}");
+			return -1;
+		}
+	}
+
+	print "\n\n  Verifying FITS output files\n";
+	print "    - Exclude RATE\n";
+
+	# Verify the catalog separately
+	$exclude = "[col -NPIXBKG;-NPIXSOU;-DOF;-CHI2;-RATE;-RATE_ERR;-CONTAM_RATE;CENT_SNR=0;-CENT_SNR;]";
+	$exclude = "[DETECT_STATUS!=(-3)]".$exclude;
+	$command = "ftdiff $template{outfile}'$exclude' $task{outfile}'$exclude' tolerance=$tolerance exclude=CREATOR,DATE-OBS,DATE-END";
+	$result = $self->doCommand($command);
+	if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	    $ndiffs = $1;
+	    print "   -->  FTDIFF reports $ndiffs differences\n";
+	    if ($ndiffs ne 0) {
+		$lines = $result->{output};
+		print "$lines\n" if $self->chatter(5);
+		$self->error(BAD_OUTPUT, "error because of bad compare");
+	    }
+
+	}
+	
+	# If I ever add PEAK_***
+	# PEAK_RATE=0;-PEAK_RATE;PEAK_SNR=0;-PEAK_SNR;PEAK_IMXPIX=0;-PEAK_IMXPIX;PEAK_IMYPIX=0;-PEAK_IMYPIX;BEST_SNR=0;-BEST_SNR
+
+	print "    - Only RATE\n";
+	$exclude = "[col RATE;RATE_ERR;CONTAM_RATE;DETECT_STATUS;CENT_SNR=0;-CENT_SNR;]";
+	$exclude = "[DETECT_STATUS!=(-3)]".$exclude;
+	$command = "ftdiff $template{outfile}'$exclude' $task{outfile}'$exclude' tolerance=1 exclude=CREATOR,DATE-OBS,DATE-END";
+	$result = $self->doCommand($command);
+	if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	    $ndiffs = $1;
+	    print "   -->  FTDIFF reports $ndiffs differences\n";
+	    if ($ndiffs ne 0) {
+		$lines = $result->{output};
+		print "$lines\n" if $self->chatter(5);
+		$self->error(BAD_OUTPUT, "error because of bad compare");
+	    }
+
+	}
+
+
+	# Now check the images
+	foreach my $outfile (keys %template) {
+
+	    # Skip the catalog, which was already checked.
+	    next if ("$outfile" eq "outfile");
+
+	    print "    ... checking $task{$outfile} ($outfile) ... \n";
+	    $command = qq(ftverify infile=$task{$outfile} outfile=STDOUT heasarc=yes);
+	    $self->doCommand($command);
+
+
+
+	    # First multiply by the "fudge" mask so that the outer
+	    # pixels are ignored.  We are at the mercy of the math
+	    # library here, so ignore the crap data...
+
+	    $outfile_fudged = $task{$outfile}.".fudge";
+	    $template_fudged = $task{$outfile}.".fudge_template";
+
+	    $command = "ftimgcalc $outfile_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B)' a='$task{$outfile}' b='$fudgemap' clobber=YES ";
+	    $self->doCommand($command);
+
+	    $command = "ftimgcalc $template_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B)' a='$template{$outfile}' b='$fudgemap' clobber=YES ";
+	    $self->doCommand($command);
+
+	    $command = "ftdiff '$template_fudged' '$outfile_fudged' hdumaxdiff=25 exclude=CREATOR,DATE-OBS,DATE-END ";
+	    if ($reltol{$outfile}) { $command .= " reltol=$reltol{$outfile}";}
+	    if ($abstol{$outfile}) { $command .= " tolerance=$abstol{$outfile}";}
+	    $result = $self->doCommand($command);
+	    if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+		$ndiffs = $1;
+		print "   -->  FTDIFF reports $ndiffs differences for $outfile\n";
+		if ($ndiffs ne 0) {
+		    $lines = $result->{output};
+		    print "$lines\n" if $self->chatter(5);
+		    $self->error(BAD_OUTPUT, "error because of bad compare");
+		}
+		
+	    }
+	    
+	    
+	}
+	
+	
+}
+

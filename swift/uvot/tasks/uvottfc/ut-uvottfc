@@ -1,0 +1,207 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvottfc/ut-uvottfc,v $
+# $Revision: 1.16 $
+# $Date: 2005/11/09 15:11:45 $
+#
+#       ut-uvottfc
+#               validate TDRSS finding chart processing
+#
+#
+# $Log: ut-uvottfc,v $
+# Revision 1.16  2005/11/09 15:11:45  rwiegand
+# Exclude DATASUM keyword when checking for differences.
+#
+# Revision 1.15  2005/11/02 15:19:33  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.14  2005/09/16 14:58:42  rwiegand
+# Ignore differences in FILE key card.
+#
+# Revision 1.13  2005/03/04 22:17:00  rwiegand
+# Ignore CREATOR keyword when comparing to templates.
+#
+# Revision 1.12  2005/03/04 19:03:59  rwiegand
+# Generate sparse image in C sub-process.
+#
+# Revision 1.11  2004/10/15 21:52:52  rwiegand
+# Added CALDB test mode.
+#
+# Revision 1.10  2004/09/09 18:38:45  rwiegand
+# Added a test with a lower tolerance for the RA and DEC columns.
+#
+# Revision 1.9  2004/06/24 18:17:35  rwiegand
+# Needed to update the unit test for b8gcn (since parameters were renamed).
+#
+# Revision 1.8  2004/05/10 17:56:19  rwiegand
+# Use Task::runCommand.
+#
+# Revision 1.7  2004/01/22 21:06:49  miket
+# Swift build 7 branch merge
+#
+# Revision 1.6  2003/12/16 16:31:51  rwiegand
+# Disabled pretty picture output.
+#
+# Revision 1.5  2003/11/26 20:43:12  rwiegand
+# There are now 4 outputs: FITS-ified packet, sparse image, source list, and
+# pretty picture.  The source list is now in a FITS table and has much more
+# information.
+#
+# Revision 1.4  2003/08/26 21:20:37  rwiegand
+# Changed tolerance parameters to be in units of arcseconds.  If a later
+# postage stamp overlaps an earlier one, ignore any zero pixel values.
+#
+# Revision 1.3  2003/08/04 15:01:27  rwiegand
+# Added parameter tfc2fits.  When tfc2fits is not equal to 'NONE', a FITS
+# file with the given name is created and the finding chart packet is saved
+# in the primary array.
+#
+# Revision 1.2  2003/06/11 21:38:36  miket
+# global name changes from tfc/starid to uvottfc/uvotstarid
+#
+# Revision 1.1  2003/02/10 18:06:17  rwiegand
+# Build 4 unit tests.  Updated from previous releases to use PIL.
+#
+# Revision 1.4  2003/02/06 21:16:00  rwiegand
+# Corrected the string constant of the tool.  Optionally report output from tool
+# under test.
+#
+# Revision 1.3  2002/12/12 21:11:22  rwiegand
+# Updated parameter passing/parsing.
+#
+# Revision 1.2  2002/12/12 18:46:20  rwiegand
+# Removed .pl extension from starid and tfc tool names.
+#
+# Revision 1.1  2002/11/26 15:30:56  rwiegand
+# Tests for star identification and TDRS finding chart tools.
+#
+
+use strict;
+
+package Test::FindingChart;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::FindingChart->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runFindingChart
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string caldb=boolean chatter=int)
+			],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runFindingChart
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	$self->{testSources}   = "$output/sources.fits";
+	$self->{testSparse}    = "$output/sparse.fits";
+
+	$self->{expectedSources} = "$input/sources.fits";
+	$self->{expectedSparse}  = "$input/sparse.fits";
+
+	my @args = (
+		infile        => "$input/tfc.packet",
+		teldeffile    => $caldb ? 'CALDB' : "$input/swuteldef.fits",
+		badpixlist    => $caldb ? 'CALDB' : "$input/swubadpix.fits",
+
+		outfile       => $self->{testSources},
+		sparsefile    => $self->{testSparse},
+
+		chatter       => 3,
+		clobber       => 'yes',
+	);
+
+	# build command line
+	my $command = $self->buildCommand('uvottfc', @args);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('ftdiff',
+			infile1 => $self->{expectedSparse},
+			infile2 => $self->{testSparse},
+			tolerance => 0.1,
+			exclude => 'DATE,CREATOR,FILE,DATASUM',
+			);
+
+	my $result = $self->shell($command);
+
+	$command = $self->buildCommand('ftdiff',
+			infile1 => $self->{expectedSources},
+			infile2 => $self->{testSources},
+			tolerance => 0.1,
+			exclude => 'DATE,DATASUM,CREATOR',
+			);
+
+	$self->shell($command);
+
+	my $cols = '[col RA; DEC]';
+	$command = $self->buildCommand('ftdiff',
+			infile1 => $self->{expectedSources} . $cols,
+			infile2 => $self->{testSources} . $cols,
+			tolerance => 1e-6,
+			exclude => 'DATE,DATASUM,CREATOR',
+			);
+
+	$self->shell($command);
+
+}
+
+

@@ -1,0 +1,348 @@
+#! /usr/bin/env perl
+#
+#   fhelp:
+#
+#   Display the help file for a specified task in one of
+#   several software packages (HEASOFT, XMM-SAS, CIAO).
+#
+use strict;
+
+# Name of this script, to be used in output messages.
+our $this_script = $0;
+$this_script =~ s:.*/::;
+
+# Platform.
+our $platform = $^O;
+
+# Overall status.
+our $status = 0;
+
+# Command line variables:
+our ($task, $text, $browser, $pager, $recurse, $local, $online, @pil_args, $open);
+
+# Process the command line.
+interpret_cmd_line();
+
+# Execute main subroutine:
+fhelp();
+
+exit $status;
+
+sub interpret_cmd_line {
+
+  #use Scalar::Util;
+
+  # Initialize parameters.
+  $task = "";
+  $text = 1;
+  $recurse = 1;
+  $pager = "";
+
+  # Handle command line: preprocess; then use Perl standard getopt.
+  # First extract non-option arguments.
+  my @options; # Options/switches.
+
+  while (@ARGV > 0) {
+    # Detect and compile list of switches.
+    if ($ARGV[0] =~ /^-/) {
+      push @options, shift @ARGV;
+    } else {
+      # First non-switch is assumed to signal parameter file arguments;
+      # Remaining arguments will be passed to PIL routines.
+      @pil_args = @ARGV;
+      last;
+    }
+  }
+
+  # Reassign argument list to contain just the command line switches (if any).
+  @ARGV = @options;
+
+  # Use Getopt to process options/switches.
+  use Getopt::Long;
+  my ($opt_b, $opt_h, $opt_i, $opt_l, $opt_m, $opt_w);
+  my $cl_ok = GetOptions(
+    'browser=s' => \$opt_b,
+    'help' => \$opt_h,
+    'i' => \$opt_i,
+    'l' => \$opt_l,
+    'more=s' => \$opt_m,
+    'w' => \$opt_w,
+  );
+  $cl_ok or $status = 1; # Detect command line problems.
+
+  # Validate command line.
+  my $errormsg;
+  defined $opt_i and defined $opt_w and
+    $errormsg .= "\n\t-w option is invalid if -i was also specified";
+  defined $errormsg and $status = 1;
+
+  # An error at this point signifies user input problems, or
+  # --help means display help, so display usage and exit.
+  ($opt_h || $status) and usage($status, $errormsg);
+
+  # Reassign option variables:
+  defined $opt_b and $browser = $opt_b;
+  defined $opt_i and $online = $opt_i;
+  defined $opt_l and $recurse = $opt_l;
+  defined $opt_m and $pager = $opt_m;
+  defined $opt_w and $local = $opt_w;
+
+
+  # Reassign argument list to contain just the PIL arguments (if any).
+  @ARGV = @pil_args;
+  my $pil_argv = [ $this_script, @ARGV];
+  my $pil_argc = $#ARGV+2;
+
+  use HEACORE::PIL;
+
+  # Initialize:
+  ($status = PILInit($pil_argc,$pil_argv) == 0) || die "Error initializing PIL";
+
+  # Task name:
+  ($status = PILGetString('task', $task)) == 0 || die "Error getting parameter 'task'";
+
+  # Browse help file online at the HEASARC:
+  if (!defined $online) {
+     ($status = PILGetBool('online', $online)) == 0 || die "Error getting parameter 'online'";
+  }
+  # Browse help file in local HEASoft installation:
+  if (!defined $local) {
+     ($status = PILGetBool('local', $local)) == 0 || die "Error getting parameter 'local'";
+  }
+  # Cannot do both:
+  if ($online && $local) {
+    $errormsg .= "\n\tlocal=yes is invalid if online=yes was also specified";
+    defined $errormsg and $status = 1;
+    usage($status, $errormsg);
+  }
+
+  # Option to recurse to other software packages (XMM-SAS, CIAO)
+  # if help for the specified task is not found in HEASOFT.
+  if (!defined $recurse) {
+     ($status = PILGetBool('recurse', $recurse)) == 0 || die "Error getting parameter 'recurse'";
+  }
+
+  # Choice of default display format: plain text in a pager (default;
+  # html will be parsed using the lynx linemode browser) or opened in
+  # a web browser.  Option $online (-i) or $local (-w) overrides the
+  # parameter file value and forces $text=0.
+  if (!$online && !$local) {
+     ($status = PILGetBool('text', $text)) == 0 || die "Error getting parameter 'text'";
+  } else {
+     $text = 0;
+  }
+
+  # Text pager ('more', 'less', etc.). Priority is opt_m, $PAGER, then pfile value:
+  if (!$pager) {
+     if (defined $ENV{'PAGER'}) {
+        $pager = "$ENV{PAGER}";
+     } else {
+        ($status = PILGetString('pager', $pager)) == 0 || die "Error getting parameter 'pager'";
+     }
+  }
+
+  return $status;
+}
+
+sub fhelp {
+
+  use Browser::Open qw( open_browser );
+
+  # Set up environment:
+  my $errmsg;
+  if (!defined $ENV{'HEADAS'}) { $errmsg .= "Set HEADAS before running $this_script\n"; }
+  if (defined $errmsg) { chop $errmsg; die "$errmsg\n"; }
+  my $headas = $ENV{'HEADAS'};
+  my $headasbin = "$headas/bin";
+  my $headashelp = "$headas/help";
+
+  # lynx linemode browser is provided by heacore:
+  my $linemode = "$headasbin/lynx -nolist -dump";
+
+  # Handle the case of attitude.html (package) and attitude.txt (ASCA task):
+  my $atthelp = "";
+  if ( $task eq "attitude" ) {
+      print "attitude package or task? [pkg|task]: ";
+      $atthelp = <STDIN>;
+      chop $atthelp;
+      $atthelp =~ s/\W//g;
+  }
+
+  # HEASOFT help options:
+  my $local_html = "$headashelp/$task.html";
+  my $local_text = "$headashelp/$task.txt";
+  my $site_html = "http://heasarc.gsfc.nasa.gov/ftools/fhelp/$task.html";
+  my $site_text = "http://heasarc.gsfc.nasa.gov/ftools/fhelp/$task.txt";
+
+  # If the user wants help on the attitude task (attitude.txt),
+  # trick the following conditionals into finding attitude.txt
+  # instead of the attitude package help file (attitude.html):
+  if ( $task eq "attitude" ) {
+     if ( $atthelp eq "task" ) {
+        $site_html = "http://heasarc.gsfc.nasa.gov/ftools/fhelp/$task.txt";
+        $local_html = "$headashelp/placeholder";
+     } else {
+        $local_text = "$headashelp/placeholder";
+     }
+  }
+
+  # Non-HEASoft packages:
+  my $fermihtml = "$ENV{FERMI_DIR}/help/$task.html";
+  my $fermitext = "$ENV{FERMI_DIR}/help/$task.txt";
+  my $sastool = "$ENV{SAS_DIR}/bin/$task";
+  my $ahelp = "$ENV{ASCDS_BIN}/ahelp";
+
+  if (-e $fermihtml) { $local_html = $fermihtml; }
+  if (-e $fermitext) { $local_text = $fermitext; }
+
+  # Does the help file exist locally?:
+  my $found_html = 0;
+  my $found_text = 0;
+  if (-e $local_html ) { $found_html = 1; }
+  if (-e $local_text ) { $found_text = 1; }
+
+  # Open the help file:
+  if ($found_html || $found_text) {
+
+     # Do not let Macs 'open' .txt files in TextEditor (default).
+     # Though this contradicts the browse request (-w), force text=1
+     # to view $task.txt in a pager instead.
+     if ($found_text && $local && ($platform eq "darwin")) { $text = 1; }
+
+     # User has requested browse or has turned text off:
+     if (($online || $local) && $text == 0) {
+
+        my $url = "";
+
+        if ($online && $found_html) { $url = $site_html; }
+        if ($online && $found_text) { $url = $site_text; }
+        if ($local && $found_html) { $url = $local_html; }
+        if ($local && $found_text) { $url = $local_text; }
+
+        # Open help file in browser:
+        open_browser($url);
+
+     # Text-only display:
+     } else {
+
+	# View local text or html file as text:
+        if ($found_html) {
+
+	   # View local html file in pager via linemode browser:
+           ($status = system("$linemode $local_html | $pager")) == 0 || die "Command failed:\n'$linemode $local_html | $pager'\n";
+
+        } elsif ($found_text) {
+
+	   # View local text file in pager:
+	   ($status = system("$pager $local_text")) == 0 || die "Command failed:\n'$pager $local_text'\n";
+
+        }
+     }
+
+  } elsif ($recurse && -e $sastool) {
+
+     # XMM-SAS:
+     ($status = system("$sastool -m")) == 0 || die "Command failed:\n'$sastool -m'\n";
+
+  } elsif ($recurse && -x $ahelp) {
+
+     # CIAO:
+     ($status = system("$ahelp $task")) == 0 || die "Command failed:\n'$ahelp $task'\n";
+
+  } elsif ($task eq "fhelp") {
+
+     # fhelp:
+     ($status = system("fhelp -h")) == 0 || die "Command failed:\n'fhelp -h'\n";
+
+  } else {
+
+     die "No help found for '$task'\n";
+
+  }
+
+  return $status;
+
+}
+
+sub usage {
+  my $status = shift;
+  my $msg = shift;
+  my $fh = $status ? *STDERR : *STDOUT;
+  my $usage =
+"\n$this_script is a utility for displaying help files.
+
+Usage: $this_script [options] [task-name] [parameters]
+
+  [options]: All options must precede task-name
+
+    Note: These options are also provided as parameters (below) which
+    may be set in $this_script.par as permanent choices when running $this_script.
+    They are provided here as flagged options for backward compatibility.
+
+    -h               Print this help.
+
+    -i               Browse help file online at the HEASARC.
+
+    -w               Browse help file in your local HEASOFT installation.
+                     Note that on Mac OS X, the -w option is ignored for
+                     help files that are in text format since the default
+                     utility for opening .txt files is 'TextEdit'.  If
+                     you wish all help files to appear in a browser,
+                     please use the -i option instead.
+
+    -l               Only look for help within HEASOFT, i.e. no recursion
+                     to other packages (CIAO, XMM-SAS).  Note that the
+                     -i or -w options are ignored for CIAO or SAS tasks.
+                     Help for CIAO tasks is displayed via their 'ahelp'
+                     utility, and for SAS by running '<task> -m'.
+
+    -m=<pager>       Specify a text pager utility ('more', 'less', etc.).
+                     If not given, a PAGER environment variable (if set)
+                     will be used, or 'more'.  Using this option
+                     overrides the 'pager' parameter below.
+
+
+  [parameters]: All parameters must follow task-name
+
+    text=<yes|no>    (Default = 'yes')
+                     Specify whether or not you prefer all help files
+                     (regardless of format) to be displayed as plain
+                     text in a pager.  HTML files will be interpreted
+                     using a linemode browser and piped to your pager.
+                     Specifying text=no is the same as option -w above.
+                     Specifying option -i or -w above will override
+                     this setting.  Note also that in order for text=no
+                     to result in a browser display, either 'online' or
+                     'local' must be set to 'yes' (see below).
+
+    online=<yes|no>  (Default = no)
+                     Browse help file online at the HEASARC.
+                     Specifying option -i above will override this setting.
+
+    local=<yes|no>   (Default = no)
+                     Browse help file in your local HEASOFT installation.
+                     Note that on Mac OS X, this parameter is ignored for
+                     help files that are in text format since the default
+                     utility for opening .txt files is 'TextEdit'.  If
+                     you wish all help files to appear in a browser,
+                     please specify online=yes instead.  Specifying
+                     option -w above will override this setting.
+
+    recurse=<yes|no> (Default = yes)
+                     Recurse to other software packages (XMM-SAS, CIAO) if
+                     help for the specified task is not found in HEASOFT.
+                     Specifying option -l above will override this setting.
+
+    pager=<pager>    (Default = 'more')
+                     Specify a text pager utility ('more', 'less', etc.).
+                     The option '-m' (if given) or a PAGER environment
+                     variable (if set) will override over this parameter.
+";
+  print $fh "$usage\n";
+  defined $msg and print $fh "
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+$msg
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+";
+  exit $status;
+}

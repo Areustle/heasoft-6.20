@@ -1,0 +1,544 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+ftimgcalc - create a new FITS image from computations on one or
+more input images
+
+<h2>USAGE</h2>
+
+<tt>ftimgcalc outfile expr a=img1.fits b=img2.fits ...</tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+ftimgcalc performs general image computations on a set of input
+images.  Multiple images can be combined using any of the mathematical
+operators and functions supported by the CFITSIO calculator.
+
+<p>
+This task is similar to the ftpixcalc task, but has some additional
+capabilities, most notably, the ability to perform calculations
+based on 
+world coordinates (e.g., the RA and DEC value of the pixels), or
+ASCII region files, and the ability to process multiple FITS extensions
+in sequence.
+In cases where both ftpixcalc and ftimgcalc
+can perform the same task, ftpixcalc will usually require less
+computer memory and, in principle, may run faster.
+
+<p>
+All the input images should have of the same dimensions and, if they are sky
+images, should refer to the same pointing direction.  ftimgcalc does
+not do mosaicking or interpolation of images from different pointings
+on the sky.
+
+<p>
+Up to 26 input images may be specified with the task parameters 'a' through 'z'.
+By default, the same (case insensitive) letter is used as the  
+variable name in the calculator expression.  For example, in this invocation,
+
+<p>
+<pre>
+  ftimgcalc outfile.fits '(A-B)/C' a=img1.fits \
+      b=img2.fits  c=img3.fits
+</pre>
+
+<p>
+the images img1.fits, img2.fits, and img3.fits are substituted into the
+expression for A, B, and C, respectively.  The calculations are 
+performed using the corresponding pixels from each image.
+
+<p>
+It is also possible to specify symbolic names for each image, as
+in, a="SKY=image.fits",
+in which case you could use the name "SKY" in the expression instead
+of the letter "a".  For
+example,
+
+<p>
+<pre>
+  ftimgcalc outfile.fits '(DATA-MODEL)/ERROR' a="DATA=img1.fits" \
+      b="MODEL=img2.fits" c="ERROR=img3.fits"
+</pre>
+
+<p>
+has the same function as the first example, but  with more
+meaningful names.  Note that the quote characters must enclose the
+image parameter values when symbolic names are given.
+If a symbolic name is specified, then it must be used in the expression
+instead of the parameter letter.
+
+<p>
+<b>IMPORTANT NOTE:</b> Since the keywords <tt>T</tt> and <tt>F</tt>
+are reserved by the CFITSIO parser for 'true' and 'false' you should
+avoid using parameters 'T' and 'F' unless you use the t=VAR=filename
+syntax to rename them.
+
+<p>
+By default, the first non-null image HDU in each input FITS file
+is opened, but the standard
+CFITSIO "filename[extension]" or "filename+n" syntax can be used to select any
+specific extension in a file.
+
+<p>
+Any valid CFITSIO calculator expression can be used, including all the
+usual mathmatical operators and functions. 
+See the calc_express help file for a complete list of all the allowed functions.
+Rank-reducing functions like SUM(NAME) or STDDEV(NAME) can be used,
+and produce a 1-pixel output image.
+
+<p>
+The expression may contain conditional logic as long as the expression as
+a whole evaluates to a numeric value.  A C-like syntax is used for the 'if-then-else' 
+conditional expressions:
+
+<p>
+<pre>
+    (expression1 ? expression2 : expression3)
+</pre>
+If expression1 evaluates to true (not zero) then expression2 is evaluated,
+otherwise expression3 is evaluated.   For example,
+<p>
+<pre>
+    (a < 0. ? 0 : a)
+</pre>
+will set the output pixel value to zero if the pixel value in the
+'a' input image is less than zero.  The use of conditional 
+expressions is especially powerful when combined with the
+REGFILTER() region filter or ANGSEP() angular separation
+functions, as illustrated in the Examples 
+section of this help file.
+
+<p>
+Expressions may use keyword values using the standard #KEYNAME syntax
+of the CFITSIO calculator.  Keyword values are taken from the first
+listed image on the command line.  In the example above, the keywords
+of 'img1.fits' will be available in the calculator expression.  If
+multiple images are specified (see next section), then the keywords
+named in the calculator expression must be present in <i>each</i>
+image extension of the first listed image file. (See Implementation
+Notes for some compatibility issues.)
+
+
+
+<h3>Multiple Images</h3>
+<p>
+The same operation may by applied to multiple image extensions in the
+input FITS files in sequence by using the nvectimages parameter.  The
+images must be sequential extensions in each input file; non-image
+extensions are ignored.  
+
+<p>
+Sometimes it is desireable to apply an operation on a series of
+images, where one of the operands is a single constant image.  For
+example, one may wish to divide a series of 10 CCD raw images by a
+single flat-field correction map.  In that case use the replicate=YES
+option; any input files which do not contain the number of images
+specified by 'nvectimages' will be replicated until they do.
+
+
+
+<h3>Using World Coordinates</h3>
+
+Before describing the use of world coordinates in the calculator
+expression, it is useful to have a basic understand how ftimgcalc works 
+internally.  In simple terms, each input image is first copied into
+a column of a temporary FITS binary table (constructed in
+memory).  Each image is stored in a separate column of the table in a
+single cell (as a vector).  Next, the table calculator function 
+that is built into the
+CFITSIO library is used to evaluate the expression  on the
+columns of this temporary table.  The result is  written into 
+another column in the temporary table.  Finally, the results image is
+copied from the table cell to the output FITS image.  
+<p>
+In addition to the columns containing the input images, the 
+temporary binary table will also contain other columns containing the 
+coordinate values associated with the pixels in each image.
+Images can have
+coordinate systems assigned by using the WCS (World Coordinate System)
+keywords.  These keywords describe the plate scale and projection of
+the image.  
+<p>
+By default the following sets of coordinates will be available
+as columns in the temporary table, assuming that the appropriate
+WCS keywords are present in the input image header.  If the image
+has no WCS keywords, then only the columns giving the
+pixel coordinates will be present.
+
+<pre>
+
+     System    Column Name           Description
+     ---------------------------------------------------------------------
+     Celestial NAME.RA   or    Celestial (sky) coordinates (R.A. and Dec.)
+               NAME.DEC
+     World     NAME.CTYPEi     Any world coordinate system defined in the 
+                               the image header (based on CTYPEi keywords)
+     World     NAME.CTYPEi.a   Alternate world coordinate system "a"
+     Pixel     NAME.Pi         Pixel number for axis i
+     Image     NAME.Xi         Intermediate image coordinate for axis i
+     Polar     NAME.THETA or   Intermediate polar coordinates 
+               NAME.PHI
+     ---------------------------------------------------------------------
+</pre>
+where "NAME" is image parameter name (a, b, c, ...) or the symbolic name 
+for the image, if specified, and CTYPE is the coordinate name give by the
+CTYPEn keyword.  For example, the R.A. and Dec coordinates for the 'a' image
+will be give in the 'a.RA' and 'a.DEC' columns of the temporary
+table, respectively. (The table column names are case insensitive).
+<p>
+
+<p>
+These coordinate system columns are most commonly used in conditional
+calculator expressions.   As a simple example, the
+following conditional expression will set all the pixels
+that have a declination value less than +30. degrees to zero:
+<pre>
+  "a.dec < 30 ? 0. : a"
+</pre>
+These coordinate columns are particularly useful when
+combined with the ANGSEP() distance function, and the REGFILTER()
+spatial region filtering function, as shown in some of the examples.
+
+<p>
+FITS images may have both a primary coordinate system and up to 26
+alternate coordinate systems (labeled "A" through "Z").  These
+coordinate systems are named with the WCS keywords CTYPE<i>ia</i>
+(where <i>i</i> is the axis number and <i>a</i> is the optional
+alternate coordinate system designator.  Any coordinate system with
+any units can be used (although celestial coordinate systems are
+required by the WCS standard to be in degrees).  Alternate coordinate
+systems are referred to as NAME.<i>CTYPE</i>.<i>a</i>, where NAME is the
+parameter name or symbolic name of the image, and 
+<i>CTYPE</i> is the coordinate name (RA, DEC, etc).  If there is no
+ambiguity, the ".a" part is optional.
+
+<p>
+The pixel coordinate values (NAME.P<i>i</i>) follow the FITS convention,
+where the lower left corner pixel is centered at coordinate 1.0, and spans 
+the range from 0.5 to 1.5..
+Intermediate "Image" coordinates (NAME.X<i>i</i>) are cartesian,
+defined as having CRPIXi and CDELTi applied, but not CRVALi and not
+any projection.  Intermediate "Polar" coordinates (NAME.THETA and
+NAME.PHI), also known as "natural" image latitude and longitude in the
+WCS standard documents, and typically measure the co-latitude and
+longitude about the image reference point.
+
+<p>
+Spatial region filters using the REGFILTER() function
+and celestial coordinates can
+be applied.  Also available are the CIRCLE(), BOX() and ELLIPSE()
+primitive functions.  The result of any of these filtering expressions is a
+logical (true/false) value depending on whether or not the center of
+the pixel is located within the defined region.  
+The filters can be applied in a natural
+way using the above notation, for example,
+
+<p>
+<pre>
+  REGFILTER("spatial.reg",NAME.P1,NAME.P2) ? 1 : 0
+</pre>
+
+<p>
+locates pixels in the image which satisfy the spatial region and sets
+the result to 1 for those pixels.  Note that for celestial regions,
+the filtering values <b>must</b> be in <b>pixel</b> coordinates (which
+is why NAME.P1 and NAME.P2 are used above).  A non-celestial region
+file (linear or physical coordinates) can be applied directly as usual
+using the desired columns.
+
+<p>
+By default, the WCS keywords of the output image are copied from the
+first image extension of the first listed image file, if the keywords
+exist.  In the example above, the world coordinate keywords of the
+output image 'outfile.fits' are copied from 'img1.fits'.  This default
+behavior can be changed using the 'wcsimage' parameter.
+
+<p>
+Internally, coordinate maps are given names by replacing NAME.XXX.A
+with NAME_XXX_A.  Only those coordinate systems that are requested are
+loaded into the calculator.  However, users should beware not to use
+primary variable NAMEs that would conflict with the above derived
+names.
+
+<h3>Console Output</h3>
+
+<p>
+If chatter is set to 2 or higher, and the result of the image
+computation is a single pixel, then the value will be printed to the
+standard output.  This is useful for simple statistical measures of an
+image (such as the average, standard deviation, median).  The output
+format is "RESULT(N)=VALUE [UNITS]", where N is the image number,
+RESULT is name given by the resultname parameter, and VALUE is the
+computed value.  The units are in square brackets and optional,
+depending on the units of the output image.  Null values are printed
+as "#NULL".  It is possible to set outfile=NONE and get only console
+output.
+
+<h3>Implementation Notes</h3>
+
+<p>
+Currently, ftimgcalc is implemented in the following manner.  Each
+input image file is opened.  The first image extension is read into an
+internal memory table.  The result value is calculated and written to
+the output.  Then the internal memory table is cleared and the process
+starts again by reading the next image extension from each input file
+(if any).  This approach requires that all input files be open at one
+time.  If the CFITSIO library was compiled with a limited number of
+open file handles, it may not be possible to open all 26 input images,
+plus the two output images and one internal memory table, all at one
+time.
+
+<p>
+Also, if the input images are gzipped or stored on the network, then
+ftimgcalc may have to store all input files in memory at one time.  If
+the input images are large, this may overwhelm the user's available
+computer memory.  For large inputs, the best strategy is to have all
+inputs locally on disk, and unzipped before calling ftimgcalc.
+
+<p>
+In ftimgcalc version 1.12 and earlier, keywords were only taken from
+the first image extension of the first file and replicated for later
+extensions.  In ftimgcalc version 2.0 and later, this behavior was
+fixed so that each input image keywords are available on an
+extension-by-extension basis.
+
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>outfile [filename]
+
+<dd>The name of the output image file, or NONE if only console
+output is expected.
+<p>
+
+<dt>expr [string]
+
+<dd>An arbitrary calculator expression, whose result will be saved in
+outfile.  The variable names that can be used in the expression are
+defined by which images are loaded.  See the calc_express help file
+for a list of all the supported operators, functions, and predefined
+constants.  A text file containing the expression may be specified by
+preceding the filename with '@', such as '@file.txt'.  The expression
+in the file can be arbitrarily complex and extend over multiple lines
+of the file. Lines that begin with 2 slash characters ('//') will be
+ignored and may be used to add comments to the file.
+<p>
+
+<dt>(<i>letter</i> = "NONE") [string]
+
+<dd>An input image file name to be used in the expression.
+<i>letter</i> can be any letter from 'a' to 'z'.  
+If no input images are specified on the command line, then ftimgcalc
+will sequentially prompt for a, b, c, ...., until a value of "NONE"
+is entered.
+There are two
+possible forms for the image file name.  If a simple filename is specified,
+(a=img.fits), then the image is referred to by the same parameter
+letter in
+the calculator expression.  In the second form, images can be renamed to a
+different symbolic name, (a="NAME=img.fits"), in which case the image
+must be referred to by the NAME used.  The quote characters must
+be used to enclose the symbolic name and file name.
+<p>
+Input files can contain one or more image extensions.  Set the
+nvectimages parameter to the number of images to be processed.  If a
+file contains fewer than nvectimages image extensions, then an error
+will be generated, unless replicate=YES.  If replicate=YES, then the
+extensions in the input file will be replicated as many times as
+necessary to fill all nvectimages image positions.
+<p>
+
+<dt>(nvectimages = 1) [integer]
+
+<dd>Number of images to process at once.  See the input file parameter
+and replicate for more information.
+<p>
+
+<dt>(replicate = NO) [boolean]
+
+<dd>When processing multiple images, this parameter indicates whether
+an input file which has too few extensions (fewer than nvectimages)
+should be extended by replication to the full number. 
+
+<dt>(diagfile = "NONE") [string]
+
+<dd>Name of diagnostic file.  This file contains all the intermediate
+expressions as a binary table with image cells.  This file might be
+useful for debugging or to perform further computations.  Note that
+the format of this file cannot be guaranteed to remain the same over
+time, as ftimgcalc is improved.
+<p>
+
+<dt>(resultname = "RESULT") [string]
+
+<dd>Name of the result.  The primary HDU will have HDUNAME="RESULT".
+Subsequent image HDUs, if any, will have an EXTNAME keyword of the
+form "RESULT_n", where n is the image number.  The diagnostic file
+will have a column titled RESULT which contains the vector of result
+images.
+<p>
+
+<dt>(bunit = "NONE") [string]
+
+<dd>Describes how the units of the image are to be assigned.  Bunit is
+the unit string to be given to the image BUNIT keyword, with the
+following exceptions.  A value of "NONE" indicates that the output
+image will have no units.  A value of ":NAME" indicates that the
+output image will have the same image as the image referred to by
+NAME as used in the expression.
+<p>
+
+<dt>(otherext = "NONE") [string]
+
+<dd>Describes whether additional extensions are to be copied to the
+output.  A value of ":NAME" indicates that any extensions which follow
+the data in the image referred to by NAME will be copied to the
+output.  A value of "NONE" indicates no extra extensions will be
+copied.
+<p>
+
+<dt>(wcsimage = "INDEF") [string]
+
+<dd>Describes how the WCS coordinate keyword of the output image are to be
+assigned.  A value of "NONE" indicates that the output image will have
+no WCS coordinates.  A value of ":NAME" indicates that the output
+image will have the same WCS keywords as the image referred to by NAME
+as used in the expression.  A value of "INDEF" choses the first image
+(the "a" image) specified on the command line.
+<p>
+
+<dt>(bitpix = "INDEF") [string]
+
+<dd>The data type of the output image, either as a FITS BITPIX integer
+or TFORM code letter.  The calculator will general choose an 
+appropriate data type for the output image based on the
+calculator expression and the data types of the input images, but this
+parameter can be used to override that decision.  Possible values:
+<ul>
+<li>"INDEF" or "0": natural default value;</li>
+<li>"B" or "8": 8-bit integer (byte);</li>
+<li>"I" or "16": 16-bit integer;</li>
+<li>"J" or "32": 32-bit integer;</li>
+<li>"K" or "64": 64-bit integer;</li>
+<li>"E" or "-32": 32-bit floating point;</li>
+<li>"D" or "-64": 64-bit floating point.</li>
+</ul>
+<p>
+
+<dt>(clobber = NO) [boolean]
+
+<dd>If the output file already exists, then setting "clobber = yes" will 
+cause it to be overwritten.
+<p>
+
+<dt>(chatter = 1) [integer, 0 - 5]
+
+<dd>Controls the amount of informative text written to standard
+output.  For single pixel output images, chatter = 2 prints the value
+to the standard output; chatter = 5 always prints debugging information.
+<p>
+
+<dt>(history = YES) [boolean]
+
+<dd>If history = YES, then a set of HISTORY keywords will be written to
+the header of the specified HDU in the output file to record the value
+of all the task parameters that were used to produce the output
+file.
+
+</dl>
+<h2>EXAMPLES</h2>
+
+<p>
+
+1. Computes the absolute value of the function "(data-model)/error", where
+each of the terms are images.
+
+<pre>
+
+  ftimgcalc output.img "ABS((DATA-MODEL)/ERROR)" \
+    a="DATA=data.fits" b="MODEL=model.fits" c="ERROR=error.fits"
+</pre>
+
+2. Computes the sum of a vector of images.  v1.fits and v2.fits both
+containing four image extensions.  The result file, output.img, will
+also contain four image extensions, each being the sum of the
+corresponding extensions in v1.fits and v2.fits.
+
+<pre>
+
+  ftimgcalc output.img "V1+V2" nvectimages=4 \
+    a="V1=v1.fits" b="V2=v2.fits"
+</pre>
+
+3. Test if each image pixel is within 0.1 degrees (6 arcmin) from the 
+(R.A., Dec.) =
+(10.0,30.0) position (the values are given in units of degrees), 
+and assign the output pixel value 1 if yes, and 0 if no.  This 
+assumes that
+image img.fits has the appropriate WCS keywords that define
+the celestial world coordinate system in the image.
+
+<pre>
+
+  ftimgcalc output.img "(ANGSEP(IMG.RA, IMG.DEC, 10., 30.) .lt. 0.1) ? \
+    (1) : (0)"  a='IMG=img.fits'
+</pre>
+
+4. This example is similar to the previous one, except that several
+circular
+regions are defined in an external ASCII region file (generally produced
+by the user with an image display program such as ds9 or fv).  In this
+example, the stars.reg file was created using the fv program, and 
+contains the following lines:
+<pre>
+  # Region created by POW Fri Jun 02 02:51:59 PM EDT 2006
+  # filename: ngc1316o.fits
+  fk5
+  +circle(3:20:49.16, -37:23:20.68, 1.741511')
+  +circle(3:20:48.41, -37:17:13.32, 57.37199")
+  +circle(3:19:07.81, -37:16:52.80, 54.50155")
+</pre>
+This region file define 3 circles in the FK5 celestial coordinate
+system that enclose 3 objects of interest.  The following ftimgcalc
+command will create an output mask image, where the pixels within
+the circles have a value of 1 and all the other pixels have a value of zero.
+Note that since the regions are defined in terms of celestial coordinates,
+the 2nd and 3rd parameters of the regfilter function (i.e., the pixel
+coordinates) must be given in projected pixel units, not celestial
+coordinate units.
+
+<pre>
+
+  ftimgcalc output.img 'regfilter("stars.reg", A.P1, A.P2) ? \
+    (1) : (0)'  a=ngc1316o.fits
+</pre>
+
+This example also shows that the entire calculator expression must
+be enclosed in single quotes if double quote are used 
+within the expression (around the region file name in this case).
+
+
+<h2>SEE ALSO</h2>
+
+<p>ftpixcalc, fcalc, ftcalc, calc_express</p>
+
+<h2>LAST MODIFIED</h2>
+
+Apr 2009
+</body>
+</html>

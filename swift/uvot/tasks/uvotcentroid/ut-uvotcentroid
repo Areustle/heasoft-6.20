@@ -1,0 +1,110 @@
+#!/usr/bin/perl
+
+use strict;
+
+package Test::Sequence;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+use File::Copy;
+use FileHandle;
+
+# main
+
+my $tool = Test::Sequence->new;
+$tool->unitTest;
+exit($tool->{code});
+
+sub execute {
+
+  my ($self) = @_;
+
+  $self->pilOptions(options => [qw(input=string output=string chatter=int)],get => 1,);
+
+  $self->runUvotcentroid
+    if $self->isValid;
+
+}
+
+sub runUvotcentroid {
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my $input = $args->{input};
+  my $output = $args->{output};
+
+
+  $self->shell('pset uvotcentroid ra=0');
+  $self->shell('pset uvotcentroid dec=0');
+  $self->shell('pset uvotcentroid conflimit=0');
+
+# run the tool
+
+  my @args = (image     => "$input/sw00030919002uuu_sk.img",
+	      srcreg     => "$input/src.reg",
+	      confidence => 90.0,
+	      niter      => 120,
+	      threshold  => 3.0,
+	      subdimsiz  => 20,
+	      plot       => 'yes',
+	      plotdev    => '/gif',
+	      cleanup    => 'yes',
+	      chatter    => 5);
+
+  my $command = $self->buildCommand('uvotcentroid', @args);
+  $self->runCommand($command, report => 3);
+
+# check ra is written to parameter list
+
+  my $ra = $self->shell('pget uvotcentroid ra');
+  my $count = -1;
+  foreach my $line (@{ $ra->{lines} || [ ] }) {
+    if ($line =~ /(\S+)/ and $line * 1. != 0.) {
+      $count = $1;
+    }
+  }
+  if ($count <= 0) {
+    $self->error(BAD_OUTPUT, "RA not written to parameter list");
+  } else {
+    print "ut-uvotcentroid: RA written to parameter list\n";
+  }
+
+# check dec is written to parameter list
+
+  my $dec = $self->shell('pget uvotcentroid dec');
+  $count = -1;
+  foreach my $line (@{ $dec->{lines} || [ ] }) {
+    if ($line =~ /(\S+)/ and $line * 1. != 0.) {
+      $count = $1;
+    }
+  }
+  if ($count eq 0) {
+    $self->error(BAD_OUTPUT, "Dec not written to parameter list");
+  } else {
+    print "ut-uvotcentroid: Dec written to parameter list\n";
+  }
+
+# check conflimit is written to parameter list
+
+  my $limit = $self->shell('pget uvotcentroid conflimit');
+  $count = -1;
+  foreach my $line (@{ $limit->{lines} || [ ] }) {
+    if ($line =~ /(\S+)/ and $line * 1. != 0.) {
+      $count = $1;
+    }
+  }
+  if ($count <= 0) {
+    $self->error(BAD_OUTPUT, "Conflimit not written to parameter list");
+  } else {
+    print "ut-uvotcentroid: Conflimit written to parameter list\n";
+  }
+
+# does gif file exist?
+
+  if (-e "pgplot.gif") {
+    print "ut-uvotcentroid: GIF file written successfully\n";
+    move('pgplot.gif',"$output/sw00030919002uuu_sk.gif");
+  } else {
+    $self->error(BAD_OUTPUT, "GIF file not written successfully");
+  }
+
+}

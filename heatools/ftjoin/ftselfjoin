@@ -1,0 +1,120 @@
+#!/usr/bin/perl
+#
+# ftselfjoin - This is a wrapper for ftjoin intersecting a table with itself
+#
+#
+# $Id: ftselfjoin,v 1.1 2009/08/26 02:00:55 craigm Exp $
+#
+# $Log: ftselfjoin,v $
+# Revision 1.1  2009/08/26 02:00:55  craigm
+# Add the task 'ftselfjoin', which is a matcher specialized for finding duplicates within a table --CM
+#
+#
+#
+
+use HEACORE::HEAINIT;
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+eval {
+    $status = headas_main(\&ftselfjoin);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub ftselfjoin {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    my $taskname = "ftselfjoin";
+    my $version = "1.0";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($version);
+
+    eval {
+	$status = &ftselfjoin_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+sub ftselfjoin_work {
+
+    # --------------- parameters
+    ($status = PILGetFname('infile', $leftfile)) == 0 || die "error getting leftfile parameter";
+    $rightfile = "$leftfile";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+
+
+    ($status = PILGetString('expr', $selexpr)) == 0 || die "error getting 'expr' parameter";
+
+    ($status = PILGetString('leftnameprefix', $leftnameprefix)) == 0 || die "error getting 'leftnameprefix' parameter";
+    ($status = PILGetString('leftnamesuffix', $leftnamesuffix)) == 0 || die "error getting 'leftnamesuffix' parameter";
+    ($status = PILGetString('rightnameprefix', $rightnameprefix)) == 0 || die "error getting 'rightnameprefix' parameter";
+    ($status = PILGetString('rightnamesuffix', $rightnamesuffix)) == 0 || die "error getting 'rightnamesuffix' parameter";
+
+    ($status = PILGetString('outcolumns', $outcolumns)) == 0 || die "error getting 'outcolumns' parameter";
+
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting 'cleanup' parameter";
+    ($status = PILGetString('debugfile', $debugfile)) == 0 || die "error getting 'debugfile' parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting 'clobber' parameter";
+    ($status = PILGetBool('history', $history)) == 0 || die "error getting 'history' parameter";
+    ($status = PILGetBool('commutative', $commutative)) == 0 || die "error getting 'commutative' parameter";
+
+
+    $jointype = 'INNER';   # Self-joint is always just intersection
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    if ($chatter >= 5) { $verbose = 1; }
+
+    $clobber = $clobber ? "YES" : "NO";
+    $cleanup = $cleanup ? "YES" : "NO";
+    $history = $history ? "YES" : "NO";
+
+    if ($commutative) {
+      # If expr is commutative, then 
+      $newexpr = "( $selexpr ) && (#L_ROW < #R_ROW)";
+    } else {
+      $newexpr = "( $selexpr ) && (#L_ROW != #R_ROW)";
+    }
+
+    $cmd = "ftjoin ".
+      "leftfile='$leftfile' rightfile='$rightfile' ".
+      "outfile='$outfile' expr='$newexpr' ".
+      "leftnameprefix='$leftnameprefix' leftnamesuffix='$leftnamesuffix' ".
+      "rightnameprefix='$rightnameprefix' rightnamesuffix='$rightnamesuffix' ".
+      "outcolumns='$outcolumns' debugfile='$debugfile' dupcolnames=YES ".
+      "cleanup='$cleanup' chatter='$chatter' clobber='$clobber' history='$history' ";
+
+    system($cmd);
+
+    return $? >> 8;
+}
+
+

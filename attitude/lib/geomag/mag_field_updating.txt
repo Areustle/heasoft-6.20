@@ -1,0 +1,112 @@
+
+Notes on updating IGRF magnetic field model (version 12)
+2015-04-28
+Craig Markwardt
+
+Here is what I did to update the IGRF magnetic field for version 12,
+which was released in early 2015.
+
+The coefficients can be found here:
+  http://www.ngdc.noaa.gov/IAGA/vmod/igrf.html  
+Specifically for version 12, I used the following link:
+  http://www.ngdc.noaa.gov/IAGA/vmod/igrf12coeffs.txt
+And these commands:
+  curl http://www.ngdc.noaa.gov/IAGA/vmod/igrf12coeffs.txt
+  dos2unix -U igrf12coeffs.txt  
+(the last command deals with DOS CR-LFs)
+
+Next, check out getcoeff_v12 and modify to taste.  Basically you are
+going to be modifying the column numbers and adding the right headers
+to make XgrfNNNN.dat files.  The last file will be a "derivative" file
+which just gives the expected change in the coefficients, extrapolated
+forward in time to the next half-decade.  For this version, this
+covers 2015-2020.
+
+Use this script to generate the XgrfNNNN_v12.dat files for the year of
+interest.  Of course there will be one igrfNNNNs_v12.dat at the last
+epoch which is the derivative term.
+
+Now go look at create_data_statements_v12.pro, and edit that to taste.
+Read the appropriate data files for the years of interest.  In this
+case, since 2010 and 2015 were modified, this means that years 2005,
+2010, 2015 in the table need to be updated.  The index=NN keyword
+should be updated to accomodate the new year or years.
+
+When running this script, a set of FORTRAN DATA statements is
+produced, which can be substituted into the geocal.f file.  This huge
+data statement begins around line 780 in the file.  For years that
+have been *updated* one needs to remove the old lines from the FORTRAN
+file to make room for the revised numbers.  For the new years, simply
+add them to the file.
+
+Now go to geocal.f, around line 775, and edit the maximum dimensions
+of the arrays.  Bump up the dimension of TZERO(), GG(*,13,13)
+GGT(*,13,13) NMAX(*) and LABEL(*). The second and third dimensions of
+GG() and GGT() can remain 13x13, which corresponds to the dimensions
+of the coefficient block.  In 2015, the maximum dimension was bumped
+up to 15, so the next time this is done in 2020, it should be bumped
+up to 16.
+
+
+
+Previous Notes for version 11
+2011-06-07
+
+Here are some notes about updating the IGRF magnetic field model, which 
+I know for a fact is included in the prefilter code, as well as xtefilt 
+("starksubs.f" is an obvious giveaway of Mike Stark).
+
+The default IGRF software is designed to access the magnetic field data 
+via input files stored on disk (in ASCII format), but the FTOOLS codes 
+have been modified to use an internal array defined by DATA statements. 
+  In principle this could be changed to use a CALDB (FITS) structure, 
+but that's for another time...
+
+The official data files are available from the NSSDC web site here:
+  http://nssdcftp.gsfc.nasa.gov/models/geomagnetic/igrf/fortran_code/
+Of course, this is not exactly the same format used in the FORTRAN files.
+
+I've created a few IDL scripts which ingest the files and create an 
+equivalent FORTRAN DATA statement.  Please see
+   /home/lhea/craigm/lib/idl/util/{read_igrf.pro,print_igrf.pro}
+The READ_IGRF script will ingest the disk files, and PRINT_IGRF will 
+print them as a FORTRAN DATA statement.  There is an example included in 
+the headers of the file.
+
+I recently created a new file geocal.f, which extends the validity of
+the data files through "provisional 2010", which is the best that is
+available.  The original file that exists in CVS now is only valid
+through "provisional 1995" which is very old indeed.  I used the IDL
+script create_data_statements.pro to create the data statements which
+were inserted into the fortran file.  Compare to geocal.f.orig from
+before the change.
+
+I believe that this should be a drop-in replacement file for geocal.f,
+which exists in both prefilter and xtefilt.
+
+Regarding moving this forward, I think it makes sense to make a test 
+version with the new code, and then the instrument teams could test how 
+much this changes things.
+
+Craig
+
+
+
+--- old info about 2009 file
+In 2009 I was able to make a new file geocal_2009.f, which extended the 
+validity through "provisional 2005" (old file was valid up through 
+"provisional 1995").  Today, two years later, the both the "definitive 
+2005" and "provisional 2010" files are now available.  The examples 
+shown in the header of read_igrf.pro are the *exact* code I used to 
+produce a revised geocal.f data file.
+
+At the time in 2009, I created a sample geocal_2009.f file with new 1995, 
+2000 and 2005 DATA statements.  Please see this directory:
+   /home/lhea/craigm/igrf-update/{geocal.f.orig,geocal.f}
+which has the "before" and "after" versions of geocal.f which make it 
+work.  Aside from the actual DATA statement, a few fortran dimensions 
+had to be changed.  I don't believe any other changes were required.
+
+Obviously, to make this more up to date, we would need to update to 
+available "provisional 2010" data.  I believe that both the RXTE/xtefilt 
+and attitude/prefilter programs can be updated in the same way.

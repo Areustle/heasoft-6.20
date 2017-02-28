@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= ftools
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_SCRIPTS	= osofindfast
+
+HD_INSTALL_HELP		= osofindfast.txt
+
+include ${HD_STD_MAKEFILE}

@@ -1,0 +1,19 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_CXXTASK		= rsp2rmfarf
+
+HD_CXXTASK_SRC_c	= rsp2rmfarf.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_CXXLIBS		= ${HD_LFLAGS} -l${HEASP} -l${CCFITS} ${HD_STD_CXXLIBS}
+
+HD_INSTALL_TASKS	= ${HD_CXXTASK}
+
+HD_INSTALL_PFILES	= rsp2rmfarf.par
+
+HD_INSTALL_HELP		= rsp2rmfarf.html
+
+include ${HD_STD_MAKEFILE}

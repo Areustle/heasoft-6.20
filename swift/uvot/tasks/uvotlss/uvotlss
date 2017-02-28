@@ -1,0 +1,338 @@
+#!perl
+
+# $Source: /headas/headas/swift/uvot/tasks/uvotlss/uvotlss,v $
+# $Revision: 1.9 $
+# $Date: 2015/09/30 15:21:31 $
+#
+#
+# $Log: uvotlss,v $
+# Revision 1.9  2015/09/30 15:21:31  rwiegand
+# Bug fix: was not determining the filter when lssfile parameter did not indicate CALDB so no corrections were found/applied.
+#
+# Revision 1.8  2015/09/08 19:46:01  rwiegand
+# Updated uvotlss version number.
+#
+# Revision 1.7  2015/09/08 19:41:51  rwiegand
+# Bug fix: was not storing FITS header when passed position on command line.
+#
+# Revision 1.6  2011/03/30 22:02:57  rwiegand
+# When processing a table, prefer the FILTER column to the FILTER keyword.
+#
+# Revision 1.5  2010/12/08 14:41:11  rwiegand
+# Motivated by requirement for uvotdetect to support LSS correction, modified
+# photometry module so that each correction uses the generic names for the
+# input (UNCORR_RATE) and output (CORR_RATE).
+#
+# Revision 1.4  2007/11/15 21:51:19  rwiegand
+# Added a warning message that this is beta software.
+#
+# Revision 1.3  2007/11/05 22:56:22  rwiegand
+# Only report the detector position if it is successfully calculated.
+#
+# Revision 1.2  2007/11/01 16:10:39  rwiegand
+# Always load the header since we need to know the FILTER.
+#
+# Revision 1.1  2007/10/25 13:43:11  rwiegand
+# Tool for calculating large scale sensitivity.
+
+
+use strict;
+
+package UVOT::LSS;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+use UVOT::Calibration;
+use UVOT::Source;
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			loadCalibration
+			processInput
+			finalize
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				input=string infile=file x=real y=real
+				lssfile=file wcsfile=file
+				ratecol=string errcol=string
+				history=bool chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (uc($args->{wcsfile}) ne 'NONE') {
+		my $header;
+		my $status = SimpleFITS->readonly($args->{wcsfile})
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT,
+				"unable to load WCS from $args->{wcsfile} [$status]");
+		}
+		$self->{WCS_HEADER} = $header;
+	}
+}
+
+
+sub loadCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $value = $args->{lssfile};
+	if (1) {	# was ($value =~ /^CALDB/i), but we always need the header
+		my $header;
+		my $status = SimpleFITS->readonly($args->{infile})
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "trying to load $args->{infile} header [$status]");
+		}
+		$self->{HEADER} = $header;
+	}
+
+	my %lss;
+	UVOT::Calibration::loadLargeScaleSensitivity($self, \%lss,
+			PAR => $args->{lssfile},
+			PAR_NOTE => 'lssfile',
+			HEADER => $self->{HEADER},
+			);
+	$self->{CAL_LSS} = \%lss;
+}
+
+
+sub processInput
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	if ($input eq 'TABLE') {
+		$self->processTABLE;
+	}
+	else {
+		$self->processXY($input);
+	}
+}
+
+
+sub processXY
+{
+	my ($self, $input) = @_;
+
+	my $args = $self->args;
+
+	my %image = (
+		XY_TYPE => $input,
+		X => $args->{x},
+		Y => $args->{y},
+		UNCORR_RATE => 0,
+		UNCORR_RATE_ERR => 0,
+	);
+
+	my $header = $self->{HEADER};
+	if (not $header) {
+		my $status = SimpleFITS->readonly($args->{infile})
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to load $args->{infile} header [$status]");
+			return;
+		}
+		$self->{HEADER} = $header;
+	}
+	$image{HEADER} = $header;
+	$image{FILTER} = $header->{FILTER} || 'UNKNOWN';
+	$self->report("FILTER is $image{FILTER}")
+		if $self->chatter(3);
+
+	UVOT::Source::updateDetectorPosition($self, \%image);
+	if (defined($image{DETX}) and defined($image{DETY})) {
+		my $detstr = sprintf('%.2f,%.2f', $image{DETX}, $image{DETY});
+		$self->report("$input $image{X},$image{Y} => DET $detstr");
+	}
+
+	UVOT::Source::applyLargeScaleSensitivity($self, $self->{CAL_LSS}, \%image);
+	$self->report(sprintf("\t=> LSS_FACTOR %.6f", $image{LSS_FACTOR}));
+}
+
+
+sub processTABLE
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $path = $args->{infile};
+	my $spec = $self->parseInputURL($args->{infile});
+	if (not length($spec->{extspec})) {
+		$self->report('extension not specified, assuming first');
+		$path .= '[1]';
+	}
+	my @table;
+	my $fits = SimpleFITS->open('+<' . $path, access => 'exists');
+	my $status = $fits->loadtable(\@table)->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load table $path [$status]");
+		return;
+	}
+
+	if (not @table) {
+		$self->warning("no rows in input table");
+		return;
+	}
+
+	my @columns = ($args->{ratecol}, $args->{errcol});
+
+	my $first = $table[0];
+
+	if ($self->{CAL_LSS}{SKYLSS}) {
+		push(@columns, qw(RA DEC));
+	}
+	elsif (not exists($first->{DETX}) and not exists($first->{DETY})) {
+		# hmm, this might be uvotdetect output, so try to use D WCS to derive
+		# DETX/Y from RA/DEC
+		if (not $self->{WCS_HEADER}) {
+			$self->error(BAD_INPUT, "need wcsfile if not SKY LSS and table missing DETX/Y");
+		}
+		push(@columns, qw(RA DEC));
+	}
+	else {
+		# old default: input looks like uvotsource output so DETX/Y are used
+		push(@columns, qw(DETX DETY));
+	}
+
+	foreach my $c (@columns) {
+		if (not exists($first->{$c})) {
+			$self->error(BAD_INPUT, "input missing $c column");
+		}
+	}
+
+	return if not $self->isValid;
+
+	foreach my $e (@table) {
+
+		$e->{UNCORR_RATE} = $e->{$args->{ratecol}};
+		$e->{UNCORR_RATE_ERR} = $e->{$args->{errcol}};
+
+		if ($self->{CAL_LSS}{SKYLSS}) {
+			$e->{XY_TYPE} = 'RADEC';
+		}
+		else {
+			if ($self->{WCS_HEADER}) {
+				$e->{XY_TYPE} = 'RADEC';
+				$e->{X} = $e->{RA};
+				$e->{Y} = $e->{DEC};
+				$e->{HEADER} = $self->{WCS_HEADER};
+				UVOT::Source::updateDetectorPosition($self, $e);
+			}
+
+			$e->{XY_TYPE} = 'DET';
+			$e->{X} = $e->{DETX};
+			$e->{Y} = $e->{DETY};
+		}
+
+		if (not $e->{FILTER}) {
+			$e->{FILTER} = $self->{HEADER}{FILTER};
+		}
+
+		# recalculate and apply the LSS_FACTOR's
+		UVOT::Source::applyLargeScaleSensitivity($self, $self->{CAL_LSS}, $e);
+
+		last if not $self->isValid;
+	}
+
+	# update the LSS_FACTOR, LSS_RATE, LSS_RATE_ERR columns
+	my @columns = (
+        { TTYPE => [ 'LSS_FACTOR', 'LSS correction factor' ],
+				TFORM => 'E' },
+        { TTYPE => [ 'LSS_RATE', 'LSS corrected rate' ],
+				TFORM => 'E', TUNIT => 'count/s' },
+        { TTYPE => [ 'LSS_RATE_ERR', 'Error in LSS_RATE' ],
+				TFORM => 'E', TUNIT => 'count/s' },
+	);
+
+	foreach my $col (@columns) {
+		my $name = $col->{TTYPE}[0];
+		my $colnum = $fits->colnum($name);
+		if ($colnum < 0) {
+			$fits->insertcol($col);
+			if ($fits->status) {
+				$self->warning("unable to create $name column");
+				last;
+			}
+		}
+
+		my @data = map { $_->{$name} } @table;
+		$fits->writecol($name, { }, \@data);
+		if ($fits->status) {
+			$self->warning("unable to write $name column");
+			last;
+		}
+	}
+
+	$status = $fits->close->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to update $args->{infile} LSS columns [$status]");
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		if ($args->{input} eq 'TABLE') {
+			$self->putParameterHistory($args->{infile})
+				if $args->{historyFlag};
+		}
+	}
+
+}
+
+
+
+# main
+{
+	my $task = UVOT::LSS->new(version => '1.4');
+
+	$task->run;
+
+	exit($task->{code});
+}
+

@@ -1,0 +1,190 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotapercorr/uvotapercorr,v $
+# $Revision: 1.7 $
+# $Date: 2010/12/08 14:41:10 $
+#
+# $Log: uvotapercorr,v $
+# Revision 1.7  2010/12/08 14:41:10  rwiegand
+# Motivated by requirement for uvotdetect to support LSS correction, modified
+# photometry module so that each correction uses the generic names for the
+# input (UNCORR_RATE) and output (CORR_RATE).
+#
+# Revision 1.6  2009/07/22 00:42:19  rwiegand
+# Needed to print out messages formatted in library and update PIL file
+# in finalize.
+#
+# Revision 1.5  2009/07/21 23:25:49  rwiegand
+# Updated to use UVOT::Calibration and UVOT::Source support for
+# aperture correction.  New default value fwhmsig=-1 indicates to
+# use recommended value.
+#
+
+use strict;
+
+package UVOT::AperCorr;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+use UVOT::Calibration;
+use UVOT::Source;
+
+
+{
+	my $task = __PACKAGE__->new(version => '2.0');
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			loadCalibration
+			applyCalibration
+			)) {
+		$self->$step;
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				cntrate=real ratesig=real aperad=real fwhmsig=real
+				filter=string psffile=file
+				chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if ($self->chatter(3)) {
+    	$self->report(join("\n\t", "Got parameters:",
+		       "cntrate = $args->{cntrate}",
+		       "ratesig = $args->{ratesig}",
+		       " aperad = $args->{aperad}",
+		       "fwhmsig = $args->{fwhmsig}",
+		       " filter = $args->{filter}",
+		       "psffile = $args->{psffile}",
+		       "chatter = $args->{chatter}"));
+	}
+
+
+	# fudge in the absence of a WHITE filter PSF calibration: use the B filter
+	my $filter = uc($args->{filter});
+	if ($filter eq 'WHITE') {
+		$filter = 'B';
+		$self->warning("There is no PSF calibration for the WHITE filter."
+				. "\nUsing the B filter calibration instead.");
+	}   
+
+	$self->{FILTER} = $filter;
+}
+
+
+sub loadCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# set up default header
+	my %header = (
+		TELESCOP => 'SWIFT',
+		INSTRUME => 'UVOTA',
+		FILTER => $self->{FILTER},
+	);
+
+	my %reef;
+
+	UVOT::Calibration::loadEncircledEnergy($self, \%reef,
+			PAR => $args->{psffile},
+			HEADER => \%header,
+            );
+
+	$self->{REEF} = \%reef;
+
+	UVOT::Calibration::primeEncircledEnergy($self, $self->{REEF}, $self->{FILTER});
+}
+
+
+sub applyCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{fwhmsig} < 0) {
+		$args->{fwhmsig} = UVOT::Calibration::DEFAULT_FWHM_UNCERTAINTY_percent;
+	}
+
+	my %tmp = (
+		RATE => $args->{cntrate},
+		RATE_ERR => $args->{ratesig},
+		APERTURE_RADIUS_arcsec => $args->{aperad},
+		FWHM_UNCERTAINTY_percent => $args->{fwhmsig},
+		FILTER => $self->{FILTER},
+	);
+
+	UVOT::Source::applyEncircledEnergy($self, $self->{REEF}, \%tmp);
+
+	$self->{DATA} = \%tmp;
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $result = $self->{DATA};
+	return if not ref($result);
+
+	if (my $aref = $result->{ERRORS}) {
+		foreach my $item (@$aref) {
+			$self->error(BAD_EXECUTE, $item);
+		}
+	}
+
+	if (my $aref = $result->{WARNINGS}) {
+		foreach my $item (@$aref) {
+			$self->warning($item);
+		}
+	}
+
+	if (my $aref = $result->{NOTES} and $self->chatter(3)) {
+		foreach my $item (@$aref) {
+			$self->report($item)
+				if $self->chatter;
+		}
+	}
+
+	if (defined($result->{CORR_RATE}) and defined($result->{CORR_RATE_ERR})) {
+		my $cntrate = $result->{CORR_RATE};
+		my $raterr = $result->{CORR_RATE_ERR};
+
+		$self->report(
+				sprintf('Corrected count rate = %.4f +/- %.4f c/s'
+						. ' (includes systematics of %.1f%%)',
+						$cntrate, $raterr, 100 * $result->{FWHM_ERR_SYS})
+				);
+
+		HEACORE::PIL::PILPutReal(aperate => int($cntrate * 1e5) / 1e5);
+		HEACORE::PIL::PILPutReal(apersig => int($raterr * 1e5) / 1e5);
+	}
+
+	else {
+		$self->error(BAD_EXECUTE, 'no results');
+	}
+}

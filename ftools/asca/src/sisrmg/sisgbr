@@ -1,0 +1,402 @@
+#!/usr/local/bin/perl
+#
+#  Script to qdp fit branching ratios derived from FITS data.
+#
+$USAGE ="$0 ";
+$USAGE.="[ -y y_bin_size -p ph_max -g nom_PI_gain ] ";
+$USAGE.="[ -a raw.qdp -o branch.qdp -c compare.qdp -t glist -b -f ] ";
+$USAGE.="bright2.fits ...\n\n";
+
+use Getopt::Std;
+getopts('a:o:c:g:p:t:y:bfh') || die $USAGE;
+
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+
+  sisgbr
+
+USAGE
+  sisgbr [ -y y_bin_size -p ph_max -g nom_PI_gain ] 
+  [ -a raw.qdp -o branch.qdp -c compare.qdp -t glist -b -f ] bright2.fits ...
+
+DESCRIPTION
+ 
+   Script to qdp fit branching ratios derived from FITS data
+ 
+
+EOHELP
+exit 0;
+}
+
+#
+#  Setup fits/qdp environment
+#
+$ENV{PGPLOT_DEVICE}="/null";
+$ENV{PGPLOT_TYPE}="/null";
+#$ENV{PGPLOT_FONT}="/dev/null";
+
+#
+# 22 March 97: M.Tripicco
+# 
+# PFILES will already be set, plus SYS/LOCPFILES are
+# deprecated and no longer exist as separate entities
+#
+#die $USAGE."The SYSPFILES variable must exist." unless $ENV{SYSPFILES};
+#$ENV{LOCPFILES}=".";
+#$ENV{PFILES}="$ENV{LOCPFILES};$ENV{SYSPFILES}";
+
+#
+#  Setup for FITS histrionics
+#
+$work="branch_$$.fits";
+
+$ybsz=($opt_y) ? $opt_y : 32;
+$pmax=($opt_p) ? $opt_p : 4096;
+$nbin=($pmax / $ybsz);
+$gain=($opt_g) ? $opt_g : 0.00365;
+
+$his_head="f2dhisto "; $his_tail=" $work 1 $ybsz GRADE PI 0,8 0,$pmax";
+$his_head="f2dhisto "; $his_tail=" $work 1 $ybsz GRADE PHA 0,8 0,$pmax";
+$img_dump="fimgdmp $work STDOUT 1 9 1 $nbin |";
+$delta_E=&row2e(1);
+
+print "YbinSZ  = $ybsz\n";
+print "PHmax   = $pmax\n";
+print "Nbins   = $nbin\n";
+print "NomGain = $gain\n";
+
+#
+#  Setup for QDP work
+#
+$temp="qdp_$$.in";
+$qdp_fit_thaw = 1;
+
+$binp=($opt_a =~ /\.qdp$/) ? $opt_a : $opt_a.".qdp";
+if ($binp eq ".qdp") { $binp="raw.qdp" ; }
+$bout=($opt_o =~ /\.qdp$/) ? $opt_o : $opt_o.".qdp";
+if ($bout eq ".qdp") { $bout="branch.qdp"; }
+$diag=($opt_c =~ /\.qdp$/) ? $opt_c : $opt_c.".qdp";
+if ($diag eq ".qdp") { $diag="compare.qdp"; }
+$bright=($opt_f) ? 0 : 1;
+$bright=($opt_b) ? 1 : 0;
+
+@glist=($opt_t) ? eval($opt_t) : 0..7;
+
+print "Temp    = $temp\n";
+print "Raw     = $binp\n";
+print "Branch  = $bout\n";
+print "Compare = $diag\n";
+print "Bright  = $bright\n";
+$,=' '; print "SGrades = ",@glist,"\n"; $,=undef;
+print "\n";
+
+die $USAGE."Need $binp or .fits files.\n" unless ( -r $binp || $ARGV[0] );
+die $USAGE."$binp would be overwritten.\n" if ( -r $binp && $ARGV[0] );
+die $USAGE."specify only one of -b or -f.\n" if ( $opt_b && $opt_f );
+
+#
+#  Canonical energies used for .ecd files
+#
+@loen=(	0.300000,0.330040,0.363088,0.399445,0.439443,
+	0.483446,0.531855,0.585111,0.643700,0.708156,
+	0.779066,0.857076,0.942898,1.037310,1.141180,
+	1.255450,1.381170,1.519470,1.671620,1.839000);
+
+@hien=(	1.841000,2.031900,2.242600,2.475140,2.731800,
+	3.015070,3.327720,3.672780,4.053630,4.473970,
+	4.937900,5.449930,6.015050,6.638780,7.327190,
+	8.086970,8.925550,9.851070,10.872600,12.000000);
+# ,14.0);
+
+#
+#  Showtime:
+#
+&make_raw($binp,@ARGV) unless ( -s $binp );
+&make_fit($bout,$binp,*loen,*hien) if ( -s $binp ); 
+&diag_out($diag, $binp, $bout, @glist) if ( -s $binp && -s $bout);
+
+#
+#  Ftools Cleanup
+#
+unlink <f*.par>;
+
+exit 0;
+
+#
+#  Loop through arguments and make raw branching ratio qdp file.
+#
+sub make_raw {
+	local($raw,$file) = shift(@_);
+	while ($file = shift(@_)) {
+		print STDERR "Working on $file.\n";
+		do histo($file);
+		do accum($file);
+	}
+	do make_qdp($raw);
+}
+
+#
+#  Subroutine to histogram a data file.
+#
+sub histo {
+	# get the counts
+	system($his_head . $_[0] . $his_tail);
+	open(IMAGE,$img_dump);
+	@image = <IMAGE>;
+	close(IMAGE);
+	# cleanup
+	shift(@image); shift(@image); shift(@image);
+	unlink($work);
+}
+
+#
+#  Accumulate the counts from the histogram for file argument
+#
+sub accum {
+	local(@grades);
+	local($row,$col,$cnt);
+
+	while ($line = shift(@image)) {
+		@grades = split(/ +/,$line);
+		shift(@grades);
+		$row = shift(@grades);
+		for ($col=0; $col < 8; $col++) {
+			$cnt = shift(@grades);
+			$files{$_[0]} += $cnt;
+			$counts{$row.",".$col} += $cnt;
+		}
+	}
+}
+
+#
+#  Generate a QDP data file of raw histogram data
+#
+sub make_qdp {
+	local($row,$col,$file,$cnt,$tot,$rcnt);
+
+	open(QDP,">$_[0]");
+	$tot = 0;
+	print QDP "READ SERR 1 2 3 4 5 6 7 8 9\n";
+	while (($file,$cnt) = each(%files)) {
+		print QDP "! $file : $cnt\n";
+		$tot += $cnt;
+	}
+	print QDP "! Total Counts : $tot\n";
+	print QDP "! E dE g0 e0 g1 e1 g2 e2 g3 e3 g4 e4 g5 e5 g6 e6 g7 e7\n";
+	print QDP "! \n";
+
+	for ($row = 1; $row <= $nbin; $row++) {
+	    $rcnt = 0;
+	    for ($col = 0; $col < 8; $col++) {
+		$cnt   = $counts{$row.",".$col};
+		$rcnt += $cnt;
+		$tot  -= $cnt;
+	    }
+	    if ($rcnt == 0) {
+		next;
+	    }
+	    printf QDP "%7.3f%7.3f", &row2e($row), &dele($row);
+	    for ($col = 0; $col < 8; $col++) {
+		$cnt   = $counts{$row.",".$col};
+		printf QDP "%9.6f%9.6f", $cnt/$rcnt, sqrt($cnt+1)/$rcnt;
+	    }
+	    printf QDP "\n";
+	}
+
+	print QDP "! left with $tot total counts.\n";
+	close(QDP);
+}
+
+#
+#  Convert row number to energy from FITS histogram
+#
+sub row2e {
+	&flat( $ybsz * ($_[0] - 0.5) ) * $gain;
+}
+
+#
+#  Bright to Bright2 mapping
+#
+sub dele {
+	if (!$bright || $_[0] < 1024) {
+		$delta_E;
+	} elsif ($_[0] < 1536) {
+		$delta_E * 2;
+	} else {
+		$delta_E * 4;
+	}
+}
+
+sub flat {
+	if (!$bright || $_[0] < 1024) {
+		$_[0];
+	} elsif ($_[0] < 1536) {
+		1024 + ($_[0] - 1024) * 2;
+	} elsif ($_[0] < 2048) {
+		2048 + ($_[0] - 1536) * 4;
+	} else {
+		4096 + ($_[0] - 2048) * 4;	# force monotonicity
+	}
+}
+
+#
+#  Do the fitting
+#
+sub make_fit {
+	local($out,$in,*loe,*hie) = @_;
+	do grab_com($in);
+	do erange(5,*loe,*lo_tab);
+	do erange(6,*hie,*hi_tab);
+	#
+	#  Generate an output report file
+	#
+	open(QBR, ">$out");
+	for ( 0..$#com     ) { print QBR $com[$_]; }
+	for ( 0..$#lo_tab  ) { print QBR $lo_tab[$_] . "\n"; }
+	for ( 0..$#hi_tab  ) { print QBR $hi_tab[$_] . "\n"; }
+	close(QBR);
+}
+
+#
+#  Grab commentary from raw branching ratio file.
+#
+sub grab_com {
+	@com = ("!\n","! Grade branching ratios derived from $binp:\n","!\n");
+	open(QINP, "$_[0]");
+	comm: while (<QINP>) {
+		if (/^! /) { push(@com, $_); }
+		elsif (/READ/) { next comm; }
+		else { last comm; }
+	}
+	close(QINP);
+}
+
+#
+#  Process a range of energies.
+#
+sub erange {
+	local($ns,*ene,*tab) = @_;
+	local($n,$c);
+
+	for ( 0..$#ene ) { $tab[$_] = sprintf("%7.3f",$ene[$_]); }
+	foreach $c ( 2..9 ) {
+		$n = $ns;
+		while ($n > 1 && &qdp_fit($c,$n,*ene,*tab)) { $n--; }
+	}
+	push(@com, "! \n");
+}
+
+#
+#  Fire up QDP to spline fit one branching ratio line.
+#
+sub qdp_fit {
+	local($col,$nsp,*ene,*table) = @_;
+	local($nbin,$wvar,$brix);
+
+	open(QIN, ">$temp");
+	print QIN "rescale x $ene[0] $ene[$#ene]\n";
+	print QIN "model akim $nsp\n";
+	for ( 1..$nsp ) { print QIN "\n\n"; }	# use parameter defaults
+	print QIN "fit $col iter 100\n\n";
+	#
+	if ($qdp_fit_thaw && $nsp > 2) {
+		$brix = $nsp - 1;
+		print QIN "thaw 2..$brix\n";
+		print QIN "fit $col iter 100\n\n";
+	}
+	#
+	print QIN "imodel\n";
+	for ( 0..$#ene ) { print QIN "fny $ene[$_]\n"; }
+	print QIN "quit\n";
+	close(QIN);
+
+	open(QDP,"qdp $binp < $temp 2>&1 |\n");
+	$brix = -1;
+  fit:	while (<QDP>) {			# grab data, check pathologies
+		s/ PLT> //g;
+		if (/W-VAR=NaN/)         { $wvar = -2 ; next fit; }
+		if (/W-VAR=(.*)/)        { $wvar = $1 ; next fit; }
+		if (/CURFIT--/)          { $wvar = -1 ; last fit; }
+		if (/Fitting(.*) point/) { $nbin = $1 ; next fit; }
+		if (/Model from/)        { $brix = 0  ; next fit; }
+		if (/^ *$/)              { last fit; }
+		if ($brix >= 0)          { $brvals[$brix++] = $_; }
+	}
+	close(QDP);
+	unlink($temp);
+	if ($wvar == -1) {		# too many parameters
+		return(1);
+	}
+	if ($wvar == -2) {		# thaw was a problem?
+		$qdp_fit_thaw = 0;
+		$wvar = &qdp_fit($col,$nsp,*ene,*table);
+		$qdp_fit_thaw = 1;
+		return($wvar);
+	}
+	push(@com,
+		sprintf("! grade %d: wvar/nbin = (%7.2f)/(%3d) = %8.3f  %s%d\n",
+			 $col-2, $wvar, $nbin, $wvar/$nbin,
+			 ($qdp_fit_thaw) ? "Thawed-x Akim " : "Frozen-x Akim ",
+			 $nsp));
+	for ( 0..$#brvals ) {
+		if ($brvals[$_] > 1.0) { $brvals[$_] = 1.000000; }
+		if ($brvals[$_] < 0.0) { $brvals[$_] = 0.000001; }
+		$table[$_] .= sprintf("%9.6f", $brvals[$_]);
+	}
+	print STDERR $com[$#com];
+	return(0);
+}
+
+#
+#  Generate a file of diagnostic output.  Add a column giving branch sum.
+#
+sub diag_out {
+	local(@line,$bsum);
+	open(DIAG, ">$_[0]");
+	print DIAG "skip single\n";
+	print DIAG "line on 10..18\n";
+	print DIAG "log y on\n";
+	print DIAG "color off 2 6..8 11 15..17\n";
+	print DIAG "color 2 on 9\ncolor 6 on 18\n";
+	print DIAG "! \n";
+	# transfer raw data
+	open(QINP, "$_[1]");
+	while (<QINP>) {
+		chop($_);
+		if ( /^READ/ ) {
+			print DIAG $_." 10\n";
+		} else {
+			print DIAG $_." 1.0 no\n";
+		}
+	}
+	close(QINP);
+	# separate data
+	print DIAG "no no  no no  no no  no no  no no  no no  ";
+	print DIAG        "no no  no no  no no  no no  no no\n";
+	# transfer fit data
+	open(QINP, "$_[2]");
+	shift(@_); shift(@_); shift(@_);
+	while (<QINP>) {
+		if ( /^!/ ) {
+			print DIAG;
+		} else {
+			@line = split;
+			shift(@line);
+			$bsum = 0;
+			for ( @_ ) {
+				$bsum += $line[$_ + 1];
+			}
+			printf DIAG "%7.3f no  ", shift(@line);
+			print  DIAG join(' no  ',@line)." no  ";
+			printf DIAG "%9.6f no \n", $bsum;
+		}
+	}
+	close(QINP);
+	close(DIAG);
+}
+
+#
+#  End of Perl Script
+#

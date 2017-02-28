@@ -1,0 +1,145 @@
+#!/software/lheasoft/develop/OSF1_4.0_alpha/bin/wish
+package provide xsl_menu 1.0
+
+proc DefLockXslLockwin {} {
+global disable_menu disable_entry
+set disable_menu { {.bmission} {.bfile} {.bedit} \
+           {.bobject} {.bview} {.bcontrol}}
+set disable_entry { {.cmdentry} {.reset} {.status} {.exit}}
+}
+
+
+proc LockXslWin {xsl_cmd} {
+global disable_menu disable_entry
+if ![ regexp -- help|lparm $xsl_cmd ]  {
+      foreach item $disable_menu {
+          .xslmenu$item configure  -state disabled
+    }
+      foreach item $disable_entry {
+          .xslcmd$item configure  -state disabled
+   }
+}
+}
+
+proc UnLockEntry {} {
+    global disable_entry
+    foreach item $disable_entry {
+       .xslcmd$item configure  -state normal
+    }
+}
+
+proc UnLockXslWin {} {
+global disable_menu disable_entry
+foreach item $disable_menu {
+    .xslmenu$item configure  -state normal
+}
+foreach item $disable_entry {
+    .xslcmd$item configure  -state normal
+}
+}
+
+proc UpdateXslMenu {} {
+global xsl_masterindex   
+foreach item $xsl_masterindex {
+    set wchild ".xslmenu.b$item.$item"
+    set lchild ".$item" 
+    set result [update_entry $wchild $lchild]
+    .xslmenu.b$item configure -state $result
+}
+}        
+
+proc update_entry { wparent lparent } { 
+#
+# Cascade menus are in  front of the commands.
+#
+global xsl_casmen xsl_commen  xsl_commsk
+set conflag 0
+set pos 0
+set i 0
+if [ info exists xsl_casmen($lparent) ] {
+   foreach item $xsl_casmen($lparent) {
+       set item [string tolower $item]
+       set wchild "$wparent.$item"
+       set lchild "$lparent.$item"
+       set result [update_entry $wchild $lchild] 
+       $wparent entryconfig $i -state $result
+       if { $result == "normal" } { 
+           set conflag 1
+       }
+       incr i
+   } 
+   set pos $i 
+}
+if [ info exists xsl_commen($lparent) ] {
+   set i 0
+   foreach item $xsl_commen($lparent) {  
+       set item [string tolower $item]
+       set wchild "$wparent.$item"
+       set mask [lindex $xsl_commsk($lparent) $i ] 
+       set result [update_cmd $wparent $mask $pos] 
+       incr i
+       incr pos
+       if { $result == "normal" } { 
+           set conflag 1
+       }
+   }
+}
+if { $conflag == 1 } { 
+   return "normal"
+} else { 
+   return "disabled"
+}
+}
+   
+proc update_cmd { wparent mask i} { 
+global XSLCTRLFLAG
+
+set mask [string trim $mask ]
+
+if { $mask == "NONE" } { 
+    $wparent entryconfig $i -state "normal"
+    return "normal"
+}
+if [regexp ^! $mask ] { 
+    regsub "\[\!\]" $mask "" mask
+    set logi "!\$XSLCTRLFLAG($mask"
+} else {
+    set logi "\$XSLCTRLFLAG($mask"
+}
+regsub -all -- "\[\|\]+|\[\|\]+!" $logi ") & \$XSLCTRLFLAG(" logi
+regsub -all -- "\[\&\]+|\[\&\]+!" $logi ") & \$XSLCTRLFLAG(" logi
+append logi ")"
+set a [expr $logi]
+if {$a == 1} {
+   $wparent entryconfig $i -state "normal"
+   return "normal"
+} else {
+   $wparent entryconfig $i -state "disabled"
+   return "disabled"
+}
+}
+
+proc clear_log {} {
+global logtxt 
+$logtxt configure -state normal
+$logtxt delete 1.0 end
+$logtxt configure -state disabled
+} 
+
+proc xslquit {args} {
+set result [tk_dialog .wrn "Warning" "Do you really want to quit/exit?" \
+   warning 1 no yes]
+if {$result == 1} { 
+   file delete xselcmd.tmp
+   eval quit $args
+}
+}   
+
+#update the window every 500ms
+proc refresh {} {
+global refcount
+incr refcount
+puts "update now $refcount"
+update idletasks
+after 500 refresh
+}

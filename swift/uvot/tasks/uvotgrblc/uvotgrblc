@@ -1,0 +1,4529 @@
+#!/usr/bin/perl -w
+
+# uvotgrblc -
+#
+# produces photometric light curves for a single source in
+# a set of Swift UVOT images
+#
+
+#
+# TODO:
+#
+#       1. Use Swift Task.pm framework
+#       2. Use CFITSIO access instead of ftlist!!!
+#       4. Get rid of summed image requirement
+#       5. Allow multiple sky image files per OBSID
+#
+
+#use strict;
+
+# some globals
+my @clean = ();
+
+#$| = 1;
+
+my $taskName = 'uvotgrblc';
+my $taskVers = '1.3';
+
+# input parameters
+my %params = (
+    skyimg       => [],     # input sky image list file
+    expimg       => [],     # input exposure map list file
+    sumsky       => [],     # input summed sky image list file
+    sumexp       => [],     # input summed exposure map list file
+    outdir       => '',     # output dir
+    outstem      => '',     # stem for output files
+    object       => '',     # name of object for plotting
+    srcra        => 0.0,    # Target RA
+    srcdec       => 0.0,    # Target Dec
+    dogrbsearch  => 0,      # do a search, instead of light curve?
+    skysummed    => 0,      # are the sum images to be treated as sky images?
+    fixedaper    => 0,      # use fixed aperture?
+    aperture     => 3,      # fixed aperture size
+    apermethod   => '',     # method for aperture correction
+    autobkg      => 0,      # determing bkg region automatically?
+    bkgreg       => '',     # bakground region file if !autobkg
+    bkgfield     => 0,      # subtract field sources from background?
+    centroid     => 0,      # try to refine coords with uvotcentroid?
+    extinct      => 0,      # Try to correct for extinction?
+    doplots      => 0,      # plot light curves and images
+    plotftype    => '',     # plot file type
+    plotfext     => '',     # NOT actually a parameter!! file extentsion
+    logxplot     => 0,      # Log scale X axis?
+    usetrigtime  => 0,      # Use trigger time?
+    trigtime     => -1.0,   # Trigger time (MET)
+    trigfrombat  => 0,      # Is trigtime from BAT?
+    usetargid    => 0,      # use TARG_ID in plotting?
+    targid       => '',     # NOT AN INPUT PARAMETER, but is the target ID
+    fldexpthresh => 0.05,   # fractional threshold of peak exposure below which
+                            # field sources are rejected
+    sigmacust    => 0.0,    # Customize sigma threshold
+    appendcurves => 0,      # make single appended output light curve
+    coordref     => 'UVOT', # where are the coords from?
+    xrtsrcra     => '',     # XRT GRB RA
+    xrtsrcdec    => '',     # XRT GRB Dec
+    xrterrrad    => 0.0,    # XRT error radius (arcsec)
+    batsrcra     => '',     # BAT GRB RA
+    batsrcdec    => '',     # BAT GRB Dec
+    baterrrad    => 0.0,    # BAT error radius (arcsec)
+    chatter      => 0,      # chat level
+    clobber      => 0,      # clobber?
+    cleanup      => 0       # clean up after ourselves?
+);
+
+######################
+# BEGIN data section #
+######################
+
+# extinction law parameter
+my $R_V = 3.1;
+
+# in here are the integrated flux conversion factors. these
+# are an estimate based on an assumed power-law spectrum with
+# index 1.
+
+# per-filter data
+my %filterData = (
+    V     => { 
+        pivot_um  => 0.5468,        # pivot wavelength in mu-meters
+        gal_Mag   => 0.0,           # magnitudes of galactic extinction
+        gal_Flux  => 1.0,           # flux extinction multiplier
+        flux_Conv => 8.2402099e-13, # flux density to integrated flux conversion
+        a         => 1.0015,        # 'a' in Cardell et al (1998) extinction law
+        b         => 0.0126         # 'b' in same
+    },
+    B     => { 
+        pivot_um  => 0.4392,
+        gal_Mag   => 0.0,
+        gal_Flux  => 1.0,
+        flux_Conv => 1.4049379e-12,
+        a         => 0.9994,
+        b         => 1.0171
+    },
+    U     => {
+        pivot_um  => 0.3465,
+        gal_Mag   => 0.0,
+        gal_Flux  => 1.0,
+        flux_Conv => 2.2855602e-12,
+        a         => 0.9226,
+        b         => 2.1019
+    },
+    UVW1  => {
+        pivot_um  => 0.2634,
+        gal_Mag   => 0.0,
+        gal_Flux  => 1.0,
+        flux_Conv => 3.5866050e-12,
+        a         => 0.4346,
+        b         => 5.3286
+    },
+    UVM2  => {
+        pivot_um  => 0.2231,
+        gal_Mag   => 0.0,
+        gal_Flux  => 1.0,
+        flux_Conv => 3.3553345e-12,
+        a         => 0.0773,
+        b         => 9.1784
+    },
+    UVW2  => {
+        pivot_um  => 0.2030,
+        gal_Mag   => 0.0,
+        gal_Flux  => 1.0,
+        flux_Conv => 5.0300132e-12,
+        a         => -0.0581,
+        b         => 8.4402
+    },
+    WHITE => {
+        pivot_um  => 0.3471,
+        gal_Mag   => 0.0,
+        gal_Flux  => 1.0,
+        flux_Conv => 1.0853881e-11,
+        a         => 0.0,
+        b         => 0.0
+    }
+);
+
+# per-filter data for sky images
+my %sky_imgs = (
+    V     => { },
+    B     => { },
+    U     => { },
+    UVW1  => { },
+    UVM2  => { },
+    UVW2  => { },
+    WHITE => { }
+);
+
+# per-filter data for summed images
+my %sum_imgs = (
+    V     => { },
+    B     => { },
+    U     => { },
+    UVW1  => { },
+    UVM2  => { },
+    UVW2  => { },
+    WHITE => { }
+);
+
+# per-filter data for exposure maps
+my %exp_imgs = (
+    V     => { },
+    B     => { },
+    U     => { },
+    UVW1  => { },
+    UVM2  => { },
+    UVW2  => { },
+    WHITE => { }
+);
+
+# per-filter data for summed expo maps
+my %sum_exps = (
+    V     => { },
+    B     => { },
+    U     => { },
+    UVW1  => { },
+    UVM2  => { },
+    UVW2  => { },
+    WHITE => { }
+);
+
+# background annuli
+my @bkgradii = ( 
+    { inner => 35, outer => 42 },
+    { inner => 27, outer => 35 },
+    { inner => 15, outer => 27 }
+);
+
+# aperture region files
+my %apertures = (
+    3   => "",
+    4   => "",
+    5   => ""
+);
+
+####################
+# END data section #
+####################
+
+
+###################
+# main subroutine #
+###################
+use HEACORE::HEAINIT;
+exit headas_main( \&uvotgrblc );
+
+sub uvotgrblc {
+
+    # HEASoft core libs
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    use Astro::FITS::CFITSIO qw( :longnames :constants );
+
+    # Platform independent file manipulation libs
+    use File::Spec::Functions;
+    use File::Path;
+    use File::Copy;
+    use File::Basename;
+    use Cwd;
+
+    use Math::Trig;
+    use libswxrtgrblc;
+
+    # setup chats and par files
+    libswxrtgrblc::setprefix( "${taskName}_${taskVers}: " );
+    libswxrtgrblc::setchat( 2 );
+    set_toolname( $taskName );
+    set_toolversion( $taskVers );
+
+    # death handler (for "or die"'s)
+    $SIG{__DIE__} = \&sigdie;
+
+    # status
+    my $stat;
+
+    ##################
+    # Get parameters #
+    ##################
+    $stat = getParams( );
+    goto CLEANUP unless $stat == 0;
+
+    ###############################
+    # chat with the user a little #
+    ###############################
+    startmsg( );
+
+    #####################
+    # check input files #
+    #####################
+    $stat = checkInputs( );
+    goto CLEANUP unless $stat == 0;
+
+    #######################
+    # make the output dir #
+    #######################
+    $stat = makeOutputDir( );
+    goto CLEANUP unless $stat == 0;
+
+    ###################################
+    # read keywords from input images #
+    ###################################
+    $stat = readInputImages( \@{$params{skyimg}}, \@{$params{expimg}},
+                             \@{$params{sumsky}}, \@{$params{sumexp}} );
+    goto CLEANUP unless $stat == 0;
+
+    ###########################
+    # get/try the plot device #
+    ###########################
+    $stat = getPlotDevice( );
+    goto CLEANUP unless $stat == 0;
+  
+    ###################
+    # do the stuff... #
+    ###################
+    if ( !$params{dogrbsearch} ) {
+
+        ########################
+        # extract light curves #
+        ########################
+        $stat = doExtraction( );
+        goto CLEANUP unless $stat == 0;
+        
+    } else {
+        
+        #############################
+        # search for GRB candidates #
+        #############################
+        $stat = doGRBSearch( );
+        goto CLEANUP unless $stat == 0;
+
+    }
+
+CLEANUP:
+
+    #########################
+    # clean un-needed files #
+    #########################
+    cleanup( );
+
+    ###############################
+    # chat with the user a little #
+    ###############################
+    endmsg( $stat );
+
+    #######
+    # END #
+    #######
+    return $stat;
+}
+
+sub getParams {
+
+    my $stat = 0;
+
+    ( $stat = getIntParam( 'chatter', \$params{chatter} ) ) == 0 || return $stat;
+    libswxrtgrblc::setchat( $params{chatter} );
+
+    # file lists
+    ( $stat = getListParam( 'skyimg', \@{$params{skyimg}} ) ) == 0 || return $stat;
+    ( $stat = getListParam( 'expimg', \@{$params{expimg}} ) ) == 0 || return $stat;
+    if ( @{$params{skyimg}} == 1 ) {
+        @{$params{skyimg}} = parseFitsList( @{$params{skyimg}} );
+    }
+    if ( @{$params{expimg}} == 1 ) {
+        @{$params{expimg}} = parseFitsList( @{$params{expimg}} );
+    }
+    ( $stat = getBoolParam( 'skysummed', \$params{skysummed} ) ) == 0 || return $stat;
+    if ( !$params{skysummed} ) {
+        ( $stat = getListParam( 'sumsky', \@{$params{sumsky}} ) ) == 0 || return $stat;
+        ( $stat = getListParam( 'sumexp', \@{$params{sumexp}} ) ) == 0 || return $stat;
+        if ( @{$params{sumexp}} == 1 ) {
+            @{$params{sumexp}} = parseFitsList( @{$params{sumexp}} );
+        }
+        if ( @{$params{sumsky}} == 1 ) {
+            @{$params{sumsky}} = parseFitsList( @{$params{sumsky}} );
+        }
+    }
+
+    # output
+    ( $stat = getStrParam( 'outdir',  \$params{outdir} ) )  == 0 || return $stat;
+    ( $stat = getStrParam( 'outstem', \$params{outstem} ) ) == 0 || return $stat;
+    ( $stat = getStrParam( 'object',  \$params{object} ) )  == 0 || return $stat;
+
+    # source params
+    ( $stat = getStrParam( 'srcra',     \$params{srcra} ) ) == 0 || return $stat;
+    ( $stat = getStrParam( 'srcdec',    \$params{srcdec} ) ) == 0 || return $stat;
+    ( $stat = getStrParam( 'sigmacust', \$params{sigmacust} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'fixedaper', \$params{fixedaper} ) ) == 0 || return $stat;
+    ( $stat = getIntParam( 'aperture',  \$params{aperture} ) ) == 0 || return $stat;
+
+    # do a GRB search instead of light curve extraction?
+    ( $stat = getBoolParam( 'dogrbsearch', \$params{dogrbsearch} ) ) == 0 || return $stat;
+
+    # background stuff
+    ( $stat = getBoolParam( 'autobkg',  \$params{autobkg} ) ) == 0 || return $stat;
+    if ( !$params{autobkg} ) {
+        ( $stat = getStrParam(  'bkgreg',   \$params{bkgreg} ) ) == 0   || return $stat;
+        ( $stat = getBoolParam( 'bkgfield', \$params{bkgfield} ) ) == 0 || return $stat;
+    }
+
+    # misc
+    ( $stat = getBoolParam( 'centroid',     \$params{centroid} ) ) == 0     || return $stat;
+    ( $stat = getBoolParam( 'appendcurves', \$params{appendcurves} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'extinct',      \$params{extinct} ) ) == 0      || return $stat;
+    ( $stat = getBoolParam( 'doplots',      \$params{doplots} ) ) == 0      || return $stat;
+    ( $stat = getStrParam( 'plotftype',     \$params{plotftype} ) ) == 0    || return $stat;
+    ( $stat = getBoolParam( 'logxplot',     \$params{logxplot} ) ) == 0     || return $stat;
+    ( $stat = getStrParam( 'apermethod',    \$params{apermethod} ) ) == 0   || return $stat;
+    ( $stat = getFltParam( 'fldexpthresh',  \$params{fldexpthresh} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'usetrigtime',  \$params{usetrigtime} ) ) == 0  || return $stat;
+    ( $stat = getFltParam( 'trigtime',      \$params{trigtime} ) ) == 0     || return $stat;
+    ( $stat = getBoolParam( 'trigfrombat',  \$params{trigfrombat} ) ) == 0  || return $stat;
+    ( $stat = getBoolParam( 'usetargid',    \$params{usetargid} ) ) == 0    || return $stat;
+
+    # get BAT/XRT positions with error radius
+
+    # XRT
+    ( $stat = getStrParam( 'xrtsrcra',  \$params{xrtsrcra} ) ) == 0  || return $stat;
+    ( $stat = getStrParam( 'xrtsrcdec', \$params{xrtsrcdec} ) ) == 0 || return $stat;
+    ( $stat = getFltParam( 'xrterrrad', \$params{xrterrrad} ) ) == 0 || return $stat;
+    if ( uc( $params{xrtsrcra} )  !~ /(NONE|INDEF)/ && 
+         uc( $params{xrtsrcdec} ) !~ /(NONE|INDEF)/ ) {
+        ( $stat, $params{xrtsrcra} )  = convertRAStringToDegrees( $params{xrtsrcra} );
+        return $stat unless $stat == 0;
+        ( $stat, $params{xrtsrcdec} ) = convertDecStringToDegrees( $params{xrtsrcdec} );
+        return $stat unless $stat == 0;
+    } else {
+        delete $params{xrtsrcra};
+        delete $params{xrtsrcdec};
+        delete $params{xrterrrad};
+    }
+
+    # BAT
+    ( $stat = getStrParam( 'batsrcra',  \$params{batsrcra} ) ) == 0  || return $stat;
+    ( $stat = getStrParam( 'batsrcdec', \$params{batsrcdec} ) ) == 0 || return $stat;
+    ( $stat = getFltParam( 'baterrrad', \$params{baterrrad} ) ) == 0 || return $stat;
+    if ( uc( $params{batsrcra} )  !~ /(NONE|INDEF)/ && 
+         uc( $params{batsrcdec} ) !~ /(NONE|INDEF)/ ) {
+        ( $stat, $params{batsrcra} )  = convertRAStringToDegrees( $params{batsrcra} );
+        return $stat unless $stat == 0;
+        ( $stat, $params{batsrcdec} ) = convertDecStringToDegrees( $params{batsrcdec} );
+        return $stat unless $stat == 0;
+    } else {
+        delete $params{batsrcra};
+        delete $params{batsrcdec};
+        delete $params{baterrrad};
+    }
+
+    # more misc
+    ( $stat = getBoolParam( 'clobber',  \$params{clobber} ) ) == 0   || return $stat;
+    ( $stat = getBoolParam( 'cleanup',  \$params{cleanup} ) ) == 0   || return $stat;
+    
+    # check the RA/Dec
+    ( $stat, $params{srcra} )  = convertRAStringToDegrees( $params{srcra} );
+    return $stat unless $stat == 0;
+    ( $stat, $params{srcdec} ) = convertDecStringToDegrees( $params{srcdec} );
+    return $stat unless $stat == 0;
+
+    return $stat;
+}
+
+#
+# makeOutputDir -
+#
+#       makes the output directory path specified in $params{outdir}
+#
+sub makeOutputDir {
+    if ( -d $params{outdir} && !$params{clobber} ) {
+        error( 1, "output directory exists and clobber not set!\n" );
+        return -1;
+    }
+    eval { mkpath( $params{outdir} ) };
+    if ( $@ ) {
+        error( 1, "failed to make output path $params{outdir}\n" );
+        return -1;
+    }
+    return 0;
+}
+
+#
+# checkInputs - 
+#
+#       checks input file lists.
+#
+sub checkInputs {
+
+    my ( $stat, $exists );
+    $stat = 0;
+
+    # copy the sky image list to the summed image list
+    # if asked
+    if ( $params{skysummed} ) {
+        warnlo( 1, "assuming input sky images are summed\n" );
+        @{$params{sumsky}} = @{$params{skyimg}};
+        @{$params{sumexp}} = @{$params{expimg}};
+    }
+
+    # make sure the files exist
+    foreach my $ref ( \@{$params{skyimg}}, \@{$params{expimg}}, 
+                      \@{$params{sumsky}}, \@{$params{sumexp}} ) {
+        if ( !@$ref ) {
+            error( 1, "empty input list! check input parameters\n" );
+            return -1;
+        }
+        foreach my $file ( @$ref ) {
+            fits_file_exists( $file, $exists, $stat );
+            if ( $exists == 0 ) {
+                error( 1, "file $file does not exist!\n" );
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+#
+# readInputImages -
+#
+#       reads keywords from various input image lists
+#
+#       reads exposure maps first, since they are required
+#       for each image
+#
+sub readInputImages {
+
+    my ( $skyimg, $expimg, $sumsky, $sumexp ) = @_;
+
+    my $stat;
+
+    ############################
+    # read the summed expomaps #
+    ############################
+    $stat = readSumExpoMaps( @$sumexp );
+    return $stat unless $stat == 0;
+
+    ##########################
+    # read the exposure maps #
+    ##########################
+    if ( !$params{skysummed} ) {
+        $stat = readSkyExpoMaps( @$expimg );
+        return $stat unless $stat == 0;
+    } else {
+        %exp_imgs = %sum_exps;
+    }
+
+    ##########################
+    # read the summed images #
+    ##########################
+    $stat = readSumImages( @$sumsky );
+    return $stat unless $stat == 0;
+
+    #######################
+    # read the sky images #
+    #######################
+    if ( !$params{skysummed} ) {
+        $stat = readSkyImages( @$skyimg );
+        return $stat unless $stat == 0;
+    } else {
+        %sky_imgs = %sum_imgs;
+    }
+
+    return $stat;
+}
+
+#
+# readSumExpoMaps -
+#
+#       reads keywords from sum exposure maps images and populates $sum_exps
+#
+sub readSumExpoMaps {
+    my $stat = readExpoMaps( \@_, \%sum_exps );
+    return $stat;
+}
+
+#
+# readSkyExpoMaps -
+#
+#       reads keywords from sky exposure maps and populates $exp_imgs
+#
+sub readSkyExpoMaps {
+    my $stat = readExpoMaps( \@_, \%exp_imgs );
+    return $stat;
+}
+
+#
+# readExpoMaps -
+#
+#       reads exposure map keywords and hashes based on input key
+#
+sub readExpoMaps {
+
+    my $expimg = shift;
+    my $outref = shift;
+    my $stat = 0;
+
+    # read keywords from exposure maps
+    for ( my $i = 0; $i < @$expimg; $i++ ) {
+        chat( 2, "reading snapshots from $expimg->[ $i ]\n" );
+        my ( $filter, $obsid, $expid, $expo, $nhdus );
+        my $fptr = Astro::FITS::CFITSIO::open_file( $expimg->[ $i ], READONLY, $stat );
+        if ( $stat != 0 ) {
+            warnhi( 1, "failed to open file $expimg->[ $i ], skipping\n" );
+            $stat = 0;
+            next;
+        }
+        $fptr->get_num_hdus( $nhdus, $stat );
+        for ( my $j = 2; $j <= $nhdus; $j++ ) {
+            $fptr->movabs_hdu( $j, ANY_HDU, $stat );
+            $fptr->read_key( TSTRING, 'FILTER', $filter, undef, $stat );
+            $fptr->read_key( TSTRING, 'OBS_ID', $obsid,  undef, $stat );
+            $fptr->read_key( TSTRING, 'EXPID',  $expid,  undef, $stat );
+            if ( $stat == KEY_NO_EXIST ) {
+                $stat  = 0;
+                $expid = 'SUMMED';
+            }
+            $fptr->read_key( TDOUBLE, 'EXPOSURE', $expo, undef, $stat );
+            $filter =~ s/[\s'"]//g;
+            $expid  =~ s/[\s'"]//g;
+            $obsid  =~ s/[\s'"]//g;
+            $outref->{$filter}{$obsid}{$expid} = {
+                filename => $expimg->[ $i ],
+                expid    => $expid,
+                obsid    => $obsid,
+                filter   => $filter,
+                exposure => $expo,
+                hdu      => $j - 1,
+            };
+        }
+        $fptr->close_file( $stat );
+    }
+    return $stat;
+}
+
+#
+# readSumImages -
+#
+#       reads keywords from sum images and populates $sum_imgs
+#
+sub readSumImages {
+    my $stat = readImages( \@_, 1, \%sum_exps, \%sum_imgs );
+    return $stat;
+}
+
+#
+# readSkyImages -
+#
+#       reads keywords from sky images and populates $sky_imgs
+#
+sub readSkyImages {
+    
+    my $stat = readImages( \@_, 0, \%exp_imgs, \%sky_imgs );
+    return $stat unless $stat == 0;
+
+    # check that the sum image exists
+    foreach my $filt ( keys %sky_imgs ) {
+        foreach my $obs ( keys %{$sky_imgs{$filt}} ) {
+            if ( !exists $sum_imgs{$filt}{$obs}{SUMMED} ) {
+                error( 1, "no summed image for FILTER=$filt, OBS_ID=$obs\n" );
+                $stat = -1;
+            }
+        }
+    }
+    return $stat;
+}
+
+#
+# readImages -
+#
+#       reads keywords from image files
+#
+sub readImages {
+
+    my ( $imgs, $copynofram, $expref, $outref ) = @_;
+
+    my $stat = 0;
+    
+    for ( my $i = 0; $i < @$imgs; $i++ ) {
+
+        # get various keywords from each HDU
+        my $fptr = Astro::FITS::CFITSIO::open_file( $imgs->[ $i ], 
+                                                    READONLY, $stat );
+        my $numhdus = 0;
+        $fptr->get_num_hdus( $numhdus, $stat );
+
+        foreach my $hdu ( 2..$numhdus ) {
+            my ( $tstrt, $tstop, $naxis1, $expo, $fram, $expid,
+                 $aspcorr, $obsid, $filter, $obsmode );
+
+            # do we need to make a copy of this?
+            my $copy = 0;
+            
+            my $j = $hdu - 1;
+            chat( 3, "reading keywords from $imgs->[ $i ]+$j\n" );
+
+            $fptr->movabs_hdu( $hdu, ANY_HDU, $stat );
+            
+            # check aspect correction
+            $fptr->read_key( TSTRING, 'ASPCORR', $aspcorr, undef, $stat );
+            if ( $aspcorr =~ /NONE/ ) {
+                warnlo( 2, "HDU $j of $imgs->[ $i ] not aspect ",
+                        "corrected, skipping\n" );
+                next;
+            # if no keyword, assume its a summed image and continue
+            } elsif ( $stat == KEY_NO_EXIST ) {
+                warnhi( 1, "ASPCORR keyword not found in $imgs->[ $i ]+$j\n",
+                           "assuming aspect correction was done!\n" );
+                $stat = 0;
+            }
+            $fptr->read_key( TLONG,   'NAXIS1',   $naxis1, undef, $stat );
+            $fptr->read_key( TDOUBLE, 'TSTART',   $tstrt,  undef, $stat );
+            $fptr->read_key( TDOUBLE, 'TSTOP',    $tstop,  undef, $stat );
+            $fptr->read_key( TDOUBLE, 'EXPOSURE', $expo,   undef, $stat );
+            $fptr->read_key( TDOUBLE, 'FRAMTIME', $fram,   undef, $stat );
+            if ( $stat == KEY_NO_EXIST || $fram <= 0.0 ) {
+                $stat = 0;
+                $fram = 0.0110322;
+                if ( $copynofram ) {
+                    $copy = 1;
+                }
+            }
+            $fptr->read_key( TSTRING, 'FILTER',   $filter, undef, $stat );
+            $fptr->read_key( TSTRING, 'OBS_ID',   $obsid,  undef, $stat );
+            $fptr->read_key( TLONG,   'EXPID',    $expid,  undef, $stat );
+            if ( $stat == KEY_NO_EXIST ) {
+                warnhi( 1, "EXPID keyword not found in $imgs->[ $i ]+$j\n",
+                           "assuming this is a summed image\n" );
+                $stat = 0;
+                $expid = "SUMMED";
+            }
+
+            # assume POINTING mode if not apparent
+            $fptr->read_key( TSTRING, 'OBS_MODE', $obsmode, undef, $stat );
+            if ( $stat == KEY_NO_EXIST ) {
+                $stat = 0;
+                $obsmode = 'POINTING';
+            }
+         
+            # fix trigger time
+            if ( $params{usetrigtime} && $params{trigtime} <= 0.0 ) {
+                my $trigtime = 0.0;
+                $fptr->read_key( TDOUBLE, 'TRIGTIME', $trigtime, undef, $stat );
+                if ( $stat == KEY_NO_EXIST ) {
+                    $stat = 0;
+                } else {
+                    $params{trigtime} = $trigtime;
+                    chat( 2, "MET trigger time is ", 
+                             sprintf( "%.14e s\n", $params{trigtime} ) );
+                }
+            } elsif ( !$params{usetrigtime} && $params{trigtime} <= 0.0 ) {
+                $params{trigtime} = $tstrt;
+            } elsif ( !$params{usetrigtime} && $tstrt < $params{trigtime} ) {
+                $params{trigtime} = $tstrt;
+            }
+            debug( "TRIGTIME set to $params{trigtime}\n" );
+
+            # fix object
+            if ( $params{object} eq '' || $params{targid} eq 'DEFAULT' ) {
+                $fptr->read_key( TSTRING, 'OBJECT', $params{object}, undef, $stat );
+            }
+    
+            # this is read as a string since for some stupid reason, it sometimes
+            # _is_ a string - duh
+            if ( $params{targid} eq '' || $params{targid} eq 'DEFAULT' ) {
+                $fptr->read_key( TSTRING, 'TARG_ID', $params{targid}, undef, $stat );
+            }
+    
+            # clean strings
+            $filter  =~ s/['"\s]//g;
+            $obsid   =~ s/['"\s]//g;
+            $obsmode =~ s/['"\s]//g;
+            $params{object} =~ s/['"]//g;
+            $params{targid} =~ s/['"\s]//g;
+            
+            # check this HDU
+            if ( !exists $filterData{$filter} ) {
+                error( 1, "filter $filter not supported, ",
+                       "skipping $imgs->[ $i ]+$j\n" );
+                next;
+            }
+            if ( $obsmode !~ /POINTING/ ) {
+                warnhi( 1, "skipping non-POINTING mode data\n" );
+                next;
+            }
+            if ( !exists $expref->{$filter}{$obsid}{$expid} ) {
+                error( 1, "no exposure map provided for image $imgs->[ $i ]+$j\n" );
+                return -1;
+            }
+            if ( exists $outref->{$filter}{$obsid}{$expid} &&
+                 $outref->{$filter}{$obsid}{$expid}{naxis1} > $naxis1 ) {
+                warnhi( 1, "duplicate EXPIDs, skipping $imgs->[ $i ]+$j\n" );
+                next;
+            } elsif ( exists $outref->{$filter}{$obsid}{$expid} ) {
+                warnhi( 1, "duplicate EXPIDs, skipping ",
+                        "$outref->{$filter}{$obsid}{$expid}{filename}+",
+                        "$outref->{$filter}{$obsid}{$expid}{hdu}\n" );
+                delete $outref->{$filter}{$obsid}{$expid};
+            }
+           
+            # here we need to make a copy of the input image, with the frame time
+            # added, so that uvotsource does not fail miserably.
+            if ( $copy ) {
+                warnlo( 1, "FRAMTIME keyword not found in $imgs->[ $i ], using $fram\n" );
+                my $newfits = catfile( $params{outdir}, basename( $imgs->[ $i ] ) );
+                $stat = ftcopy( "$imgs->[ $i ]\[col #FRAMTIME=$fram;*\]", $newfits, 1 );
+                return $stat unless $stat == 0;
+                $imgs->[ $i ] = $newfits;
+                push @clean, $newfits;
+            }
+           
+            # get basename for temporary outfiles
+            my $base = lc( $filter );
+            $base   =~ s/(uv|ite)//;
+            $base   =~ s/^(\w)$/$1$1/;
+            $base    = "sw${obsid}u${base}";
+
+            # save it
+            %{$outref->{$filter}{$obsid}{$expid}} = (
+                tstart    => $tstrt,
+                tstop     => $tstop,
+                exposure  => $expo,
+                frametime => $fram,
+                filename  => $imgs->[ $i ],
+                expomap   => $expref->{$filter}{$obsid}{$expid}{filename},
+                expohdu   => $expref->{$filter}{$obsid}{$expid}{hdu},
+                expid     => $expid,
+                filter    => $filter,
+                naxis1    => $naxis1,
+                obs_id    => $obsid,
+                obs_mode  => $obsmode,
+                outbase   => $base,
+                exclude   => [ ],
+                hdu       => $j
+            );
+            chat( 5, "found the following info for $imgs->[ $i ]+$j:\n", 
+                  map( sprintf( "  %-20s = %s\n", uc( $_ ), 
+                                $outref->{$filter}{$obsid}{$expid}{$_} ),
+                       sort keys %{$outref->{$filter}{$obsid}{$expid}} ) );
+        }
+        $fptr->close_file( $stat );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+#
+# doExtraction -
+#
+#       does light curve extraction
+#
+sub doExtraction {
+
+    my $stat = 0;
+
+    #####################################
+    # Determine the Galactic extinction #
+    #####################################
+    if ( $params{extinct} ) {
+        getExtinction( );
+    }
+
+    ##################################
+    # write default aperture regions #
+    ##################################
+    $stat = writeDefaultApertureRegions( );
+    return $stat unless $stat == 0;
+   
+    ################################
+    # Determine background regions #
+    ################################
+    $stat = determineBkgRegions( 1 );
+    return $stat unless $stat == 0;
+
+    ##########################################
+    # Determine prelimiary source/bkg counts #
+    ##########################################
+    $stat = getInitialCounts( );
+    return $stat unless $stat == 0;
+
+    ######################################
+    # Check the initial detection levels #
+    ######################################
+    chat( 2, "calculating initial sigma detections\n" );
+    checkInitialDetections( );
+    
+    ##########################################
+    # Refine position using uvotcentroid     #
+    # if we find we need to redo some things #
+    # then redo them (ugh)                   #
+    ##########################################
+    if ( $params{centroid} ) {
+        my $redo;
+        ( $stat, $redo ) = refineCoordinates( );
+        return $stat unless $stat == 0;
+        if ( $redo ) {
+            $stat = writeDefaultApertureRegions( );
+            return $stat unless $stat == 0;
+            $stat = determineBkgRegions( );
+            return $stat unless $stat == 0;
+            $stat = getInitialCounts( );
+            return $stat unless $stat == 0;
+            checkInitialDetections( );
+        }
+    }
+
+    ###############################
+    # Get the finding chart expid #
+    ###############################
+    my $findingref = getFindingChartExpid( );
+
+    # save the full hash, in case it gets deleted
+    my %findingexp = ( );
+    if ( $findingref ) {
+        %findingexp = %{$findingref};
+    }
+    
+    ##################################
+    # Extract corrected light curves #
+    ##################################
+    foreach my $filt ( sort keys %sky_imgs ) {
+        foreach my $obs ( sort keys %{$sky_imgs{$filt}} ) {
+            
+            my $str = "working on FILTER=$filt, OBS_ID=$obs";
+            my $dsh = ( '+' ) x length( $str );
+            chat( 2, "\n$dsh\n$str\n$dsh\n" );
+
+            chat( 2, "combining consecutive HDUs with no detection\n" );
+            $stat = mergeNonDetected( $filt, $obs );
+            return $stat unless $stat == 0;
+
+            chat( 2, "determining apertures\n" );
+            getApertures( $filt, $obs );
+
+            chat( 2, "extracting flux/magnitude light curves\n" );
+            $stat = extractLightCurves( $filt, $obs );
+            return $stat unless $stat == 0;
+        }
+    }
+
+    ################################
+    # write FITS/text light curves #
+    ################################
+    my $plotref;
+    ( $stat, $plotref ) = writeLightCurves( );
+    return $stat unless $stat == 0;
+
+    ##############
+    # Plot image #
+    ##############
+    if ( $params{doplots} ) {
+        $stat = plotImage( $plotref, \%findingexp, undef );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+#
+# writeDefaultApertureRegions -
+#
+#       writes the 3, 4, and 5" aperture region files
+#
+sub writeDefaultApertureRegions {
+
+    foreach my $aperture ( keys %apertures ) {
+        my $base = sprintf "$params{outstem}_grb_\%dasec.reg", $aperture;
+        $apertures{$aperture} = catfile( $params{outdir}, $base );
+        open REG, ">$apertures{$aperture}" 
+            or die "failed to open file $apertures{$aperture}\n";
+        printf REG "fk5;circle(%.5f,%.5f,\%d\")\n",
+                   $params{srcra}, $params{srcdec}, $aperture;
+        close REG;
+        push @clean, $apertures{$aperture};
+    }
+    return 0;
+}
+
+#
+# getExtinction -
+#
+#       queries NED for the E(B-V) value at the specified
+#       coordinates, then applies the Cardelli et al (1998)
+#       extinction law to each filter, assuming R_V=3.1
+#       This subroutine is a modified version of one 
+#       provided by Stephen Holland.
+#
+sub getExtinction {
+
+    # try to use LWP for web gets
+    eval 'use LWP;';
+    if ( $@ ) {
+        warnlo( 1, "failed to import LWP module\n" );
+        warnlo( 1, "no extinction corrections can be applied\n" );
+        return;
+    }
+
+    my $ua = LWP::UserAgent->new;
+    $ua->timeout( 30 );
+
+    # get starting values from NED
+    # if we can't, or NED fails us, then use 0.0 magnitudes
+    # of extinction for the correction to all filters
+    my $nedURL =
+        "http://nedwww.ipac.caltech.edu/cgi-bin/nph-calc"
+      . "?in_csys=Equatorial&in_equinox=J2000.0&obs_epoch=2000"
+      . sprintf( "&lon=%.7fd&lat=%.7fd", $params{srcra}, $params{srcdec} )
+      . "&pa=0.0&out_csys=Equatorial&out_equinox=J2000.0";
+
+    chat( 2, "getting galactic extinction values from NED\n" );
+    chat( 3, "querying NED with URL: $nedURL\n" );
+    
+    my $response = $ua->get( $nedURL );
+    $response->is_success || die "could not get url\n";
+    $response->content_type eq "text/html" || die "content type is not HTML";
+
+    # get the output
+    my $data = $response->content;
+
+    # parse it for E(B-V)
+    my $ebmv = undef;
+    foreach my $line ( split /\012/, $data ) {
+        if ( $line =~ /E\(B-V\)\s*=\s*(\S+)\s*mag/ ) {
+            $ebmv = $1 * 1.0;
+        }
+    }
+    if ( !$ebmv ) {
+        error( 1, "failed to get reddening coefficient from NED\n" );
+        error( 1, "NED query URL was: $nedURL\n" );
+        error( 1, "extiction will not be corrected for\n" );
+        return;
+    }
+    
+    # get the per-filter values from the Cardelli et al (1998) extinction law
+    foreach my $filter ( sort keys %filterData ) {
+        my $mag_gal = $ebmv * ( $filterData{$filter}{a} * $R_V + $filterData{$filter}{b} );
+        $filterData{$filter}{gal_Mag} = $mag_gal;
+        $filterData{$filter}{gal_Flux} = 10.0**( $mag_gal / 2.5 );
+        
+        my $str = sprintf( "magnitudes of extinction [FILTER=%-5s, "
+                           . "WAVELENGTH=%.4f microns]: %.4f\n",
+                           $filter, $filterData{$filter}{pivot_um},
+                           $mag_gal );
+        chat( 2, $str );
+    }
+}
+
+#
+# determineBkgRegions -
+#
+#       For each summed image detect the field sources.  Based on the distance
+#       and intensity of each source, assign a radius for a circular area
+#       associated with each detected source. These areas are excluded from the
+#       annular extraction region where the bkg is estimated.  For each summed
+#       image compare the intensity of the background from 3 annular regions
+#       (concentric on the GRB) and select the less intense (i.e., the less
+#       contaminated)
+#
+sub determineBkgRegions {
+
+    # do we need to detect sources?
+    my $runuvotdetect = 0;
+    if ( @_ ) {
+        $runuvotdetect = 1;
+    }
+
+    my $script = getTmpFile( "xco" );
+    push @clean, $script;
+
+    my $stat = 0;
+
+    # check background for each summed image
+    foreach my $filt ( keys %sum_imgs ) {
+        foreach my $obs ( keys %{$sum_imgs{$filt}} ) {
+
+            my $href = $sum_imgs{$filt}{$obs}{SUMMED};
+            
+            # detect field sources
+            if ( $runuvotdetect ) {
+                chat( 2, "detecting sources in $href->{filename}\n" );
+                my $detfile = catfile( $params{outdir}, "$href->{outbase}_det.fits" );
+
+                my $uvotdetect = {
+                    infile    => $href->{filename},
+                    outfile   => $detfile,
+                    expfile   => $href->{expomap},
+                    threshold => 3,
+                    expopt    => 'alpha',
+                    clobber   => 'yes'
+                };
+                $stat = runSystem( genCmd( 'uvotdetect', $uvotdetect ) );
+                return $stat unless $stat == 0;
+                push @clean, $detfile;
+
+                # save this file for later
+                $href->{detfile} = $detfile;
+            }
+
+            next unless -e $href->{detfile};
+
+            # read the field sources
+            my ( $fldsrcs, $contaminated ) = readUVOTDetectFile( $href->{detfile} );
+
+            # save stuff
+            $href->{fldsrcs}          = $fldsrcs;
+            $href->{contaminated}     = $contaminated;
+            $href->{bkg_inner_radius} = "INDEF";
+            $href->{bkg_outer_radius} = "INDEF";
+
+            # background region filename
+            my $new_bkg = catfile( $params{outdir}, "$href->{outbase}_bkg.reg" );
+            my $new_bkgplot = catfile( $params{outdir}, "$href->{outbase}_bkgplot.reg" );
+            push @clean, $new_bkg, $new_bkgplot;
+
+            # if a bkg region is specified, then either subtract field sources
+            # or don't
+            if ( !$params{autobkg} ) {
+                if ( !$params{bkgfield} ) {
+                    $href->{bkg_reg} = $params{bkgreg};
+                    $href->{bkg_reg_plot} = $params{bkgreg};
+                } else {
+                    if ( !copy( $params{bkgreg}, $new_bkg ) ) {
+                        error( 1, "failed to copy $params{bkgreg} to $new_bkg\n" );
+                        return -1;
+                    }
+                    open BKG, ">>$new_bkg" or die "failed to open file $new_bkg\n";
+                    foreach my $fldsrc ( @$fldsrcs ) {
+                        print BKG $fldsrc->{reg_str};
+                    }
+                    close BKG;
+                    $href->{bkg_reg} = $new_bkg;
+                    $href->{bkg_reg_plot} = $new_bkg;
+                    push @clean, $new_bkg;
+                }
+                # save this info
+                $href->{bkg_inner_radius} = -999;
+                $href->{bkg_outer_radius} = -999;
+                foreach my $exp ( keys %{$sky_imgs{$filt}{$obs}} ) {
+                    $sky_imgs{$filt}{$obs}{$exp}{bkg_reg}          = $href->{bkg_reg};
+                    $sky_imgs{$filt}{$obs}{$exp}{bkg_reg_plot}     = $href->{bkg_reg_plot};
+                    $sky_imgs{$filt}{$obs}{$exp}{bkg_inner_radius} = $href->{bkg_inner_radius};
+                    $sky_imgs{$filt}{$obs}{$exp}{bkg_outer_radius} = $href->{bkg_outer_radius};
+                }
+                next;
+            }
+
+            # otherwise...
+            # run ximage to extract the bkg counts in the annular regions
+            open SCR, ">$script" or die "failed to open file $script\n";
+
+            print SCR "cey 2000\n";
+            print SCR "set exit_on_startfail 1\n";
+            print SCR "read size=220 ra=\{$params{srcra}\} "
+                    . "dec=\{$params{srcdec}\} \{$href->{filename}+$href->{hdu}\}\n";
+                    
+            my $j = 0;
+            my @bkgregs = ( );
+            my @bkgplotregs = ( );
+            foreach my $bkgradius ( @bkgradii ) {
+                my $bkgreg = getTmpFile( "reg" );
+                push @bkgregs, $bkgreg;
+                my $bkgplotreg = getTmpFile( "reg" );
+                push @bkgplotregs, $bkgplotreg;
+                
+                open TMP, ">$bkgreg" or die "failed to open file $bkgreg\n";
+                open TMP2, ">$bkgplotreg" or die "failed to open file $bkgplotreg\n";
+                
+                my $str = sprintf( "fk5;annulus(%.7f,%.7f,%.2f\",%.2f\")\n", 
+                                   $params{srcra}, $params{srcdec}, 
+                                   $bkgradius->{inner}, $bkgradius->{outer} );
+                print TMP $str;
+                print TMP2 $str;
+
+                # create a fake circular region to test field region positions agains
+                # this speeds things up quite a bit
+                my $fakereg = sprintf( "fk5;circle(%.7f,%.7f,%.2f\")",
+                                        $params{srcra}, $params{srcdec},
+                                        $bkgradius->{outer} );
+                foreach my $fldsrc ( @$fldsrcs ) {
+
+                    # put them all in the plotting background region
+                    print TMP2 $fldsrc->{reg_str};
+
+                    # only put field regions in the background region if they overlap
+                    # the background region
+                    my $overlap = circleRegionsOverlap( $fakereg, $fldsrc->{reg_str} );
+                    if ( $overlap < 0 ) {
+                        next;
+                    } elsif ( $overlap > 0 ) {
+                        print TMP $fldsrc->{reg_str};
+                    }
+
+                }
+                close TMP;
+                close TMP2;
+                
+                print SCR "counts \{$bkgreg\}\n";
+                print SCR "puts \"MYBKG$j|\$counts(avgdet)\"\n";
+                $j++;
+            }
+            print SCR "quit\n";
+            close SCR;
+            
+            chat( 2, "estimating best background region in $href->{filename}\n" );
+            my $cmd = "ximage \@$script";
+            my $out;
+            ( $stat, $out ) = runSystem( $cmd );
+            return $stat unless $stat == 0;
+
+            # estimate the lowest background value among the annular regions
+            my $minindex = 0;
+            my $minbkg   = 2.0e20;
+            foreach my $line ( @$out ) {
+                if ( $line !~ /^MYBKG/ ) { next; }
+                my @splitline = split /\s*\|\s*/, $line;
+                $splitline[ 0 ] =~ /^MYBKG(\d+)$/;
+                if ( $splitline[ 1 ] * 1.0 < $minbkg ) {
+                    $minbkg   = $splitline[ 1 ] * 1.0;
+                    $minindex = $1;
+                }
+            }
+            chat( 3, "background annulus for FILTER=$filt OBS_ID=$obs:\n" );
+            chat( 3, "     Inner Radius: $bkgradii[ $minindex ]->{inner}\n" );
+            chat( 3, "     Outer Radius: $bkgradii[ $minindex ]->{outer}\n" );
+
+            # copy the one we want
+            copy( $bkgregs[ $minindex ], $new_bkg );
+            copy( $bkgplotregs[ $minindex ], $new_bkgplot );
+            unlink @bkgregs;
+            unlink @bkgplotregs;
+
+            # save this info
+            $href->{bkg_reg}          = $new_bkg;
+            $href->{bkg_reg_plot}     = $new_bkgplot;
+            $href->{bkg_inner_radius} = $bkgradii[ $minindex ]->{inner};
+            $href->{bkg_outer_radius} = $bkgradii[ $minindex ]->{outer};
+            foreach my $exp ( keys %{$sky_imgs{$filt}{$obs}} ) {
+                $sky_imgs{$filt}{$obs}{$exp}{bkg_reg}          = $href->{bkg_reg};
+                $sky_imgs{$filt}{$obs}{$exp}{bkg_reg_plot}     = $href->{bkg_reg_plot};
+                $sky_imgs{$filt}{$obs}{$exp}{bkg_inner_radius} = $href->{bkg_inner_radius};
+                $sky_imgs{$filt}{$obs}{$exp}{bkg_outer_radius} = $href->{bkg_outer_radius};
+            }
+        }
+    }
+    return 0;
+}
+
+#
+# readUVOTDetectFile -
+#
+#       reads a subset of columns from an output file from uvotdetect
+#
+sub readUVOTDetectFile {
+
+    my $detfile = shift;
+
+    my @columns = qw( RA DEC MAG MAG_ERR RATE RATE_ERR
+                      PROF_MAJOR PROF_MINOR PROF_THETA );
+    my $colstr  = join ',', @columns;
+    my $ftlist = {
+        infile    => "$detfile+1",
+        option    => 'T',
+        outfile   => '-',
+        rows      => '-',
+        columns   => $colstr,
+        rownum    => 'no',
+        colheader => 'no',
+        clobber   => 'yes'
+    };
+    my $cmd = genCmd( 'ftlist', $ftlist );
+    open DET, "$cmd |" or die "failed to run command $cmd\n";
+
+    # get the field sources
+    my $contaminated = 0;
+    my @fldsrcs = ( );
+
+FLDSOURCES:
+    while ( <DET> ) {
+        chomp;
+        s/^\s+//;
+        s/\s+$//;
+        next unless length;
+        my @line = split( /\s+/, $_ );
+       
+        my %fldsrc = ( );
+        map( $fldsrc{lc($columns[ $_ ])} = $line[ $_ ], 0..$#line );
+        foreach my $key ( keys %fldsrc ) {
+
+            # carefully, now...
+            my @ret = eval { 
+                my @msg = ( );
+                $SIG{__WARN__} = sub { @msg = @_; };
+                $fldsrc{$key} *= 1.0;
+                return @msg;
+            };
+            if ( @ret ) {
+                warn @ret;
+                warnlo( 1, "skipping source at FK5($fldsrc{ra},",
+                        "$fldsrc{dec}) due to missing data\n" );
+                next FLDSOURCES;
+            }
+        }
+
+        # skip faint sources
+        if ( $fldsrc{mag} > 23 ) { next FLDSOURCES; }
+
+        # process this source
+        my $fldsrcref = processFieldSource( \%fldsrc );
+        if ( defined $fldsrcref ) {
+            if ( exists $fldsrcref->{contaminate} ) {
+                $contaminated = 1;
+            }
+            push @fldsrcs, $fldsrcref;
+        }
+    }
+    close DET;
+
+    # sort field sources by distance from the GRB
+    @fldsrcs = sort { $a->{dist} <=> $b->{dist} } @fldsrcs;
+    return ( \@fldsrcs, $contaminated );
+}
+
+#
+# regionOverlaps -
+#
+#       checks to see if two regions overlap
+#       Only works on circles
+#       Only works on single line, ds9 style regions
+#       with fk5 coordinates in degrees (not sexagesimal),
+#       and radii in degrees, arcminutes or arcseconds
+#
+#       input is two strings (one for each region)
+#
+sub circleRegionsOverlap {
+
+    my ( $reg1, $reg2 ) = @_;
+
+    my $circpatt = qr/^fk5;\s*[\-]?\s*circle\s*\(\s*([\d\.]+)\s*,\s*([\d\.]+)\s*,\s*([\d\.]+)\s*(['"])?\s*\)/;
+    my ( $x1, $x2, $y1, $y2, $r1, $r2 );
+
+    # parse the strings
+    if ( $reg1 =~ /$circpatt/ ) {
+        $x1 = $1 * 1.0;
+        $y1 = $2 * 1.0;
+        $r1 = $3 * 1.0;
+        if ( defined $4 && $4 eq "'" ) {
+            $r1 /= 60.0;
+        } elsif ( defined $4 && $4 eq '"' ) {
+            $r1 /= 3600.0;
+        }
+    } else {
+        return -1;
+    }
+    if ( $reg2 =~ /$circpatt/ ) {
+        $x2 = $1 * 1.0;
+        $y2 = $2 * 1.0;
+        $r2 = $3 * 1.0;
+        if ( defined $4 && $4 eq "'" ) {
+            $r2 /= 60.0;
+        } elsif ( defined $4 && $4 eq '"' ) {
+            $r2 /= 3600.0;
+        }
+    } else {
+        return -1;
+    }
+    
+    # get the distance between the two circle centers
+    my $dist = angdist( $x1, $y1, $x2, $y2 );
+
+    # check it
+    if ( $dist / 3600.0 >= ( $r1 + $r2 ) ) {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+#
+# processFieldSource -
+#
+#       does some filtering on a field source 
+#       and creates an exclusion region string
+#
+sub processFieldSource {
+
+    my $fldsrc = shift;
+
+    # approximate distance to the field source
+    my $distance = angdist( $params{srcra}, $params{srcdec},
+                            $fldsrc->{ra}, $fldsrc->{dec} );
+    
+    # keep only those outside 3"
+    if ( $distance > 3.0 ) {
+        my $radius;
+        
+        my $str  = sprintf( "found source at FK5(%+.4f,%+.4f), ", 
+                         $fldsrc->{ra}, $fldsrc->{dec} );
+        $str    .= sprintf( "%.1f\" from source position\n", $distance );
+        chat( 4, $str );
+
+        # base the radius on magnitude
+        if ( $fldsrc->{mag} > 15 ) {
+            $radius = max( ( 23 - $fldsrc->{mag} ) * 1.6, 3.0 );
+        } else {
+            $radius = ( 23 - $fldsrc->{mag} ) * 3.;
+        }
+
+        # check for possible contamination
+        if ( $distance - $radius < 5.0 ) {
+            $fldsrc->{contaminate} = 1;
+            warnhi( 1, sprintf( "source at FK5(%+.4f,%+.4f), is a possible "
+                              . "contaminating source!\n", 
+                                $fldsrc->{ra}, $fldsrc->{dec} ) );
+        }
+
+        # generate the exclusion region string
+        $str = sprintf( "fk5;-circle(%.7f,%.7f,%.3f\")\n", 
+                        $fldsrc->{ra}, $fldsrc->{dec}, $radius );
+       
+        # save what we learned
+        $fldsrc->{radius}  = $radius;
+        $fldsrc->{dist}    = $distance;
+        $fldsrc->{reg_str} = $str;
+        
+        return $fldsrc;
+    }
+    return undef;
+}
+
+#
+# getInitialCounts -
+#
+#       gets an initial estimate of the count rate in each EXPID
+#       for a faster approach, read all the HDUs for all the images with Ximage
+#       in a single session.  The counts for the source and the bkg are
+#       obtained from Ximage and used to estimate the sigma of the detection
+#
+#       Also the exposure map is checked to see if the mean exposure in
+#       the largest background region is within 5% of the total exposure
+#       I.e.: is the source on the freakin chip
+#
+sub getInitialCounts {
+   
+    my $stat = 0;
+    my $totexpids = 0;
+
+    chat( 2, "writing Ximage script to estimate initial detections...\n" );
+
+    # write a circle region using the biggest background region 
+    # outer radius to check if source is "on-chip enough"
+    my $bkgreg = getTmpFile( "reg" );
+    push @clean, $bkgreg;
+
+    open BKG, ">$bkgreg" or die "failed to open file $bkgreg\n";
+    my $radius = -1e20;
+    foreach my $bkgradius ( @bkgradii ) {
+        if ( $bkgradius->{outer} > $radius ) { $radius = $bkgradius->{outer}; }
+    }
+    printf BKG "fk5;circle(%.6f,%.6f,%.3f\")\n",
+               $params{srcra}, $params{srcdec}, $radius;
+    close BKG;
+    
+    # open and write the Ximage script
+    my $script = catfile( $params{outdir}, "$params{outstem}_init_sig_est.xco" );
+    push @clean, $script;
+
+    open SCR, ">$script" or die "failed to open file $script\n";
+    print SCR "cey 2000\n";
+    print SCR "set exit_on_startfail 1\n";
+
+    # do each HDU of every sky image
+    foreach my $filt ( keys %sky_imgs ) {
+        foreach my $obs ( keys %{$sky_imgs{$filt}} ) {
+            foreach my $exp ( keys %{$sky_imgs{$filt}{$obs}} ) {
+
+                my $href = $sky_imgs{$filt}{$obs}{$exp};
+                my $eref = $exp_imgs{$filt}{$obs}{$exp};
+
+                # generate XImage script lines for this HDU
+                print SCR <<EOF;
+read size=220 ra={$params{srcra}} dec={$params{srcdec}} {$href->{filename}+$href->{hdu}}
+counts {$apertures{3}}
+puts "MYSRC|$filt|$obs|$exp|\$counts(total)|\$counts(areaimg)"
+counts {$apertures{5}}
+puts "MY5SRC|$filt|$obs|$exp|\$counts(total)|\$counts(areaimg)"
+counts {$href->{bkg_reg}}
+puts "MYBKG|$filt|$obs|$exp|\$counts(total)|\$counts(areaimg)"
+read size=220 ra={$params{srcra}} dec={$params{srcdec}} {$eref->{filename}+$eref->{hdu}}
+counts {$bkgreg}
+if { [catch {set mytest \$counts(avgimg)} ret] } {
+    puts "MYEXPBKG|$filt|$obs|$exp|0.0|$href->{exposure}"
+} else {
+    puts "MYEXPBKG|$filt|$obs|$exp|\$counts(avgimg)|$href->{exposure}"
+}
+EOF
+                $totexpids++;
+            }
+        }
+    }
+    print SCR "quit\n";
+    close SCR;
+
+    # check the total number of EXPIDs
+    if ( $totexpids < 1 ) {
+        error( 1, "no good EXPIDs found, bailing out\n" );
+        return -1;
+    }
+
+    # estimate the counts for source and background running Ximage
+    chat( 2, "extracting preliminary source and background counts\n" );
+    chat( 2, "this may take a while...\n" );
+
+    # turn down the chatter and run
+    libswxrtgrblc::setchat( $params{chatter} == 5 ? 5 : $params{chatter} - 1 );
+    my $cmd = "ximage \@$script";
+    my $out;
+    ( $stat, $out ) = runSystem( $cmd );
+    return $stat unless $stat == 0;
+    libswxrtgrblc::setchat( $params{chatter} );
+    
+    # extract the values from Ximage stdout
+    foreach my $line ( @$out ) {
+        chomp $line;
+        if ( $line =~ /^MYSRC/ ) {
+            my ( $sr, $filt, $obs, $exp, $cnts, $area ) = split /\s*\|\s*/, $line;
+            if ( !exists $sky_imgs{$filt}{$obs}{$exp} ) { next; }
+            $sky_imgs{$filt}{$obs}{$exp}{counts}      = $cnts * 1.0;
+            $sky_imgs{$filt}{$obs}{$exp}{areas}       = $area * 1.0;
+            $sky_imgs{$filt}{$obs}{$exp}{initial_reg} = $apertures{3};
+        } elsif ( $line =~ /^MY5SRC/ ) {
+            my ( $sr, $filt, $obs, $exp, $cnts, $area ) = split /\s*\|\s*/, $line;
+            if ( !exists $sky_imgs{$filt}{$obs}{$exp} ) { next; }
+            $sky_imgs{$filt}{$obs}{$exp}{counts5}      = $cnts * 1.0;
+            $sky_imgs{$filt}{$obs}{$exp}{areas5}       = $area * 1.0;
+            $sky_imgs{$filt}{$obs}{$exp}{initial_reg5} = $apertures{5};
+        } elsif ( $line =~ /^MYBKG/ ) {
+            my ( $sr, $filt, $obs, $exp, $cnts, $area ) = split /\s*\|\s*/, $line;
+            if ( !exists $sky_imgs{$filt}{$obs}{$exp} ) { next; }
+            $sky_imgs{$filt}{$obs}{$exp}{countb} = $cnts * 1.0;
+            $sky_imgs{$filt}{$obs}{$exp}{areab}  = $area * 1.0;
+
+            # check for basic trouble here
+            if ( $sky_imgs{$filt}{$obs}{$exp}{areas} == 0.0 ||
+                 $sky_imgs{$filt}{$obs}{$exp}{areab} == 0.0 ) {
+                warnhi( 1, "problem finding source/bkg counts in ",
+                        "$sky_imgs{$filt}{$obs}{$exp}{filename}+",
+                        "$sky_imgs{$filt}{$obs}{$exp}{hdu}\n" );
+                warnhi( 1, "source may be off chip. this HDU will be skipped!\n" );
+                delete $sky_imgs{$filt}{$obs}{$exp};
+                push @{$sum_imgs{$filt}{$obs}{SUMMED}{exclude}}, $exp;
+            }
+        # check the background exposure before checking for background
+        } elsif ( $line =~ /^MYEXPBKG/ ) {
+            my ( $sr, $filt, $obs, $exp, $avgexpo, $nomexpo )= split /\s*\|\s*/, $line;
+            if ( !exists $sky_imgs{$filt}{$obs}{$exp} ) { next; }
+            if ( $avgexpo < 0.95 * $nomexpo ) {
+                warnhi( 1, "source may be off chip in ",
+                           "$sky_imgs{$filt}{$obs}{$exp}{filename}+",
+                           "$sky_imgs{$filt}{$obs}{$exp}{hdu}\n" );
+                warnhi( 1, "this HDU will be skipped!\n" );
+                delete $sky_imgs{$filt}{$obs}{$exp};
+                push @{$sum_imgs{$filt}{$obs}{SUMMED}{exclude}}, $exp;
+            }
+        }
+    }
+    return 0;
+}
+
+#
+# checkInitialDetections -
+#
+#       checks the significance of initial count rates
+#
+sub checkInitialDetections {
+
+    my $stat = 0;
+
+    # too much hashing
+    foreach my $filt ( sort keys %sky_imgs ) {
+        foreach my $obs ( sort keys %{$sky_imgs{$filt}} ) {
+            foreach my $expid ( sort keys %{$sky_imgs{$filt}{$obs}} ) {
+                if ( !exists $sky_imgs{$filt}{$obs}{$expid} ) { next; }
+                my $href = $sky_imgs{$filt}{$obs}{$expid};
+
+                # sanity check
+                if ( !exists $href->{areab}  || 
+                     !defined $href->{areab} ||
+                     $href->{areab} <= 0.0 ) {
+                    next;
+                }
+               
+                # get the # frames and area scale 
+                my $area_scale = $href->{areas} / $href->{areab};
+                my $num_frames = $href->{exposure} / $href->{frametime};
+
+                # get the raw error (taken from uvotsource)
+                my ( $raw_bkg_err, $raw_err, $raw5_bkg_err, $raw5_err );
+                if ( $href->{counts} < $num_frames ) {
+                    $raw_err = $href->{counts} * 
+                               ( $num_frames - $href->{counts} ) / 
+                               $num_frames;
+                } else {
+                    $raw_err = $href->{counts};
+                }
+                if ( $href->{countb} < $num_frames ) {
+                    $raw_bkg_err = $href->{countb} * 
+                                   ( $num_frames - $href->{countb} ) / 
+                                   $num_frames;
+                } else {
+                    $raw_bkg_err = $href->{countb};
+                }
+
+                # check for bad values
+                if ( $raw_err < 0.0 ) {
+                    $raw_err = 0.0;
+                }
+                if ( $raw_bkg_err < 0.0 ) {
+                    $raw_bkg_err = 0.0;
+                }
+
+                # calc S/N
+                my $toterr = sqrt( $raw_err + $area_scale**2.0 * $raw_bkg_err );
+                my $netcts = $href->{counts} - $area_scale * $href->{countb};
+
+                if ( $href->{exposure} <= 0.0 ) {
+                    $href->{rate} = 0.0;
+                } else {
+                    $href->{rate} = $netcts / $href->{exposure};
+                }
+                
+                my $sigma;
+                if ( $toterr <= 0.0 ) {
+                    $sigma = 0.0;
+                } else {
+                    $sigma = $netcts / $toterr;
+                }
+
+                $href->{initial_sigma} = $sigma;
+                if ( $sigma >= $params{sigmacust} ) {
+                    chat( 2, sprintf( "initial %.3g-sigma detection ", $sigma ),
+                             "in $href->{filename}+$href->{hdu}\n" );
+                    $href->{detected} = 1;
+                } else {
+                    chat( 2, sprintf( "no detection at %.3g-sigma ", $params{sigmacust} ),
+                             "in $href->{filename}+$href->{hdu}\n" );
+                    $href->{detected} = 0;
+                }
+
+                # repeat for 5", but use the 3" if its a higher sigma
+                # get the # frames and area scale 
+                $area_scale = $href->{areas5} / $href->{areab};
+
+                # get the raw error (taken from uvotsource)
+                if ( $href->{counts5} < $num_frames ) {
+                    $raw_err = $href->{counts5} * 
+                               ( $num_frames - $href->{counts5} ) / 
+                               $num_frames;
+                } else {
+                    $raw_err = $href->{counts5};
+                }
+
+                # check for bad values
+                if ( $raw_err < 0.0 ) {
+                    $raw_err = 0.0;
+                }
+                if ( $raw_bkg_err < 0.0 ) {
+                    $raw_bkg_err = 0.0;
+                }
+
+                # calc S/N
+                $toterr = sqrt( $raw_err + $area_scale**2.0 * $raw_bkg_err );
+                $netcts = $href->{counts5} - $area_scale * $href->{countb};
+                
+                if ( $href->{exposure} <= 0.0 ) {
+                    $href->{rate5} = 0.0;
+                } else {
+                    $href->{rate5} = $netcts / $href->{exposure};
+                }
+
+                if ( $toterr <= 0.0 ) {
+                    $sigma = 0.0;
+                } else {
+                    $sigma = $netcts / $toterr;
+                }
+                $href->{initial_sigma5} = $sigma;
+
+                # take the biggest sigma
+                if ( $href->{initial_sigma5} < $href->{initial_sigma} ) {
+                    $href->{initial_sigma5} = $href->{initial_sigma};
+                }
+
+                # this is for centroiding, so we can fix the sigma
+                $href->{detected5} = ( $href->{initial_sigma5} >= 2. );
+            }
+        }
+    }
+}
+
+#
+# refineCoordinates -
+#
+#       tries to run uvotcentroid on various images to improve the position
+#
+sub refineCoordinates {
+
+    my %highest_hdus = ( );
+    my %highest_sums = ( );
+
+    my $stat = 0;
+   
+    # don't centroid if there is possible contamination
+    my @filts = ( );
+FILT:
+    foreach my $filt ( keys %sum_imgs ) {
+        foreach my $obs ( keys %{$sum_imgs{$filt}} ) {
+            if ( $sum_imgs{$filt}{$obs}{SUMMED}{contaminated} ) {
+                warnhi( 1, "refusing to centroid possibly contaminated source!\n" );
+                warnhi( 1, "no centroid will be found for FILTER=$filt\n" );
+                next FILT;
+            }
+            push @filts, $filt;
+        }
+    }
+
+    # find the highest sigma detection (in the 5" region)
+    # for each filter's sky images
+    foreach my $filt ( @filts ) {
+        foreach my $obs ( keys %{$sky_imgs{$filt}} ) {
+            my $href = $sky_imgs{$filt}{$obs};
+            my $sortsigma = sub { 
+                $href->{$b}{initial_sigma5} <=> $href->{$a}{initial_sigma5}
+            };
+            my @sortkeys = sort $sortsigma keys %$href;
+            foreach my $exp ( @sortkeys ) {
+                # take the highest detection
+                if ( $href->{$exp}{detected5} ) {
+                    $highest_hdus{$filt} = $href->{$exp};
+                    $highest_sums{$filt} = $sum_imgs{$filt}{$obs}{SUMMED};
+                    last;
+                }
+            }
+        }
+    }
+
+    my @positions = ( );
+    
+    # centroid each one and get the mean position
+    my $sumra     = 0.0;
+    my $sumdec    = 0.0;
+    my $sigra     = 0.0;
+    my $sigrasum  = 0.0;
+    my $sigdec    = 0.0;
+    my $sigdecsum = 0.0;
+    my $meanra    = 0.0;
+    my $meandec   = 0.0;
+    foreach my $filt ( keys %highest_hdus ) {
+        
+        my $href = $highest_hdus{$filt};
+
+        # determine the size to use for centroiding
+        my $pixdist;
+        if ( exists $highest_sums{$filt}{fldsrcs}[ 0 ]->{ra} &&
+             exists $highest_sums{$filt}{fldsrcs}[ 0 ]->{dec} ) {
+
+            my ( $grbx, $grby, $srcx, $srcy, $radx, $rady );
+            ( $stat, $grbx, $grby ) = skyToXY( "$href->{filename}+$href->{hdu}",
+                                               $params{srcra}, $params{srcdec} );
+            return $stat unless $stat == 0;
+            ( $stat, $srcx, $srcy ) = skyToXY( "$href->{filename}+$href->{hdu}",
+                                               $highest_sums{$filt}{fldsrcs}[ 0 ]->{ra},
+                                               $highest_sums{$filt}{fldsrcs}[ 0 ]->{dec} );
+            return $stat unless $stat == 0;
+            ( $stat, $radx, $rady ) = skyToXY( "$href->{filename}+$href->{hdu}",
+                                               $highest_sums{$filt}{fldsrcs}[ 0 ]->{ra},
+                                               $highest_sums{$filt}{fldsrcs}[ 0 ]->{dec} +
+                                               $highest_sums{$filt}{fldsrcs}[ 0 ]->{radius} / 3600.0 );
+            return $stat unless $stat == 0;
+            $pixdist  = sqrt( ( $grbx - $srcx )**2.0 + ( $grby - $srcy )**2.0 );
+            $pixdist -= sqrt( ( $radx - $srcx )**2.0 + ( $rady - $srcy )**2.0 );
+        } else {
+            $pixdist = 40;
+        }
+
+        # pick a bigger size for UV filters (as recommended in the fhelp)
+        my $subdimsize;
+        if ( $filt =~ /UV/ ) {
+            if ( $pixdist < 40 && $pixdist > 15 ) {
+                $subdimsize = int( $pixdist );
+            } elsif ( $pixdist >= 40 ) {
+                $subdimsize = 40;
+            } else {
+                warnhi( 1, "refusing to centroid $href->{filename}+$href->{hdu} ",
+                           "due to too small window\n" );
+                next;
+            }
+        } else {
+            if ( $pixdist < 20 && $pixdist > 8 ) {
+                $subdimsize = int( $pixdist );
+            } elsif ( $pixdist >= 20 ) {
+                $subdimsize = 20;
+            } else {
+                warnhi( 1, "refusing to centroid $href->{filename}+$href->{hdu} ",
+                           "due to too small window\n" );
+                next;
+            }
+        }
+
+        chat( 2, "centroiding $filt filter image ",
+                 "$href->{filename}+$href->{hdu}\n" );
+        my $uvotcentroid = {
+            image      => "$href->{filename}+$href->{hdu}",
+            srcreg     => $href->{initial_reg5},
+            confidence => 90,
+            niter      => 100,
+            threshold  => 2.5,
+            subdimsiz  => $subdimsize,
+            plot       => 'no',
+            cleanup    => 'yes',
+            chatter    => 0
+        };
+        my ( $stat, $out ) = runSystem( genCmd( 'uvotcentroid', $uvotcentroid ) );
+        next unless $stat == 0;
+
+        my %position = ( );
+        foreach my $line ( @$out ) {
+            chomp $line;
+            if ( $line =~ /^uvotcentroid:\s+RA\(.+\) =\s+(.+)$/ ) {
+                ( $stat, $position{ra} ) = convertRAStringToDegrees( $1 );
+                return $stat unless $stat == 0;
+                $sumra    += $position{ra};
+                $sigrasum += $position{ra}**2;
+            } elsif ( $line =~ /^uvotcentroid:\s+Dec\(.+\) =\s+(.+)$/ ) {
+                my $dec = $1;
+                $dec =~ s/'/m/;
+                $dec =~ s/"/s/;
+                ( $stat, $position{dec} ) = convertDecStringToDegrees( $dec );
+                return $stat unless $stat == 0;
+                $sumdec    += $position{dec};
+                $sigdecsum += $position{dec}**2;
+            }
+        }
+        # (0.0, 0.0) is _very_ unlikely, and is 
+        # indicative of an error from uvotcentroid
+        if ( $position{ra} == 0.0 && $position{dec} == 0.0 ) {
+            next;
+        }
+        if ( keys %position ) { 
+            push @positions, \%position;
+        }
+    }
+    my $numpos = scalar( @positions );
+    if ( @positions ) {
+        $meanra  = $sumra  / $numpos;
+        $meandec = $sumdec / $numpos;
+        $sigra   = sqrt( abs( $sigrasum  / $numpos - $meanra**2.0 ) );
+        $sigdec  = sqrt( abs( $sigdecsum / $numpos - $meandec**2.0 ) );
+    }
+
+    # do two rounds of 1.5-sigma elimination
+    foreach my $pos ( @positions ) {
+        if ( abs( $pos->{ra}  - $meanra )  > 1.5 * $sigra ||
+             abs( $pos->{dec} - $meandec ) > 1.5 * $sigdec) {
+            $sumra     -= $pos->{ra};
+            $sigrasum  -= $pos->{ra}**2.0;
+            $sumdec    -= $pos->{dec};
+            $sigdecsum -= $pos->{dec}**2.0;
+            $numpos--;
+            $pos = undef;
+        }
+    }
+    if ( $numpos > 0 ) {
+        $meanra  = $sumra / $numpos;
+        $meandec = $sumdec / $numpos;
+        $sigra   = sqrt( abs( $sigrasum  / $numpos - $meanra**2.0 ) );
+        $sigdec  = sqrt( abs( $sigdecsum / $numpos - $meandec**2.0 ) );
+        chat( 3, "after one round of 1.5-sigma elimination:\n",
+                 sprintf( "   RA(J2000)  [deg] = %.6f\n", $meanra ),
+                 sprintf( "   Dec(J2000) [deg] = %.6f\n", $meandec ) );
+    }
+    foreach my $pos ( @positions ) {
+        if ( !$pos ) { next; }
+        if ( abs( $pos->{ra}  - $meanra )  > 1.5 * $sigra ||
+             abs( $pos->{dec} - $meandec ) > 1.5 * $sigdec) {
+            $sumra -= $pos->{ra};
+            $sumdec -= $pos->{dec};
+            $numpos--;
+        }
+    }
+
+    # get the final mean position and report it
+    if ( $numpos > 0 ) {
+        $meanra  = $sumra / $numpos;
+        $meandec = $sumdec / $numpos;
+        chat( 2, "mean position found with centroiding:\n",
+                 sprintf( "   RA(J2000)  [deg] = %.6f\n", $meanra ),
+                 sprintf( "   Dec(J2000) [deg] = %.6f\n", $meandec ) );
+        my $distance = angdist( $params{srcra}, $params{srcdec},
+                                $meanra, $meandec );
+    
+        # if the distance from the input coords is > 1.5" 
+        # (half the smallest aperture) we have to redo some things
+        if ( $distance > 1.5 && $distance <= 3.0 ) {
+            $params{srcra}  = $meanra;
+            $params{srcdec} = $meandec;
+            return ( 0, 1 );
+        } elsif ( $distance > 3.0 ) {
+            warnhi( 1, "new source position > 3.0\" from input position\n",
+                       "CHECK INPUT COORDINATES!\n" );
+            return ( 0, 0 );
+        } else {
+            $params{srcra}  = $meanra;
+            $params{srcdec} = $meandec;
+            return ( 0, 0 );
+        }
+    } else {
+        warnhi( 1, "could not get a good centroid!\n",
+                   "will use input RA/Dec for source position\n" );
+    }
+    return ( 0, 0 );
+}
+
+#
+# mergeNonDetected -
+#
+#       merges consecutive snapshots that are not initially detected
+#
+sub mergeNonDetected {
+
+    my ( $filt, $obs ) = @_;
+
+    my $stat = 0;
+    my $cmd;
+    
+    my $href = $sky_imgs{$filt}{$obs};
+    
+    my $sortfunc = sub { $href->{$a}{tstart} <=> $href->{$b}{tstart} };
+    my @sortkeys = sort $sortfunc keys %$href;
+    
+    my $starthdu = -1;
+    my $stophdu  = -1;
+    my $startexp = 0;
+    my $lasthdu  = $href->{$sortkeys[ $#sortkeys ]}{hdu};
+    my $firsthdu = $href->{$sortkeys[ 0 ]}{hdu};
+   
+    # loop over HDUs and check for contiguous non-detections
+    # merge them if there are more than one
+    # if there are no detections, then use the sum image
+    my @delete = ( );
+    foreach my $exp ( @sortkeys ) {
+
+        # first non-detection
+        if ( !$href->{$exp}{detected} && $starthdu < 0 ) {
+            $starthdu = $href->{$exp}{hdu};
+            $startexp = $exp;
+            $stophdu  = $starthdu;
+
+            # one hdu? quit
+            if ( $starthdu == $firsthdu && $stophdu == $lasthdu ) {
+                chat( 3, "nothing to do for $href->{$exp}{filename}\n" );
+                last;
+            }
+        # consecutive non-detection
+        } elsif ( !$href->{$exp}{detected} ) {
+            $stophdu = $href->{$exp}{hdu};
+            push @delete, $exp;
+            
+            # if we have all non-detections use sum
+            if ( $starthdu == $firsthdu && $stophdu == $lasthdu ) {
+                push @delete, $startexp;
+                %{$href->{"$startexp-$exp"}} = %{$sum_imgs{$filt}{$obs}{SUMMED}};
+                chat( 3, "nothing to do for $href->{$exp}{filename}\n" );
+                last;
+            }
+        }
+        
+        # end of group of non-detections
+        # sum them, excluding the right ones
+        if ( $stophdu != $starthdu && 
+             ( $href->{$exp}{detected} || $stophdu == $lasthdu ) ) {
+
+            push @delete, $startexp;
+
+            chat( 2, "no detections in HDUs $starthdu-$stophdu ",
+                  "of $href->{$exp}{filename}\n" );
+            chat( 2, "summing HDUs $starthdu-$stophdu ",
+                  "of $href->{$exp}{filename}\n" );
+            my $outfile = getTmpFile( "img" );
+            
+            # exclude all those that need to be by default
+            my $exclude = "ASPCORR:NONE,DUPEXPID,SETTLING";
+            if ( @{$sum_imgs{$filt}{$obs}{SUMMED}{exclude}} ) {
+                $exclude .= ',';
+                $exclude .= join ',', @{$sum_imgs{$filt}{$obs}{SUMMED}{exclude}};
+            }
+            
+            # now exclude the rest
+            if ( $starthdu == $firsthdu && $stophdu < $lasthdu ) {
+                my $exstart = $stophdu + 1;
+                $exclude .= ",$exstart-$lasthdu";
+            } elsif ( $starthdu > $firsthdu && $stophdu < $lasthdu ) {
+                my $exstart = $stophdu + 1;
+                my $exstop  = $starthdu - 1;
+                $exclude .= ",1-$exstop,$exstart-$lasthdu";
+            } elsif ( $starthdu > $firsthdu && $stophdu == $lasthdu ) {
+                my $exstop  = $starthdu - 1;
+                $exclude .= ",1-$exstop";
+            }
+            $cmd = "uvotimsum infile=\"$href->{$exp}{filename}\" "
+                 . "outfile=\"$outfile\" method=GRID exclude=\"$exclude\" "
+                 . "expmap=no clobber=yes ignoreframetime=yes";
+            $stat = runSystem( $cmd );
+            return $stat unless $stat == 0;
+           
+            delete $href->{$startexp};
+
+            # now make this a "sky_img"
+            my ( $tstart, $tstop, $expo, $frame );
+            my $fptr = Astro::FITS::CFITSIO::open_file( "$outfile+1", 
+                                                        READONLY, $stat );
+            $fptr->read_key( TDOUBLE, 'TSTART',   $tstart, undef, $stat );
+            $fptr->read_key( TDOUBLE, 'TSTOP',    $tstop,  undef, $stat );
+            $fptr->read_key( TDOUBLE, 'EXPOSURE', $expo,   undef, $stat );
+            $fptr->read_key( TDOUBLE, 'FRAMTIME', $frame,  undef, $stat );
+            if ( $stat == KEY_NO_EXIST || $frame == -1 ) {
+                $stat  = 0;
+                $frame = 0.0110322;
+            }
+            $fptr->close_file( $stat );
+            return $stat unless $stat == 0;
+
+            %{$href->{"$startexp-$exp"}} = (
+                filename         => $outfile,
+                tstart           => $tstart,
+                tstop            => $tstop,
+                exposure         => $expo,
+                frametime        => $frame,
+                obs_id           => $obs,
+                filter           => $filt,
+                expid            => "$startexp-$exp",
+                bkg_inner_radius => $sum_imgs{$filt}{$obs}{SUMMED}{bkg_inner_radius},
+                bkg_outer_radius => $sum_imgs{$filt}{$obs}{SUMMED}{bkg_outer_radius},
+                hdu              => 1
+            );
+            $starthdu = -1;
+            $stophdu  = -1;
+            push @clean, $outfile;
+        } elsif ( $href->{$exp}{detected} ) {
+            $starthdu = -1;
+            $stophdu  = -1;
+        }
+    }
+    foreach my $exp ( @delete ) {
+        delete $href->{$exp};
+    }
+    return 0;
+}
+
+#
+# getApertures -
+#
+#       gets aperture size based on count rate and nearness of neighbors
+#
+sub getApertures {
+
+    my ( $filt, $obs ) = @_;
+
+    my $skyref = $sky_imgs{$filt}{$obs};
+    my $sumref = $sum_imgs{$filt}{$obs}{SUMMED};
+    
+    # Select size of extraction region for the GRB based on its intensity and
+    # the distance and intesity of its neighboor Re-evaluate the sigma for each
+    # extension and if it's a positive detection and the source extraction
+    # radius is <5" than calculate the aperture correction factor
+
+    # sources are sorted with increasing distance, so just take the 
+    # closest one that is outside 3" - if it's inside 3" it's either
+    # the GRB or we screwed anyway.
+    
+    # get the contamination radius
+    my $contami_radius = 5.0;
+    foreach my $fldsrc ( @{$sumref->{fldsrcs}} ) {
+        if ( $fldsrc->{dist} > 3.0 ) {
+            my $inner = ( $fldsrc->{dist} - $fldsrc->{radius} );
+            if ( $inner < 3.0 ) {
+                warnhi( 1, "possible field source contamination for ",
+                        "FILTER=$filt, OBS_ID=$obs\n" );
+                chat( 2, "possible contaminating source at ",
+                      "FK5($fldsrc->{ra},$fldsrc->{dec})\n" );
+                $contami_radius = 3.0;
+                last;
+            } elsif ( $inner < $contami_radius ) {
+                $contami_radius = $inner;
+            }
+        }
+    }
+    $contami_radius = int( $contami_radius );
+
+    # get the GRB size for each sky image
+    # the extraction region size depends on the intensity of
+    # the GRB itself, not only on the neighboor characteristics
+    # over-ride with user aperture if asked
+    foreach my $exp ( keys %$skyref ) {
+        if ( $params{fixedaper} ) {
+            $skyref->{$exp}{aperture} = $params{aperture};
+        } elsif ( !$skyref->{$exp}{detected} ) {
+            $skyref->{$exp}{aperture} = min( 5, $contami_radius );
+        } elsif ( $skyref->{$exp}{rate} >= 0.75 ) {
+            $skyref->{$exp}{aperture} = min( 5, $contami_radius );
+        } elsif ( $skyref->{$exp}{rate} >= 0.10 ) {
+            $skyref->{$exp}{aperture} = min( 4, $contami_radius );
+        } else {
+            $skyref->{$exp}{aperture} = 3;
+        }
+        chat( 2, "using $skyref->{$exp}{aperture}\" aperture for ",
+              "$skyref->{$exp}{filename}+$skyref->{$exp}{hdu}\n" );
+          
+        $skyref->{$exp}{grbregfile} = $apertures{$skyref->{$exp}{aperture}};
+    }
+}
+
+
+sub extractLightCurves {
+
+    my ( $filt, $obs ) = @_;
+
+    my $skyref = $sky_imgs{$filt}{$obs};
+    my $sumref = $sum_imgs{$filt}{$obs}{SUMMED};
+   
+    my $outfile = getTmpFile( "fits" );
+    push @clean, $outfile;
+
+    my $uvotsource = {
+        sigma     => $params{sigmacust},
+        zerofile  => 'CALDB',
+        coinfile  => 'CALDB',
+        psffile   => 'CALDB',
+        lssfile   => 'NONE',
+        syserr    => 'no',
+        apercorr  => 'NONE',
+        fwhmsig   => 3,
+        output    => 'ALL',
+        outfile   => $outfile,
+        centroid  => 'no',
+        cleanup   => 'yes',
+        clobber   => 'yes',
+        chatter   => 2 # always
+    };
+
+    foreach my $exp ( sort keys %$skyref ) {
+
+        # get the source data
+        $uvotsource->{image}     = "$skyref->{$exp}{filename}+$skyref->{$exp}{hdu}";
+        $uvotsource->{srcreg}    = $skyref->{$exp}{grbregfile};
+        $uvotsource->{bkgreg}    = $sumref->{bkg_reg};
+        $uvotsource->{frametime} = $skyref->{$exp}{frametime};
+
+        chat( 2, "extracting source information for $uvotsource->{image}\n" );
+        my $cmd = genCmd( 'uvotsource', $uvotsource );
+        my ( $stat, $out ) = runSystem( $cmd );
+        if ( $stat != 0 ) {
+            warnhi( 1, "uvotsource failed on $uvotsource->{image}, skipping\n" );
+            next;
+        }
+
+        foreach my $line ( @$out ) {
+            if ( $line =~ /Significance:\s*([\d\.]+) sigma/ ) {
+                $skyref->{$exp}{sigma} = $1 * 1.0;
+                last;
+            }
+        }
+
+        # check the detection significance and warn if we lost a 
+        # previously detected source
+        if ( $skyref->{$exp}{sigma} >= $params{sigmacust} ) {
+            chat( 3, "source detected at $skyref->{$exp}{sigma}-sigma ",
+                  "in $uvotsource->{image}\n" );
+              
+            $skyref->{$exp}{ap_factor} = getApertureCorrection( $filt, $obs, $exp );
+            
+            if ( $skyref->{$exp}{ap_factor} < 0 ) {
+                error( 1, "failed to get aperture correction ",
+                       "for $uvotsource->{image} - using 1.0" );
+                $skyref->{$exp}{ap_factor} = 1.0;
+                $skyref->{$exp}{apermeth}  = 'NOTAPPLICABLE';
+            }
+            
+            if ( !$skyref->{$exp}{detected} ) {
+                chat( 2, "new detection with uvotsource in ",
+                      "$uvotsource->{image}\n" );
+            }
+            $skyref->{$exp}{detected} = 1;
+            
+        } else {
+            chat( 3, "source NOT detected at $params{sigmacust}-sigma ",
+                  "in $uvotsource->{image}\n" );
+            
+            $skyref->{$exp}{ap_factor} = 1.0;
+            
+            if ( $skyref->{$exp}{detected} ) {
+                warnlo( 1, "detection with XImage not found with uvotsource for ",
+                        "$uvotsource->{image}\n" );
+            }
+            
+            $skyref->{$exp}{detected}        = 0;
+            $skyref->{$exp}{apermeth}        = 'NOTAPPLICABLE';
+            $skyref->{$exp}{ap_fldsrc_ra}    = -999;
+            $skyref->{$exp}{ap_fldsrc_dec}   = -999;
+            $skyref->{$exp}{ap_fldsrc_rate}  = -999;
+            $skyref->{$exp}{ap_fldsrc_rate5} = -999;
+            $skyref->{$exp}{ap_fldsrc_dist}  = -999;
+
+        }
+        chat( 2, "aperture correction for $uvotsource->{image}: ",
+              sprintf( "%.5g\n", $skyref->{$exp}{ap_factor} ) );
+
+        # grab the output data
+        my @columns = qw( 
+                          TSTART TSTOP EXPOSURE 
+                          RAW_TOT_CNTS RAW_TOT_CNTS_ERR
+                          RAW_BKG_CNTS RAW_BKG_CNTS_ERR 
+                          RAW_STD_CNTS RAW_STD_CNTS_ERR 
+                          RAW_TOT_RATE RAW_TOT_RATE_ERR
+                          RAW_BKG_RATE RAW_BKG_RATE_ERR 
+                          RAW_STD_RATE RAW_STD_RATE_ERR 
+                          COI_STD_FACTOR COI_STD_FACTOR_ERR
+                          COI_BKG_FACTOR COI_BKG_FACTOR_ERR 
+                          COI_TOT_RATE COI_TOT_RATE_ERR 
+                          COI_BKG_RATE COI_BKG_RATE_ERR
+                          COI_SRC_RATE COI_SRC_RATE_ERR 
+                          LSS_FACTOR 
+                          MAG MAG_ERR MAG_BKG MAG_BKG_ERR 
+                          MAG_LIM MAG_LIM_SIG
+                          FLUX_AA FLUX_AA_ERR FLUX_AA_LIM 
+                          FLUX_AA_BKG FLUX_AA_BKG_ERR 
+                          FLUX_HZ FLUX_HZ_ERR FLUX_HZ_LIM
+                          FLUX_HZ_BKG FLUX_HZ_BKG_ERR
+                        );
+        my $collst = join ',', @columns;
+        my $ftlist = {
+            infile      => $outfile,
+            option      => 'T',
+            outfile     => '-',
+            clobber     => 'no',
+            columns     => $collst,
+            rows        => 1,
+            vector      => '-',
+            separator   => '|',
+            rownum      => 'no',
+            colheader   => 'no'
+        };
+
+        $cmd = genCmd( 'ftlist', $ftlist );
+        ( $stat, $out ) = runSystemNoChat( $cmd );
+        return $stat unless $stat == 0;
+
+        $out->[ 0 ] =~ s/\s*//g;
+        my @splitline = split /\|/, $out->[ 0 ];
+        map( $skyref->{$exp}{lc($columns[ $_ ])} = $splitline[ $_ ] * 1.0, 
+             0..$#splitline );
+        
+        # get the time, timedel, half-timedel and fractional exposure
+        $skyref->{$exp}{time}    = ($skyref->{$exp}{tstart}+$skyref->{$exp}{tstop})/2.0;
+        $skyref->{$exp}{time}   -= $params{trigtime};
+        $skyref->{$exp}{timedel} = $skyref->{$exp}{tstop} - $skyref->{$exp}{tstart};
+        $skyref->{$exp}{xax_e}   = $skyref->{$exp}{timedel} / 2.0;
+        $skyref->{$exp}{fracexp} = $skyref->{$exp}{exposure} / $skyref->{$exp}{timedel};
+
+        # apply the aperture corrections and flux conversions
+        chat( 2, "applying corrections and conversions for $uvotsource->{image}\n" );
+        applyCorrections( $filt, $obs, $exp );
+    }
+}
+
+
+sub getApertureCorrection {
+
+    my ( $filt, $obs, $exp ) = @_;
+
+    my $stat = 0;
+
+    my $skyref = $sky_imgs{$filt}{$obs}{$exp};
+    my $sumref = $sum_imgs{$filt}{$obs}{SUMMED};
+
+    # setup default aperture correction source data
+    $skyref->{ap_fldsrc_ra}    = -999;
+    $skyref->{ap_fldsrc_dec}   = -999;
+    $skyref->{ap_fldsrc_rate}  = -999;
+    $skyref->{ap_fldsrc_rate5} = -999;
+    $skyref->{ap_fldsrc_dist}  = -999;
+
+    # first look for previously found aperture corrections
+    # for this filter/radius combo
+    foreach my $exp ( sort keys %{$sky_imgs{$filt}{$obs}} ) {
+        if ( $sky_imgs{$filt}{$obs}{$exp}{detected} && 
+             $sky_imgs{$filt}{$obs}{$exp}{ap_factor} &&
+             $sky_imgs{$filt}{$obs}{$exp}{aperture} == $skyref->{aperture} ) {
+            $skyref->{apermeth}        = $sky_imgs{$filt}{$obs}{$exp}{apermeth};
+            $skyref->{ap_fldsrc_ra}    = $sky_imgs{$filt}{$obs}{$exp}{ap_fldsrc_ra};
+            $skyref->{ap_fldsrc_dec}   = $sky_imgs{$filt}{$obs}{$exp}{ap_fldsrc_dec};
+            $skyref->{ap_fldsrc_rate}  = $sky_imgs{$filt}{$obs}{$exp}{ap_fldsrc_rate};
+            $skyref->{ap_fldsrc_rate5} = $sky_imgs{$filt}{$obs}{$exp}{ap_fldsrc_rate5};
+            $skyref->{ap_fldsrc_dist}  = $sky_imgs{$filt}{$obs}{$exp}{ap_fldsrc_dist};
+            return $sky_imgs{$filt}{$obs}{$exp}{ap_factor};
+        }
+    }
+
+    # no aperture correction for undetected sources
+    if ( !$skyref->{detected} ) { 
+        $skyref->{apermeth} = 'NOTAPPLICABLE';
+        return 1.0;
+    }
+
+    # there is only an aperture correction for regions < 5"
+    if ( $skyref->{aperture} < 5 ) {
+
+        chat( 2, "finding aperture correction for ",
+              "$skyref->{filename}+$skyref->{hdu}\n" );
+        
+        my @fldsrcs = ( );
+        chat( 3, "finding field sources to use in calculation\n" );
+        
+        # check them versus the summed exposure map, and reject those
+        # where there is not optimal exposure (user determined)
+        $stat = rejectFieldSources( \@{$sumref->{fldsrcs}}, $sumref->{expomap} );
+        return -1 unless $stat == 0;
+
+        foreach my $fldsrc ( @{$sumref->{fldsrcs}} ) {
+            next if exists $fldsrc->{reject};
+            push @fldsrcs, $fldsrc;
+        }
+
+        my $uvotsource = {
+            image     => "$sumref->{filename}",
+            sigma     => $params{sigmacust},
+            zerofile  => 'CALDB',
+            coinfile  => 'CALDB',
+            psffile   => 'CALDB',
+            lssfile   => 'NONE',
+            syserr    => 'no',
+            frametime => $skyref->{frametime},
+            apercorr  => 'NONE',
+            fwhmsig   => 3,
+            output    => 'rate',
+            outfile   => 'NONE',
+            centroid  => 'no',
+            cleanup   => 'yes',
+            clobber   => 'yes',
+            chatter   => 2 # always
+        };
+
+        # require three, but allow 5
+        my @apercors = ( );
+        if ( @fldsrcs > 2 && $params{apermethod} ne 'CURVEOFGROWTH' ) {
+
+            chat( 2, "using field sources for aperture correction\n" );
+            foreach my $fldsrc ( reverse sort { $a->{rate} <=> $b->{rate} } @fldsrcs ) {
+               
+                if ( @apercors > 4 ) { last; }
+
+                my $starreg = getTmpFile( "reg" );
+                my $grbreg  = getTmpFile( "reg" );
+                my $bkgreg  = getTmpFile( "reg" );
+                push @clean, $starreg, $grbreg, $bkgreg;
+
+                # 5" region
+                open REG, ">$starreg" or die "failed to open file $starreg\n";
+                printf REG "fk5;circle(%.7f,%.7f,%.1f\")\n",
+                           $fldsrc->{ra}, $fldsrc->{dec}, 5.0;
+                close REG;
+
+                # GRB sized region
+                open REG, ">$grbreg" or die "failed to open file $grbreg\n";
+                printf REG "fk5;circle(%.7f,%.7f,%.1f\")\n",
+                           $fldsrc->{ra}, $fldsrc->{dec}, $skyref->{aperture};
+                close REG;
+
+                # background region
+                open REG, ">$bkgreg" or die "failed to open file $bkgreg\n";
+                my $bkgregstr = sprintf( "fk5;annulus(%.7f,%.7f,27\",35\")\n",
+                                      $fldsrc->{ra}, $fldsrc->{dec} );
+                my $fakereg = sprintf( "fk5;circle(%.7f,%.7f,35\")\n",
+                                       $fldsrc->{ra}, $fldsrc->{dec} );
+                printf REG $bkgregstr;
+                foreach my $ofldsrc ( @{$sumref->{fldsrcs}} ) {
+                    my $overlap = circleRegionsOverlap( $fakereg, $ofldsrc->{reg_str} );
+                    if ( $overlap < 0 ) {
+                        next;
+                    } elsif ( $overlap > 0 ) {
+                        print REG $ofldsrc->{reg_str};
+                    }
+                }
+                close REG;
+                $uvotsource->{bkgreg} = $bkgreg;
+
+                # run uvotsource for both
+                $uvotsource->{srcreg} = $starreg;
+
+                my $cmd = genCmd( 'uvotsource', $uvotsource );
+                my ( $stat, $out ) = runSystem( $cmd );
+                return -1 unless $stat == 0;
+
+                my ( $sigma1, $sigma2 ) = ( 0.0, 0.0 );
+                foreach my $line ( @$out ) {
+                    if ( $line =~ /Source:.*?([\d\.]+)/ ) {
+                        $sigma1 = $1 * 1.0;
+                        last;
+                    }
+                }
+                
+                $uvotsource->{srcreg} = $grbreg;
+                $cmd = genCmd( 'uvotsource', $uvotsource );
+                ( $stat, $out ) = runSystem( $cmd );
+                return -1 unless $stat == 0;
+
+                foreach my $line ( @$out ) {
+                    if ( $line =~ /Source:.*?([\d\.]+)/ ) {
+                        $sigma2 = $1 * 1.0;
+                        last;
+                    }
+                }
+                
+                # save the aperture correction
+                # making sure it's > 1!!! otherwise it's clearly wrong
+                # and chat a little about what we're doing
+                if ( $sigma1 != 0.0 && $sigma2 != 0.0 ) {
+                    my $apercor = $sigma1 / $sigma2;
+                    $fldsrc->{apercor} = $apercor;
+                    $fldsrc->{rate5}   = $sigma1;
+                    $fldsrc->{rate}    = $sigma2;
+                    if ( $skyref->{aperture} == 3 && $apercor > 1.0 && $apercor < 1.2 ) {
+                        push @apercors, $fldsrc;
+                        chat( 2, sprintf( "including field source at FK5(%.7f,%.7f)\n",
+                                          $fldsrc->{ra}, $fldsrc->{dec} ),
+                                 "in median aperture correction calculation\n" );
+                             
+                    } elsif ( $skyref->{aperture} == 4 && $apercor > 1.0 && $apercor < 1.1 ) {
+                        push @apercors, $fldsrc;
+                        chat( 2, sprintf( "including field source at FK5(%.7f,%.7f)\n",
+                                          $fldsrc->{ra}, $fldsrc->{dec} ),
+                                 "in median aperture correction calculation\n" );
+                    
+                    } else {
+                        chat( 2, sprintf( "rejecting source at FK5(%.7f,%.7f) "
+                                        . "due to bad aperture correction\n", 
+                                          $fldsrc->{ra}, $fldsrc->{dec} ) );
+                    }
+                } else {
+                    chat( 2, sprintf( "rejecting source at FK5(%.7f,%.7f) "
+                                    . "due to bad aperture correction\n", 
+                                      $fldsrc->{ra}, $fldsrc->{dec} ) );
+                }
+            }
+
+            # high-median, and record the method
+            if ( @apercors >= 3 ) {
+                @apercors = sort { $a->{apercor} <=> $b->{apercor} } @apercors;
+                my $apersource = $apercors[ int( ( $#apercors + 1 ) / 2 ) ];
+                $skyref->{apermeth}        = 'FIELDSTARS';
+                $skyref->{ap_fldsrc_ra}    = $apersource->{ra};
+                $skyref->{ap_fldsrc_dec}   = $apersource->{dec};
+                $skyref->{ap_fldsrc_rate}  = $apersource->{rate};
+                $skyref->{ap_fldsrc_rate5} = $apersource->{rate5};
+                $skyref->{ap_fldsrc_dist}  = $apersource->{dist};
+                return $apersource->{apercor};
+            } else {
+                warnlo( 1, "failed to get aperture correction using field sources\n" );
+                warnlo( 1, "will use uvotsource:CURVEOFGROWTH method instead\n" );
+            }
+            
+        } 
+        
+        chat( 2, "using uvotsource:CURVEOFGROWTH method for ",
+              "aperture correction\n" );
+
+        $skyref->{apermeth} = 'CURVEOFGROWTH';
+
+        my $outfile = getTmpFile( "fits" );
+        
+        $uvotsource->{srcreg}   = $skyref->{grbregfile};
+        $uvotsource->{bkgreg}   = $sumref->{bkg_reg};  
+        $uvotsource->{outfile}  = $outfile;
+        $uvotsource->{apercorr} = 'CURVEOFGROWTH';
+        $uvotsource->{output}   = 'ALL';
+
+        my $cmd = genCmd( 'uvotsource', $uvotsource );
+        $stat = runSystem( $cmd );
+        return -1 unless $stat == 0;
+
+        my $ftlist = {
+            infile    => $outfile,
+            option    => 'T',
+            outfile   => '-',
+            columns   => 'AP_FACTOR',
+            rows      => 1,
+            vector    => '-',
+            separator => '',
+            rownum    => 'no',
+            colheader => 'no'
+        };
+        $cmd = genCmd( 'ftlist', $ftlist );
+        my $out;
+        ( $stat, $out ) = runSystemNoChat( $cmd );
+        return -1 unless $stat == 0;
+        
+        if ( $params{cleanup} ) { unlink $outfile; }
+
+        chomp $out->[ 0 ];
+        $out->[ 0 ] =~ s/\s+//g;
+        return $out->[ 0 ] * 1.0;
+
+    # GRB radius is 5", so aperture correction is 1
+    } else {
+        $skyref->{apermeth} = 'NOTAPPLICABLE';
+        return 1.0;
+    }
+}
+
+#
+# rejectFieldSources -
+#
+#       checks the average exposure time of each field source region
+#       and rejects those with lower exposure than a user defined 
+#       percentage fo the peak exposure. 
+#
+#       This rejection is only used to reject sources during aperture
+#       correction. They are still excluded from the background calculation
+#
+#       This is done separately from other rejection since it runs all
+#       field sources through XImage in the same script - reducing run-
+#       time considerably
+#
+sub rejectFieldSources {
+    
+    my ( $fldsrcs, $expomap ) = @_;
+
+    my $stat = 0;
+    my @localclean = ( );
+
+    my $script = getTmpFile( "xco" );
+    push @clean, $script;
+    
+    # check the exposure in each field source region
+    # and compare to the max exposure 
+    # if below the threshold, reject it
+    open SCR, ">$script" or die "failed to open file $script\n";
+    print SCR <<EOF;
+cey 2000
+set exit_on_startfail 1
+read size=-10 {$expomap+1}
+set datamax [eval chheader key=DATAMAX]
+set minthresh [expr \$datamax * $params{fldexpthresh}]
+EOF
+    for ( my $i = 0; $i < @$fldsrcs; $i++ ) {
+        my $fldsrc = $fldsrcs->[ $i ];
+        next if exists $fldsrc->{reject};
+        
+        # disallow highly elliptical sources and large sources (>7")
+        # as well as sources too close, too far, too dim and too bright
+        # currently 20", 200", 0.5 counts/s and 5.0 counts/s, respectively
+        my $ecc;
+        my $size;
+        if ( $fldsrc->{prof_major} <= 0.0 ||
+             $fldsrc->{prof_minor} <= 0.0 ) {
+            chat( 3, sprintf( "rejecting source at FK5(%.6f,%.6f) "
+                            . "due to selection criteria\n",
+                               $fldsrc->{ra}, $fldsrc->{dec} ) );
+            next;
+        }
+        if ( $fldsrc->{prof_major} >= $fldsrc->{prof_minor} ) {
+            $ecc  = $fldsrc->{prof_major} / $fldsrc->{prof_minor};
+            $size = $fldsrc->{prof_major};
+        } else {
+            $ecc  = $fldsrc->{prof_minor} / $fldsrc->{prof_major};
+            $size = $fldsrc->{prof_minor};
+        }
+
+        # reject on other criteria
+        if ( $fldsrc->{dist} > 20.0  &&
+             $size < 7.0             && 
+             $ecc < 1.5              &&
+             $fldsrc->{rate} > 0.5   &&
+             $fldsrc->{rate} < 5.0 ) {
+             
+            # get closest neighbor, and reject this source if the closest
+            # neighbor is inside the exclusion radius + 5"
+            my $j = $i - 1;
+            my $searchRadius = max( $fldsrc->{radius} + 5.0, 60.0 );
+            my $rejectRadius = $fldsrc->{radius} + 5.0;
+            my @checkIndices = ( );
+            my $closestDist = 1.0e20;
+            while ( $j >= 0 ) {
+                my $osrc = $fldsrcs->[ $j ];
+                if ( $osrc->{dist} < $fldsrc->{dist} - $searchRadius ) { last; }
+                my $locdist = angdist( $osrc->{ra}, $osrc->{dec},
+                                       $fldsrc->{ra}, $fldsrc->{dec} );
+                if ( $locdist < $rejectRadius || $locdist < $osrc->{radius} + 5.0 ) {
+                    $fldsrc->{reject} = 1;
+                    if ( !exists $osrc->{reject} ) {
+                        chat( 3, sprintf( "rejecting source at FK5(%.6f,%.6f) "
+                                        . "due to close neighbors\n",
+                                          $osrc->{ra}, $osrc->{dec} ) );
+                    }
+                    $osrc->{reject}   = 1;
+                }
+                $j--;
+            }
+            $j = $i + 1;
+            while ( $j < @$fldsrcs ) {
+                my $osrc = $fldsrcs->[ $j ];
+                if ( $osrc->{dist} > $fldsrc->{dist} + $searchRadius ) { last; }
+                my $locdist = angdist( $osrc->{ra}, $osrc->{dec},
+                                       $fldsrc->{ra}, $fldsrc->{dec} );
+                if ( $locdist < $rejectRadius || $locdist < $osrc->{radius} + 5.0 ) {
+                    $fldsrc->{reject} = 1;
+                    if ( !exists $osrc->{reject} ) {
+                        chat( 3, sprintf( "rejecting source at FK5(%.6f,%.6f) "
+                                        . "due to close neighbors\n",
+                                          $osrc->{ra}, $osrc->{dec} ) );
+                    }
+                    $osrc->{reject}   = 1;
+                }
+                $j++;
+            }
+
+            # if we're rejecting it then don't bother with XImage
+            if ( $fldsrc->{reject} ) {
+                chat( 3, sprintf( "rejecting source at FK5(%.6f,%.6f) "
+                                . "due to close neighbors\n",
+                                  $fldsrc->{ra}, $fldsrc->{dec} ) );
+                next;
+            }
+
+            # otherwise check the exposure in the source's region
+            my $tmpreg = getTmpFile( "reg" );
+            open REG, ">$tmpreg" or die "failed to open file $tmpreg\n";
+            printf REG "fk5;circle(%.6f,%.6f,%.3f)\n", 
+                       $fldsrc->{ra}, $fldsrc->{dec}, $fldsrc->{radius};
+            close REG;
+            push @localclean, $tmpreg;
+            
+            print SCR <<EOF;
+counts {$tmpreg}
+if { \$counts(total) <= 0 || \$counts(avgimg) < \$minthresh } {
+    puts "REJECT = $i"
+} 
+EOF
+        } else {
+            $fldsrc->{reject} = 1;
+            chat( 3, sprintf( "rejecting source at FK5(%.6f,%.6f) "
+                            . "due to source selection criteria\n",
+                              $fldsrc->{ra}, $fldsrc->{dec} ) );
+        }
+    }
+    print SCR "quit\n";
+    close SCR;
+
+    chat( 2, "checking exposure of field sources\n" );
+    my $cmd = "ximage \@$script";
+    my $out;
+    if ( $params{chatter} >= 4 ) {
+        ( $stat, $out ) = runSystem( $cmd );
+    } else {
+        ( $stat, $out ) = runSystemNoChat( $cmd );
+    }
+
+    foreach my $line ( @$out ) {
+        chomp $line;
+        if ( $line =~ /^REJECT =\s+(\S+)$/ ) {
+            my $fldsrc = $fldsrcs->[ $1 ];
+            $fldsrc->{reject} = 1;
+            chat( 3, sprintf( "rejecting source at FK5(%.6f,%.6f) "
+                            . "due to low exposure\n",
+                              $fldsrc->{ra}, $fldsrc->{dec} ) );
+        }
+    }
+    unlink @localclean;
+    return $stat;
+}
+
+#
+# applyCorrections -
+#
+#       applies exinction (if asked) and aperture corrections
+#       to light curves
+#
+sub applyCorrections {
+
+    my ( $filt, $obs, $exp ) = @_;
+
+    my $skyref = $sky_imgs{$filt}{$obs}{$exp};
+
+    my $flux_conv = $filterData{$filt}{flux_Conv};
+    my $mag_corr  = $filterData{$filt}{gal_Mag} + 2.5 * log10( $skyref->{ap_factor} );
+    my $flux_corr = $filterData{$filt}{gal_Flux} * $skyref->{ap_factor};
+
+    # aperture/coincidence-loss corrected rate
+    debug( "applying aperture correction to rates\n" );
+    $skyref->{ap_coi_src_rate}     = $skyref->{coi_src_rate} * $skyref->{ap_factor};
+    $skyref->{ap_coi_src_rate_err} = $skyref->{coi_src_rate_err} * $skyref->{ap_factor};
+
+    # aperture/coincidence-loss/large-scale-sensitivity corrected rate
+    $skyref->{lss_rate}     = $skyref->{ap_coi_src_rate} * $skyref->{lss_factor};
+    $skyref->{lss_rate_err} = $skyref->{ap_coi_src_rate_err} * $skyref->{lss_factor};
+    
+    # corrected flux densities
+    debug( "applying corrections to flux densities\n" );
+    $skyref->{flux_aa}         *= $flux_corr;
+    $skyref->{flux_aa_err}     *= $flux_corr;
+    $skyref->{flux_aa_lim}     *= $filterData{$filt}{gal_Flux};
+    
+    $skyref->{flux_aa_bkg}     *= $filterData{$filt}{gal_Flux};
+    $skyref->{flux_aa_bkg_err} *= $filterData{$filt}{gal_Flux};
+    
+    $skyref->{flux_hz}         *= $flux_corr;
+    $skyref->{flux_hz_err}     *= $flux_corr;
+    $skyref->{flux_hz_lim}     *= $filterData{$filt}{gal_Flux};
+    
+    $skyref->{flux_hz_bkg}     *= $filterData{$filt}{gal_Flux};
+    $skyref->{flux_hz_bkg_err} *= $filterData{$filt}{gal_Flux};
+    
+    # estimated, corrected integrated flux
+    debug( "converting and correcting integrated fluxes\n" );
+    $skyref->{int_flux}     = $skyref->{flux_hz}     * $flux_conv;
+    $skyref->{int_flux_err} = $skyref->{flux_hz_err} * $flux_conv;
+    $skyref->{int_flux_lim} = $skyref->{flux_hz_lim} * $flux_conv;
+
+    # corrected magnitude
+    debug( "applying corrections to integrated fluxes\n" );
+    $skyref->{mag}     = $skyref->{mag}     - $mag_corr;
+    $skyref->{mag_lim} = $skyref->{mag_lim} - $filterData{$filt}{gal_Mag};
+    $skyref->{mag_bkg} = $skyref->{mag_bkg} - $filterData{$filt}{gal_Mag};
+}
+
+#
+# writeLightCurves -
+#
+#       writes fits light curves, and qdp light curves
+#
+sub writeLightCurves {
+
+    my $stat = 0;
+
+    my @columns = qw( 
+                      TIME XAX_E TIMEDEL FRACEXP TSTART TSTOP EXPOSURE
+                      RAW_TOT_CNTS RAW_TOT_CNTS_ERR 
+                      RAW_BKG_CNTS RAW_BKG_CNTS_ERR
+                      RAW_STD_CNTS RAW_STD_CNTS_ERR 
+                      RAW_TOT_RATE RAW_TOT_RATE_ERR 
+                      RAW_BKG_RATE RAW_BKG_RATE_ERR
+                      RAW_STD_RATE RAW_STD_RATE_ERR 
+                      COI_STD_FACTOR COI_STD_FACTOR_ERR 
+                      COI_BKG_FACTOR COI_BKG_FACTOR_ERR
+                      COI_TOT_RATE COI_TOT_RATE_ERR 
+                      COI_BKG_RATE COI_BKG_RATE_ERR 
+                      COI_SRC_RATE COI_SRC_RATE_ERR 
+                      AP_COI_SRC_RATE AP_COI_SRC_RATE_ERR 
+                      LSS_FACTOR
+                      LSS_RATE LSS_RATE_ERR 
+                      MAG MAG_ERR MAG_BKG MAG_BKG_ERR 
+                      FLUX_AA FLUX_AA_ERR 
+                      FLUX_AA_BKG FLUX_AA_BKG_ERR
+                      FLUX_HZ FLUX_HZ_ERR
+                      FLUX_HZ_BKG FLUX_HZ_BKG_ERR
+                      INT_FLUX INT_FLUX_ERR 
+                      SIGMA 
+                      BKG_INNER_RADIUS BKG_OUTER_RADIUS 
+                      APERTURE
+                      AP_FACTOR       AP_FLDSRC_RA   AP_FLDSRC_DEC 
+                      AP_FLDSRC_RATE5 AP_FLDSRC_RATE AP_FLDSRC_DIST
+                    );
+
+    my @plotcol = qw(
+                      TIME XAX_E MAG MAG_ERR MAG_LIM 
+                      INT_FLUX INT_FLUX_ERR INT_FLUX_LIM
+                    );
+
+    # patterns to match rows that need to be INDEF'd for upper limit
+    # related complexities
+    my $ratpatt = qr/^(MAG|FLUX_AA|FLUX_HZ|INT_FLUX)$/;
+    
+    my $limpatt = qr/^(MAG_LIM|FLUX_AA_LIM|FLUX_HZ_LIM|INT_FLUX_LIM)$/;
+
+    my $errpatt = qr/^(MAG_ERR|FLUX_AA_ERR|FLUX_HZ_ERR|INT_FLUX_ERR)$/;
+
+    # get the swift software version
+    my $swvers = `swiftversion`;
+    chomp $swvers;
+
+    # write QDP files if asked
+    my ( $qdpfile, $pcofile1, $pcofile2 );
+    if ( $params{doplots} ) {
+        $qdpfile  = catfile( $params{outdir}, "$params{outstem}_uuvetsrab.qdp" );
+        $pcofile1 = catfile( $params{outdir}, "$params{outstem}_pco1.pco" );
+        $pcofile2 = catfile( $params{outdir}, "$params{outstem}_pco2.pco" );
+        open QDP, ">$qdpfile" or die "failed to open file $qdpfile\n";
+        open PCO1, ">$pcofile1" or die "failed to open file $pcofile1\n";
+        open PCO2, ">$pcofile2" or die "failed to open file $pcofile2\n";
+        print QDP "skip single\nread serr 1 2 4\n";
+        print QDP <<EOF;
+!
+!  Time      |  Time Error |     Mag     |  Mag Error  |  Mag Limit  |   Flux      | Flux Error  | Flux Limit  |
+!  [s]       |     [s]     |             |             |             | erg/cm**2/s | erg/cm**2/s | erg/cm**2/s |
+!---------------------------------------------------------------------------------------------------------------
+EOF
+    }
+
+    my $mmin = 2.0e20;
+    my $mmax = -2.0e20;
+    my $tmin = 2.0e20;
+    my $tmax = -2.0e20;
+    
+    # this is for the HDU to plot - we are finding max's here anyway
+    # so we might as well store the max obsid/filter combo for later
+    my $plotref;
+    my $plotreg;
+    
+    # do these in order of decreasing wavelength (except WHITE)
+    my @lightCurves = ( );
+    foreach my $filt (qw( V B U UVW1 UVM2 UVW2 WHITE )) {
+
+        if ( $params{doplots} ) {
+            print QDP "!\n! Data for $filt filter\n!\n";
+        }
+        if ( !keys %{$sky_imgs{$filt}} ) { 
+            if ( $params{doplots} ) {
+                print QDP ( ( "0.0           " ) x @plotcol ) . "\n";
+                print QDP ( ( "NO            " ) x @plotcol ) . "\n\n";
+            }
+            next;
+        }
+
+        # get the standard filter string
+        my $filtstr;
+        if ( length $filt >= 2 && $filt !~ /WHITE/ ) {
+            $filtstr = lc( substr $filt, 2, 2 );
+        } elsif ( length $filt < 2 ) {
+            $filtstr = lc( $filt ) x 2;
+        } else {
+            $filtstr = 'wh';
+        }
+        my $outfile = catfile( $params{outdir}, 
+                               "$params{outstem}_u${filtstr}srab.lc" );
+        push @lightCurves, $outfile;
+       
+        # get the time-sorted order of all data for this filter
+        # and get the contamination flag
+        my @timehashes;
+        my $contam = 'F';
+        foreach my $obs ( sort keys %{$sky_imgs{$filt}} ) {
+            foreach my $exp ( sort keys %{$sky_imgs{$filt}{$obs}} ) {
+                if ( !exists $sky_imgs{$filt}{$obs}{$exp} ||
+                     !defined $sky_imgs{$filt}{$obs}{$exp} ||
+                     !defined $sky_imgs{$filt}{$obs}{$exp}{tstart} ||
+                     !defined $sky_imgs{$filt}{$obs}{$exp}{tstop} ) {
+                    next;
+                }
+                my $timehash = {
+                    obs    => $obs,
+                    exp    => $exp,
+                    tstart => $sky_imgs{$filt}{$obs}{$exp}{tstart},
+                    tstop  => $sky_imgs{$filt}{$obs}{$exp}{tstop},
+                };
+                push @timehashes, $timehash;
+                if ( exists $sky_imgs{$filt}{$obs}{$exp}{contaminated} &&
+                     $sky_imgs{$filt}{$obs}{$exp}{contaminated} == 1 ) {
+                    $contam = 'T';
+                }
+            }
+        }
+        @timehashes = sort { $a->{tstart} <=> $b->{tstart} } @timehashes;
+
+        # get some values for the light curve header
+        my $tstart   = $timehashes[ 0 ]{tstart};
+        my $tstop    = $timehashes[ $#timehashes ]{tstop};
+        my $pivot    = $filterData{$filt}{pivot_um};
+        my $extinctm = $filterData{$filt}{gal_Mag};
+        my $extinctf = $filterData{$filt}{gal_Flux};
+        my $fluxconv = $filterData{$filt}{flux_Conv};
+
+        # and for plots
+        $tmin = min( $tmin, $tstart - $params{trigtime} );
+        $tmax = max( $tmax, $tstop - $params{trigtime} );
+        debug( sprintf( "\$tmin = %.6f\n", $tmin ) );
+        debug( sprintf( "\$tmax = %.6f\n", $tmax ) );
+
+        # define data types for columns
+        my $cdfile = getTmpFile( "txt" );
+        open CD, ">$cdfile" or die "failed to open $cdfile\n";
+
+        print CD <<EOF;
+TIME                    1D      s
+XAX_E                   1D      s
+TIMEDEL                 1D      s
+FRACEXP                 1E
+TSTART                  1D      MET(s)
+TSTOP                   1D      MET(s)
+EXPOSURE                1D      s
+RAW_TOT_CNTS            1E      count
+RAW_TOT_CNTS_ERR        1E      count
+RAW_BKG_CNTS            1E      count
+RAW_BKG_CNTS_ERR        1E      count
+RAW_STD_CNTS            1E      count
+RAW_STD_CNTS_ERR        1E      count
+RAW_TOT_RATE            1E      count/s
+RAW_TOT_RATE_ERR        1E      count/s
+RAW_BKG_RATE            1E      count/s/arcsec**2
+RAW_BKG_RATE_ERR        1E      count/s/arcsec**2
+RAW_STD_RATE            1E      count/s
+RAW_STD_RATE_ERR        1E      count/s
+COI_STD_FACTOR          1E
+COI_STD_FACTOR_ERR      1E
+COI_BKG_FACTOR          1E
+COI_BKG_FACTOR_ERR      1E
+COI_TOT_RATE            1E      count/s
+COI_TOT_RATE_ERR        1E      count/s
+COI_BKG_RATE            1E      count/s/arcsec**2
+COI_BKG_RATE_ERR        1E      count/s/arcsec**2
+COI_SRC_RATE            1E      count/s
+COI_SRC_RATE_ERR        1E      count/s
+AP_COI_SRC_RATE         1E      count/s
+AP_COI_SRC_RATE_ERR     1E      count/s
+LSS_FACTOR              1E
+LSS_RATE                1E      count/s
+LSS_RATE_ERR            1E      count/s
+MAG                     1E      mag
+MAG_ERR                 1E      mag
+MAG_BKG                 1E      mag/arcsec**2
+MAG_BKG_ERR             1E      mag/arcsec**2
+FLUX_AA                 1E      erg/s/cm**2/A
+FLUX_AA_ERR             1E      erg/s/cm**2/A
+FLUX_AA_BKG             1E      erg/s/cm**2/A/arcsec**2
+FLUX_AA_BKG_ERR         1E      erg/s/cm**2/A/arcsec**2
+FLUX_HZ                 1E      mJy
+FLUX_HZ_ERR             1E      mJy
+FLUX_HZ_BKG             1E      mJy/arcsec**2
+FLUX_HZ_BKG_ERR         1E      mJy/arcsec**2
+INT_FLUX                1E      '[$filt] erg/cm**2/s'
+INT_FLUX_ERR            1E      '[$filt] erg/cm**2/s'
+SIGMA                   1E      sigma
+BKG_INNER_RADIUS        1E      arcsec
+BKG_OUTER_RADIUS        1E      arcsec
+APERTURE                1E      arcsec
+AP_FACTOR               1E
+AP_FLDSRC_RA            1E      deg
+AP_FLDSRC_DEC           1E      deg
+AP_FLDSRC_RATE5         1E      count/s
+AP_FLDSRC_RATE          1E      count/s
+AP_FLDSRC_DIST          1E      arcsec
+APERCORR_METHOD         30A
+OBS_ID                  11A
+EXPID                   30A
+EOF
+        close CD;
+
+        my $hdfile = getTmpFile( "txt" );
+        open HD, ">$hdfile" or die "failed to open file $hdfile\n";
+
+        # handle targid and trigtime keywords
+        my $targstr = '';
+        my $trigstr = '';
+        if ( $params{usetargid} ) {
+            $targstr = "TARG_ID  $params{targid}           / Target ID\n";
+        }
+        if ( $params{usetrigtime} ) {
+            if ( $params{trigfrombat} ) {
+                $trigstr = "TRIGTIME $params{trigtime} / [s] MET TRIGger Time for Automatic Target\n";
+            } else {
+                $trigstr = "TRIGTIME $params{trigtime} / [s] MET TRIGger Time from Other Observatory\n";
+            }
+        }
+
+        # print header file
+        print HD <<EOF;
+TELESCOP 'SWIFT'           / Telescope (mission) name
+INSTRUME 'UVOTA'           / Instrument name
+FILTER   '$filt'           / Filter
+${targstr}TIMESYS  'TT'              / time system
+MJDREFI  51910             / MJD reference day 01 Jan 2001 00:00:00
+MJDREFF  0.00074287037     / MJD reference (fraction of day) 01 Jan 2001 00:
+TIMEREF  'LOCAL   '        / Time reference (barycenter/local)
+TASSIGN  'SATELLITE'       / Time assigned by clock
+TIERRELA 1.0E-8            / [s/s] relative errors expressed as rate
+TIERABSO 1.0               / [s] timing precision in seconds
+TIMEUNIT 's'               / Time unit for timing header keywords
+TSTART   $tstart           / Start time
+TSTOP    $tstop            / Stop time
+TIMEZERO $params{trigtime} / Offset to the time column is needed
+${trigstr}DEADAPP  T                 / Dead time corrections have been applied
+ORIGIN   'GSFC    '        / Source of FITS file
+CREATOR  '$taskName v$taskVers' / Program that created this FITS file
+OBJECT   '$params{object}'         / Object name
+RA_OBJ   $params{srcra}    / [deg] R.A. Object
+DEC_OBJ  $params{srcdec}   / [deg] Dec Object
+PIVOTLAM $pivot            / [um] Pivot wavelength of this filter
+FLUXCONV $fluxconv         / [erg/cm**2/s/mJy] mJy to Flux conversion
+EXTINCTM $extinctm         / [$filt mag] Magnitudes of Galactic extinction
+EXTINCTF $extinctf         / Extinction correction for flux
+CONTAM   $contam           / Possible field source contamination?
+COMMENT
+COMMENT Column Descriptions:
+COMMENT  NAME                - DESCRIPTION
+COMMENT ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+COMMENT  TIME                - Time since BAT trigger
+COMMENT  XAX_E               - Half-width of time bin
+COMMENT  TIMEDEL             - Full-width of time bin
+COMMENT  FRACEXP             - Fractional exposure of bin
+COMMENT  TSTART              - MET start time of bin
+COMMENT  TSTOP               - MET stop time of bin
+COMMENT  EXPOSURE            - Good exposure time of bin
+COMMENT  
+COMMENT  RAW_TOT_CNTS        - Total raw counts in aperture
+COMMENT  RAW_TOT_CNTS_ERR    - Error in RAW_TOT_CNTS
+COMMENT  RAW_BKG_CNTS        - Total raw background counts
+COMMENT  RAW_BKG_CNTS_ERR    - Error in RAW_BKG_CNTS
+COMMENT  RAW_STD_CNTS        - Total raw counts in coincidence loss region
+COMMENT  RAW_STD_CNTS_ERR    - Error in RAW_STD_CNTS_ERR
+COMMENT
+COMMENT  RAW_TOT_RATE        - Total raw rate in aperture
+COMMENT  RAW_TOT_RATE_ERR    - Error in RAW_TOT_RATE
+COMMENT  RAW_BKG_RATE        - Total raw background rate in aperture
+COMMENT  RAW_BKG_RATE_ERR    - Error in RAW_BKG_RATE
+COMMENT  RAW_STD_RATE        - Total raw rate in coincidence loss region
+COMMENT  RAW_STD_RATE_ERR    - Error in RAW_STD_RATE
+COMMENT
+COMMENT  COI_STD_FACTOR      - Coincidence-loss correction factor
+COMMENT  COI_STD_FACTOR_ERR  - Error in COI_STD_FACTOR
+COMMENT  COI_BKG_FACTOR      - Background coincidence-loss correction factor
+COMMENT  COI_BKG_FACTOR_ERR  - Error in COI_BKG_FACTOR
+COMMENT
+COMMENT  COI_TOT_RATE        - Coincidence-loss corrected rate
+COMMENT  COI_TOT_RATE_ERR    - Error in COI_TOT_RATE
+COMMENT  COI_BKG_RATE        - Background coincidence-loss corrected rate
+COMMENT  COI_BKG_RATE_ERR    - Error in COI_BKG_RATE
+COMMENT  COI_SRC_RATE        - Net coincidence-loss corrected rate
+COMMENT  COI_SRC_RATE_ERR    - Error in COI_SRC_RATE
+COMMENT  AP_COI_SRC_RATE     - Net aperture/coincidence-loss corrected rate
+COMMENT  AP_COI_SRC_RATE_ERR - Error in AP_COI_SRC_RATE
+COMMENT
+COMMENT  LSS_FACTOR          - Large-scale sensitivity factor
+COMMENT  LSS_RATE            - Net aperture/coincidence-loss/lss corrected rate
+COMMENT  LSS_RATE_ERR        - Error in LSS_RATE
+COMMENT  
+COMMENT  MAG                 - $filt magnitude
+COMMENT  MAG_ERR             - Error in MAG
+COMMENT  MAG_BKG             - Background $filt magnitude
+COMMENT  MAG_BKG_ERR         - Error in MAG_BKG
+COMMENT  
+COMMENT  FLUX_AA             - $filt flux density
+COMMENT  FLUX_AA_ERR         - Error in FLUX_AA
+COMMENT  FLUX_AA_BKG         - Background $filt flux density
+COMMENT  FLUX_AA_BKG_ERR     - Error in FLUX_AA_BKG
+COMMENT
+COMMENT  FLUX_HZ             - $filt flux density
+COMMENT  FLUX_HZ_ERR         - Error in FLUX_HZ
+COMMENT  FLUX_HZ_BKG         - Background $filt flux density
+COMMENT  FLUX_HZ_BKG_ERR     - Error in FLUX_HZ_BKG
+COMMENT  
+COMMENT  INT_FLUX            - Integrated $filt band flux
+COMMENT  INT_FLUX_ERR        - Error in INT_FLUX
+COMMENT  
+COMMENT  SIGMA               - Significance of detection
+COMMENT  BKG_INNER_RADIUS    - Inner radius of background annulus
+COMMENT  BKG_OUTER_RADIUS    - Outer radius of background annulus
+COMMENT  APERTURE            - Aperture radius
+COMMENT  AP_FACTOR           - Aperture correction factor
+COMMENT  AP_FLDSRC_RA        - RA  of field star used for aperture correction
+COMMENT  AP_FLDSRC_DEC       - Dec of field star used for aperture correction
+COMMENT  AP_FLDSRC_RATE5     - Rate of field star in 5" aperture
+COMMENT  AP_FLDSRC_RATE      - Rate of field star in APERTURE
+COMMENT  AP_FLDSRC_DIST      - Distance of field star from source (arcsec)
+COMMENT  APERCORR_METHOD     - Method used for aperture correction
+COMMENT                        FIELDSTARS|CURVEOFGROWTH|NOTAPPLICABLE
+COMMENT
+COMMENT  OBS_ID              - OBS_ID where this point came from
+COMMENT  EXPID               - EXPID(s) where this point came from
+COMMENT                        May be an inclusive range of EXP_IDs
+EOF
+
+        # print the data file and the plot file if asked to
+        my $datafile = getTmpFile( "txt" );
+        open DAT, ">$datafile" or die "failed to open file $datafile\n";
+
+        foreach my $th ( @timehashes ) {
+            my $obs = $th->{obs};
+            my $exp = $th->{exp};
+            my $skyref = $sky_imgs{$filt}{$obs}{$exp};
+
+            # get the min and max for magnitude plot
+            # and determine the highest sigma image to plot
+            if ( $skyref->{detected} ) {
+                if ( $skyref->{mag} - $skyref->{mag_err} < $mmin ) {
+                    $mmin    = $skyref->{mag} - $skyref->{mag_err};
+                }
+                if ( ( defined $plotref && $plotref->{detected} && $skyref->{sigma} > $plotref->{sigma} ) ||
+                     !defined $plotref || !$plotref->{detected} ) {
+                    $plotref = $skyref;
+                    $plotreg = $skyref->{grbregfile};
+                }                     
+                $mmax = max( $mmax, $skyref->{mag} + $skyref->{mag_err} );
+            } else {
+                $mmax = max( $mmax, $skyref->{mag_lim} );
+                if ( $skyref->{mag_lim} < $mmin ) {
+                    $mmin = $skyref->{mag_lim};
+                }
+                if ( ( defined $plotref && !$plotref->{detected} && $skyref->{sigma} > $plotref->{sigma} ) ||
+                     !defined $plotref ) {
+                    $plotref = $skyref;
+                    $plotreg = $skyref->{grbregfile};
+                }
+            }
+            
+            # now print the data rows
+            foreach my $key ( @columns ) {
+                my $col = lc( $key );
+                if ( !$skyref->{detected} ) {
+                    if ( $key =~ $ratpatt ) {
+                        printf DAT "%.15g ", $skyref->{"${col}_lim"};
+                    } elsif ( $key =~ $errpatt ) {
+                        print DAT "INDEF ";
+                    } else {
+                        printf DAT "%.15g ", $skyref->{$col};
+                    }
+                } else {
+                    printf DAT "%.15g ", $skyref->{$col};
+                }
+            }
+            # string columns
+            print DAT "$skyref->{apermeth} $skyref->{obs_id} $skyref->{expid}\n";
+
+            # print the qdp data
+            if ( !$params{doplots} ) { next; }
+            foreach my $key ( @plotcol ) {
+                my $col = lc( $key );
+                if ( $skyref->{detected} ) {
+                    if ( $key =~ $limpatt ) {
+                        print QDP "INDEF         ";
+                    } else {
+                        printf QDP "%+.6e ", $skyref->{$col};
+                    }
+                } else {
+                    if ( $key =~ $errpatt || $key =~ $ratpatt ) {
+                        print QDP "INDEF         ";
+                    } else {
+                        printf QDP "%+.6e ", $skyref->{$col};
+                    }
+                }
+            }
+            print QDP "\n";
+        }
+        if ( $params{doplots} ) {
+            print QDP "NO            " x @plotcol;
+            print QDP "\n\n";
+        }
+
+        # run ftcreate
+        my $ftcreate = {
+            cdfile   => $cdfile,
+            datafile => $datafile,
+            outfile  => $outfile,
+            headfile => $hdfile,
+            tabtyp   => 'BINARY',
+            extname  => $filt,
+            nskip    => 0,
+            nrows    => 0,
+            morehdr  => 0,
+            clobber  => 'yes',
+            chatter  => $params{chatter},
+            history  => 'no'
+        };
+        my $cmd = genCmd( 'ftcreate', $ftcreate );
+        my $stat = runSystem( $cmd );
+
+        push @clean, $cdfile, $datafile, $hdfile;
+        return $stat unless $stat == 0;
+    }
+
+    # write qdp command files, and run qdp
+    if ( $params{doplots} ) {
+        writePCO1( $tmin, $tmax, $mmin, $mmax );
+        writePCO2( $tmin, $tmax );
+        close QDP;
+        close PCO1;
+        close PCO2;
+
+        my $plot1 = "$params{outstem}_uuvetsrmb_lc.$params{plotfext}$params{plotftype}";
+        my $plot2 = "$params{outstem}_uuvetsrfb_lc.$params{plotfext}$params{plotftype}";
+        
+        my $cwd = getcwd( );
+        chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+        
+        my $cmd = "qdp " . basename( $qdpfile ) . " 2>&1 > /dev/null";
+        
+        chat( 3, "running $cmd\n" );
+        open QDP, "|$cmd" or die "failed to run command: $cmd\n";
+        print QDP "/null\n";
+        print QDP "@" . basename( $pcofile1 ) . "\n";
+        print QDP "cpd $plot1\n";
+        print QDP "plot\nquit\n";
+        close QDP;
+       
+        chat( 3, "running $cmd\n" );
+        open QDP, "|$cmd" or die "failed to run command: $cmd\n";
+        print QDP "/null\n";
+        print QDP "@" . basename( $pcofile2 ) . "\n";
+        print QDP "cpd $plot2\n";
+        print QDP "plot\nquit\n";
+        close QDP;
+        chdir $cwd or die "failed to chdir to $cwd\n";
+    }
+
+    # fix $plotref to point to SUMMED image
+    if ( defined $plotref ) {
+        chat( 3, "highest sigma image :FILTER=$plotref->{filter}, ",
+                 "OBS_ID=$plotref->{obs_id}\n" );
+        $plotref = $sum_imgs{$plotref->{filter}}{$plotref->{obs_id}}{SUMMED};
+        $plotref->{grbregfile} = $plotreg;
+    } else {
+        warnhi( 1, "failed to find highest sigma image for plotting!\n" );
+    }
+
+    # append the curves if asked
+    if ( $params{appendcurves} ) {
+        $stat = appendCurves( $tmin + $params{trigtime}, 
+                              $tmax + $params{trigtime},
+                              \@lightCurves );
+        push @clean, @lightCurves;
+        my $outfile = catfile( $params{outdir}, "$params{outstem}_uuvetsrab.lc" );
+        my $fptr = Astro::FITS::CFITSIO::open_file( $outfile, READWRITE, $stat );
+        $fptr->movabs_hdu( 1, undef, $stat );
+        HDpar_stamp( $fptr, 1, $stat );
+        $fptr->close_file( $stat );
+    } else {
+        foreach my $curve ( @lightCurves ) {
+            my $fptr = Astro::FITS::CFITSIO::open_file( $curve, READWRITE, $stat );
+            $fptr->movabs_hdu( 1, undef, $stat );
+            HDpar_stamp( $fptr, 1, $stat );
+            $fptr->close_file( $stat );
+        }
+    }
+
+    return ( $stat, $plotref );
+}
+
+
+# sets file extension based on plot device
+# and tries to use said device
+sub getPlotDevice {
+
+    my $stat = 0;
+    if ( $params{plotftype} =~ /ps/ ) {
+        $params{plotfext} = "ps";
+    } elsif ( $params{plotftype} =~ /gif/ ) {
+        $params{plotfext} = "gif";
+    } elsif ( $params{plotftype} =~ /ppm/ ) {
+        $params{plotfext} = "ppm";
+    } elsif ( $params{plotftype} =~ /wd/ ) {
+        $params{plotfext} = "xwd";
+    } else {
+        error( 1, "unsupported plot device $params{plotftype}\n" );
+        return -1;
+    }
+
+    # try it!
+    my $cwd = getcwd( );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+   
+    my $qdptest = basename( getTmpFile( "qdp" ) );
+    open QDP, ">$qdptest" or die "failed to open file $qdptest\n";
+    print QDP "1.0 1.0\n2.0 4.0\n";
+    close QDP;
+    
+    my $testplot = basename( getTmpFile( "$params{plotfext}" ) ); 
+
+    my $cmd = "qdp $qdptest 2>&1 > /dev/null";
+    
+    chat( 3, "testing qdp with command: $cmd\n" );
+    open QDP, "|$cmd" or die "failed to run command: $cmd\n";
+    print QDP "/null\n";
+    print QDP "cpd ${testplot}$params{plotftype}\n";
+    print QDP "plot\nquit\n";
+    close QDP;
+
+    if ( !-e $testplot ) {
+        error( 1, "failed to create test plot using plot ",
+               "device $params{plotftype}!\n" );
+        $stat = -1;
+    }
+    unlink $testplot, $qdptest;
+    chdir $cwd;
+    return $stat;
+}
+
+# NOTE: Assumes global filehandle PCO1 has been defined
+sub writePCO1 {
+
+    my ( $tmin, $tmax, $ymin, $ymax ) = @_;
+
+    # round, and put a .2 buffer to try to not overlap labels
+    $ymin = int( $ymin ) - 0.2;
+    if ( $ymax != 0 ) {
+        $ymax = ( $ymax / int( $ymax ) ) == 0.0 ? $ymax : int( $ymax + 1 );
+        $ymax += 0.2;
+    } else {
+        $ymax = int( $ymax ) + 0.2;
+    }
+
+    # log scale...
+    if ( $params{logxplot} ) {
+        print PCO1 "log x\n";
+        $tmin = int( $tmin - $tmin / 2.0 );
+        $tmax = int( $tmax + $tmax * 2.0 );
+    # linear scale...
+    } else {
+        # make 5% expansion at the edges
+        my $extra = 0.05 * ( $tmax - $tmin );
+        $tmin = int( $tmin - $extra );
+        $tmax = int( $tmax + $extra );
+        #$tmin = int( $tmin - 0.05 * abs( $tmin ) );
+        #$tmax = int( $tmax + 0.05 * abs( $tmax ) );
+    }
+    debug( sprintf( "using %.6f for plot X min\n", $tmin ) );
+    debug( sprintf( "using %.6f for plot X max\n", $tmax ) );
+
+    # note, this is a magnitude plot, so y-axis is upside down
+    print PCO1 <<EOF;
+lwidth 4
+time off
+lab file
+scr white
+EOF
+    if ( $params{usetargid} ) {
+        print PCO1 <<EOF;
+lab t "$params{object}: UVOT, TARG_ID=$params{targid} Magnitude Light Curves"
+EOF
+    } else {
+        print PCO1 <<EOF;
+lab t "$params{object}: UVOT Magnitude Light Curves"
+EOF
+    }
+    print PCO1 <<EOF;
+gap error
+lab pos y 3.0
+color 2  on 1 2 3 4
+color 3  on 5 6 7 8
+color 4  on 9 10 11 12
+color 5  on 13 14 15 16
+color 6  on 17 18 19 20
+color 7  on 21 22 23 24
+color 8  on 25 26 27 28
+mark 31  on 2 4 6 8 10 12 14 16 18 20 22 24 26 28
+csize 1.0
+win 1
+location 0.0 0.7714 1.0 0.9
+yplot    on 1 2
+lab nx   off
+lab y    [V]
+res y    $ymax $ymin
+lab rotate
+win 2
+location 0.0 0.6571 1.0 0.8000
+yplot    on 5 6
+lab nx   off
+!lab ny   off
+lab y    [B]
+res y    $ymax $ymin
+lab rotate
+win 3
+location 0.0 0.5429 1.0 0.6857
+yplot    on 9 10
+lab nx   off
+lab y    [U]
+res y    $ymax $ymin
+lab rotate
+win 4
+location 0.0 0.4286 1.0 0.5714
+yplot    on 13 14
+lab nx   off
+!lab ny   off
+lab y    [W1]
+res y    $ymax $ymin
+lab rotate
+win 5
+location 0.0 0.3143 1.0 0.4571
+yplot    on 17 18
+lab nx   off
+lab y    [M2]
+res y    $ymax $ymin
+lab rotate
+win 6
+location 0.0 0.2000 1.0 0.3429
+yplot    on 21 22
+lab nx   off
+!lab ny   off
+lab y    [W2]
+res y    $ymax $ymin
+lab rotate
+win 7
+location 0.0 0.0857 1.0 0.2286
+yplot    on 25 26
+lab y    [WH]
+res y    $ymax $ymin
+lab rotate
+EOF
+    if ( $params{usetrigtime} ) {
+        if ( $params{trigfrombat} ) {
+            print PCO1 "lab x    Time Since BAT Trigger (s)\n";
+        } else {
+            print PCO1 "lab x    Time Since Trigger (s)\n";
+        }
+    } else {
+        print PCO1 "lab x    Time Since MET=$params{trigtime} s (s)\n";
+    }
+    print PCO1 <<EOF;
+win all
+res x    $tmin $tmax
+EOF
+}
+
+sub writePCO2 {
+
+    my ( $tmin, $tmax ) = @_;
+
+    # log scale...
+    if ( $params{logxplot} ) {
+        print PCO2 "log x\n";
+        $tmin = int( $tmin - $tmin / 2.0 );
+        $tmax = int( $tmax + $tmax * 2.0 );
+    # linear scale...
+    } else {
+        # make 5% expansion at the edges
+        my $extra = 0.05 * ( $tmax - $tmin );
+        $tmin = int( $tmin - $extra );
+        $tmax = int( $tmax + $extra );
+        #$tmin = int( $tmin - 0.05 * abs( $tmin ) );
+        #$tmax = int( $tmax + 0.05 * abs( $tmax ) );
+    }
+    debug( sprintf( "using %.6f for plot X min\n", $tmin ) );
+    debug( sprintf( "using %.6f for plot X max\n", $tmax ) );
+    print PCO2 <<EOF;
+yplot off
+lwidth 4
+time off
+lab file
+scr white
+EOF
+    if ( $params{usetargid} ) {
+        print PCO2 <<EOF;
+lab t "$params{object}: UVOT, TARG_ID=$params{targid} Integrated Flux Light Curves"
+EOF
+    } else {
+        print PCO2 <<EOF;
+lab t "$params{object}: UVOT Integrated Flux Light Curves"
+EOF
+    }
+    print PCO2 <<EOF;
+log y
+gap error
+lab pos y 3.0
+color 2  on 1 2 3 4
+color 3  on 5 6 7 8
+color 4  on 9 10 11 12
+color 5  on 13 14 15 16
+color 6  on 17 18 19 20
+color 7  on 21 22 23 24
+color 8  on 25 26 27 28
+mark 31  on 2 4 6 8 10 12 14 16 18 20 22 24 26 28
+yplot    on 3 4 7 8 11 12 15 16 19 20 23 24 27 28
+res x $tmin $tmax
+res y
+csize 1.0
+lab y Integrated Flux (erg cm\\U-2\\D s\\U-1\\D)
+EOF
+    if ( $params{usetrigtime} ) {
+        if ( $params{trigfrombat} ) {
+            print PCO2 "lab x    Time Since BAT Trigger (s)\n";
+        } else {
+            print PCO2 "lab x    Time Since Trigger (s)\n";
+        }
+    } else {
+        print PCO2 "lab x    Time Since MET=$params{trigtime} s (s)\n";
+    }
+}
+
+
+sub plotImage {
+
+    my ( $plotref, $findref, $findingOnly ) = @_;
+
+    $findingOnly = ( defined $findingOnly ) ? 1 : 0;
+
+    my $radius   = 4.5;
+    my $findrad  = getImageReadRadius( );
+    
+    # finding chart regions for BAT/XRT
+    my $xrtreg = getTmpFile( "reg" );
+    my $batreg = getTmpFile( "reg" );
+    if ( exists $params{xrtsrcra} ) {
+        open XRT, ">$xrtreg" or die "failed to open file $xrtreg\n";
+        print XRT "fk5;circle($params{xrtsrcra},$params{xrtsrcdec},$params{xrterrrad}')\n";
+        close XRT;
+    }
+    if ( exists $params{batsrcra} ) {
+        open XRT, ">$batreg" or die "failed to open file $batreg\n";
+        print XRT "fk5;circle($params{batsrcra},$params{batsrcdec},$params{baterrrad}')\n";
+        close XRT;
+    }
+
+    # regions for display range determination in finding chart
+    if ( !exists $findref->{grbregfile} || !-e $findref->{grbregfile} ) {
+        my $findreg = getTmpFile( "reg" );
+        open REG, ">$findreg" or die "failed to open file $findreg\n";
+        print REG "fk5;circle($params{srcra},$params{srcdec},5\")\n";
+        close REG;
+        $findref->{grbregfile} = $findreg;
+        push @clean, $findreg;
+    }
+    if ( !exists $findref->{bkg_reg} || !-e $findref->{bkg_reg} ) {
+        my $findbkg = getTmpFile( "reg" );
+        open REG, ">$findbkg" or die "failed to open file $findbkg\n";
+        print REG "fk5;annulus($params{srcra},$params{srcdec},15\",27\")\n";
+        close REG;
+        $findref->{bkg_reg} = $findbkg;
+        push @clean, $findbkg;
+    }
+
+    # plot files and temporary plot files (for stupid pgplot)
+    my $plotfile = catfile( $params{outdir}, 
+                            "$params{outstem}_uuvsri1.$params{plotfext}" );
+    my $findfile = catfile( $params{outdir}, 
+                            "$params{outstem}_uuvsri2.$params{plotfext}" );
+    my $tmpplot1 = basename( getTmpFile( $params{plotfext} ) );
+    my $tmpplot2 = basename( getTmpFile( $params{plotfext} ) );
+   
+    # write the script
+    my $script = getTmpFile( "xco" );
+
+    # plot the image with log scaling and min/max set
+    # to 95% of the background, and 15% of the total source
+    # counts respectively
+    open F, ">$script" or die "failed to open file $script\n";
+    print F <<EOF;
+set exit_on_startfail 1
+cey 2000
+levels number=32
+if { $findingOnly == 0 && [file exists {$plotref->{filename}}] } {
+    cpd {${tmpplot1}$params{plotftype}}
+    cct set reverse red2
+    color set=0 name=white
+    color set=1 name=black
+    set colorsset 1
+    read size=-$radius ra={$params{srcra}} dec={$params{srcdec}} {$plotref->{filename}}
+    if { [file exists {$plotref->{grbregfile}}] && [file exists {$plotref->{bkg_reg}}] } {
+        counts regionfile={$plotref->{grbregfile}}
+        set mymax [expr 0.15 * \$counts(total)]
+        counts regionfile={$plotref->{bkg_reg}}
+        set mymin [expr 0.95 * \$counts(avgimg)]
+    } else {
+        set mymin 1
+        set mymax 0
+    }
+    set mylabel "OBS_ID=$plotref->{obs_id}, FILTER=$plotref->{filter}"
+    title ""
+    title lower "\$mylabel"
+    if { \$mymin < \$mymax } {
+        disp log minlevel=\$mymin maxlevel=\$mymax noframe
+    } else {
+        disp log noframe
+    }
+    if { [file exists {$plotref->{grbregfile}}] && [file exists {$plotref->{bkg_reg_plot}}] } {
+        circlereg displayonly lwidth=2 lstyle=3 color=4 excolor=2 regionfile={$plotref->{bkg_reg_plot}}
+        circlereg displayonly lwidth=2 lstyle=1 color=4 regionfile={$plotref->{grbregfile}}
+    }
+    set grid_astoptions "Grid=1,Border=1,Edge(1)=bottom,Edge(2)=right,Width(NumLab)=2.0"
+    grid ticks_only abbrev csize=0.75 color=2 lwidth=4
+    if { $params{usetargid} != 0 } {
+        set mylabel "$params{object}: UVOT, TARG_ID=$params{targid}, Highest S/N Image"
+    } else {
+        set mylabel "$params{object}: UVOT Highest S/N Image"
+    }
+    vplabel color=1 margin=3 just=center lwidth=4 "\$mylabel"
+}
+if { [file exists {$findref->{filename}}] && ( [file exists {$xrtreg}] || [file exists {$batreg}] || $findingOnly == 1 ) } {
+    cpd {${tmpplot2}$params{plotftype}}
+    if { ![info exists colorsset] } {
+        cct set reverse red2
+        color set=0 name=white
+        color set=1 name=black
+    }
+    read size=-$findrad ra={$params{srcra}} dec={$params{srcdec}} {$findref->{filename}+$findref->{hdu}}
+    if { [file exists {$findref->{grbregfile}}] && [file exists {$findref->{bkg_reg}}] } {
+        counts regionfile={$findref->{grbregfile}}
+        set mymax [expr 0.15 * \$counts(total)]
+        counts regionfile={$findref->{bkg_reg}}
+        set mymin [expr 0.95 * \$counts(avgimg)]
+    } else {
+        set mymin 1
+        set mymax 0
+    }
+    set mylabel "OBS_ID=$findref->{obs_id}, FILTER=$findref->{filter}, EXPID=$findref->{expid}"
+    title ""
+    title lower "\$mylabel"
+    if { \$mymin < \$mymax } {
+        disp log minlevel=\$mymin maxlevel=\$mymax noframe
+    } else {
+        disp log noframe
+    }
+    if { [file exists {$findref->{grbregfile}}] } {
+        circlereg displayonly lwidth=1 lstyle=1 color=1 regionfile={$findref->{grbregfile}}
+    }
+    if { [file exists {$xrtreg}] } {
+        circlereg displayonly lwidth=1 lstyle=1 color=4 regionfile={$xrtreg}
+        label color=4 ra=$params{xrtsrcra} dec=[expr $params{xrtsrcdec}+($params{xrterrrad}+.1)/60.0] just=center "XRT"
+    }
+    if { [file exists {$batreg}] } {
+        circlereg displayonly lwidth=4 lstyle=1 color=4 regionfile={$batreg}
+        label color=4 ra=$params{batsrcra} dec=[expr $params{batsrcdec}+($params{baterrrad}+.1)/60.0] just=center "BAT" 
+    }
+    set grid_astoptions "Grid=1,Border=1,Edge(1)=bottom,Edge(2)=right,Width(NumLab)=2.0"
+    grid ticks_only abbrev csize=0.75 color=2 lwidth=4
+    if { $params{usetargid} != 0 } {
+        set mylabel "$params{object}: UVOT, TARG_ID=$params{targid}, Finding Chart Image"
+    } else {
+        set mylabel "$params{object}: UVOT Finding Chart Image"
+    }
+    vplabel color=1 margin=3 just=center lwidth=4 "\$mylabel"
+}
+quit
+EOF
+    close F;
+
+    my $cmd = "ximage \@$script < /dev/null";
+    my $stat = runSystem( $cmd );
+    move( $tmpplot1, $plotfile );
+    move( $tmpplot2, $findfile );
+    push @clean, $script;
+    unlink $xrtreg, $batreg;
+    return $stat;
+}
+
+#
+# getImageReadRadius -
+#
+#       gets the ~size to read an image with in XImage in arcmin
+#       defaults to 7'. Only used for finding chart images
+#
+sub getImageReadRadius {
+
+    my ( $batdist, $xrtdist ) = ( undef, undef );
+    my $radius = 7.0;
+    if ( exists $params{xrtsrcra} ) {
+        my $xrtdist = angdist( $params{srcra}, $params{srcdec},
+                               $params{xrtsrcra}, $params{xrtsrcdec} );
+        $xrtdist /= 60.0;
+        $xrtdist += $params{xrterrrad};
+        $xrtdist *= 2.0;
+        if ( $xrtdist >= $radius ) {
+            $radius = $xrtdist + 1.0;
+        }
+    }
+    if ( exists $params{batsrcra} ) {
+        my $batdist = angdist( $params{srcra}, $params{srcdec}, 
+                               $params{batsrcra}, $params{batsrcdec} );
+        $batdist /= 60.0;
+        $batdist += $params{baterrrad};
+        $batdist *= 2.0;
+        if ( $batdist >= $radius ) {
+            $radius = $batdist + 1.0;
+        }
+    }
+    return $radius;
+}
+
+#
+# getFindingChartExpid -
+#
+#       gets the earliest image with the highest sensitivity
+#
+sub getFindingChartExpid {
+
+    # get the earliest image with the highest sensitivity,
+    # the order is V, WH, B, U, W1, W2, M2
+    my $bestexp = undef;
+    foreach my $filt (qw( UVM2 UVW2 UVW1 U B WHITE V )) {
+        if ( !exists $sky_imgs{$filt} ) { next; }
+        foreach my $obs ( sort keys %{$sky_imgs{$filt}} ) {
+        
+            my $href = $sky_imgs{$filt}{$obs};
+            my @expids = sort { $href->{$a}{tstart} <=> $href->{$b}{tstart} } keys %$href;
+            my $i = 0;
+            while ( $i < @expids && $expids[ $i ] !~ /\d+/ ) {
+                $i++;
+            }
+            if ( $i >= @expids ) { $i = 0; }
+            if ( defined $bestexp && $bestexp->{tstart} > $href->{$expids[ $i ]}{tstart} ) {
+                $bestexp = $href->{$expids[ $i ]};
+            } elsif ( !defined $bestexp ) {
+                $bestexp = $href->{$expids[ $i ]};
+                if ( !exists $bestexp->{bkg_reg} ) {
+                    $bestexp->{bkg_reg} = $sum_imgs{$filt}{$obs}{SUMMED}{bkg_reg};
+                }
+            }
+        }
+    }
+    return $bestexp;
+}
+
+#
+# appendCurves -
+#
+#       appends all light curves to a single file
+#
+sub appendCurves {
+    my ( $tstart, $tstop, $curves, $notLC ) = @_;
+
+    my $cmd;
+    my $stat = 0;
+
+    if ( !@$curves ) {
+        error( 1, "while trying to merge light curves, found none!\n" );
+        return -1;
+    }
+    # copy the first file to the output file
+    my $outfile;
+    if ( $notLC ) {
+        $outfile = catfile( $params{outdir}, "$params{outstem}_uuvgrbcdt.fits" );
+    } else {
+        $outfile = catfile( $params{outdir}, "$params{outstem}_uuvetsrab.lc" );
+    }
+    copy( $curves->[ 0 ], $outfile );
+    for ( my $i = 1; $i < @$curves; $i++ ) {
+        my $ftappend = {
+            infile  => "$curves->[ $i ]+1",
+            outfile => $outfile,
+            chatter => $params{chatter},
+            history => 'no'
+        };
+        $cmd = genCmd( 'ftappend', $ftappend );
+        $stat = runSystem( $cmd );
+        return $stat unless $stat == 0;
+    }
+    $stat = updateLCHeader( $tstart, $tstop, $outfile, 0 );
+    return $stat;
+}
+
+#
+# updateLCHeader -
+#
+#       updates a list of HDUS with proper keywords
+#
+sub updateLCHeader {
+
+    my ( $tstart, $tstop, $file, $hdus ) = @_;
+
+    # convert TSTART/TSTOP to DATE-OBS and DATE-END
+    my $dateobs = swifttime( $tstart, 'm', 's', 'u', 't' );
+    my $dateend = swifttime( $tstop, 'm', 's', 'u', 't' );
+    if ( $dateobs == FLT_NULL || $dateend == FLT_NULL ) {
+        error( 1, "failed to convert start/stop times to UTC!\n" );
+        return -1;
+    }
+
+    # get the "file creation date"
+    my ( $date, $stat, $timeref );
+    $stat = 0;
+    fits_get_system_time( $date, $timeref, $stat );
+    $stat = 0;
+    
+    # get the swift software version
+    my $swvers = `swiftversion`;
+    chomp $swvers;
+
+    my $hdfile = getTmpFile( "txt" );
+    open HD, ">$hdfile" or die "failed to open file $hdfile\n";
+    print HD <<EOF;
+TELESCOP 'SWIFT'           / Telescope (mission) name
+INSTRUME 'UVOTA'           / Instrument name
+TIMESYS  'TT'              / time system
+MJDREFI  51910             / MJD reference day 01 Jan 2001 00:00:00
+MJDREFF  0.00074287037     / MJD reference (fraction of day) 01 Jan 2001 00:
+TIMEREF  'LOCAL   '        / Time reference (barycenter/local)
+TASSIGN  'SATELLITE'       / Time assigned by clock
+TIERRELA 1.0E-8            / [s/s] relative errors expressed as rate
+TIERABSO 1.0               / [s] timing precision in seconds
+TIMEUNIT 's'               / Time unit for timing header keywords
+TSTART   $tstart           / Start time
+TSTOP    $tstop            / Stop time
+DATE-OBS '$dateobs'        / Start date of observations
+DATE-END '$dateend'        / End date of observations
+DATE     '$date'           / File creation date
+ORIGIN   'GSFC    '        / Source of FITS file
+CREATOR  '$taskName v$taskVers' / Program that created this FITS file
+OBJECT   '$params{object}'         / Object name
+RA_OBJ   $params{srcra}    / [deg] R.A. Object
+DEC_OBJ  $params{srcdec}   / [deg] Dec Object
+EOF
+    if ( $params{usetargid} ) {
+        print HD <<EOF;
+TARG_ID  $params{targid}           / Target ID
+EOF
+    }
+    if ( $params{usetrigtime} ) {
+        if ( $params{trigfrombat} ) {
+            print HD <<EOF;
+TRIGTIME $params{trigtime} / [s] MET TRIGger Time for Automatic Target
+EOF
+        } else {
+            print HD <<EOF;
+TRIGTIME $params{trigtime} / [s] MET TRIGger Time from Other Observatory
+EOF
+        }
+    }
+    close HD;
+
+    push @clean, $hdfile;
+
+    # now mod the head
+    if ( ref $hdus =~ /ARRAY/i ) {
+        foreach my $hdu ( @$hdus ) {
+            my $fmodhead = {
+                infile => "$file+$hdu",
+                tmpfil => $hdfile
+            };
+            my $cmd = genCmd( 'fmodhead', $fmodhead );
+            $stat = runSystem( $cmd );
+            return $stat unless $stat == 0;
+        }
+    } else {
+        my $fmodhead = {
+            infile => "$file+$hdus",
+            tmpfil => $hdfile
+        };
+        my $cmd = genCmd( 'fmodhead', $fmodhead );
+        $stat = runSystem( $cmd );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+sub doGRBSearch {
+    
+    my ( $skyref, $expref, $sumref, $sumexp ) = @_;
+
+    my @skyimg = @$skyref;
+    my @expimg = @$expref;
+    my $stat = 0;
+
+    # default search radius is 14'
+    my $radius = 14.0 * 60.0;
+
+    my $catsrcs = queryUSNO( $radius );
+    if ( $catsrcs == -1 ) {
+        error( 1, "query failed\n" );
+        return -1;
+    }
+    my @usnosrcs = @$catsrcs;
+
+    # read keywords from exposure maps
+    my $exporef;
+    ( $stat, $exporef ) = readExpoMaps( \@expimg, 'EXPID' );
+    my %expomaps = %{$exporef};
+
+    for ( my $i = 0; $i < @skyimg; $i++ ) {
+
+        # check how many hdus the sky image has 
+        # and get various keywords from each HDU
+        chat( 2, "reading snapshots from $skyimg[ $i ]\n" );
+        my $fptr = Astro::FITS::CFITSIO::open_file( $skyimg[ $i ], READONLY, $stat );
+
+        my $numhdus = 0;
+        $fptr->get_num_hdus( $numhdus, $stat );
+
+        foreach my $hdu ( 2..$numhdus ) {
+            my ( $tstrt, $tstp, $naxis1, $expo, $fram, $expid, $datamode,
+                 $aspcorr, $obsid, $filter, $obsmode, $trigtime );
+
+            my $j = $hdu - 1;
+            
+            chat( 3, "reading keywords from $skyimg[ $i ]+$j\n" );
+
+            $fptr->movabs_hdu( $hdu, ANY_HDU, $stat );
+            
+            # check aspect correction
+            $fptr->read_key( TSTRING, 'ASPCORR', $aspcorr, undef, $stat );
+            if ( $aspcorr =~ /NONE/ ) {
+                warnlo( 2, "HDU $j of $skyimg[ $i ] not aspect ",
+                        "corrected, skipping\n" );
+                next;
+            # if no keyword, assume its a summed image and continue
+            } elsif ( $stat == KEY_NO_EXIST ) {
+                warnhi( 1, "ASPCORR keyword not found in $skyimg[ $i ]+$j\n",
+                           "assuming aspect correction was done!\n" );
+                $stat = 0;
+            }
+            $fptr->read_key( TLONG,   'NAXIS1',   $naxis1, undef, $stat );
+            $fptr->read_key( TDOUBLE, 'TSTART',   $tstrt,  undef, $stat );
+            $fptr->read_key( TDOUBLE, 'TSTOP',    $tstp,   undef, $stat );
+            $fptr->read_key( TDOUBLE, 'EXPOSURE', $expo,   undef, $stat );
+            $fptr->read_key( TDOUBLE, 'FRAMTIME', $fram,   undef, $stat );
+            if ( $stat == KEY_NO_EXIST || $fram <= 0.0 ) {
+                $stat = 0;
+                $fram = 0.0110322;
+            }
+            # fix trigger time
+            if ( $params{usetrigtime} && $params{trigtime} <= 0.0 ) {
+                $fptr->read_key( TDOUBLE, 'TRIGTIME', $trigtime, undef, $stat );
+                if ( $stat == KEY_NO_EXIST ) {
+                    $stat = 0;
+                } else {
+                    $params{trigtime} = $trigtime;
+                    chat( 2, "MET trigger time is ", sprintf( "%.14e s\n", $params{trigtime} ) );
+                }
+            } elsif ( !$params{usetrigtime} && $params{trigtime} <= 0.0 ) {
+                $params{trigtime} = $tstrt;
+            } elsif ( !$params{usetrigtime} && $tstrt < $params{trigtime} ) {
+                $params{trigtime} = $tstrt;
+            }
+            $fptr->read_key( TSTRING, 'FILTER',   $filter,   undef, $stat );
+            $fptr->read_key( TSTRING, 'OBS_ID',   $obsid,    undef, $stat );
+            $fptr->read_key( TSTRING, 'DATAMODE', $datamode, undef, $stat );
+            $fptr->read_key( TLONG,   'EXPID',    $expid,    undef, $stat );
+            if ( $stat == KEY_NO_EXIST ) {
+                warnhi( 1, "EXPID keyword not found in $skyimg[ $i ]+$j\n",
+                           "assuming this is a summed image\n" );
+                $stat = 0;
+                $expid = "SUMMED";
+            }
+            $fptr->read_key( TSTRING, 'OBS_MODE', $obsmode, undef, $stat );
+            # assume POINTING mode if not apparent
+            if ( $stat == KEY_NO_EXIST ) {
+                $stat = 0;
+                $obsmode = 'POINTING';
+            }
+          
+            $filter  =~ s/['"\s]//g;
+            $obsid   =~ s/['"\s]//g;
+            $obsmode =~ s/['"\s]//g;
+            
+            if ( !exists $filterData{$filter} ) {
+                error( 1, "filter $filter not supported, ",
+                       "skipping $skyimg[ $i ]+$hdu\n" );
+                next;
+            }
+            if ( $obsmode !~ /POINTING/ ) {
+                warnlo( 1, "skipping non-POINTING mode data\n" );
+                next;
+            }
+            if ( exists $sky_imgs{$filter}{$obsid}{$expid} &&
+                 $sky_imgs{$filter}{$obsid}{$expid}{naxis1} > $naxis1 ) {
+                warnlo( 1, "duplicate EXPIDs, skipping $skyimg[ $i ]+$j\n" );
+                next;
+            } elsif ( exists $sky_imgs{$filter}{$obsid}{$expid} ) {
+                warnlo( 1, "duplicate EXPIDs, skipping ",
+                        "$sky_imgs{$filter}{$obsid}{$expid}{filename}+",
+                        "$sky_imgs{$filter}{$obsid}{$expid}{hdu}\n" );
+                delete $sky_imgs{$filter}{$obsid}{$expid};
+            }
+            if ( !exists $expomaps{$filter}{$expid} ) {
+                warnhi( 1, "no exposure map found for EXPID=$expid! skipping\n" );
+                next;
+            }
+            %{$sky_imgs{$filter}{$obsid}{$expid}} = (
+                tstart    => $tstrt,
+                tstop     => $tstp,
+                exposure  => $expo,
+                expomap   => $expomaps{$filter}{$expid}{filename},
+                expohdu   => $expomaps{$filter}{$expid}{hdu},
+                frametime => $fram,
+                datamode  => $datamode,
+                filename  => $skyimg[ $i ],
+                expid     => $expid,
+                filter    => $filter,
+                naxis1    => $naxis1,
+                obs_id    => $obsid,
+                obs_mode  => $obsmode,
+                hdu       => $j
+            );
+            chat( 4, "found the following info for $skyimg[ $i ]+$j:\n", 
+                  map( sprintf( "  %-20s = %s\n", uc( $_ ), 
+                                $sky_imgs{$filter}{$obsid}{$expid}{$_} ),
+                       sort keys %{$sky_imgs{$filter}{$obsid}{$expid}} ) );
+
+        }
+        $fptr->close_file( $stat );
+        return $stat unless $stat == 0;
+    }
+
+    # For each filter:
+    # - run uvotdetect
+    # - determine which are "good" detected sources and select those in the BAT
+    #   position circle
+    # - for each source query the usno B1 catalog and determine if the sources is known
+
+    # filter order is in inverse sensitivity order (it does not really matter)
+    my $uvotdetect = {
+        threshold => $params{sigmacust},
+        sexfile   => 'DEFAULT',
+        sexargs   => 'NONE',
+        plotsrc   => 'no',
+        regfile   => 'NONE',
+        zerobkg   => 0.03,
+        expopt    => 'alpha',
+        calibrate => 'yes',
+        attfile   => 'NONE',
+        clobber   => 'yes',
+        history   => 'no',
+        cleanup   => 'yes',
+        chatter   => $params{chatter}
+    };
+    my @detsources = ( );
+    my $tstart = 1e20;
+    my $tstop  = -1e20;
+    my %srcsnapshot = ( );
+    foreach my $filt (qw( V WHITE B U UVW1 UVW2 UVM2 )) {
+      
+        # just do the first obsid of each filter
+        my @obsids = sort keys %{$sky_imgs{$filt}};
+        next unless @obsids;
+        my $obs = $obsids[ 0 ];
+
+        my @expids = sort { $sky_imgs{$filt}{$obs}{$a}{tstart} <=> 
+                            $sky_imgs{$filt}{$obs}{$b}{tstart} }
+                          keys %{$sky_imgs{$filt}{$obs}};
+        next unless @expids;
+
+        for ( my $i = 0; $i < @expids; $i++ ) {
+            my $exp = $expids[ $i ];
+
+            my $detfile = getTmpFile( "fits" );
+
+            my $infile = "$sky_imgs{$filt}{$obs}{$exp}{filename}"
+                       . "+$sky_imgs{$filt}{$obs}{$exp}{hdu}";
+            my $exfile = "$sky_imgs{$filt}{$obs}{$exp}{expomap}"
+                       . "+$sky_imgs{$filt}{$obs}{$exp}{expohdu}";
+
+            $uvotdetect->{infile}  = $infile;
+            $uvotdetect->{outfile} = $detfile;
+            $uvotdetect->{expfile} = $exfile;
+
+            # uvotdetect sources
+            my @columns = ( );
+            chat( 2, "detecting sources with uvotdetect in $infile\n" );
+            $stat = runSystem( genCmd( 'uvotdetect', $uvotdetect ) );
+            return $stat unless $stat == 0;
+
+            @columns = qw( RA DEC PROF_MAJOR PROF_MINOR );
+            my $colstr = join ',', @columns;
+            my $cmd = "ftlist \"$detfile+1\" T outfile=- rows=- columns=$colstr "
+                    . "rownum=no colheader=no clobber=yes";
+
+            open DET, "$cmd |" or die "failed to run command $cmd\n";
+
+            # get the field sources
+FLDSOURCES:
+            while ( <DET> ) {
+                chomp;
+                s/^\s+//;
+                s/\s+$//;
+                next unless length;
+                my @line = split( /\s+/, $_ );
+                my %fldsrc = ( );
+                map( $fldsrc{lc($columns[ $_ ])} = $line[ $_ ], 0..$#line );
+                foreach my $key ( keys %fldsrc ) {
+                    # carefully, now...
+                    my @ret = eval { 
+                        my @msg = ( );
+                        $SIG{__WARN__} = sub { @msg = @_; };
+                        $fldsrc{$key} *= 1.0;
+                        return @msg;
+                    };
+                    if ( @ret ) {
+                        warn @ret;
+                        warnlo( 1, "skipping source at FK5($fldsrc{ra},",
+                                "$fldsrc{dec}) due to missing data\n" );
+                        next FLDSOURCES;
+                    }
+                }
+                # skip oblong sources (these are likely not GRBs)
+                if ( exists $fldsrc{prof_major} && (
+                     $fldsrc{prof_major} / $fldsrc{prof_minor} < 0.5 ||
+                     $fldsrc{prof_major} / $fldsrc{prof_minor} > 2.0 ) ) {
+                    next FLDSOURCES;
+                }
+                if ( exists $params{batsrcra} ) {
+                    my $dist = angdist( $fldsrc{ra}, $fldsrc{dec},
+                                        $params{batsrcra}, $params{batsrcdec} );
+                    if ( abs( $dist ) > $params{baterrrad} * 60.0 ) {
+                        next FLDSOURCES;
+                    }
+                } elsif ( exists $params{xrtsrcra} ) {
+                    my $dist = angdist( $fldsrc{ra}, $fldsrc{dec},
+                                        $params{xrtsrcra}, $params{xrtsrcdec} );
+                    if ( abs( $dist ) > $params{xrterrrad} * 60.0 ) {
+                        next FLDSOURCES;
+                    }
+                }
+
+                # save the list, but filter duplicates (<3.0" apart)
+                if ( @detsources ) {
+                    my $found = 0;
+                    foreach my $src ( @detsources ) {
+                        my $dist = angdist( $fldsrc{ra}, $fldsrc{dec},
+                                            $src->{ra}, $src->{dec} );
+                        if ( abs( $dist ) < 3.0 ) {
+                            $found = 1;
+                            last;
+                        }
+                    }
+                    if ( !$found ) {
+                        chat( 3, sprintf( "found source at FK5(%.6f,%.6f)\n",
+                                          $fldsrc{ra}, $fldsrc{dec} ) );
+                        push @detsources, \%fldsrc;
+                    }
+                } else {
+                    chat( 3, sprintf( "found source at FK5(%.6f,%.6f)\n",
+                                      $fldsrc{ra}, $fldsrc{dec} ) );
+                    push @detsources, \%fldsrc;
+                }
+            }
+            close DET;
+            unlink $detfile;
+
+            # get the snapshot to take source info from
+            if ( exists $srcsnapshot{$filt} &&
+                 $srcsnapshot{$filt}->{tstart} > $sky_imgs{$filt}{$obs}{$exp}{tstart} ) {
+                $srcsnapshot{$filt} = $sky_imgs{$filt}{$obs}{$exp};
+            } elsif ( !exists $srcsnapshot{$filt} ) {
+                $srcsnapshot{$filt} = $sky_imgs{$filt}{$obs}{$exp};
+            }
+        }
+    }
+               
+    my @noncatsrcs  = ( );
+
+    # check the source list versus the USNO-B1 catalog
+    foreach my $detsrc ( @detsources ) {
+        my $found = 0;
+        foreach my $usnosrc ( @usnosrcs ) {
+            my $dist = angdist( $detsrc->{ra}, $detsrc->{dec},
+                                $usnosrc->{ra}, $usnosrc->{dec} );
+            if ( abs( $dist ) < 3.0 ) {
+                chat( 2, sprintf( "detected source \@FK5(%.6f,%.6f)\n",
+                                  $detsrc->{ra},$detsrc->{dec} ) );
+                chat( 2, sprintf( "matches catalog source \@FK5(%.6f,%.6f)\n",
+                                  $usnosrc->{ra},$usnosrc->{dec} ) );
+                chat( 2, sprintf( "to within %.3f\"\n", $dist ) );
+                $found = 1;
+                last;
+            }
+        }
+        if ( !$found ) {
+            push @noncatsrcs, $detsrc;
+        }
+    }
+
+    my @lightCurves = ( );
+    foreach my $filt (qw( V WHITE B U UVW1 UVW2 UVM2 )) {
+      
+        next unless exists $srcsnapshot{$filt};
+
+        # setup GRB candidate catalog file
+        my $filtstr;
+        if ( length $filt >= 2 && $filt !~ /WHITE/ ) {
+            $filtstr = lc( substr $filt, 2, 2 );
+        } elsif ( length $filt < 2 ) {
+            $filtstr = lc( $filt ) x 2;
+        } else {
+            $filtstr = 'wh';
+        }
+        my $catfile = catfile( $params{outdir}, 
+                               "$params{outstem}_u${filtstr}grbcdt.fits" );
+       
+        # just do the first obsid of each filter
+        my @obsids = sort keys %{$sky_imgs{$filt}};
+        next unless @obsids;
+        my $obs = $obsids[ 0 ];
+
+        # check each one with uvotsource in the earliest HDU
+        # of each filter, and do a plot
+        if ( !@noncatsrcs ) {
+            chat( 2, "no un-cataloged sources found for FILTER=$filt\n" );
+            next;
+        }
+        chat( 2, "checking un-cataloged sources for FILTER=$filt\n" );
+
+        # run uvotsource
+        my $srcreg = getTmpFile( "reg" );
+        my $bkgreg = getTmpFile( "reg" );
+        my $uvotsource = {
+            srcreg       => $srcreg,
+            bkgreg       => $bkgreg,
+            sigma        => $params{sigmacust},
+            zerofile     => 'CALDB',
+            coinfile     => 'CALDB',
+            psffile      => 'CALDB',
+            lssfile      => 'CALDB',
+            syserr       => 'no',
+            frametime    => 'DEFAULT',
+            apercorr     => 'CURVEOFGROWTH',
+            fwhmsig      => 3,
+            output       => 'ALL',
+            outfile      => $catfile,
+            centroid     => 'no',
+            cleanup      => 'yes',
+            clobber      => 'no',
+            chatter      => $params{chatter}
+        };
+
+        # do only the earliest HDU in each filter
+        $uvotsource->{image} = "$srcsnapshot{$filt}->{filename}+"
+                             . "$srcsnapshot{$filt}->{hdu}";
+        my $cmd = genCmd( 'uvotsource', $uvotsource );
+        foreach my $src ( @noncatsrcs ) {
+            open SRC, ">$srcreg" or die "failed to open file $srcreg\n";
+            open BKG, ">$bkgreg" or die "failed to open file $bkgreg\n";
+            chat( 2, sprintf( "found GRB candidate at FK5(%.6f,%.6f)\n",
+                              $src->{ra}, $src->{dec} ) );
+            printf SRC "fk5;circle(%.7f,%.7f,5\")\n", $src->{ra}, $src->{dec};
+            printf BKG "fk5;annulus(%.7f,%.7f,27\",35\")\n", $src->{ra}, $src->{dec};
+            foreach my $detsrc ( @detsources ) {
+                printf BKG "fk5;-circle(%.7f,%.7f,7\")\n", $detsrc->{ra}, $detsrc->{dec};
+            }
+            close SRC;
+            close BKG;
+            $stat = runSystem( $cmd );
+            if ( $stat != 0 ) {
+                warnhi( 1, "failed to run uvotsource for $uvotsource->{image}\n" );
+                next;
+            }
+        }
+
+        # setup the plot
+        open SRC, ">$srcreg" or die "failed to open file $srcreg\n";
+        open BKG, ">$bkgreg" or die "failed to open file $bkgreg\n";
+        foreach my $src ( @noncatsrcs ) {
+            printf SRC "fk5;circle(%.7f,%.7f,5\")\n", $src->{ra}, $src->{dec};
+            printf BKG "fk5;annulus(%.7f,%.7f,27\",35\")\n", $src->{ra}, $src->{dec};
+        }
+        foreach my $detsrc ( @detsources ) {
+            printf BKG "fk5;-circle(%.7f,%.7f,7\")\n", $detsrc->{ra}, $detsrc->{dec};
+        }
+        close SRC;
+        close BKG;
+        push @clean, $srcreg, $bkgreg;
+
+        # update the tstart/tstop
+        if ( $srcsnapshot{$filt}->{tstart} < $tstart ) {
+            $tstart = $srcsnapshot{$filt}->{tstart};
+        }
+        if ( $srcsnapshot{$filt}->{tstop} > $tstop ) {
+            $tstop = $srcsnapshot{$filt}->{tstop};
+        }
+
+        # use same src/bkg reg for the rest
+        foreach my $obs ( keys %{$sky_imgs{$filt}} ) {
+            foreach my $exp ( keys %{$sky_imgs{$filt}{$obs}} ) {
+                $sky_imgs{$filt}{$obs}{$exp}{bkg_reg} = $bkgreg;
+                $sky_imgs{$filt}{$obs}{$exp}{grbregfile} = $srcreg;
+            }
+        }
+
+        # update the header
+        if ( -e $catfile ) {
+            push @lightCurves, $catfile;
+        }
+    }
+
+    # get the finding chart exposure
+    my $findingref = getFindingChartExpid( );
+
+    # save the full hash, in case it gets deleted
+    my %findingexp = ( );
+    if ( $findingref ) {
+        %findingexp = %{$findingref};
+    }
+
+    # plot finding chart
+    $stat = plotImage( undef, \%findingexp, 1 );
+    return $stat unless $stat == 0;
+
+    foreach my $file ( @lightCurves ) {
+        $stat = updateLCHeader( $tstart, $tstop, $file, ( 0, 1 ) );
+        return $stat unless $stat == 0;
+    }
+
+    # append the curves if asked
+    if ( @lightCurves && $params{appendcurves} ) {
+        $stat = appendCurves( $tstart, $tstop, \@lightCurves, 1 );
+        push @clean, @lightCurves;
+    }
+
+    return $stat;
+}
+
+sub queryUSNO {
+
+    my $radius = shift;
+
+    # check that scat works
+    my $stat = checkScat( );
+    return -1 unless $stat == 0;
+
+    # setup the USNO-B1 query
+    # THIS IS REALLY NOT GENERAL AT ALL!!!!!
+    my $site = "http://tdc-www.harvard.edu/cgi-bin/scat";
+    my $cmd  = "scat -j -n 10000 -c ub1 -r %.4f %.4f %.4f J2000";
+   
+    # this assumes that the XRT error circle lies inside the BAT - hope we're right
+    if ( exists $params{batsrcra} ) {
+        $radius = $params{baterrrad} * 60.0;
+        $cmd = sprintf "$cmd", $radius, $params{batsrcra}, $params{batsrcdec};
+        chat( 2, "setting up search around FK5($params{batsrcra},$params{batsrcdec})\n" );
+    } elsif ( exists $params{xrtsrcra} ) {
+        $radius = $params{xrterrrad} * 60.0;
+        $cmd = sprintf "$cmd", $radius, $params{xrtsrcra}, $params{xrtsrcdec};
+        chat( 2, "setting up search around FK5($params{xrtsrcra},$params{xrtsrcdec})\n" );
+    # if neither exists, query the USNO with input radius
+    } else {
+        $cmd = sprintf "$cmd", $radius, $params{srcra}, $params{srcdec};
+        chat( 2, "setting up search around FK5($params{srcra},$params{srcdec})\n" );
+    }
+
+    # run the USNO-B1 query
+    chat( 2, "querying USNO-B1 catalog\n" );
+    my $out;
+    $ENV{UB1_PATH} = $site;
+    ( $stat, $out ) = runSystem( $cmd );
+
+    # parse it for source RA/Decs
+    my @usnosrcs = ( );
+    chat( 2, "parsing catalog output...\n" );
+    debug( "dumping catalog table\n" );
+    foreach my $line ( @$out ) {
+        chomp $line;
+        if ( $params{chatter} >= 5 ) {
+            print "$line\n";
+        }
+        $line =~ s/^\s+(.*?)\s+$/$1/;
+        $line =~ s/^#.*?$//;
+        next unless length $line;
+        my @spl = split /\s+/, $line;
+        my ( $srcra, $srcdec );
+        ( $stat, $srcra ) = convertRAStringToDegrees( $spl[ 1 ] );
+        next if $stat != 0;
+        ( $stat, $srcdec ) = convertDecStringToDegrees( $spl[ 2 ] );
+        next if $stat != 0;
+        my %usnosrc = (
+            ra  => $srcra,
+            dec => $srcdec
+        );
+        push @usnosrcs, \%usnosrc;
+    }
+    if ( !@usnosrcs ) {
+        warnhi( 1, "no sources found with scat\n" );
+    }
+    return \@usnosrcs;
+}
+
+#
+# checkScat -
+#
+#       checks that the wcstools scat command is in the path
+#
+sub checkScat {
+    
+    # check that the wcstool scat works
+    my $cmd = "scat -v";
+    my ( $stat, $out ) = runSystem( $cmd );
+    $out = join '', @{$out};
+    if ( $out !~ /WCSTools/ ) {
+        error( 1, "WCSTools command \"scat\" must be in your path\n" );
+        return -1;
+    }
+    return 0;
+}
+
+#
+# ftcopy -
+#
+#       runs ftcopy with clobber=yes and history=no
+#
+sub ftcopy {
+    my ( $file1, $file2, $copyall ) = @_;
+    
+    $copyall = $copyall ? 'yes' : 'no';
+    my %ftcopy = (
+        infile  => $file1,
+        outfile => $file2,
+        copyall => $copyall,
+        clobber => 'yes',
+        chatter => 0,
+        history => 'no'
+    );
+    my $cmd = genCmd( 'ftcopy', \%ftcopy );
+    my $stat = runSystem( $cmd );
+    return $stat;
+}
+
+#
+# skyToXY -
+#
+#       runs FTool sky2xy on file $evt, for position ($ra, $dec)
+#       returns status, x-pixel and y-pixel
+#
+sub skyToXY {
+
+    my ( $evt, $ra, $dec, $xcol, $ycol ) = @_;
+    if ( !defined $xcol ) {
+        $xcol = 'X';
+    }
+    if ( !defined $ycol ) {
+        $ycol = 'Y';
+    }
+    my $sky2xy = {
+        infile    => $evt,
+        xsky      => $ra,
+        ysky      => $dec,
+        xcol      => $xcol,
+        ycol      => $ycol,
+        sensecase => 'no',
+        tchat     => 10,
+        lchat     => 0
+    };
+
+    my $cmd = genCmd( 'sky2xy', $sky2xy );
+
+    my ( $stat, $out ) = runSystem( $cmd );
+    return $stat unless $stat == 0;
+
+    my ( $xpx, $ypx );
+    foreach my $line ( @$out ) {
+        chomp $line;
+        if ( $line =~ /Output pixel coordinates:\s+(\S+?),\s+(\S+)$/ ) {
+            $xpx = $1 * 1.0;
+            $ypx = $2 * 1.0;
+        }
+    }
+    return ( $stat, $xpx, $ypx );
+}
+
+#
+# log10 -
+#
+#       returns the log base 10 of input or 0.0 if input <= 0
+#
+sub log10 {
+    my $n = shift;
+    if ( $n <= 0.0 ) { return 0.0; }
+    return log( $n ) / log( 10 );
+}
+
+#
+# min -
+#
+#       returns the min of two numbers
+#
+sub min {
+    my ( $c1, $c2 ) = @_;
+    if ( $c1 <= $c2 ) { return $c1; }
+    return $c2;
+}
+
+#
+# max -
+#
+#       returns the max of two numbers
+#
+sub max {
+    my ( $c1, $c2 ) = @_;
+    if ( $c1 >= $c2 ) { return $c1; }
+    return $c2;
+}
+
+#
+# angdist -
+#
+#       calculates proper angular distance between two
+#       RA/Dec pairs.
+#
+sub angdist {
+    unless ( $#_ == 3 ) {
+        return undef;
+    }
+    my ( $ra1, $dec1, $ra2, $dec2 ) = @_;
+    my $dtor  = 3.141592654 / 180.0;
+    my $r0 = $ra1  * $dtor;
+    my $d0 = $dec1 * $dtor;
+    my $r1 = $ra2  * $dtor;
+    my $d1 = $dec2 * $dtor;
+
+    my $dst = sin( ( $d0 - $d1 ) / 2.0 )**2 + 
+              cos( $d0 ) * cos( $d1 ) * sin( ( $r1 - $r0 ) / 2.0 )**2;
+
+    if ( $dst > 1.0 ) {
+        $dst = 1.0;
+    } elsif ( $dst < 0.0 ) {
+        $dst = 0.0;
+    }
+    $dst = 2.0 * asin( sqrt( $dst ) ) / $dtor;
+    return $dst * 3600.0;
+}
+
+#
+# startmsg -
+#
+#       prints a nice startup message
+#
+sub startmsg {
+    my $time = localtime( time );
+    my $intro = "---- Starting $taskName v$taskVers at $time ----";
+    my $dashs = '-' x length $intro;
+    if ( $params{chatter} > 0 ) {
+        print "\n$dashs\n$intro\n$dashs\n\n";
+    }
+}
+
+#
+# endmsg -
+#
+#       prints a nice end message
+#
+sub endmsg {
+    my $stat = shift;
+    my $time = localtime( time );
+    my $success = $stat == 0 ? "success" : "failure";
+    my $intro = "---- $taskName v$taskVers $success at $time ----";
+    my $dashs = '-' x length $intro;
+    if ( $params{chatter} > 0 ) {
+        print "\n$dashs\n$intro\n$dashs\n\n";
+    }
+}
+
+#
+# cleanup -
+#
+#       removes all files/dirs in @clean
+#
+sub cleanup {
+    if ( $params{cleanup} ) {
+        chat( 2, "cleaning up\n" );
+        foreach my $file ( reverse @clean ) {
+            if ( -f $file ) {
+                debug( "cleaning un-needed file $file\n" );
+                unlink $file;
+            } elsif ( -d $file ) {
+                debug( "cleaning un-needed directory $file\n" );
+                rmtree( $file );
+            }
+        }
+    }
+}
+
+#
+# sigdie -
+#
+#       dies "gracefully"
+#
+sub sigdie {
+    error( 1, @_ );
+    cleanup( );
+    endmsg( -1 );
+    @_ = ( "task $taskName died an unnatural death\n" );
+    die @_ if $^S;
+}
+
+

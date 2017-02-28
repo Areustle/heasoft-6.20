@@ -1,0 +1,855 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/attitude/tasks/tristarid/tristarid,v $
+# $Revision: 1.20 $
+# $Date: 2012/07/05 15:11:27 $
+#
+#	This tool takes a source list and attempts star identification
+#	and aspect correction.
+#
+# $Log: tristarid,v $
+# Revision 1.20  2012/07/05 15:11:27  rwiegand
+# Bug fix: an externally supplied quaternion should not be ignored when there
+# are insufficient sources (3+) to find a solution by triplet matching.
+#
+# Revision 1.19  2012/01/20 19:59:12  rwiegand
+# Accept quaternion elements indistinguishable from 0 and 1.
+#
+# Revision 1.18  2011/03/02 15:09:59  rwiegand
+# Transferring columns was broken because rows (for nearby catalog sources)
+# could be inserted during the source table post-processing.  The fix is
+# to rewrite all column data.
+#
+# Revision 1.17  2010/08/06 21:32:58  rwiegand
+# Was not capturing the separation statistics for the early stages
+# (raw, triangle).
+#
+# Revision 1.16  2010/07/26 14:07:29  rwiegand
+# Updated version. Store match statistics even if there is no solution.
+#
+# Revision 1.15  2010/07/22 21:12:18  rwiegand
+# Optionally direct match reference objects against detections.  Provide
+# alternate match filtering algorithm (filter.mode=BASE_COUNT_RANGE).
+# Make Group goodness depend on number, intensity of matches, and distance.
+#
+# Revision 1.14  2007/10/05 19:15:58  rwiegand
+# Store residual rotation quaternion.  Transfer arbitrary columns from input
+# to output.
+#
+# Revision 1.13  2006/05/24 20:55:46  rwiegand
+# Corrected problem setting reference position from {RA,DEC}_PNT keywords
+# when reflist=NONE.
+#
+# Revision 1.12  2006/05/04 20:34:27  rwiegand
+# Store star identification results as keywords in outfile.
+#
+# Revision 1.11  2006/01/25 18:51:31  rwiegand
+# Pass FILTER and DATE-OBS to catalog loader.
+#
+# Revision 1.10  2005/12/01 16:05:54  rwiegand
+# Added parameter to pass in the correction quaternion.
+#
+# Revision 1.9  2005/10/31 13:56:09  rwiegand
+# Renamed the catalog partition paramater to catspec.  This removes the
+# need for a dummy directory when the actual data is not even local.
+#
+# Revision 1.8  2005/10/09 22:41:36  rwiegand
+# Moved UVOT::* perl modules to StarID::*.  Distinguish quaternion angle
+# from effective rotation.
+#
+# Revision 1.7  2005/09/19 14:55:44  rwiegand
+# Only apply starid options if not NONE.
+#
+# Revision 1.6  2005/09/16 12:13:52  rwiegand
+# Tweaked some reported messages.
+#
+# Revision 1.5  2005/08/31 13:25:03  rwiegand
+# Update name of minimum matches parameter.
+#
+# Revision 1.4  2005/08/29 11:51:13  rwiegand
+# Stream-lined parameters.  Use C tristarid1.
+#
+# Revision 1.3  2005/08/09 20:57:29  rwiegand
+# Removed assign parameter and added rotation limit in thinker invocation.
+#
+# Revision 1.2  2005/08/05 12:35:05  rwiegand
+# Reduced verbosity.
+#
+# Revision 1.1  2005/07/18 12:39:58  rwiegand
+# Triplet based star identification tool.
+#
+
+use strict;
+
+package StarID;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+
+use atFunctions qw(atRotVect);
+use StarID::SourceTable;
+use StarID::CatalogLoader;
+
+
+
+# main
+{
+	my $tool = StarID->new(version => 0.6);
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file catspec=file
+				matchtol=real unradius=real uncount=real unmag=real
+				cntcorr=int poscorr=real rotcorr=real errcorr=real
+				reflist=string starid=string quat=string
+				clobber=bool cleanup=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadSources
+		if $self->isValid;
+
+	$self->selectSources
+		if $self->isValid;
+
+	$self->loadCatalog
+		if $self->isValid;
+
+	{
+		$self->performStarIdentification
+			if $self->isValid;
+
+		# if managed to try star identification, generate FITS output
+		# regardless of whether a solution was found
+		$self->writeResults;
+	}
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		if (-e $args->{outfile}) {
+			$self->error(BAD_INPUT,
+				"$args->{outfile} exists and clobber not set");
+		}
+	}
+
+	if ($args->{reflist} !~ /^NONE$/i) {
+		# match non-negative reals in decimal notation
+		my $rePos = qr(\d+\.\d*|\.\d+|\d+);
+		my @refs;
+		my @str = split(',', $args->{reflist});
+		foreach my $str (@str) {
+			if ($str =~ /^(\w+):($rePos)([+\-]$rePos)$/) {
+				my ($key, $ra, $dec) = ($1, $2, $3);
+				my $source = StarID::Source->new(
+						ID => $key,
+						RA => Math::toRadians($ra),
+						DEC => Math::toRadians($dec),
+						);
+				$source->{UNIT} = Math::rd2unit($source->ra, $source->dec);
+				push(@refs, $source);
+				$self->report("reference: key=$key, ra=$ra, dec=$dec")
+					if $self->chatter(6);
+			}
+			else {
+				$self->warning("ignoring invalid reference $str");
+			}
+		}
+		$self->{reference} = \@refs;
+	}
+
+	if ($args->{clobberFlag}) {
+		if (-e $args->{outfile}) {
+			unlink($args->{outfile})
+				or $self->warning("unable to unlink $args->{outfile} [$!]");
+		}
+	}
+
+	$self->{outSources} = [ ];
+}
+
+
+sub loadSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $loader = StarID::SourceTable->new(tool => $self->{tool});
+
+	my $simple = SimpleFITS->readonly($args->{infile});
+	my $status = $simple->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to open $args->{infile} [$status]");
+		return;
+	}
+
+	my $sources = $loader->loadFile($args->{infile},
+			simple => $simple,
+			scale => 'radians',
+			);
+
+	if (not $loader->isValid) {
+		$self->error(BAD_INPUT,
+				"unable to load $args->{infile}");
+	}
+	else {
+
+		$self->{loadcol} = $loader->{loaded};
+		$self->{columns} = $loader->{columns};
+
+		if (not $self->{reference}) {
+			my $header;
+			$status = $simple->readheader($header, clean => 1);
+
+			if (my $filter = $header->{FILTER}) {
+				if ($filter =~ /'(\S+)\s*'/) {
+					$filter = $1;
+				}
+				$self->{FILTER} = $filter;
+			}
+
+			if (my $dateobs = $header->{'DATE-OBS'}) {
+				$self->{DATEOBS} = $dateobs;
+			}
+
+			if (exists($header->{RA_PNT}) and exists($header->{DEC_PNT})) {
+				my $source = StarID::Source->new(
+						ID => 'PNT',
+						RA => Math::toRadians($header->{RA_PNT}),
+						DEC => Math::toRadians($header->{DEC_PNT}),
+						);
+				$source->{UNIT} = Math::rd2unit($source->ra, $source->dec);
+				$self->{reference} = [ $source ];
+			}
+			else {
+				$self->{reference} = [ ];
+			}
+		}
+
+		$self->{cards} = [ ];
+		$self->storeHeaderCards($simple->handle,
+				types => [ TYP_COMM_KEY, TYP_CONT_KEY,
+						TYP_USER_KEY, TYP_REFSYS_KEY ],
+				array => $self->{cards},
+				);
+
+
+		$status = $simple->close->status;
+
+		my $count = @$sources;
+		$self->{nDetected} = $count;
+		$self->report("loaded $count sources from $args->{infile}")
+			if $self->chatter(2);
+
+		foreach my $s (@{ $sources }) {
+			$s->{UNIT} = Math::rd2unit($s->{RA}, $s->{DEC});
+			bless($s, 'StarID::Source');
+		}
+
+		$self->{allSources} = $sources;
+	}
+}
+
+
+sub selectSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @sources;
+	my @sorted = sort { $a->mag <=> $b->mag } @{ $self->{allSources} };
+	my $limit = @sorted;
+
+	for (my $i = 0; $i < $limit; ++$i) {
+
+		my $s = $sorted[$i];
+
+		$s->{ID} = "$i\[$s->{ROW}]";
+		$s->{UNIT} = Math::rd2unit($s->ra, $s->dec);
+
+		push(@sources, $s);
+
+		$self->report("source $s->{ID} dump: " . $self->stringify($s))
+			if $self->chatter(6);
+
+		if ($self->chatter(4)) {
+			my $skyp = sprintf('RA=%.6f DEC=%.6f MAG=%.2f',
+					Math::toDegrees($s->ra),
+					Math::toDegrees($s->dec),
+					$s->mag);
+			$self->report("source $s->{ID}: $skyp");
+		}
+	}
+
+	$self->{selected} = \@sources;
+	$self->report("selected $limit sources for matching");
+
+	{
+		$self->{nobs} = $limit;
+
+		$self->{obscat} = $self->temporary('obs');
+		my $fh = FileHandle->new($self->{obscat}, 'w');
+		foreach my $s (@sources) {
+			$fh->print(
+				join(', ', map { "$_=$s->{$_}" } qw(ID RA DEC MAG TYPE)),
+				"\n");
+		}
+		$fh->close;
+	}
+}
+
+
+sub loadCatalog
+{
+	my ($self) = @_;
+
+	if ($self->{nobs} < 1) {
+		$self->report("insufficient sources to load catalog");
+		$self->{outSources} = $self->{allSources};
+		return;
+	}
+
+	my $args = $self->args;
+
+	my $bounds = StarID::CatalogLoader::findBoundingCircle($self,
+			$self->{allSources});
+	$bounds->{filter} = $self->{FILTER};
+	$bounds->{dateobs} = $self->{DATEOBS};
+
+	my $loader = StarID::CatalogLoader->new(
+			task => $self,
+			catspec => $args->{catspec},
+			bounds => $bounds,
+			);
+
+	$loader->execute;
+
+	if (not $loader->isValid) {
+		$self->error(BAD_INPUT,
+				"unable to load $args->{catspec}");
+		return;
+	}
+
+	$self->{catalog} = $loader->getCatalog;
+	my $count = $self->{catalog}->size;
+	$self->report("loaded $count objects from catalog");
+	$self->{nReference} = $count;
+
+	my $filter_as = $loader->{partition}{'filter.direct.arcsec'};
+	$self->{FILTER_DIRECT_arcsec} = $filter_as;
+	if (undef and defined($filter_as) and $filter_as > 0) {
+		$self->report(sprintf('applying direct filter of %.3f [arcsec]',
+				$filter_as));
+		my $filter_rad = Math::toRadians($filter_as / 3600);
+		my %direct;
+		foreach my $obs (@{ $self->{selected} }) {
+			my $aref = $self->{catalog}->contents($obs, $filter_rad);
+			if (UNIVERSAL::isa($aref, 'ARRAY')) {
+				foreach my $ref (@$aref) {
+					$direct{$ref->id} = $ref;
+				}
+			}
+		}
+
+		my @contents = values(%direct);
+		my $newCount = scalar(@contents);
+		$self->report("direct filtering left $newCount objects");
+		$bounds = StarID::CatalogLoader::findBoundingCircle($self, \@contents);
+		$self->{catalog} = StarID::Catalog::Indexed->new(
+				center => $bounds,
+				contents => \@contents,
+				bounds => $bounds,
+				);
+	}
+
+	my $ra = sprintf('%.4f', Math::toDegrees($bounds->ra));
+	my $dec = sprintf('%.4f', Math::toDegrees($bounds->dec));
+	my $arcmin = sprintf('%.2f', Math::toDegrees($bounds->{radius}*60));
+	$self->report("\tRA $ra DEC $dec, radius $arcmin arcmin");
+
+	$self->{refcat} = $self->temporary('catalog');
+
+	my $fh = FileHandle->new($self->{refcat}, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $self->{refcat} [$!]");
+		return;
+	}
+	my @field = qw(ID RA DEC MAG TYPE);
+	$self->{catalog}->apply(sub {
+				my ($s) = @_;
+				my $record = join(", ", map { "$_=$s->{$_}" } @field);
+				$fh->print($record . "\n");
+			});
+	$fh->close;
+
+	$self->{fovDeg} = 2 * Math::toDegrees($bounds->{radius});
+}
+
+
+
+sub validateQuaternion
+{
+	my ($self, @q) = @_;
+
+	if (@q != 4) {
+		$self->warning("validateQuaternion: @q does not have 4 elements");
+		return undef;
+	}
+
+	my $tmp = 0;
+	foreach my $x (@q) {
+		$tmp += $x * $x;
+	}
+	my $norm = sqrt($tmp);
+	my $errnorm = abs($norm - 1);
+	my $errtol = 1e-12;
+	if ($errnorm > $errtol) {
+		$self->warning("validateQuaternion: 1 - |@q| = $errnorm > $errtol");
+		return undef;
+	}
+
+	foreach my $x (@q) {
+		$x /= $norm;
+	}
+
+	return \@q;
+}
+
+
+sub performStarIdentification
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{quat} =~ /^NONE$/i) {
+		if ($self->{nobs} < 3) {
+			$self->report("insufficient sources for matching");
+		}
+		else {
+			$self->runTristarid;
+		}
+	}
+	else {
+		my @q = split(/\s+/, $args->{quat});
+		if (my $q = $self->validateQuaternion(@q)) {
+			$self->{quaternion} = $q;
+		}
+		else {
+			$self->error(BAD_INPUT, 'invalid input quaternion');
+		}
+	}
+
+	if (my $q = $self->{quaternion}) {
+		$self->correct($q);
+	}
+}
+
+
+sub runTristarid
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @args = (
+		split(/\s+/, $args->{starid}),
+		"rot.err=$args->{rotcorr}",
+		"fov=$self->{fovDeg}",
+	);
+
+	if (defined($self->{FILTER_DIRECT_arcsec})) {
+		push(@args, "direct.refs=$self->{FILTER_DIRECT_arcsec}");
+	}
+
+	my @par;
+	my %par;
+	foreach my $arg (@args) {
+		next if $arg =~ /^NONE$/i;
+		my ($k, $v) = split('=', $arg);
+		if (not exists($par{$k})) {
+			push(@par, $k);
+		}
+		$par{$k} = $v;
+	}
+
+	my @starid = map { $_ => $par{$_} } @par;
+	my $tmpfile = $self->temporary('starid');
+
+	my $command = $self->buildCommand('tristarid1',
+			'obs.path' => $self->{obscat},
+			'ref.path' => $self->{refcat},
+			'out.path' => $tmpfile,
+			@starid,
+			);
+
+	my $result = $self->shell($command);
+	return if not $self->isValid;
+
+	my %tristarid;
+	my @q;
+
+	if (not -f $tmpfile) {
+		$self->error(BAD_OUTPUT, "missing $tmpfile");
+	}
+	else {
+		my $fh = FileHandle->new($tmpfile);
+		my @lines = <$fh>;
+		undef($fh);
+		my $collect;
+		my $reReal = qr(-?\d+\.\d+e[-+]\d+);
+		my $reStage = qr(\w+(?: \w+)?);
+		foreach my $line (@{ $result->{lines} }) {
+			if (defined($collect)) {
+				if ($line =~ /^\w+:\s+Q(\d)\s+($reReal)\s*$/) {
+					$q[$1] = $2;
+					if ($1 == 3) {
+						undef($collect); # done collecting
+					}
+				}
+				else {
+					$self->warning("expecting Q element, got $line\n");
+				}
+			}
+			elsif ($line =~ /^\w+: optimal quaternion: (.+)/) {
+				@q = split(' ', $1);
+			}
+			elsif ($line =~ /^\w+: optimal quaternion:$/) {
+				$collect = 0;
+			}
+			elsif ($line =~ /^\w+: match count: (\d+)/) {
+				$tristarid{matches} = $1;
+			}
+			elsif ($line =~ /^status: (mean|rms|sigma) ($reStage) (\d\.\d+)/) {
+				$tristarid{stage} = $2;
+				$tristarid{$1} = $3;
+			}
+			elsif ($line =~ /^\w+: max separation: (\d\.\d+)/) {
+				$tristarid{maxsep} = $1;
+			}
+		}
+	}
+
+	$self->{tristarid} = \%tristarid;
+
+	if (@q != 4) {
+		$self->{queueError} = 'unable to solve for correction quaternion';
+	}
+	elsif (my $q = $self->validateQuaternion(@q)) {
+		$self->{quaternion} = $q;
+	}
+	else {
+		$self->error(BAD_OUTPUT, 'invalid correction quaternion');
+	}
+}
+
+
+sub correct
+{
+	my ($self, $q) = @_;
+
+	my $tristarid = $self->{tristarid};
+
+	if ($tristarid) {
+		$self->report(join("\n\t", "solution: quaternion:", @$q));
+		$self->report("solution: based on $tristarid->{matches} matches");
+		$self->report("solution: max separation $tristarid->{maxsep} [arcsec]");
+		$self->report("solution: solution status $tristarid->{stage}");
+	}
+	else {
+		$self->report(join("\n\t", "input quaternion:", @$q));
+	}
+
+	# require that quaternion corresponds to
+	# 1. at least $args->{cntcorr} matched sources
+	# 2. maximum position change of less than $args->{poscorr} [arcsec]
+	# 3. maximum position error of less than $args->{errcorr} [arcsec]
+	# 4. rotation of less than $args->{rotcorr} [arcmin]
+
+	# it may make sense to change the position limit to a maximum loss
+	# that could be parameterized in terms of loss base and number of matches
+
+	my $posarcsec = 0;
+	{
+		my $mincos = 1;
+
+		foreach my $s (@{ $self->{allSources} }) {
+			my $rotated = atRotVect(q => $q, in => $s->unit);
+			my $cos = Math::v3cosangle($rotated, $s->unit);
+			if ($cos < $mincos) {
+				$mincos = $cos;
+			}
+		}
+		$posarcsec = 3600 * Math::toDegrees(POSIX::acos($mincos));
+		$self->{posarcsec} = $posarcsec;
+		my $str = sprintf('%.3f', $posarcsec);
+		$self->report("\tposition => $str arcsec");
+	}
+
+	my $rotarcmin = 0;
+	{
+		# find mean unit vector of sources
+		my @sum = (0, 0, 0);
+		foreach my $s (@{ $self->{allSources} }) {
+			Math::v3add(\@sum, $s->unit);
+		}
+		my $count = scalar(@{ $self->{allSources} });
+		my $meanUnit = Math::v3scalex(\@sum, 1 / $count);
+		my ($nx, $ny) = Math::createSystem($meanUnit);
+
+		# set v1=mean+nx*k, v2=mean-nx*k,  k =~ 0.01
+		# rotate v1 to v1hat and v2 to v2hat
+		# v1 - v2 = 2 * nx * k = [ 2k, 0 ] in nx,ny system
+		# project v1hat - v2hat = dhat onto nx, ny plane = [ px, py ]
+		# effective rotation angle is angle between [ px, py ] and [ 2k, 0 ]
+		#	= arctan(py, px)
+
+		my $k = 0.01;
+		my $v1 = Math::v3kxpy($k, $nx, $meanUnit);
+		Math::v3normalize($v1);
+		my $v2 = Math::v3kxpy(-$k, $nx, $meanUnit);
+		Math::v3normalize($v2);
+		my $v1hat = atRotVect(q => $q, in => $v1);
+		my $v2hat = atRotVect(q => $q, in => $v2);
+		my $dhat = Math::v3subtract($v1hat, $v2hat);
+		my $px = Math::v3dot($dhat, $nx);
+		my $py = Math::v3dot($dhat, $ny);
+		my $angle = atan2($py, $px);
+		$rotarcmin = 60 * Math::toDegrees($angle);
+		$self->{rotarcmin} = $rotarcmin;
+		my $str = sprintf('%.3f', $rotarcmin);
+		$self->report("\teffective rotation => $str arcmin");
+		$self->{MEAN_UNIT} = $meanUnit;
+	}
+
+	{
+		my $quatrot = 60 * 2 * Math::toDegrees(POSIX::acos($q->[3]));
+		my $str = sprintf('%.3f', $quatrot);
+		$self->report("\tquaternion angle => $str arcmin");
+	}
+
+	my $args = $self->args;
+	my $correct = 1;
+	if ($tristarid) {
+		if ($tristarid->{matches} < $args->{cntcorr}) {
+			$correct = 0;
+			$self->error(BAD_TASK, "correction based on insufficient matches");
+		}
+
+		if ($posarcsec > $args->{poscorr}) {
+			$correct = 0;
+			$self->error(BAD_TASK, "correction exceeds maximum position change");
+		}
+
+		if ($tristarid->{maxsep} > $args->{errcorr}) {
+			$correct = 0;
+			$self->error(BAD_TASK, "correction leaves excessive position error");
+		}
+
+		if (abs($rotarcmin) > $args->{rotcorr}) {
+			$correct = 0;
+			$self->error(BAD_TASK, "correction exceeds maximum rotation angle");
+		}
+	}
+
+	$self->{aspcorr} = $correct;
+
+	if (not $correct) {
+		$self->{outSources} = $self->{allSources};
+	}
+	else {
+
+		# transform source vectors
+
+		my @corrected;
+		foreach my $s (@{ $self->{allSources} }) {
+			my $rotated = atRotVect(q => $q, in => $s->unit);
+			my ($ra, $dec) = Math::v3rdl($rotated);
+			my $corrected = StarID::Source->new(
+				%$s,
+				UNIT => $rotated,
+				RA => $ra,
+				DEC => $dec,
+			);
+			push(@corrected, $corrected);
+		}
+
+		$self->{corrected} = \@corrected;
+		$self->{outSources} = \@corrected;
+	}
+
+}
+
+
+sub putAspcorrDetails
+{
+	my ($self, $fits) = @_;
+
+	my $status = 0;
+
+	$fits->update_key_str('ASPCORR', $self->{aspcorr} ? 'YES' : 'NONE',
+			'Aspect correction status', $status);
+
+	$fits->update_key_lng('ASPNDET', $self->{nDetected},
+			'Number of detected sources', $status);
+	$fits->update_key_lng('ASPNREF', $self->{nReference},
+			'Number of reference sources', $status);
+
+	if ($self->{aspcorr}) {
+		my $q = $self->{quaternion};
+		for (my $i = 0; $i < 4; ++$i) {
+			$fits->update_key_dbl('ASPQ' . $i, $q->[$i], 15,
+					'Aspect correction quaternion element', $status);
+		}
+		$fits->update_key_dbl('ASPDELTA', $self->{posarcsec}, 6,
+				'Aspect correction position change [arcsec]', $status);
+		$fits->update_key_dbl('ASPROLL', $self->{rotarcmin}, 6,
+				'Aspect correction roll angle [arcmin]', $status);
+
+		my $qResidual = constructQuaternion($self->{MEAN_UNIT},
+				Math::toRadians(-$self->{rotarcmin} / 60));
+		for (my $i = 0; $i < 4; ++$i) {
+			$fits->update_key_dbl('ASPR' . $i, $qResidual->[$i], 15,
+					'Aspect correction residual element', $status);
+		}
+	}
+
+	if (my $tristarid = $self->{tristarid}) {
+		$fits->update_key_str('ASPSTAGE', $tristarid->{stage},
+				'Aspect correction stage', $status);
+		$fits->update_key_lng('ASPCOUNT', $tristarid->{matches},
+				'Aspect correction match count', $status);
+		$fits->update_key_dbl('ASPMEAN', $tristarid->{mean}, 3,
+				'Aspect correction mean residual [arcsec]', $status);
+		$fits->update_key_dbl('ASPSIGMA', $tristarid->{sigma}, 3,
+				'Aspect correction sigma residual [arcsec]', $status);
+		$fits->update_key_dbl('ASPRMS', $tristarid->{rms}, 3,
+				'Aspect correction rms residual [arcsec]', $status);
+	}
+}
+
+
+sub constructQuaternion
+{
+	my ($unit, $radians) = @_;
+	my $cos = cos($radians / 2);
+	my $sin = sin($radians / 2);
+	if ($cos < 0) {
+		$cos = -$cos;
+		$sin = -$sin;
+	}
+	my $q = [
+		$unit->[0] * $sin,
+		$unit->[1] * $sin,
+		$unit->[2] * $sin,
+		$cos,
+	];
+	return $q;
+}
+
+
+sub writeResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $tmpfile = $self->temporary('srclist');
+
+	my $simple = SimpleFITS->create($tmpfile);
+	my $status = $simple->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to create $tmpfile [$status]");
+		return;
+	}
+
+	my $writer = StarID::SourceTable->new(
+			simple => $simple,
+			tool => $self->{tool},
+			sources => $self->{outSources},
+			scale => 'radians',
+			catalog => $self->{catalog},
+			outfile => $tmpfile,
+			reference => $self->{reference},
+			matchtol => $args->{matchtol},
+			unobserved => $args->{unradius},
+			uncount => $args->{uncount},
+			unmag => $args->{unmag},
+			history => $args->{history},
+			);
+
+	$writer->execute(
+			columns => $self->{columns},
+			);
+
+	if (not $writer->isValid) {
+		$self->error(BAD_OUTPUT, "unable to save results");
+	}
+	else {
+
+		my $status = 0;
+		my $fits = $simple->handle;
+
+		foreach my $hdu (1, 2) {
+
+			if ($fits->movabs_hdu($hdu, undef, $status)) {
+				$self->error(BAD_OUTPUT,
+					"unable to move to HDU $hdu [$status]");
+				next;
+			}
+
+			foreach my $card (@{ $self->{cards} }) {
+				$fits->write_record($card, $status);
+			}
+
+			$self->putAspcorrDetails($fits);
+
+			$fits->update_key_str('CREATOR', "$self->{tool} $self->{version}",
+					'File creation software', $status);
+
+			$fits->write_date($status);
+		}
+
+		$self->putParameterHistory($fits);
+		$self->updateChecksums($fits, 1, 2);
+
+		$fits->close_file($status);
+
+		my $sort = $self->buildCommand('ftsort',
+				infile => $tmpfile,
+				outfile => $args->{outfile},
+				columns => 'ORDER',
+				);
+		$self->shell($sort);
+	}
+
+	if (my $error = $self->{queueError}) {
+		$self->error(BAD_TASK, $error);
+	}
+}
+
+

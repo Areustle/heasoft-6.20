@@ -1,0 +1,2864 @@
+#!/usr/bin/perl 
+#
+# 
+#	nuproducts
+#
+#	INVOCATION:
+#
+#		nuproducts [parameter=value ...]
+#
+#	DESCRIPTION:
+#               
+#
+#	DOCUMENTATION:
+#
+#
+#	CHANGE HISTORY:
+#        0.1.0 - NS 06/11/11 - First version
+#        0.1.1 - NS 20/12/11 - Renamed 'gtifile' input parameter to 'usrgtifile'
+#        0.1.2 - NS 02/03/12 - Added 'numkarf' task call
+#                            - Added 'numkrmf' task call
+#        0.1.3 - NS 16/05/12 - Added 'phibin' input parameter
+#        0.1.4 - NS 25/07/12 - Added 'indir' 'instrument' 'steminputs' 'offaxisfile' and 'offaxishisto' input parameters
+#                            - Handle 'DEFAULT' value for input/output files
+#                            - Update 'ANCRFILE' 'RESPFILE' and 'BACKFILE' keywords of the output source PHA file
+#        0.1.5 - NS 28/08/12 - Handle long file naming
+#        0.1.6 - NS 23/10/12 - Added 'nulccorr' task call
+#        0.1.7 - NS 14/12/12 - Added 'nubkgcorr' task call
+#                            - Added 'initseed', 'runbkgcorr' and 'cmprmf' input parameters
+#        0.1.8 - NS 28/01/13 - Modified 'xspec' ftool call
+#        0.1.9 - NS 25/02/13 - Added input parameters needed by new version of numkarf task
+#                            - Added 'usrgtifile' input parameter in 'nubkgcorr' task call
+#                            - Modified 'xselect' and 'ximage' ftool call
+#        0.2.0 - NS 13/03/13 - Added input parameters needed by new version of numkarf task
+#        0.2.1 - NS 12/04/13 - Added input parameters needed by new version of numkarf task
+#        0.2.2 - NS 14/06/13 - Added input parameters needed by new version of nulccorr task
+#                            - Replaced 'nubkgcorr' with 'nubackscale' task
+#                            - Added 'usrgtifile' input parameter in 'numkrmf' task call
+#                            - Modified handling of 'usrgtifile' input file
+#        0.2.3 - NS 10/07/13 - Added input parameters needed by new version of nulccorr, numkarf and nubackscale tasks
+#        0.2.4 - NS 18/07/13 - Added input parameters needed by new version of numkarf task
+#        0.2.5 - NS 20/11/13 - Added 'barycorr' ftools call
+#                            - Added PI filtering command in xselect execution
+#        0.2.6 - NS 20/03/14 - Added 'grppha' ftool call
+#                            - Added SOFTVER and CALDBVER info in output files
+#        0.2.7 - NS 02/04/14 - Added 'nuexpomap' task call
+#                            - Handle 'nuexpomap' task output files while calling 'nubackscale', 'nulccorr' and 'numkarf' tasks
+#        0.2.8 - NS 21/05/14 - Added input parameters needed by 'grppha' ftool call
+#                            - Added 'usrgtibarycorr' input parameter
+#        0.2.9 - NS 21/05/15 - Added input parameters needed by new version of numkarf task
+#        0.3.0 - RF 14/04/16 - Update the checksum of the optional output file 'grpphafile'
+#        
+#
+#	AUTHORS:
+#
+#       ASDC - ASI Science Data Center
+#
+#
+
+# NuSTAR perl library
+require "libnustarperl.pl";
+
+use strict;
+use File::Basename;
+use Math::Trig;
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use vars qw( %Task %Default @Par %Def );
+use vars qw( %OutFiles %TmpOutFiles %InFiles %TmpInFiles %InFilesExt @CleanupList );
+
+#
+# Specific of the task
+#
+
+%Task = (
+	 start          => `date`,
+	 name           => "nuproducts",
+	 version        => "0.3.0",
+	 releasedate    => "2016-04-14",
+	 stem           => "nuproducts_0.3.0",
+	 stemout        => "",
+	 infile         => "",
+	 hkfile         => "",
+	 optaxisfile    => "",
+	 mastaspectfile => "",
+	 attfile        => "",
+	 det1reffile    => "",
+	 usrgtifile     => "",
+	 srcregionfile  => "",
+	 bkgregionfile  => "",
+	 phafile        => "",
+	 bkgphafile     => "",
+	 plotdev        => "",
+	 softver        => "",
+	 caldbver       => "",
+	 runexpomap     => "no",
+	 runexpomapvign => "no",
+	 tmpdir         => $$."_tmp_nuproducts",
+	 clobber        => 0,  # it means 'clobber=no'
+	 chatter        => 0,
+	 status         => 0,
+	 errmess        => "",
+	 history        => "",
+	 );
+
+
+#
+#  Defaults
+#
+%Default = (
+	    DEFAULT         => "DEFAULT",
+	    CALDB           => "CALDB",
+	    NONE            => "NONE",
+	   );
+
+
+%InFiles = (
+	    infile          => "",
+	    hkfile          => "",
+	    optaxisfile     => "",
+	    mastaspectfile  => "",
+	    attfile         => "",
+	    det1reffile     => "",
+	    orbitfile       => "",
+	    );
+
+
+%InFilesExt = (
+	       infile          => "01".$Def{LEV2STEM}.$Def{EVTEXT},
+	       hkfile          => $Def{HKSTEM}.$Def{HKEXT},
+	       optaxisfile     => $Def{OPTAXISSTEM}.$Def{FITSEXT},
+	       mastaspectfile  => $Def{MASTSTEM}.$Def{FITSEXT},
+	       attfile         => "_att.fits",
+	       det1reffile     => $Def{DET1REFSTEM}.$Def{FITSEXT},
+	       orbitfile       => "_orb.fits",
+	       );
+
+
+%TmpInFiles = (
+	       infile               => "",
+	       xsel_srcregionfile   => "",
+	       xsel_bkgregionfile   => "",
+	       xspec_rmffile        => "",
+	       ximage_imagefile     => "",
+	       );
+
+
+%OutFiles = (
+	     lcfile          => "",
+	     phafile         => "",
+	     bkglcfile       => "",
+	     bkgphafile      => "",
+	     imagefile       => "",
+	     imageplot       => "",
+	     phaplot         => "",
+	     lcplot          => "",
+	     outarffile      => "",
+	     outrmffile      => "",
+	     offaxisfile     => "",
+	     offaxishisto    => "",
+	     apstophisto     => "",
+	     grhisto         => "",
+	     lcsrccorrfile   => "",
+	     lcbkgcorrfile   => "",
+	     outfile         => "",
+	     grpphafile      => "",
+	     );
+
+
+%TmpOutFiles = (
+		# temporary file output of barycorr ftool
+		hkfile               => "",
+		optaxisfile          => "",
+		mastaspectfile       => "",
+		attfile              => "",
+		det1reffile          => "",
+		usrgtifile           => "",
+		#
+		ximage_imageplot     => "",
+		xsel_imagefile       => "",
+		xsel_lcfile          => "",
+		xsel_phafile         => "",
+		xsel_bkglcfile       => "",
+		xsel_bkgphafile      => "",
+		xspec_phaplot        => "",
+		lcurve_lcplot        => "",
+		srcxselxco           => "",
+		bkgxselxco           => "",
+		ximagexco            => "",
+		xspecxcm             => "",
+		lcurvepco            => "",
+		filtered_evt         => "",
+		# temporary file output of nuexpomap task
+		det2instrfile        => "",
+		aspecthistofile      => "",
+		skyinstrfile         => "",
+		expomapfile          => "",
+		skyinstrfile_vign    => "",
+		expomapfile_vign     => "",
+		);
+
+
+my ( $strmsg );
+my ( $hdunum,$hdutype );
+my ( $fptr_pha,$status_pha,$i ) = (0,0,0);
+
+#  
+#   Running Task Message
+#
+&RunningTask;
+
+
+#
+# Get Input Parameters 
+#
+if ( &GetInputParameters ){
+    $Task{errmess} = "Error: parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Create a temporary directory
+#
+if( -d $Task{tmpdir} ){
+    &PrntChty(2,"$Task{stem}: Error: unable to create temporary directory '$Task{tmpdir}' , already exists!\n");
+    goto EXITWITHERROR;
+}
+
+if( &CreateDir($Task{tmpdir}) ) { 
+    goto EXITWITHERROR; 
+}
+
+
+#
+# Check Input Parameters 
+#
+if ( &CheckInputParameters ) {
+    $Task{errmess} = "Error checking input parameters";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Set the names of the input files 
+# and put them in '%InFiles' hash table
+#
+if ( &SetInFiles ) {
+    $Task{errmess} = "Error setting the names of the input files";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Set the names of the temporary input files 
+# and put them in '%TmpInFiles' hash table
+#
+if ( &SetTmpInFiles ) {
+    $Task{errmess} = "Error setting the names of the temporary input files";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Check 'stemout' input parameter 
+# and set $Task{stemout}
+#
+&SetStemOut();
+
+
+#
+# Set the names of the output files 
+# and put them in '%OutFiles' hash table
+#
+if ( &SetOutFiles ) {
+    $Task{errmess} = "Error setting the names of the output files";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Set the names of the temporary output files 
+# and put them in '%TmpOutFiles' hash table
+#
+if ( &SetTmpOutFiles ) {
+    $Task{errmess} = "Error setting the names of the temporary output files";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Run barycorr
+#
+if ( &GetValPar("barycorr")=~/[yY]/ ) {
+
+
+    if(&RunBaryCorr($InFiles{infile},$OutFiles{outfile})){
+	goto EXITWITHERROR;
+    }
+    $Task{infile} = $OutFiles{outfile};
+
+    if(&RunBaryCorr($InFiles{hkfile},$TmpOutFiles{hkfile})){
+	goto EXITWITHERROR;
+    }
+    $Task{hkfile} = $TmpOutFiles{hkfile};
+
+    if(&RunBaryCorr($InFiles{optaxisfile},$TmpOutFiles{optaxisfile})){
+	goto EXITWITHERROR;
+    }
+    $Task{optaxisfile} = $TmpOutFiles{optaxisfile};
+
+    if(&RunBaryCorr($InFiles{mastaspectfile},$TmpOutFiles{mastaspectfile})){
+	goto EXITWITHERROR;
+    }
+    $Task{mastaspectfile} = $TmpOutFiles{mastaspectfile};
+
+    if(&RunBaryCorr($InFiles{attfile},$TmpOutFiles{attfile})){
+	goto EXITWITHERROR;
+    }
+    $Task{attfile} = $TmpOutFiles{attfile};
+
+    if(&RunBaryCorr($InFiles{det1reffile},$TmpOutFiles{det1reffile})){
+	goto EXITWITHERROR;
+    }
+    $Task{det1reffile} = $TmpOutFiles{det1reffile};
+
+
+    if ( (!&CompUL(&GetValPar("usrgtifile"),$Default{NONE})) && (&GetValPar("usrgtibarycorr")=~/[yY]/) ){
+
+	my ($tmpfile) = $TmpOutFiles{usrgtifile}."tmp1" ;
+
+	&PrntChty(5,"$Task{stem}: Info: Copying '".&GetValPar("usrgtifile")."' in '$tmpfile' temporary file\n");
+	if (!copy(&GetValPar("usrgtifile"), $tmpfile)) {
+	    &PrntChty(3,"$Task{stem}: Error: unable to copy '".&GetValPar("usrgtifile")."' in '$tmpfile' temporary file ($!)\n");
+	    goto EXITWITHERROR;
+	}
+
+	if(&UpdateUsrGtiFileKeys($tmpfile)){
+	    goto EXITWITHERROR;
+	}
+
+	if(&RunBaryCorr($tmpfile,$TmpOutFiles{usrgtifile})){
+	    goto EXITWITHERROR;
+	}
+
+	if ( -f $tmpfile && !unlink ( $tmpfile ) ) {
+	    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$tmpfile' temporary file. $!\n");
+	}
+	
+	$Task{usrgtifile} = $TmpOutFiles{usrgtifile};
+    }
+    else{
+	$Task{usrgtifile} = &GetValPar("usrgtifile");
+    }
+    
+   
+    push @CleanupList, $OutFiles{outfile};
+}
+else{
+    $Task{infile} = $InFiles{infile};
+    $Task{hkfile} = $InFiles{hkfile};
+    $Task{optaxisfile} = $InFiles{optaxisfile};
+    $Task{mastaspectfile} = $InFiles{mastaspectfile};
+    $Task{attfile} = $InFiles{attfile};
+    $Task{det1reffile} = $InFiles{det1reffile};
+    $Task{usrgtifile} = &GetValPar("usrgtifile");
+}
+
+
+#
+# Get CALDBVER and SOFTVER keyword values from input file
+#
+{
+    my $checkexist = 1;
+    
+    &GetKeyword ( $Task{infile}, undef, undef, "SOFTVER", \$Task{softver}, $checkexist);
+    if ( $Task{status} ) { 
+	&PrntChty(2,"$Task{stem}: Warning: SOFTVER keywords not found in $Task{infile} file\n");
+	$Task{status} = 0;
+    }
+    
+    &GetKeyword ( $Task{infile}, undef, undef, "CALDBVER", \$Task{caldbver}, $checkexist);
+    if ( $Task{status} ) { 
+	&PrntChty(2,"$Task{stem}: Warning: CALDBVER keywords not found in $Task{infile} file\n");
+	$Task{status} = 0;
+    }
+}
+
+
+#
+# Create a temporary local link to the  input event file
+#
+if ( &CreateAbsSymbolicLink($Task{infile}, $TmpInFiles{infile}) ){
+    &PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{infile}."' to '".$Task{infile}."'\n");
+    goto EXITWITHERROR;
+}
+
+
+#
+# Create Temporary Filtered Event File
+# ($TmpOutFiles{filtered_evt} is created)
+#
+if (!&CompUL(&GetValPar("usrgtifile"),$Default{NONE})) {
+
+    &PrntChty(2,"$Task{stem}: Info: creating Temporary Filtered Event File '".$TmpOutFiles{filtered_evt}."'\n");
+
+    if ( &FilterEvtByUsrGti($TmpInFiles{infile},$TmpOutFiles{filtered_evt},$Task{usrgtifile}) ) {
+	goto EXITWITHERROR;
+    }
+
+    if(&RunNulivetime($TmpOutFiles{filtered_evt})){
+	goto EXITWITHERROR;
+    }
+
+    # Update temporary local link to the  input event file
+    if ( !unlink ($TmpInFiles{infile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $TmpInFiles{infile} . "' temporary link\n");
+    }
+
+    if ( &CreateAbsSymbolicLink($TmpOutFiles{filtered_evt}, $TmpInFiles{infile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{infile}."' to '".$TmpOutFiles{filtered_evt}."'\n");
+	goto EXITWITHERROR;
+    }
+
+    $Task{infile} = $TmpOutFiles{filtered_evt};
+}
+
+
+#
+# Run nuexpomap
+# ($TmpOutFiles{det2instrfile}, $TmpOutFiles{aspecthistofile}, $TmpOutFiles{skyinstrfile} and $TmpOutFiles{expomapfile} are created)
+#
+if( (&GetValPar("extended")=~/[yY]/) || ((&GetValPar("bkgextract")=~/[yY]/)&&(&GetValPar("correctlc")=~/[yY]/)) ) {
+
+    $Task{runexpomap} = "yes";
+    if( &RunNuExpoMap() ) {
+	goto EXITWITHERROR;
+    }
+
+    # Run nuexpomap with vignetting correction
+    # ($TmpOutFiles{skyinstrfile_vign} and $TmpOutFiles{expomapfile_vign} are created)
+    if( (&GetValPar("extended")=~/[yY]/) && (&GetValPar("correctlc")=~/[yY]/) && (&GetValPar("lcvignflag")=~/[yY]/) && (&GetValPar("lcexpoflag")=~/[yY]/) ||
+	(&GetValPar("extended")=~/[nN]/) && (&GetValPar("correctlc")=~/[yY]/) && (&GetValPar("lcvignflag")=~/[yY]/) && (&GetValPar("lcpsfflag")=~/[yY]/) ){
+
+	$Task{runexpomapvign} = "yes";
+	if( &RunNuExpoMapWithVignetting() ) {
+	    goto EXITWITHERROR;
+	}
+    }
+}
+
+
+#
+# Check source input region file or create it
+# ($Task{srcregionfile} is created if needed)
+#
+if ( &SetSourceRegionFile ) {
+    goto EXITWITHERROR;
+}
+
+
+#
+# Create xselect command file 
+# ($TmpOutFiles{srcxselxco} is created)
+#
+if ( &CreateSourceXselFile ) {
+    goto EXITWITHERROR;
+}
+
+
+#
+# Run xselect
+# ($TmpOutFiles{imagefile}, $TmpOutFiles{phafile} and $TmpOutFiles{lcfile} are created)
+#
+
+if ( &CreateAbsSymbolicLink($Task{srcregionfile}, $TmpInFiles{xsel_srcregionfile}) ){
+    &PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{xsel_srcregionfile}."' to '".$Task{srcregionfile}."'\n");
+    goto EXITWITHERROR;
+}
+
+$strmsg = "Light Curve and/or Spectrum and/or Image generated";
+if( &RunXselect($TmpOutFiles{srcxselxco},$strmsg) ) {
+    goto EXITWITHERROR;
+}
+
+if( -f $TmpOutFiles{xsel_imagefile} ){
+    if ( &RenameFile($TmpOutFiles{xsel_imagefile}, $OutFiles{imagefile}) ) { goto EXITWITHERROR; }
+}
+
+if(!&CompUL(&GetValPar("phafile"),$Default{NONE})) {
+
+    if ( &RenameFile($TmpOutFiles{xsel_phafile}, $OutFiles{phafile}) ) { goto EXITWITHERROR; }
+
+    # Run nubackscale on source PHA file
+    if( &GetValPar("runbackscale")=~/[yY]/ ){
+	if( &RunBackScale($OutFiles{phafile},"SRC") ) {
+	    goto EXITWITHERROR;
+	}
+    }
+
+    $Task{phafile} = $OutFiles{phafile};
+}
+else{
+    $Task{phafile} = $TmpOutFiles{xsel_phafile};
+    push @CleanupList, $TmpOutFiles{xsel_phafile};
+}
+
+if( -f $TmpOutFiles{xsel_lcfile} ){
+    if ( &RenameFile($TmpOutFiles{xsel_lcfile}, $OutFiles{lcfile}) ) { goto EXITWITHERROR; }
+
+    # Run nulccorr
+    # ($OutFiles{lcfile} is updated)
+    if ( &GetValPar("correctlc") =~ /[yY]/ ) {
+	if( &RunNuLcCorr($OutFiles{lcfile},$Task{phafile},$OutFiles{lcsrccorrfile},"SRC") ) {
+	    goto EXITWITHERROR;
+	}
+    }
+}
+
+# Delete temporary link
+if ( !unlink ($TmpInFiles{xsel_srcregionfile}) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $TmpInFiles{xsel_srcregionfile} . "' temporary file\n");
+}
+
+
+#
+# Run lcurve
+# ($OutFiles{lcplot} is created)
+#
+if (!&CompUL(&GetValPar("lcfile"),$Default{NONE})) {
+    if( &RunLcurve() ) {
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Run ximage
+# ($OutFiles{imageplot} is created)
+#
+if ( -f $OutFiles{imagefile} ) {
+    if( &RunXimage ) {
+	goto EXITWITHERROR;
+    }
+}
+
+
+if ( &GetValPar("bkgextract") =~ /[yY]/ ) {
+    
+    #
+    # Check background input region file or create it
+    # ($Task{bgkregionfile} is created if needed)
+    #
+    if ( &SetBackgroundRegionFile ) {
+	goto EXITWITHERROR;
+    }
+
+
+    #
+    # Create xselect command file 
+    # ($TmpOutFiles{bkgxselxco} is created)
+    #
+    if ( &CreateBackgroundXselFile ) {
+	goto EXITWITHERROR;
+    }
+
+
+    #
+    # Run xselect
+    # ($TmpOutFiles{xsel_bkgphafile} and $TmpOutFiles{xsel_bkglcfile} are created)
+    #
+
+    if ( &CreateAbsSymbolicLink($Task{bkgregionfile}, $TmpInFiles{xsel_bkgregionfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{xsel_bkgregionfile}."' to '".$Task{bkgregionfile}."'\n");
+	goto EXITWITHERROR;
+    }
+
+    $strmsg = "Background Light Curve and/or Spectrum generated";
+    if( &RunXselect($TmpOutFiles{bkgxselxco},$strmsg) ) {
+	goto EXITWITHERROR;
+    }
+
+    if(!&CompUL(&GetValPar("bkgphafile"),$Default{NONE})) {
+
+	if ( &RenameFile($TmpOutFiles{xsel_bkgphafile}, $OutFiles{bkgphafile}) ) { goto EXITWITHERROR; }
+
+	# Run nubackscale on background PHA file
+	if( &GetValPar("runbackscale")=~/[yY]/ ){
+	    if( &RunBackScale($OutFiles{bkgphafile},"BKG") ) {
+		goto EXITWITHERROR;
+	    }
+	}
+
+	$Task{bkgphafile} = $OutFiles{bkgphafile};
+    }
+    else{
+	$Task{bkgphafile} = $TmpOutFiles{xsel_bkgphafile};
+	push @CleanupList, $TmpOutFiles{xsel_bkgphafile};
+    }
+    
+    if( -f $TmpOutFiles{xsel_bkglcfile} ){
+	if ( &RenameFile($TmpOutFiles{xsel_bkglcfile}, $OutFiles{bkglcfile}) ) { goto EXITWITHERROR; }
+
+	# Run nulccorr
+	# ($OutFiles{bkglcfile} is updated)
+	if ( &GetValPar("correctlc") =~ /[yY]/ ) {
+	    if( &RunNuLcCorr($OutFiles{bkglcfile},$Task{bkgphafile},$OutFiles{lcbkgcorrfile},"BKG") ) {
+		goto EXITWITHERROR;
+	    }
+	}
+    }
+
+    # Delete temporary link
+    if ( !unlink ($TmpInFiles{xsel_bkgregionfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $TmpInFiles{xsel_bkgregionfile} . "' temporary file\n");
+    }
+
+}
+
+#
+# Run numkarf
+# ($OutFiles{outarffile} is created)
+#
+if ( &GetValPar("runmkarf") =~ /[yY]/ ) {
+    if( &RunNumkarf() ) {
+	goto EXITWITHERROR;
+    }
+}
+
+#
+# Run numkrmf
+# ($OutFiles{outrmffile} is created)
+#
+if ( &GetValPar("runmkrmf") =~ /[yY]/ ) {
+    if( &RunNumkrmf() ) {
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Run xspec
+# ($OutFiles{phaplot} is created)
+#
+if (!&CompUL(&GetValPar("phafile"),$Default{NONE}) && &GetValPar("runmkrmf") =~ /[yY]/) {
+    if( &RunXspec() ) {
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Update 'ANCRFILE' 'RESPFILE' and 'BACKFILE' keywords of the output source PHA file
+# ($OutFiles{phafile} is updated)
+#
+if (!&CompUL(&GetValPar("phafile"),$Default{NONE})) {
+    if( &UpdatePhaKeys() ) {
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Run grppha
+# ($OutFiles{grpphafile} is created)
+#
+
+if (!&CompUL(&GetValPar("phafile"),$Default{NONE}) && &GetValPar("rungrppha") =~ /[yY]/) {
+    if( &RunGrpPha() ) 
+    {
+	goto EXITWITHERROR;
+    }
+    else
+    {
+	# open fits file
+	fits_open_file($fptr_pha,$OutFiles{grpphafile},READWRITE,$status_pha);
+	if ($status_pha) 
+	{
+	    &PrntChty(3, "$Task{stem}: Error: unable to open '$OutFiles{grpphafile}' file.");
+	    goto EXITWITHERROR;
+	}
+	
+	# gen num of HDU on fits file
+	fits_get_num_hdus($fptr_pha,$hdunum,$status_pha);
+	if ( $status_pha ) {
+	    &PrntChty(3, "$Task{stem}: Error: Unable to get number of extensions from '$OutFiles{grpphafile}' file.");
+	    goto EXITWITHERROR;
+	}
+
+	for ($i = 1; $i <= $hdunum; $i++) 
+	{
+	    fits_movabs_hdu($fptr_pha, $i, $hdutype, $status_pha);
+	    if ( $status_pha ) {
+		&PrntChty(3, "$Task{stem}: Error: Unable to move in extension $i of file '$OutFiles{grpphafile}'.");
+		goto EXITWITHERROR;
+	    }
+	
+	    # calc checksum on fits file
+	    fits_write_chksum($fptr_pha,$status_pha);
+	    if ($status_pha) {
+		&PrntChty(3, "$Task{stem}: Error: Updating checksum of file '$OutFiles{grpphafile}'.");
+		goto EXITWITHERROR;
+	    }
+	}
+	
+	# close fits file
+	if ( $fptr_pha ) 
+	{
+	    $status_pha = 0;
+	    fits_close_file($fptr_pha,$status_pha);
+	}
+    }
+}
+
+
+#
+# Cleanup temporary files
+#
+if ( &GetValPar("cleanup") =~ /[yY]/ ) {
+    &Cleanup(@CleanupList);
+}
+else {
+    my ($outdir) = &GetValPar("outdir");
+
+    if( -f $TmpOutFiles{srcxselxco} ){
+	if ( &RenameFile($TmpOutFiles{srcxselxco} , $outdir."/".basename($TmpOutFiles{srcxselxco}) ) ) { 
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot rename '" . $TmpOutFiles{srcxselxco} . "' temporary file\n");
+	}
+    }
+
+    if( -f $TmpOutFiles{bkgxselxco} ){
+	if ( &RenameFile($TmpOutFiles{bkgxselxco} , $outdir."/".basename($TmpOutFiles{bkgxselxco}) ) ) { 
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot rename '" . $TmpOutFiles{bkgxselxco} . "' temporary file\n");
+	}
+    }
+
+    if( -f $TmpOutFiles{ximagexco} ){
+	if ( &RenameFile($TmpOutFiles{ximagexco} , $outdir."/".basename($TmpOutFiles{ximagexco}) ) ) { 
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot rename '" . $TmpOutFiles{ximagexco} . "' temporary file\n");
+	}
+    }
+
+    if( -f $TmpOutFiles{xspecxcm} ){
+	if ( &RenameFile($TmpOutFiles{xspecxcm} , $outdir."/".basename($TmpOutFiles{xspecxcm}) ) ) { 
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot rename '" . $TmpOutFiles{xspecxcm} . "' temporary file\n");
+	}
+    }
+
+    if( -f $TmpOutFiles{lcurvepco} ){
+	if ( &RenameFile($TmpOutFiles{lcurvepco} , $outdir."/".basename($TmpOutFiles{lcurvepco}) ) ) { 
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot rename '" . $TmpOutFiles{lcurvepco} . "' temporary file\n");
+	}
+    }
+
+}
+
+
+if ( !unlink ($TmpInFiles{infile}) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $TmpInFiles{infile} . "' temporary link\n");
+}
+
+if ( -f $TmpOutFiles{filtered_evt} && !unlink ( $TmpOutFiles{filtered_evt} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{filtered_evt}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{hkfile} && !unlink ( $TmpOutFiles{hkfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{hkfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{optaxisfile} && !unlink ( $TmpOutFiles{optaxisfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{optaxisfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{mastaspectfile} && !unlink ( $TmpOutFiles{mastaspectfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{mastaspectfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{attfile} && !unlink ( $TmpOutFiles{attfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{attfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{det1reffile} && !unlink ( $TmpOutFiles{det1reffile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{det1reffile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{usrgtifile} && !unlink ( $TmpOutFiles{usrgtifile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{usrgtifile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{det2instrfile} && !unlink ( $TmpOutFiles{det2instrfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{det2instrfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{aspecthistofile} && !unlink ( $TmpOutFiles{aspecthistofile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{aspecthistofile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{skyinstrfile} && !unlink ( $TmpOutFiles{skyinstrfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{skyinstrfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{expomapfile} && !unlink ( $TmpOutFiles{expomapfile} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{expomapfile}' temporary file. $!\n");
+}
+
+if ( -f $TmpOutFiles{skyinstrfile_vign} && !unlink ( $TmpOutFiles{skyinstrfile_vign} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{skyinstrfile_vign}' temporary file. $!\n");
+}
+
+
+if ( -f $TmpOutFiles{expomapfile_vign} && !unlink ( $TmpOutFiles{expomapfile_vign} ) ) {
+    &PrntChty(2,"$Task{stem}: Warning: Unable to remove '$TmpOutFiles{expomapfile_vign}' temporary file. $!\n");
+}
+
+
+#
+# Remove temporary directory
+#
+if( !rmdir($Task{tmpdir}) ){
+    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$Task{tmpdir}."' temporary directory\n");
+}
+
+#
+# End of nuproducts task
+#
+
+&Success;
+exit (0);
+
+
+ EXITWITHERROR:
+
+&Error;
+exit(1);
+
+
+
+
+#-------------------------------------------------------------
+#  subroutines section
+#-------------------------------------------------------------
+
+
+sub GetInputParameters {
+
+    use vars qw( %Task  @Par  %Ind);
+  
+    my ( $name, $indref, $p);
+
+    # temporary set of chatter to normal
+    $Task{chatter} = 3;
+
+    # get parameter list from parameter file
+    ($indref,@Par) = &GetParameterList();
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    %Ind = %$indref;
+
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+   
+    # Get 'indir' input parameter
+    if (&GetValPar("indir","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts indir`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts indir'\n");
+	    return 1;
+	}
+	&SetValPar("indir",$String);
+	&SetValPar("indir",2,"set");
+    }
+
+    # Get 'instrument' input parameter
+    if (&GetValPar("instrument","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts instrument`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts instrument'\n");
+	    return 1;
+	}
+	&SetValPar("instrument",$String);
+	&SetValPar("instrument",2,"set");
+    }
+
+    # Get 'steminputs' input parameter
+    if (&GetValPar("steminputs","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts steminputs`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts steminputs'\n");
+	    return 1;
+	}
+	&SetValPar("steminputs",$String);
+	&SetValPar("steminputs",2,"set");
+    }
+
+    # Get 'outdir' input parameter
+    if (&GetValPar("outdir","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts outdir`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts outdir'\n");
+	    return 1;
+	}
+	&SetValPar("outdir",$String);
+	&SetValPar("outdir",2,"set");
+    }
+
+    # Get 'infile' input parameter
+    if (&GetValPar("infile","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts infile`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts infile'\n");
+	    return 1;
+	}
+	&SetValPar("infile",$String);
+	&SetValPar("infile",2,"set");
+    }
+
+    # Get 'srcregionfile' input parameter
+    if (&GetValPar("srcregionfile","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts srcregionfile`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts srcregionfile'\n");
+	    return 1;
+	}
+	&SetValPar("srcregionfile",$String);
+	&SetValPar("srcregionfile",2,"set");
+    }
+
+    # Get 'bkgextract' input parameter
+    if (&GetValPar("bkgextract","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts bkgextract`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts bkgextract'\n");
+	    return 1;
+	}
+	&SetValPar("bkgextract",$String);
+	&SetValPar("bkgextract",2,"set");
+    }
+
+    # Get 'bkgregionfile' input parameter
+    if ( (&GetValPar("bkgextract")=~/[yY]/) && (&GetValPar("bkgregionfile","set")==0) )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts bkgregionfile`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts bkgregionfile'\n");
+	    return 1;
+	}
+	&SetValPar("bkgregionfile",$String);
+	&SetValPar("bkgregionfile",2,"set");
+    }
+
+    # Get 'runmkarf' input parameter
+    if (&GetValPar("runmkarf","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts runmkarf`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts runmkarf'\n");
+	    return 1;
+	}
+	&SetValPar("runmkarf",$String);
+	&SetValPar("runmkarf",2,"set");
+    }
+
+    # Get 'runmkrmf' input parameter
+    if (&GetValPar("runmkrmf","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts runmkrmf`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts runmkrmf'\n");
+	    return 1;
+	}
+	&SetValPar("runmkrmf",$String);
+	&SetValPar("runmkrmf",2,"set");
+    }
+
+    # Get 'barycorr' input parameter
+    if (&GetValPar("barycorr","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nuproducts barycorr`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nuproducts barycorr'\n");
+	    return 1;
+	}
+	&SetValPar("barycorr",$String);
+	&SetValPar("barycorr",2,"set");
+    }
+
+    foreach $p (@Par) {
+	if (($p->{set} == 1) && (!&RequestParameter($p->{name}))) {
+	    &PrntChty(2,"$Task{stem}: Error: input parameter '$p->{name}' not compatible with other input parameters.\n");
+	    return 1;
+	}
+    }
+
+    $Task{errmess} = "";
+    if (! &LoadParameter()) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+    
+    $Task{chatter} = &GetValPar("chatter");
+    
+    if ( &GetValPar("clobber") =~ /[yY]/ ) {
+	$Task{clobber} = 1;
+    }
+
+    $Task{plotdev} = &GetValPar("plotdevice");
+       
+    return 0;
+    
+} #GetInputParameters
+
+
+sub RequestParameter(){
+    use vars qw (%Default %Task);
+    my ($par_name) = @_;
+
+    # Input parameters not requested if srcregionfile!=DEFAULT
+    if ( ( $par_name eq "srcra" || $par_name eq "srcdec" || $par_name eq "srcradius" )
+	 &&( !&CompUL(&GetValPar("srcregionfile"),$Default{DEFAULT}) ) ){
+	return 0;
+    }
+
+    # Input parameters not requested if bkgextract="no"
+    if ( ( $par_name eq "bkgregionfile" || $par_name eq "bkgra" || $par_name eq "bkgdec" || $par_name eq "bkgradius1" || $par_name eq "bkgradius2" )
+	 &&( &GetValPar("bkgextract")=~/[nN]/ ) ){
+	return 0;
+    }
+
+    # Input parameters not requested if bkgregionfile!=DEFAULT
+    if ( ( $par_name eq "bkgra" || $par_name eq "bkgdec" || $par_name eq "bkgradius1" || $par_name eq "bkgradius2" )
+	 &&( !&CompUL(&GetValPar("bkgregionfile"),$Default{DEFAULT}) ) ){
+	return 0;
+    }
+
+    # Input parameters not requested if runmkarf="no"
+    if ( ( $par_name eq "outarffile" ) 
+	 && ( &GetValPar("runmkarf")=~/[nN]/ ) ){
+	return 0;
+    }
+
+    # Input parameters not requested if correctlc="no"
+    if ( ($par_name eq "hkfile")
+	&&( &GetValPar("correctlc")=~/[nN]/ ) ){
+	return 0;
+    }
+
+    # Input parameters not requested if barycorr="no"
+    if ( ($par_name eq "clockfile" || $par_name eq "orbitfile" || $par_name eq "srcra_barycorr" || $par_name eq "srcdec_barycorr" || $par_name eq "outfile")
+	&&( &GetValPar("barycorr")=~/[nN]/ ) ){
+	return 0;
+    }
+
+    return 1;
+
+} # RequestParameter
+
+
+sub CheckInputParameters {
+
+    # Check 'instrument' input parameter
+    if( !&CompUL(&GetValPar("instrument"),"FPMA") && !&CompUL(&GetValPar("instrument"),"FPMB") ){
+	&PrntChty(2,"$Task{stem}: Error: Input value '".&GetValPar("instrument")."' not allowed for parameter 'instrument'\n");
+	return 1;
+    }
+
+    # Check 'srcregionfile' input parameter
+    if ( (!&CompUL(&GetValPar("srcregionfile"),$Default{DEFAULT})) && (!-f &GetValPar("srcregionfile")) ) {
+	&PrntChty(2,"$Task{stem}: Error: Input File '".&GetValPar("srcregionfile")."' not found\n");
+	return 1;
+    }
+
+    # Check 'bkgregionfile' input parameter
+    if ( ( &GetValPar("bkgextract") =~ /[yY]/ ) && (!&CompUL(&GetValPar("bkgregionfile"),$Default{DEFAULT})) && (!-f &GetValPar("bkgregionfile")) ) {
+	&PrntChty(2,"$Task{stem}: Error: Input File '".&GetValPar("bkgregionfile")."' not found\n");
+	return 1;
+    }
+
+    # Check 'usrgtifile' input parameter
+    if ( (!&CompUL(&GetValPar("usrgtifile"),$Default{NONE})) && (!-f &GetValPar("usrgtifile")) ) {
+	&PrntChty(2,"$Task{stem}: Error: Input File '".&GetValPar("usrgtifile")."' not found\n");
+	return 1;
+    }
+   
+    # cut off the last '/' of 'outdir' input parameter
+    my $od = &GetValPar("outdir");
+    $od =~ s/\/$// ;
+    &SetValPar("outdir",$od);
+ 
+    if( !-d &GetValPar("outdir") ){
+	if( &CreateDir(&GetValPar("outdir")) ) { return 1; }
+    }
+    
+
+    if( $Task{plotdev} != "ps" && $Task{plotdev} != "gif" ){
+	&PrntChty(2,"$Task{stem}: Error: input value '".$Task{plotdev}."' not allowed for parameter 'plotdevice' (ps or gif)\n");
+	return 1;
+    }
+
+    # Check 'runmkarf' input parameter and reset it if phafile=NONE
+    if ( &GetValPar("runmkarf") =~ /[yY]/ && &CompUL(&GetValPar("phafile"),$Default{NONE}) ) {
+	
+	&PrntChty(2,"$Task{stem}: Warning: phafile set to NONE, numkarf task NOT executed.\n");
+	&SetValPar("runmkarf","no");
+	&SetValPar("runmkarf",2,"set");
+    }
+
+
+    return 0;
+
+} # CheckInputParameters
+
+
+sub SetInFiles(){
+
+    my (@filelist);
+    my ($instrstem);
+
+    my ($indir) = &GetValPar("indir");
+    my ($steminputs) = &GetValPar("steminputs");
+
+
+    if(&CompUL(&GetValPar("instrument"),"FPMA")){
+	$instrstem = "A";
+    }
+    else{
+	$instrstem = "B";
+    }
+
+
+    # infile
+    if ( &CompUL(&GetValPar("infile"), $Default{DEFAULT}) ) {
+	$InFiles{infile} = $indir . "/" . $steminputs . $instrstem . $InFilesExt{infile} ;
+	
+	my ($filename) = $InFiles{infile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{infile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{infile} = &GetValPar("infile");
+    }
+
+    # hkfile
+    if ( &CompUL(&GetValPar("hkfile"), $Default{DEFAULT}) ) {
+	$InFiles{hkfile} = $indir . "/" . $steminputs . $instrstem . $InFilesExt{hkfile} ;
+	
+	my ($filename) = $InFiles{hkfile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{hkfile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{hkfile} = &GetValPar("hkfile");
+    }
+
+    # optaxisfile
+    if ( &CompUL(&GetValPar("optaxisfile"), $Default{DEFAULT}) ) {
+	$InFiles{optaxisfile} = $indir . "/" . $steminputs . $instrstem . $InFilesExt{optaxisfile} ;
+	
+	my ($filename) = $InFiles{optaxisfile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{optaxisfile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{optaxisfile} = &GetValPar("optaxisfile");
+    }
+
+    # mastaspectfile
+    if ( &CompUL(&GetValPar("mastaspectfile"), $Default{DEFAULT}) ) {
+	$InFiles{mastaspectfile} = $indir . "/" . $steminputs . $InFilesExt{mastaspectfile} ;
+	
+	my ($filename) = $InFiles{mastaspectfile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{mastaspectfile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{mastaspectfile} = &GetValPar("mastaspectfile");
+    }
+
+    # attfile
+    if ( &CompUL(&GetValPar("attfile"), $Default{DEFAULT}) ) {
+	$InFiles{attfile} = $indir . "/" . $steminputs . $InFilesExt{attfile} ;
+	
+	my ($filename) = $InFiles{attfile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{attfile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{attfile} = &GetValPar("attfile");
+    }
+
+    # det1reffile
+    if ( &CompUL(&GetValPar("det1reffile"), $Default{DEFAULT}) ) {
+	$InFiles{det1reffile} = $indir . "/" . $steminputs . $instrstem . $InFilesExt{det1reffile} ;
+	
+	my ($filename) = $InFiles{det1reffile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{det1reffile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{det1reffile} = &GetValPar("det1reffile");
+    }
+
+    # orbitfile
+    if ( &CompUL(&GetValPar("orbitfile"), $Default{DEFAULT}) ) {
+	$InFiles{orbitfile} = $indir . "/" . $steminputs . $InFilesExt{orbitfile} ;
+	
+	my ($filename) = $InFiles{orbitfile};
+	@filelist = grep ( /$filename((.gz)|(.tgz))?$/, (glob "$filename*"));
+	if(scalar(@filelist)==1){
+	    $InFiles{orbitfile} = $filelist[0];
+	}
+    }
+    else{
+	$InFiles{orbitfile} = &GetValPar("orbitfile");
+    }
+
+
+    return 0;
+
+} # SetInFiles
+
+
+sub SetTmpInFiles(){
+
+    my ( $pid ) = $$;
+
+    $TmpInFiles{infile} = $Task{tmpdir}."/lnk-".basename($InFiles{infile});
+
+    $TmpInFiles{xsel_srcregionfile} = $Task{tmpdir}."/".$pid."_src.reg";
+
+    $TmpInFiles{xsel_bkgregionfile} = $Task{tmpdir}."/".$pid."_bkg.reg";
+
+    $TmpInFiles{xspec_rmffile} = $Task{tmpdir}."/".$pid.".rmf";
+
+    $TmpInFiles{ximage_imagefile} = $Task{tmpdir}."/".$pid.$Def{IMGSTEM}.$Def{IMGEXT};
+
+    return 0;
+
+} # SetTmpInFiles
+
+
+sub SetStemOut(){
+    
+    if (&CompUL(&GetValPar("stemout"),$Default{DEFAULT})) {
+	my ( $filenameroot ) = &GetFileNameRoot( $InFiles{infile} );
+	$filenameroot =~ s/($Def{LEV1STEM}|$Def{LEV2STEM})$//;
+	$Task{stemout} = $filenameroot;
+    }
+    else{
+	$Task{stemout} = &GetValPar("stemout");
+    }
+
+} # SetStemOut
+
+
+sub SetOutFiles(){
+
+    my ($filename);
+    my ($outdir) = &GetValPar("outdir");
+
+
+    # lcfile
+    if (&CompUL(&GetValPar("lcfile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{LCSTEM}.$Def{LCEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("lcfile") );
+    }
+    $OutFiles{lcfile} = $outdir."/".$filename;
+
+    # phafile
+    if (&CompUL(&GetValPar("phafile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{PHASTEM}.$Def{PHAEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("phafile") );
+    }
+    $OutFiles{phafile} = $outdir."/".$filename;
+
+    # bkglcfile
+    if (&CompUL(&GetValPar("bkglcfile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{BKGLCSTEM}.$Def{LCEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("bkglcfile") );
+    }
+    $OutFiles{bkglcfile} = $outdir."/".$filename;
+
+    # bkgphafile
+    if (&CompUL(&GetValPar("bkgphafile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{BKGPHASTEM}.$Def{PHAEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("bkgphafile") );
+    }
+    $OutFiles{bkgphafile} = $outdir."/".$filename;
+
+    # imagefile
+    if (&CompUL(&GetValPar("imagefile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{IMGSTEM}.$Def{IMGEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("imagefile") );
+    }
+    $OutFiles{imagefile} = $outdir."/".$filename;
+
+    # imageplot
+    $OutFiles{imageplot} = $outdir."/".$Task{stemout}."_im.".$Task{plotdev};
+
+    # phaplot
+    $OutFiles{phaplot} = $outdir."/".$Task{stemout}."_ph.".$Task{plotdev};
+
+    # lcplot
+    $OutFiles{lcplot} = $outdir."/".$Task{stemout}."_lc.".$Task{plotdev};
+
+    # outarffile
+    if (&CompUL(&GetValPar("outarffile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{ARFSTEM}.$Def{ARFEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("outarffile") );
+    }
+    $OutFiles{outarffile} = $outdir."/".$filename;
+    
+    # outrmffile
+    if (&CompUL(&GetValPar("outrmffile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{RMFSTEM}.$Def{RMFEXT};
+    }
+    else{
+	$filename = basename( &GetValPar("outrmffile") );
+    }
+    $OutFiles{outrmffile} = $outdir."/".$filename;
+
+    # offaxisfile
+    if (&CompUL(&GetValPar("offaxisfile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}."_offaxis.fits";
+	$OutFiles{offaxisfile} = $outdir."/".$filename; 
+    }
+    elsif (&CompUL(&GetValPar("offaxisfile"),$Default{NONE})) {
+	$OutFiles{offaxisfile} = "NONE";
+    }
+    else{
+	$filename = basename( &GetValPar("offaxisfile") );
+	$OutFiles{offaxisfile} = $outdir."/".$filename; 
+    }
+     
+    # offaxishisto
+    if (&CompUL(&GetValPar("offaxishisto"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}."_offaxishisto.fits";
+	$OutFiles{offaxishisto} = $outdir."/".$filename; 
+    }
+    elsif (&CompUL(&GetValPar("offaxishisto"),$Default{NONE})) {
+	$OutFiles{offaxishisto} = "NONE";
+    }
+    else{
+	$filename = basename( &GetValPar("offaxishisto") );
+	$OutFiles{offaxishisto} = $outdir."/".$filename; 
+    }
+       
+    # apstophisto
+    if (&CompUL(&GetValPar("apstophisto"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{APSTOPHISTTEM}.$Def{FITSEXT};
+	$OutFiles{apstophisto} = $outdir."/".$filename; 
+    }
+    elsif (&CompUL(&GetValPar("apstophisto"),$Default{NONE})) {
+	$OutFiles{apstophisto} = "NONE";
+    }
+    else{
+	$filename = basename( &GetValPar("apstophisto") );
+	$OutFiles{apstophisto} = $outdir."/".$filename; 
+    }
+       
+    # grhisto
+    if (&CompUL(&GetValPar("grhisto"),$Default{DEFAULT})) {
+	$filename = $Task{stemout}.$Def{GRHISTSTEM}.$Def{FITSEXT};
+	$OutFiles{grhisto} = $outdir."/".$filename; 
+    }
+    elsif (&CompUL(&GetValPar("grhisto"),$Default{NONE})) {
+	$OutFiles{grhisto} = "NONE";
+    }
+    else{
+	$filename = basename( &GetValPar("grhisto") );
+	$OutFiles{grhisto} = $outdir."/".$filename; 
+    }
+
+    if (&CompUL(&GetValPar("lcsrccorrfile"),$Default{NONE})) {
+	$OutFiles{lcsrccorrfile} = "NONE";
+    }
+    else{
+	$filename = basename( &GetValPar("lcsrccorrfile") );
+	$OutFiles{lcsrccorrfile} = $outdir."/".$filename; 
+    }
+
+    if (&CompUL(&GetValPar("lcbkgcorrfile"),$Default{NONE})) {
+	$OutFiles{lcbkgcorrfile} = "NONE";
+    }
+    else{
+	$filename = basename( &GetValPar("lcbkgcorrfile") );
+	$OutFiles{lcbkgcorrfile} = $outdir."/".$filename; 
+    }
+
+    # outfile
+    if (&CompUL(&GetValPar("outfile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout} . "_cl_barycorr.evt";
+    }
+    else{
+	$filename = basename( &GetValPar("outfile") );
+    }
+    $OutFiles{outfile} = $outdir."/".$filename;
+
+    # grpphafile
+    if (&CompUL(&GetValPar("grpphafile"),$Default{DEFAULT})) {
+	$filename = $Task{stemout} . "_sr_grp.pha";
+    }
+    else{
+	$filename = basename( &GetValPar("grpphafile") );
+    }
+    $OutFiles{grpphafile} = $outdir."/".$filename;
+
+    return 0;
+
+} # SetOutFiles
+
+
+sub SetTmpOutFiles(){
+
+    my ( $pid ) = $$;
+
+    # temporary file output of barycorr ftool
+    $TmpOutFiles{hkfile} = &GetValPar("outdir")."/".$pid.$Def{HKSTEM}.$Def{HKEXT};
+    $TmpOutFiles{optaxisfile} = &GetValPar("outdir")."/".$pid.$Def{OPTAXISSTEM}.$Def{FITSEXT};
+    $TmpOutFiles{mastaspectfile} = &GetValPar("outdir")."/".$pid.$Def{MASTSTEM}.$Def{FITSEXT};
+    $TmpOutFiles{attfile} = &GetValPar("outdir")."/".$pid."_att.fits";
+    $TmpOutFiles{det1reffile} = &GetValPar("outdir")."/".$pid.$Def{DET1REFSTEM}.$Def{FITSEXT};
+     $TmpOutFiles{usrgtifile} = &GetValPar("outdir")."/".$pid."_usrgti".$Def{FITSEXT};
+
+    # temporary file output of nuexpomap task
+    $TmpOutFiles{det2instrfile} = &GetValPar("outdir")."/".$pid.$Def{DET2MAP}.$Def{IMGEXT};
+    $TmpOutFiles{aspecthistofile} = &GetValPar("outdir")."/".$pid.$Def{ASPHIST}.$Def{FITSEXT};
+    $TmpOutFiles{skyinstrfile} = &GetValPar("outdir")."/".$pid.$Def{SKYMAP}.$Def{IMGEXT};
+    $TmpOutFiles{expomapfile} = &GetValPar("outdir")."/".$pid.$Def{EXPOSTEM}.$Def{IMGEXT};
+    $TmpOutFiles{skyinstrfile_vign} = &GetValPar("outdir")."/".$pid.$Def{SKYMAP}."_vign".$Def{IMGEXT};
+    $TmpOutFiles{expomapfile_vign} = &GetValPar("outdir")."/".$pid.$Def{EXPOSTEM}."_vign".$Def{IMGEXT};
+
+
+    # imageplot
+    $TmpOutFiles{ximage_imageplot} = $pid."_im.".$Task{plotdev};
+
+    # imagefile
+    $TmpOutFiles{xsel_imagefile} = $pid.$Def{IMGSTEM}.$Def{IMGEXT};
+    
+    # lcfile
+    $TmpOutFiles{xsel_lcfile} = $pid.$Def{LCSTEM}.$Def{LCEXT};
+    
+    # phafile
+    $TmpOutFiles{xsel_phafile} = $pid.$Def{PHASTEM}.$Def{PHAEXT};
+    
+    # bkglcfile
+    $TmpOutFiles{xsel_bkglcfile} = $pid.$Def{BKGLCSTEM}.$Def{LCEXT};
+    
+    # bkgphafile
+    $TmpOutFiles{xsel_bkgphafile} = $pid.$Def{BKGPHASTEM}.$Def{PHAEXT};
+    
+    # phaplot
+    $TmpOutFiles{xspec_phaplot} = $pid."_ph.".$Task{plotdev};
+     
+    # lcplot
+    $TmpOutFiles{lcurve_lcplot} = $pid."_lc.".$Task{plotdev};   
+
+    # event file filtered by usrgtifile
+    $TmpOutFiles{filtered_evt} = $Task{tmpdir}."/".$Task{stemout}."_cl-gti.evt";
+
+
+    # Temporary files included in cleanup list
+    $TmpOutFiles{srcxselxco} = $Task{tmpdir}."/".$Task{stemout}."_srcxsel.xco";
+    $TmpOutFiles{bkgxselxco} = $Task{tmpdir}."/".$Task{stemout}."_bkgxsel.xco";
+    $TmpOutFiles{ximagexco} = $Task{tmpdir}."/".$Task{stemout}."_ximage.xco";
+    $TmpOutFiles{xspecxcm} = $Task{tmpdir}."/".$Task{stemout}."_xspec.xcm"; 
+    $TmpOutFiles{lcurvepco} = $Task{tmpdir}."/".$Task{stemout}."_lcurve.pco";
+
+
+    push @CleanupList, $TmpOutFiles{srcxselxco};
+    push @CleanupList, $TmpOutFiles{bkgxselxco};
+    push @CleanupList, $TmpOutFiles{ximagexco};
+    push @CleanupList, $TmpOutFiles{xspecxcm};
+    push @CleanupList, $TmpOutFiles{lcurvepco};
+
+
+    return 0;
+
+} # SetTmpOutFiles
+
+
+sub RunXimage(){
+
+    &RunningSub("RunXimage","ximage");
+
+    # Temporary local link to input '$OutFiles{imagefile}'
+    if ( &CreateAbsSymbolicLink($OutFiles{imagefile}, $TmpInFiles{ximage_imagefile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{ximage_imagefile}."' to '".$OutFiles{imagefile}."'\n");
+	return 1;
+    }
+
+    if ( -f $TmpOutFiles{ximagexco} ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($TmpOutFiles{ximagexco}) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $TmpOutFiles{ximagexco} . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $TmpOutFiles{ximagexco} ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }
+
+    # Check output image plot
+    if ( -f $OutFiles{imageplot} ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($OutFiles{imageplot}) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $OutFiles{imageplot} . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $OutFiles{imageplot} ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }
+
+    # Set plot device
+    my ($dev) = $Task{plotdev};
+    if ( $dev eq "ps" ) { $dev = "cps"; }
+
+
+    if ( ! open(XIMFILE,">$TmpOutFiles{ximagexco}" ) ) {    
+	&PrntChty(2,"$Task{stem}: Error: Unable to write '".$TmpOutFiles{ximagexco}."' file\n");
+	return 1;
+    }
+
+    if (  &GetValPar("chatter") <= 4 ) {
+	print XIMFILE "chat 0\n";
+    }
+
+    print XIMFILE "read/size=600 ".$TmpInFiles{ximage_imagefile}."\n";
+    print XIMFILE "cey 2000\n";
+    print XIMFILE "cpd ".$TmpOutFiles{ximage_imageplot}."/$dev\n";
+    print XIMFILE "disp;grid\n";
+    if( $Task{softver} && $Task{caldbver} ){
+	print XIMFILE "vplabel/bottom/margin=4.5 \"".$Task{softver}.", CALDB ".$Task{caldbver}."\"\n";
+    }
+    print XIMFILE "cpd /xtk\n";
+    print XIMFILE "quit";
+	       
+    close ( XIMFILE );
+
+    my ( $command ) = "ximage \@$TmpOutFiles{ximagexco}";
+    &RunningComm("$Task{stem}",$command);
+
+    my ( $ret ) = 0;
+    $ret = system ( $command );
+    if ( $ret ) {
+ 	&ErrorComm("RunXimage","ximage",$command);
+        $Task{errmess} = "Error: running 'ximage'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # Move the temporary copy to the output file
+    if( -f $TmpOutFiles{ximage_imageplot} ){
+	if ( &RenameFile($TmpOutFiles{ximage_imageplot}, $OutFiles{imageplot}) ) { return 1; }
+    }
+
+    # Delete temporary link
+    if ( !unlink ($TmpInFiles{ximage_imagefile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $TmpInFiles{ximage_imagefile} . "' temporary file\n");
+    }
+
+
+    &SuccessSub("RunXimage","ximage","Created '$OutFiles{imageplot}' image");
+
+    return 0;
+
+} # RunXimage
+
+
+sub SetSourceRegionFile(){
+    
+    if (!CompUL( &GetValPar("srcregionfile"),$Default{DEFAULT})) {
+	
+	$Task{srcregionfile} =  &GetValPar("srcregionfile");
+	&PrntChty(4,"$Task{stem}: Info: Source Region File '".$Task{srcregionfile}."'\n");
+
+	if (! -f &GetValPar("srcregionfile")) {
+	    &PrntChty(2,"$Task{stem}: Error: Input File '".&GetValPar("srcregionfile")."' not found\n");
+	    return 1;
+	}
+    }
+    else{
+	$Task{srcregionfile} = &GetValPar("outdir")."/".$Task{stemout}."_src.reg";
+	&PrntChty(4,"$Task{stem}: Info: Temporary Source Region File '".$Task{srcregionfile}."'\n");
+
+	if ( -f $Task{srcregionfile} ) {
+	    if ( $Task{clobber} ) {
+		if ( !unlink ($Task{srcregionfile}) ) {
+		    &PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $Task{srcregionfile} . "' file\n");
+		    return 1;
+		}
+	    }
+	    else {
+		&PrntChty(2,"$Task{stem}: Error: The file '" . $Task{srcregionfile} ."' exists\n");
+		&PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+		return 1;
+	    }
+	}
+	
+	if ( ! open(REGFILE,">$Task{srcregionfile}" ) ) {    
+	    &PrntChty(2,"$Task{stem}: Error: Unable to write '".$Task{srcregionfile}."' file\n");
+	    return 1;
+	}
+		       
+	my $rag = &Ra2Deg(&GetValPar("srcra"));
+	my $decg = &Dec2Deg(&GetValPar("srcdec"));
+	my ($x, $y);
+   		      		   
+	if (&RaDec2XY($Task{infile},$rag,$decg,\$x,\$y)) {
+	    return 1;
+	}
+
+	print REGFILE "CIRCLE ($x,$y," .&GetValPar("srcradius") .")\n";
+	&PrntChty(3,"$Task{stem}: Info: Source Extraction Region: CIRCLE( $x,$y," .  &GetValPar("srcradius") . ")\n");
+
+	close REGFILE;
+    }
+
+    return 0;
+
+} # SetSourceRegionFile
+
+
+sub SetBackgroundRegionFile(){
+    
+    if (!CompUL( &GetValPar("bkgregionfile"),$Default{DEFAULT})) {
+	
+	$Task{bkgregionfile} =  &GetValPar("bkgregionfile");
+	&PrntChty(4,"$Task{stem}: Info: Background Region File '".$Task{bkgregionfile}."'\n");
+
+	if (! -f &GetValPar("bkgregionfile")) {
+	    &PrntChty(2,"$Task{stem}: Error: Input File '".&GetValPar("bkgregionfile")."' not found\n");
+	    return 1;
+	}
+    }
+    else{
+	$Task{bkgregionfile} = &GetValPar("outdir")."/".$Task{stemout}."_bkg.reg";
+	&PrntChty(4,"$Task{stem}: Info: Temporary Background Region File '".$Task{bkgregionfile}."'\n");
+
+	if ( -f $Task{bkgregionfile} ) {
+	    if ( $Task{clobber} ) {
+		if ( !unlink ($Task{bkgregionfile}) ) {
+		    &PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $Task{bkgregionfile} . "' file\n");
+		    return 1;
+		}
+	    }
+	    else {
+		&PrntChty(2,"$Task{stem}: Error: The file '" . $Task{bkgregionfile} ."' exists\n");
+		&PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+		return 1;
+	    }
+	}
+	
+	if ( ! open(REGFILE,">$Task{bkgregionfile}" ) ) {    
+	    &PrntChty(2,"$Task{stem}: Error: Unable to write '".$Task{bkgregionfile}."' file\n");
+	    return 1;
+	}
+		       
+	my $rag = &Ra2Deg(&GetValPar("bkgra"));
+	my $decg = &Dec2Deg(&GetValPar("bkgdec"));
+	my ($x, $y);
+		      		      		   
+	if (&RaDec2XY($InFiles{infile},$rag,$decg,\$x,\$y)) {
+	    return 1;
+	}
+
+	print REGFILE "ANNULUS ($x,$y," .&GetValPar("bkgradius1").",".&GetValPar("bkgradius2").")\n";
+	&PrntChty(3,"$Task{stem}: Info: Background Extraction Region: ANNULUS ($x,$y," .&GetValPar("bkgradius1").",".&GetValPar("bkgradius2").")\n");
+
+	close REGFILE;
+    }
+
+    return 0;
+
+} # SetBackgroundRegionFile
+
+
+sub CreateSourceXselFile(){
+
+    my ( $pid ) = $$;
+    my ( $filenopath, $onlypath );
+
+    $filenopath = basename( $TmpInFiles{infile} );
+    $onlypath = dirname( $TmpInFiles{infile} );
+
+    if ( -f $TmpOutFiles{srcxselxco} ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($TmpOutFiles{srcxselxco}) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $TmpOutFiles{srcxselxco} . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $TmpOutFiles{srcxselxco} ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }
+
+    if ( ! open(XSELFILE,">$TmpOutFiles{srcxselxco}" ) ) {    
+	&PrntChty(2,"$Task{stem}: Error: Unable to write '".$TmpOutFiles{srcxselxco}."' file\n");
+	return 1;
+    }
+
+    print XSELFILE "xsel${pid}\n";
+    print XSELFILE  "read eve $filenopath\n";
+    print XSELFILE "$onlypath/\n";
+    print XSELFILE "\n";
+
+    if (!&CompUL(&GetValPar("imagefile"),$Default{NONE})) {
+	print XSELFILE "filter pha_cutoff ".&GetValPar("pilow")." ".&GetValPar("pihigh")."\n";
+	print XSELFILE "extract image\n";
+	print XSELFILE "save image $TmpOutFiles{xsel_imagefile}\n";
+	print XSELFILE "yes\n";
+	print XSELFILE "clear pha_cutoff\n";
+    }
+    
+    if( (!&CompUL(&GetValPar("phafile"),$Default{NONE})) || (!&CompUL(&GetValPar("lcfile"),$Default{NONE})) ) {
+
+	print XSELFILE "set wmapname X Y\n";
+	print XSELFILE "set xyname X Y\n";
+	print XSELFILE "filter region $TmpInFiles{xsel_srcregionfile}\n";
+
+	#if (!&CompUL(&GetValPar("phafile"),$Default{NONE})) {
+	print XSELFILE "extract spectrum\n";
+	print XSELFILE "save spectrum $TmpOutFiles{xsel_phafile}\n";
+	print XSELFILE "yes\n";
+	#}
+
+	if (!&CompUL(&GetValPar("lcfile"),$Default{NONE})) {
+	    print XSELFILE "set binsize ".&GetValPar("binsize")."\n"; 
+	    print XSELFILE "filter pha_cutoff " . &GetValPar("pilow") . " " . &GetValPar("pihigh") . "\n";
+	    print XSELFILE "extract curve exposure=0.0\n";
+	    print XSELFILE "save curve $TmpOutFiles{xsel_lcfile}\n";
+	    print XSELFILE "yes\n";
+	}
+
+    }
+
+    print XSELFILE "quit\n";
+    print XSELFILE "no\n";
+    
+    close XSELFILE;
+
+    return 0;
+
+} # CreateSourceXselFile
+
+
+sub CreateBackgroundXselFile(){
+
+    my ( $pid ) = $$;
+    my ( $filenopath, $onlypath );
+
+    $filenopath = basename( $TmpInFiles{infile} );
+    $onlypath = dirname( $TmpInFiles{infile} );
+
+    if ( -f $TmpOutFiles{bkgxselxco} ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($TmpOutFiles{bkgxselxco}) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $TmpOutFiles{bkgxselxco} . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $TmpOutFiles{bkgxselxco} ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }
+
+    if ( ! open(XSELFILE,">$TmpOutFiles{bkgxselxco}" ) ) {    
+	&PrntChty(2,"$Task{stem}: Error: Unable to write '".$TmpOutFiles{bkgxselxco}."' file\n");
+	return 1;
+    }
+
+    print XSELFILE "xsel${pid}\n";
+    print XSELFILE  "read eve $filenopath\n";
+    print XSELFILE "$onlypath/\n";
+    print XSELFILE "\n";
+
+    
+    if( (!&CompUL(&GetValPar("bkgphafile"),$Default{NONE})) || (!&CompUL(&GetValPar("bkglcfile"),$Default{NONE})) ) {
+
+	print XSELFILE "set wmapname X Y\n";
+	print XSELFILE "set xyname X Y\n";
+	print XSELFILE "filter region $TmpInFiles{xsel_bkgregionfile}\n";
+
+	#if (!&CompUL(&GetValPar("bkgphafile"),$Default{NONE})) {
+	print XSELFILE "extract spectrum\n";    
+	print XSELFILE "save spectrum $TmpOutFiles{xsel_bkgphafile}\n";
+	print XSELFILE "yes\n";
+	#}
+
+	if (!&CompUL(&GetValPar("bkglcfile"),$Default{NONE})) {
+	    print  XSELFILE "set binsize ".&GetValPar("binsize")."\n";
+	    print XSELFILE "filter pha_cutoff " . &GetValPar("pilow") . " " . &GetValPar("pihigh") . "\n";
+	    print XSELFILE "extract curve exposure=0.0\n";
+	    print XSELFILE "save curve $TmpOutFiles{xsel_bkglcfile}\n";
+	    print XSELFILE "yes\n";
+	}
+
+    }
+
+    print XSELFILE "quit\n";
+    print XSELFILE "no\n";
+    
+    close XSELFILE;
+
+    return 0;
+
+} # CreateBackgroundXselFile
+
+
+sub RunXselect {
+
+    my ($XselectFile,$msg) = @_;
+
+    # Temporary files deleted at the end of the routine
+    my ( @XselTmpFiles ) = ( "xsel_timefile.asc", "xselect.log", "xautosav.xcm" );
+
+    # Build the command line to run xselect
+    my ( $command ) = "xselect \@$XselectFile";
+
+    &RunningSub("RunXselect","xselect");
+    &RunningComm("RunXselect",$command);
+
+
+    my ( $ret ) = 0;
+    $ret = system ( $command );
+    if ( $ret ) {
+ 	&ErrorComm("RunXselect","xselect",$command);
+        $Task{errmess} = "Error: running 'xselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    # check errors from 'xselect.log' file
+    $ret = &CheckXselectLog();
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXselect","xselect",$command);
+	&PrntChty(2,"$Task{stem}: Error: Please check ''xselect.log' file\n");
+        $Task{errmess} = "Error: running 'xselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunXselect","xselect","$msg");
+
+
+    my $tmpfile;
+    foreach $tmpfile (@XselTmpFiles) {
+	unlink ($tmpfile);
+    }
+    
+    return 0;
+
+} # RunXselect
+
+
+sub RunBackScale {
+
+    my ($phaname, $type) = @_;
+
+    my ( $par, $ret );
+    my ( $command, %nubackscale );
+    
+    %nubackscale = (
+		    srcoutfile     => "NONE",
+		    bkgoutfile     => "NONE",
+		    evtfile        => $Task{infile},
+		    chatter        => &GetValPar("chatter"),
+		    clobber        => &GetValPar("clobber"),
+		    history        => &GetValPar("history"),
+		    );
+
+
+    if( $Task{runexpomap}=~/[yY]/ ){
+	$nubackscale{inexpomapfile} = $TmpOutFiles{expomapfile};
+
+    }
+    else{
+	$nubackscale{inexpomapfile}  = "NONE";
+	$nubackscale{pixposfile}     = &GetValPar("pixposfile");
+	$nubackscale{alignfile}      = &GetValPar("alignfile");
+	$nubackscale{mastaspectfile} = $Task{mastaspectfile};
+	$nubackscale{attfile}        = $Task{attfile};
+	$nubackscale{teldef}         = &GetValPar("teldef");
+	$nubackscale{instrprobmapfile} = &GetValPar("instrprobmapfile");
+	$nubackscale{aberration}     = &GetValPar("aberration");
+	$nubackscale{det1reffile}    = $Task{det1reffile};
+	$nubackscale{pixbin}         = &GetValPar("pixbin");
+	$nubackscale{percent}        = &GetValPar("percent");
+	$nubackscale{initseed}       = &GetValPar("initseed");
+    }
+
+
+    if (&CompUL($type,"SRC")) {
+	$nubackscale{srcphafile} = $phaname;
+	$nubackscale{srccorrect} = "yes";
+	$nubackscale{bkgcorrect} = "no";
+    }
+    else{
+	$nubackscale{bkgphafile} = $phaname;
+	$nubackscale{srccorrect} = "no";
+	$nubackscale{bkgcorrect} = "yes";
+    }
+
+    $command = "nubackscale";
+    for $par ( keys %nubackscale ) { $command .= " $par=$nubackscale{$par}"; } 
+
+    &RunningSub("RunBackScale","nubackscale");
+    &RunningComm("RunBackScale",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunBackScale","nubackscale",$command);
+        $Task{errmess} = "ERROR running 'nubackscale'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunBackScale","nubackscale","'$phaname' updated.");
+
+    return 0;
+
+} # RunBackScale
+
+
+sub RunNuLcCorr {
+
+    my ($lcname,$phaname, $corrfile, $type) = @_;
+
+    my ( $par, $ret );
+    my ( $command, %nulccorr );
+
+    %nulccorr = (
+		 lcfile         => $lcname,
+		 hkfile         => $Task{hkfile},
+		 outlcfile      => "NONE",
+		 infile         => $Task{infile},
+		 phafile        => $phaname,
+		 psffile        => &GetValPar("psffile"),
+		 vignfile       => &GetValPar("vignfile"),
+		 aberration     => &GetValPar("aberration"),
+		 energy         => &GetValPar("lcenergy"),
+		 optaxisfile    => $Task{optaxisfile},
+		 pixbin         => &GetValPar("pixbin"),
+		 cutmaps        => &GetValPar("cutmaps"),
+		 percent        => &GetValPar("percent"),
+		 skyinstrfile   => "NONE",
+		 initseed       => &GetValPar("initseed"),
+		 corrfile       => $corrfile,
+		 psfflag        => &GetValPar("lcpsfflag"),
+		 expoflag       => &GetValPar("lcexpoflag"),
+		 chatter        => &GetValPar("chatter"),
+		 clobber        => &GetValPar("clobber"),
+		 history        => &GetValPar("history"),
+		);
+
+
+    if (&CompUL($type,"BKG")) {
+	$nulccorr{extended} = "yes";
+	$nulccorr{vignflag} = "no";
+	$nulccorr{boxsize} = 20;
+	if(&GetValPar("extended")=~/[nN]/){
+	    $nulccorr{expoflag} = "yes";
+	}
+    }
+    else{
+	$nulccorr{extended} = &GetValPar("extended");
+	$nulccorr{vignflag} = &GetValPar("lcvignflag");
+	$nulccorr{boxsize} = &GetValPar("boxsize");
+    }
+
+
+    if( $Task{runexpomap}=~/[yY]/ ){
+
+	if (&CompUL($type,"BKG")) {
+	    $nulccorr{inskyinstrfile} = $TmpOutFiles{skyinstrfile};
+	    $nulccorr{inaspecthistofile} = $TmpOutFiles{aspecthistofile};
+	}
+	else{
+	    $nulccorr{inaspecthistofile} = $TmpOutFiles{aspecthistofile};
+
+	    if($Task{runexpomapvign}=~/[yY]/){
+		$nulccorr{inskyinstrfile} = $TmpOutFiles{skyinstrfile_vign};
+	    }
+	    else{
+		$nulccorr{inskyinstrfile} = $TmpOutFiles{skyinstrfile};
+	    }
+	}
+
+    }
+    else{
+	$nulccorr{inskyinstrfile}    = "NONE";
+	$nulccorr{inaspecthistofile} = "NONE";
+	$nulccorr{pixposfile}     = &GetValPar("pixposfile");
+	$nulccorr{alignfile}      = &GetValPar("alignfile");
+	$nulccorr{mastaspectfile} = $Task{mastaspectfile};
+	$nulccorr{attfile}        = $Task{attfile};
+	$nulccorr{teldef}         = &GetValPar("teldef");
+	$nulccorr{instrprobmapfile} = &GetValPar("instrprobmapfile");
+	$nulccorr{det1reffile}      = $Task{det1reffile};
+    }
+
+
+    $command = "nulccorr";
+    for $par ( keys %nulccorr ) { $command .= " $par=$nulccorr{$par}"; } 
+
+    &RunningSub("RunNuLcCorr","nulccorr");
+    &RunningComm("RunNuLcCorr",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNuLcCorr","nulccorr",$command);
+        $Task{errmess} = "ERROR running 'nulccorr'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNuLcCorr","nulccorr","'$lcname' updated.");
+
+    return 0;
+
+} # RunNuLcCorr
+
+
+sub RunXspec {
+
+    &RunningSub("RunXspec","xspec");
+
+    my ( $pid ) = $$;  
+
+    if ( -f $TmpOutFiles{xspecxcm} ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($TmpOutFiles{xspecxcm}) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $TmpOutFiles{xspecxcm} . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $TmpOutFiles{xspecxcm} ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }  
+
+
+    # Set plot device
+    my ($dev) = $Task{plotdev};
+    if ( $dev eq "ps" ) { $dev = "cps"; }
+
+    # Temporary local link to input '$OutFiles{phafile}'
+    my ( $phafile ) = $pid."_phafile.pha";
+    if ( &CreateAbsSymbolicLink($OutFiles{phafile}, $phafile) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$phafile."' to '".$OutFiles{phafile}."'\n");
+	return 1;
+    }
+
+    my ( $phabase ) = basename( $OutFiles{phafile} );
+
+    if ( ! open(XCMFILE,">$TmpOutFiles{xspecxcm}" ) ) {    
+	&PrntChty(2,"$Task{stem}: Error: Unable to write '".$TmpOutFiles{xspecxcm}."' file\n");
+	return 1;
+    }
+
+    # set xspec chatter
+    my ( $xspecchat ) = &GetXspecChatter($Task{chatter});
+    #  print XSELFILE "\n";
+    print XCMFILE "chatter $xspecchat\n";
+    print XCMFILE "data $phafile\n";
+
+    if ( &GetValPar("runmkrmf") =~ /[yY]/ ) {
+
+	# Temporary local link to input '$OutFiles{outrmffile}'
+	if ( &CreateAbsSymbolicLink($OutFiles{outrmffile}, $TmpInFiles{xspec_rmffile}) ){
+	    &PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{xspec_rmffile}."' to '".$OutFiles{outrmffile}."'\n");
+	    return 1;
+	}
+
+	print XCMFILE "response $TmpInFiles{xspec_rmffile}\n";	
+    }
+
+    print XCMFILE "setplot energy\n";
+    print XCMFILE "ignore **-3. 79.-**\n";
+    print XCMFILE "setplot rebin 10 100\n";
+    print XCMFILE "setplot command \" cpd $TmpOutFiles{xspec_phaplot}/$dev\"\n";
+    print XCMFILE "setplot command \"time off\"\n";
+    print XCMFILE "setplot command \"la t Energy spectrum ($phabase)\"\n";
+    if( $Task{softver} && $Task{caldbver} ){
+	print XCMFILE "setplot command \"la ot ".$Task{softver}.", CALDB ".$Task{caldbver}."\"\n";
+    }
+    print XCMFILE "setplot command \"la f\"\n"; 
+    print XCMFILE "plot ldata\n";
+    print XCMFILE "quit\n";
+    print XCMFILE "y\n";
+
+    close(XCMFILE);
+    
+    my ( $command ) = "xspec - $TmpOutFiles{xspecxcm}\n";
+    &RunningComm("$Task{stem}",$command);
+
+    my ( $ret ) = 0;
+    $ret = system ( $command );
+    if ( $ret ) {
+ 	&ErrorComm("RunXxpsec","xspec",$command);
+        $Task{errmess} = "Error: running 'xspec'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+    # Move the temporary copy to the output file
+    if( -f $TmpOutFiles{xspec_phaplot} ){
+	if ( &RenameFile($TmpOutFiles{xspec_phaplot}, $OutFiles{phaplot}) ) { return 1; }
+    }
+
+
+    # Delete temporary link
+    if ( !unlink ($phafile) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $phafile . "' temporary link\n");
+    }
+
+    if ( -l $TmpInFiles{xspec_rmffile} && !unlink ($TmpInFiles{xspec_rmffile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $TmpInFiles{xspec_rmffile} . "' temporary link\n");
+    }
+
+    &SuccessSub("RunXspec","xspec","'$OutFiles{phaplot}' created.");
+
+    return 0;
+
+} # RunXspec
+
+
+sub RunLcurve {
+
+    &RunningSub("RunLcurve","lcurve");
+
+    my ( $pid ) = $$;  
+
+    if ( -f $TmpOutFiles{lcurvepco} ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($TmpOutFiles{lcurvepco}) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $TmpOutFiles{lcurvepco} . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $TmpOutFiles{lcurvepco} ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }
+
+
+    # Set plot device
+    my ($dev) = $Task{plotdev};
+    if ( $dev eq "ps" ) { $dev = "cps"; }
+
+    # set chatter
+    my ( $chat ) = &GetXspecChatter($Task{chatter});
+
+    # Temporary file to copy in '&GetValPar("outdir")."/".$Task{stemout}.".flc"'
+    my ( $tmplcfile ) = $pid.".flc";
+
+    # Temporary local link to input '$OutFiles{lcfile}'
+    my ( $lcfile ) = $pid."_in.lc";
+    if ( &CreateAbsSymbolicLink($OutFiles{lcfile}, $lcfile) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$lcfile."' to '".$OutFiles{lcfile}."'\n");
+	return 1;
+    }
+
+
+    my ( $lcfilebase ) = basename( $OutFiles{lcfile} );
+
+    if ( ! open(LCUFILE,">$TmpOutFiles{lcurvepco}" ) ) {    
+	&PrntChty(2,"$Task{stem}: Error: Unable to write '".$TmpOutFiles{lcurvepco}."' file\n");
+	return 1;
+    }
+
+    print LCUFILE "la t Light curve ($lcfilebase), ".&GetValPar("pilow")."-".&GetValPar("pihigh")." PI channels\n";
+    if( $Task{softver} && $Task{caldbver} ){
+	print LCUFILE "la ox ".$Task{softver}.", CALDB ".$Task{caldbver}."\n";
+    }
+    print LCUFILE "scr white\n";
+    print LCUFILE "pl\n";
+    print LCUFILE "quit\n";
+    
+    close(LCUFILE);
+
+    my $command = "lcurve nser=1 cfile1=$lcfile window=- dtnb=INDEF nbint=INDEF outfile=$tmplcfile plot=yes plotdev=$TmpOutFiles{lcurve_lcplot}/$dev plotfile=$TmpOutFiles{lcurvepco} tchat=$chat";
+    &RunningComm("$Task{stem}",$command);
+
+    my ( $ret ) = 0;
+    $ret = system ( $command );
+    if ( $ret ) {
+ 	&ErrorComm("RunLcurve","lcurve",$command);
+        $Task{errmess} = "Error: running 'lcurve'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+    # Move the temporary copy to the output file
+    if( -f $TmpOutFiles{lcurve_lcplot} ){
+	if ( &RenameFile($TmpOutFiles{lcurve_lcplot}, $OutFiles{lcplot}) ) { return 1; }
+    }
+
+    # Move the temporary copy to the output file
+    if( -f $tmplcfile ){
+	if ( &RenameFile($tmplcfile, &GetValPar("outdir")."/".$Task{stemout}.".flc") ) { return 1; }
+    }
+
+    # Delete temporary link
+    if ( !unlink ($lcfile) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $lcfile . "' temporary link\n");
+    }
+
+
+    &SuccessSub("RunLcurve","lcurve","'$OutFiles{lcplot}' created.");
+
+    push @CleanupList, $tmplcfile;
+
+    return 0;
+
+} # RunLcurve
+
+
+sub RunNumkarf {
+
+    my ( $par, $ret );
+    my ( $command, %numkarf );
+
+    %numkarf = (
+		phafile        => $OutFiles{phafile},
+		outfile        => $OutFiles{outarffile},
+		optaxisfile    => $Task{optaxisfile},
+		offaxisfile    => $OutFiles{offaxisfile},
+		offaxishisto   => $OutFiles{offaxishisto},
+		apstophisto    => $OutFiles{apstophisto},
+		grhisto        => $OutFiles{grhisto},
+		infile         => $Task{infile},
+		pixposfile     => &GetValPar("pixposfile"),
+		alignfile      => &GetValPar("alignfile"),
+		mastaspectfile => $Task{mastaspectfile},
+		attfile        => $Task{attfile},
+		teldef         => &GetValPar("teldef"),
+		instrprobmapfile => &GetValPar("instrprobmapfile"),
+		inexpomapfile  => "NONE",
+		aberration     => &GetValPar("aberration"),
+		det1reffile    => $Task{det1reffile},
+		pixbin         => &GetValPar("pixbin"),
+		phibin         => &GetValPar("phibin"),
+		apstopphibin   => &GetValPar("apstopphibin"),
+		grphibin       => &GetValPar("grphibin"),
+		inarffile      => &GetValPar("inarffile"),
+		grppsffile     => &GetValPar("grppsffile"),
+		psfdir         => &GetValPar("psfdir"),
+		vignfile       => &GetValPar("vignfile"),
+		apstopcorrfile => &GetValPar("apstopcorrfile"),
+		grcorrfile     => &GetValPar("grcorrfile"),
+		detabscorrfile => &GetValPar("detabscorrfile"),
+		srcregionfile  => $Task{srcregionfile},
+		psfflag        => &GetValPar("psfflag"),
+		vignflag       => &GetValPar("vignflag"),
+		apstopflag     => &GetValPar("apstopflag"),
+		grflag         => &GetValPar("grflag"),
+		detabsflag     => &GetValPar("detabsflag"),
+		extended       => &GetValPar("extended"),
+		boxsize        => &GetValPar("boxsize"),
+		pilowarf       => &GetValPar("pilowarf"),
+		pihigharf      => &GetValPar("pihigharf"),
+		flatflag       => &GetValPar("flatflagarf"),
+		percent        => &GetValPar("percent"),
+		cutmaps        => &GetValPar("cutmaps"),
+		initseed       => &GetValPar("initseed"),
+		cleanup        => &GetValPar("cleanup"),
+		chatter        => &GetValPar("chatter"),
+		clobber        => &GetValPar("clobber"),
+		history        => &GetValPar("history"),
+		);
+
+
+    if( ($Task{runexpomap}=~/[yY]/) && (&GetValPar("extended")=~/[yY]/) ){
+	$numkarf{inexpomapfile} = $TmpOutFiles{expomapfile};
+	delete $numkarf{pixposfile};
+	delete $numkarf{mastaspectfile};
+	delete $numkarf{attfile};
+	delete $numkarf{teldef};
+	delete $numkarf{instrprobmapfile};
+	delete $numkarf{det1reffile};
+    }
+
+
+    $command = "numkarf";
+    for $par ( keys %numkarf ) { $command .= " $par=$numkarf{$par}"; } 
+
+    &RunningSub("RunNumkarf","numkarf");
+    &RunningComm("RunNumkarf",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNumkarf","numkarf",$command);
+        $Task{errmess} = "ERROR running 'numkarf'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNumkarf","numkarf","'$OutFiles{outarffile}' created.");
+
+    return 0;
+
+} # RunNumkarf
+
+
+sub RunNumkrmf {
+
+    my ( $par, $ret );
+    my ( $command, %numkrmf );
+
+    %numkrmf = (
+		infile         => $Task{infile},
+		usrgtifile     => $Task{usrgtifile},
+		srcregionfile  => $Task{srcregionfile},
+		outfile        => $OutFiles{outrmffile},
+		grprmffile     => &GetValPar("grprmffile"),
+		rmfdir         => &GetValPar("rmfdir"),
+		cmprmf         => &GetValPar("cmprmf"),
+		chatter        => &GetValPar("chatter"),
+		clobber        => &GetValPar("clobber"),
+		history        => &GetValPar("history"),
+		);
+
+
+    $command = "numkrmf";
+    for $par ( keys %numkrmf ) { $command .= " $par=$numkrmf{$par}"; } 
+
+    &RunningSub("RunNumkrmf","numkrmf");
+    &RunningComm("RunNumkrmf",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNumkrmf","numkrmf",$command);
+        $Task{errmess} = "ERROR running 'numkrmf'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNumkrmf","numkrmf","'$OutFiles{outrmffile}' created.");
+
+    return 0;
+
+} # RunNumkrmf
+
+
+sub UpdatePhaKeys {
+
+    my ( $pid ) = $$;
+    my ( $tmpfile ) = $pid."_tmp.pha";
+
+    # Create a temporary link to the input phafile
+    if ( &CreateAbsSymbolicLink($OutFiles{phafile}, $tmpfile) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$tmpfile."' to '".$OutFiles{phafile}."'\n");
+	return 1;
+    }
+
+    if ( &GetValPar("runmkarf") =~ /[yY]/ ) {
+
+	my($filename) = basename( $OutFiles{outarffile} );
+
+	&AddKeyword($tmpfile."+1", "ANCRFILE", $filename, "associated ancillary response filename");
+	if ( $Task{status} ) {return 1;}
+    }
+
+    if ( &GetValPar("runmkrmf") =~ /[yY]/ ) {
+
+	my($filename) = basename( $OutFiles{outrmffile} );
+
+	&AddKeyword($tmpfile."+1", "RESPFILE", $filename, "associated redistrib matrix filename");
+	if ( $Task{status} ) {return 1;}
+    }
+
+    if ( &GetValPar("bkgextract") =~ /[yY]/ ) {
+
+	my($filename) = basename( $OutFiles{bkgphafile} );
+
+	&AddKeyword($tmpfile."+1", "BACKFILE", $filename, "associated background filename");
+	if ( $Task{status} ) {return 1;}
+    }
+
+    # Update checksum
+    if ( system("ftchecksum ".$tmpfile." update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Error: Error updating checksum on ".$tmpfile."\n"); 
+	$Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # Delete temporary link
+    if ( !unlink ($tmpfile) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" . $tmpfile . "' temporary link\n");
+    }
+
+    return 0;
+
+} # UpdatePhaKeys
+
+
+sub FilterEvtByUsrGti {
+
+    my ($evtfile, $filtered_evt, $gtifile) = @_;
+
+    my ( $pid ) = $$;
+    my ( $evtxselxco ) = $Task{tmpdir}."/".$Task{stemout}."_evtxsel.xco";
+
+    my ( $filenopath, $onlypath );
+    $filenopath = basename( $evtfile );
+    $onlypath = dirname( $evtfile );
+
+
+    if ( -f $evtxselxco ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink ($evtxselxco) ) {
+		&PrntChty(2,"$Task{stem}: Error: Cannot delete '" . $evtxselxco . "' file\n");
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The file '" . $evtxselxco ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please move it or set the parameter 'clobber' to yes\n");
+	    return 1;
+	}
+    }
+
+    if ( ! open(XSELFILE,">$evtxselxco" ) ) {    
+	&PrntChty(2,"$Task{stem}: Error: Unable to write '".$evtxselxco."' file\n");
+	return 1;
+    }
+
+    print XSELFILE "xsel${pid}\n";
+    print XSELFILE  "read eve $filenopath\n";
+    print XSELFILE "$onlypath/\n";
+    print XSELFILE "\n";
+    print XSELFILE "filter time file " . $gtifile ."\n";
+    print XSELFILE "extract events copyall=yes\n";    
+    print XSELFILE "save events $filtered_evt\n";
+    print XSELFILE "yes\n";
+    print XSELFILE "quit\n";
+    print XSELFILE "no\n";
+
+    close XSELFILE;
+
+
+    my ( $strmsg ) = "Filtered event file '$filtered_evt' generated";
+    if( &RunXselect($evtxselxco, $strmsg) ) {
+	return 1;
+    }
+
+    # Remove temporary command file
+    if ( !unlink ( $evtxselxco ) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Unable to remove '$evtxselxco' file. $!\n");
+    }
+
+
+    return 0;
+
+} # FilterEvtByUsrGti
+
+
+sub RunNulivetime {
+
+    my ( $evtfile ) = @_;
+
+    my ( $par, $ret );
+    my ( $command, %nulivetime );
+
+    %nulivetime = (
+		  infile      => $evtfile,
+		  hkfile      => $Task{hkfile},
+		  outfile     => "NONE",
+		  chatter     => &GetValPar("chatter"),
+		  clobber     => &GetValPar("clobber"),
+		  history     => &GetValPar("history"),
+		  );
+
+
+    $command = "nulivetime";
+    for $par ( keys %nulivetime ) { $command .= " $par=$nulivetime{$par}"; } 
+
+    &RunningSub("RunNulivetime","nulivetime");
+    &RunningComm("RunNulivetime",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNulivetime","nulivetime",$command);
+        $Task{errmess} = "ERROR running 'nulivetime'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNulivetime","nulivetime", "'$evtfile' updated");
+
+    return 0;
+
+} # RunNulivetime
+
+
+sub RunBaryCorr {
+
+    my ( $infile, $outfile ) = @_;
+
+    my ( $par, $ret );
+    my ( $command, %barycorr );
+
+    %barycorr = (
+		 infile      => $infile,
+		 outfile     => $outfile,
+		 orbitfiles  => $InFiles{orbitfile},
+		 clockfile   => &GetValPar("clockfile"),
+		 ra          => &GetValPar("srcra_barycorr"),
+		 dec         => &GetValPar("srcdec_barycorr"),
+		 refframe    => "FK5",
+		 barytime    => "no",
+		 tolerance   => 3.0,
+		 chatter     => &GetValPar("chatter"),
+		 clobber     => &GetValPar("clobber"),
+		 history     => &GetValPar("history"),
+		 );
+
+
+    $command = "barycorr";
+    for $par ( keys %barycorr ) { $command .= " $par=$barycorr{$par}"; } 
+
+    &RunningSub("RunBaryCorr","barycorr");
+    &RunningComm("RunBaryCorr",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunBaryCorr","barycorr",$command);
+        $Task{errmess} = "ERROR running 'barycorr'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunBaryCorr","barycorr", "barycenter correction applied to '$outfile' file.");
+
+    return 0;
+
+} # RunBaryCorr
+
+
+sub UpdateUsrGtiFileKeys(){
+
+    my ($infile) = @_;
+    my ($fptr,$status) = (0,0);
+    my ($hdunum,$hdutype,$i,$extname,$comm);
+
+    # open fits file
+    fits_open_file($fptr,$infile,READWRITE,$status);
+    if ($status) {
+	&PrntChty(3, "$Task{stem}: Error: unable to open '$infile' file.");
+	return 1;
+    }
+
+    fits_get_num_hdus($fptr,$hdunum,$status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: Unable to get number of extensions from '$infile' file.");
+	goto UpdateUsrGtiFileKeys_end;
+    }
+
+    for ($i = 1; $i <= $hdunum; $i++) {
+	
+	fits_movabs_hdu($fptr, $i, $hdutype, $status);
+	if ( $status ) {
+	    &PrntChty(3, "$Task{stem}: Error: Unable to move in extension $i of file '$infile'.");
+	    goto UpdateUsrGtiFileKeys_end;
+	}
+
+	# Skip primary extension
+	if($i>1){
+	    fits_read_key_str($fptr,"EXTNAME",$extname,$comm,$status);
+	    if ( $status ) {
+		&PrntChty(3, "$Task{stem}: Error: cannot read keyword 'EXTNAME' of '$infile' file");
+		goto UpdateUsrGtiFileKeys_end;
+	    }
+
+	    if($extname eq "STDGTI"){
+		fits_update_key($fptr,TSTRING,'EXTNAME',"GTI","", $status);
+		if ( $status ) {
+		    &PrntChty(3, "$Task{stem}: Error: cannot update keyword 'EXTNAME' of '$infile' file");
+		    goto UpdateUsrGtiFileKeys_end;
+		}
+	    }
+	}
+
+	fits_update_key($fptr,TSTRING,'TIMESYS',"TT","", $status);
+	if ( $status ) {
+	    &PrntChty(3, "$Task{stem}: Error: cannot update keyword 'TIMESYS' of '$infile' file");
+	    goto UpdateUsrGtiFileKeys_end;
+	}
+
+	fits_update_key($fptr,TSTRING,'TIMEREF',"LOCAL","", $status);
+	if ( $status ) {
+	    &PrntChty(3, "$Task{stem}: Error: cannot update keyword 'TIMEREF' of '$infile' file");
+	    goto UpdateUsrGtiFileKeys_end;
+	}
+
+	fits_update_key($fptr,TSTRING,'TIMEUNIT',"s","", $status);
+	if ( $status ) {
+	    &PrntChty(3, "$Task{stem}: Error: cannot update keyword 'TIMEUNIT' of '$infile' file");
+	    goto UpdateUsrGtiFileKeys_end;
+	}
+
+	fits_write_chksum($fptr,$status);
+	if ($status) {
+	    &PrntChty(3, "$Task{stem}: Error: Updating checksum of file '$infile'.");
+	    goto UpdateUsrGtiFileKeys_end;
+	}
+    }
+
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+	if ( $status ) { 
+	    &PrntChty(3, "$Task{stem}: Error: cannot close '$infile' event file");
+	    return 1;
+	}
+    }
+
+    return 0;
+
+
+  UpdateUsrGtiFileKeys_end:
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+    }
+
+    return 1;
+
+}
+
+
+sub RunGrpPha {
+
+    my ( $par, $ret );
+    my ( $command, %grppha );
+    my ( $grppibadhigh, $grppibadlow, $grpmincounts );
+
+    $grppibadhigh = &GetValPar("grppibadhigh");
+    $grppibadhigh = $grppibadhigh +1;
+    $grppibadlow = &GetValPar("grppibadlow");
+    $grppibadlow = $grppibadlow -1;
+    $grpmincounts = &GetValPar("grpmincounts");
+
+
+    %grppha = (
+	       infile      => $OutFiles{phafile},
+	       outfile     => $OutFiles{grpphafile},
+	       comm        => "\"bad 0-${grppibadlow} $grppibadhigh-4095&group min ${grpmincounts}\"",
+	       tempc       => "exit",
+	       chatter     => &GetValPar("chatter"),
+	       clobber     => &GetValPar("clobber"),
+	       );
+
+
+    $command = "grppha";
+    for $par ( keys %grppha ) { $command .= " $par=$grppha{$par}"; } 
+
+    &RunningSub("RunGrpPha","grppha");
+    &RunningComm("RunGrpPha",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunGrpPha","grppha",$command);
+        $Task{errmess} = "ERROR running 'grppha'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunGrpPha","grppha", $OutFiles{grpphafile}." source grouped PHA file created.");
+
+    return 0;
+
+} # RunGrpPha
+
+
+sub RunNuExpoMap {
+
+    my ( $par, $ret );
+    my ( $command, %nuexpomap );
+
+    
+    %nuexpomap = (
+		  infile         => $Task{infile},
+		  pixposfile     => &GetValPar("pixposfile"),
+		  alignfile      => &GetValPar("alignfile"),
+		  mastaspectfile => $Task{mastaspectfile},
+		  attfile        => $Task{attfile},
+		  teldef         => &GetValPar("teldef"),
+		  instrprobmapfile => &GetValPar("instrprobmapfile"),
+		  vignfile       => &GetValPar("vignfile"),
+		  indet2instrfile=> "NONE",
+		  aberration     => &GetValPar("aberration"),
+		  vignflag       => "no",
+		  energy         => &GetValPar("lcenergy"),
+		  det1reffile    => $Task{det1reffile},
+		  pixbin         => &GetValPar("pixbin"),
+		  skyx           => 500.5,
+		  skyy           => 500.5,
+		  skysize        => 1000,
+		  offsetfile     => "NONE",
+		  aspecthistofile=> $TmpOutFiles{aspecthistofile},
+		  det1instrfile  => "NONE",
+		  det2instrfile  => $TmpOutFiles{det2instrfile},
+		  skyinstrfile   => $TmpOutFiles{skyinstrfile},
+		  expomapfile    => $TmpOutFiles{expomapfile},
+		  percent        => &GetValPar("percent"),
+		  initseed       => &GetValPar("initseed"),
+		  chatter        => &GetValPar("chatter"),
+		  clobber        => &GetValPar("clobber"),
+		  history        => &GetValPar("history"),
+		  );
+
+
+    $command = "nuexpomap";
+    for $par ( keys %nuexpomap ) { $command .= " $par=$nuexpomap{$par}"; } 
+
+    &RunningSub("RunNuExpoMap","nuexpomap");
+    &RunningComm("RunNuExpoMap",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNuExpoMap","nuexpomap",$command);
+        $Task{errmess} = "ERROR running 'nuexpomap'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNuExpoMap","nuexpomap","Exposure map generated.");
+
+    return 0;
+
+} # RunNuExpoMap
+
+
+sub RunNuExpoMapWithVignetting {
+
+    my ( $par, $ret );
+    my ( $command, %nuexpomap );
+
+    
+    %nuexpomap = (
+		  infile         => $Task{infile},
+		  #pixposfile     => &GetValPar("pixposfile"),
+		  alignfile      => &GetValPar("alignfile"),
+		  #mastaspectfile => $Task{mastaspectfile},
+		  attfile        => $Task{attfile},
+		  teldef         => &GetValPar("teldef"),
+		  #instrprobmapfile => &GetValPar("instrprobmapfile"),
+		  vignfile       => &GetValPar("vignfile"),
+		  indet2instrfile=> $TmpOutFiles{det2instrfile},
+		  aberration     => &GetValPar("aberration"),
+		  vignflag       => "yes",
+		  energy         => &GetValPar("lcenergy"),
+		  #det1reffile    => $Task{det1reffile},
+		  pixbin         => &GetValPar("pixbin"),
+		  skyx           => 500.5,
+		  skyy           => 500.5,
+		  skysize        => 1000,
+		  #offsetfile     => "NONE",
+		  #aspecthistofile=> $TmpOutFiles{aspecthistofile},
+		  #det1instrfile  => "NONE",
+		  #det2instrfile  => "NONE",
+		  skyinstrfile   => $TmpOutFiles{skyinstrfile_vign},
+		  expomapfile    => $TmpOutFiles{expomapfile_vign},
+		  percent        => &GetValPar("percent"),
+		  initseed       => &GetValPar("initseed"),
+		  chatter        => &GetValPar("chatter"),
+		  clobber        => &GetValPar("clobber"),
+		  history        => &GetValPar("history"),
+		  );
+
+
+    $command = "nuexpomap";
+    for $par ( keys %nuexpomap ) { $command .= " $par=$nuexpomap{$par}"; } 
+
+    &RunningSub("RunNuExpoMapWithVignetting","nuexpomap");
+    &RunningComm("RunNuExpoMapWithVignetting",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNuExpoMapWithVignetting","nuexpomap",$command);
+        $Task{errmess} = "ERROR running 'nuexpomap'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNuExpoMapWithVignetting","nuexpomap","Exposure map with vignetting correction generated.");
+
+    return 0;
+
+} # RunNuExpoMapWithVignetting

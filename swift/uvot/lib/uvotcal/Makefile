@@ -1,0 +1,20 @@
+HD_COMPONENT_NAME	= swift
+
+HD_COMPONENT_VERS	=
+
+HD_LIBRARY_ROOT		= uvotcal
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+HD_INSTALL_HEADERS	= uvotquality.h uvotimage.h
+ 
+HD_LIBRARY_SRC_c	= uvotquality.c
+
+LOC_LIBS		= -lrew
+
+HD_SHLIB_LIBS		= ${HD_LFLAGS} ${LOC_LIBS} -l${HEAUTILS} -l${PIL} \
+			  -l${CFITSIO} -l${READLINE} -l${HEAIO}
+
+include ${HD_STD_MAKEFILE}

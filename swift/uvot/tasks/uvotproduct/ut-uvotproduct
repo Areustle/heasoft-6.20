@@ -1,0 +1,132 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotproduct/ut-uvotproduct,v $
+# $Revision: 1.3 $
+# $Date: 2007/11/08 20:59:28 $
+#
+#	uvotproduct unit test
+#
+#
+# $Log: ut-uvotproduct,v $
+# Revision 1.3  2007/11/08 20:59:28  rwiegand
+# Rewrote post uvotproduct rewrite.
+#
+
+use strict;
+
+package Test::Product;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotproduct
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment(qw(FTOOLS));
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotproduct
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	my @names = qw(
+		sw00130088000ubb_sk.img
+		sw00130088000uvv_sk.img
+		sw00130088000uuu_sk.img
+	);
+
+	my $infile = join(',', map { "$input/$_" } @names);
+
+	my @args = (
+		infile    => $infile,
+		outfile   => "$output/maghist.fits",
+		plotfile  => "$output/maghist.gif",
+
+		srcreg    => "$input/uvot.reg",
+		bkgreg    => "$input/bkg.reg",
+		batpos    => "$input/bat.reg",
+		xrtpos    => 'NONE',
+		uvotpos   => "$input/uvot.reg",
+		groundpos => 'NONE',
+		reportfile => "$output/report.txt",
+
+		cleanup   => 'no',
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+
+	{
+		my $command = $self->buildCommand('uvotproduct', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{outfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{outfile},
+			reltol => 1e-3,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+
+	$self->report("plotfile $args{plotfile} must be verified manually");
+}
+

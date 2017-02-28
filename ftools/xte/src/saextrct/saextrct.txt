@@ -1,0 +1,754 @@
+SAEXTRCT (Aug98)               ftools.xte               SAEXTRCT (Aug98)
+
+
+
+NAME
+    saextrct -- creates a light curve and/or spectrum from  XTE  Science
+    Array  (SA)  data. Supports SA observation data from the XTE PCA and
+    HEXTE instruments, as well as ASCA  GIS  Multi-channel  Pulse  Count
+    (MPC) mode data and time-ordered data from the Einstein SSS.
+    
+    
+USAGE
+    saextrct  infile  lcbinarray  gtiarray  maxmiss gtiorfile gtiandfile
+    gticols  outroot  extenpha  extenlc  phasefile  accumulate   timecol 
+    columns  multiple  binsz  mfracexp  tnull  timezero printmode lcmode
+    spmode mlcinten mspinten writesum writemean timemin timemax  timeint
+    chmin  chmax  chint  chbin  ephem  period  phaseint  obsdate obstime
+    sensecase chkit clobber negative dryrun bailout mode
+    
+    
+DESCRIPTION
+    This task creates a single light curve and/or a spectrum from one or
+    more  Science  Array  files,  allowing options for filtering by time
+    using FITS and/or ASCII Good Time  Interval  (GTI)  information,  by
+    detector  and layer (where available), by channel, and by phase.  It
+    takes as its input a standard Level 0 XTE/SA FITS file, or  list  of
+    such  files,  and creates as output standard Level 2 spectral and/or
+    light curve files in OGIP standard formats.
+    
+    Internally, the task bins a requested portion of  a  vector  column.
+    Selection  is  based  on  (optional)  GTI  files  or  other  applied 
+    filters. The binning can be specified for the entire file, or for  a
+    subset of rows that fulfil the filtering criteria.
+    
+    The binning has five modes. If the bin mode ('lcmode' or 'spmode') =
+    'SUM' or 'EVENT_SUM', the output is the total counts -- this is  the
+    appropriate  default for energy spectra. If the bin mode = 'RATE' or
+    'EVENT_RATE', the output is the total of the  value  of  the  counts
+    divided  by  the time binsize -- this is the appropriate default for
+    light curves. If the bin mode = 'MEAN' then the output is  the  mean
+    value  of  the  binned  quantity  during  each  time interval -- for
+    housekeeping information or other telemetry values, this would be an
+    appropriate default.
+    
+    The  time  bin size ('BINSZ') and the time ranges can be entered, or
+    will be calculated by the program if the value is set to  INDEF.  If
+    the  bin  size  is  set  to  INDEF,  100 equally spaced bins will be
+    produced. Note that if the BINSZ selected is less than  the  minimum
+    time  resolution  of the first file, the BINSZ will be reset to that
+    minimum time resolution. If subsequent files  have  a  minimum  time
+    resolution greater than BINSZ, they will not be included in the data
+    extraction.
+    
+    
+PARAMETERS
+    
+    infile [string - file name or @filename]
+        Supply either the name of the input FITS file(s)  (and  optional
+        extension  number  in square brackets) to be binned, or an ASCII
+        file containing several input FITS filenames to be  acted  upon,
+        with  one  filename per line.  If the latter, the ASCII filename
+        should be preceded with an '@' symbol, e.g.  '@file_of_infiles'.
+        A maximum of 100 separate files or extensions may be supplied.
+    
+    (lcbinarray = INDEF) [integer]
+        This  value  defines  the  working  array  size  that is used to
+        accumulate light bin information in the  extractor.  This  value
+        must  be  greater  than  10000  (ten  thousand), and defaults to
+        400000  (four hundred  thousand).   It  must  also   be   evenly 
+        divisible  by  40,  for  technical  reasons.  A larger value for
+        LCBINARRAY will lead to a larger memory requirement to  run  the
+        extractor,  thus  it  is possible to run out of system resources
+        if this value is set too high.
+        
+        In general this parameter should be left at its  default  value.
+        However,  it  is  supplied  to allow the expert user to tune the
+        extractor based upon their individual requirements.  The  larger
+        the  size of the light bin array, the fewer cycles are necessary
+        to process large files. However, there may be a runtime cost  if
+        your  system  lacks  the  RAM  for  the  size  of array you have
+        defined. Leave this value alone unless you  have  the  requisite
+        computing knowledge.
+    
+    (gtiarray = INDEF) [integer]
+        This  value  defines  the array size that is used to process and
+        sort your GTI list. The INDEF default  of  12800  is  sufficient
+        for  almost all purposes.  A user processing a very large number
+        of GTIs may need  to  increase  this  value,  with  a  resulting
+        commensurate increase in the program size.
+    
+    (maxmiss = INDEF) [integer]
+        In  cases  where  the  user is processing a number of lightcurve
+        bins  in  excess  of  100,000  (or  lcbinarray),  the  data  are 
+        processed  in  several  cycles.  If MAXMISS=INDEF (the default),
+        all data in all files are read for each  cycle.  If  MAXMISS  is
+        set  to  a  discrete value, then the code will only read MAXMISS
+        number  of  timestamps  that  fall  later   than   the   cycling 
+        time-range  before skipping the rest of the data and going on to
+        the next cycle. Thus MAXMISS is the "maximum number  of  misses"
+        to  tolerate  before  skipping  to  the next cycle, and the code
+        will resume processing the data at  the  point  where  the  data
+        first fell beyond the specified cycle time-range.
+        
+        If  used  correctly  this  parameter  can  speed  up  processing 
+        considerably;  e.g.  for  XTE  PCA  data,  MAXMISS=200   is   an 
+        effective  choice.  However,  use of this parameter assumes that
+        (i) your data is time-ordered in ascending  order  and  (ii)  no
+        input  files  have  overlapping time ranges.  XTE data generally
+        fulfil these requirements.
+    
+    gtiorfile = "-" [string - file name, @filename, APPLY or APPLYnnn]
+        The name and extension (specified with a +extnum appended to the
+        filename,  i.e.,  FITSFILE+2)  of  the  input Good Time Interval
+        (GTI) information for each file.  Typically  this  will  be  the
+        information  about  what  time  intervals  within  each file are
+        acceptable as being "good" data  for  that  particular  file.  A
+        blank  or  "-"  input  indicates  that  no GTI checking for each
+        individual file is required.  The  GTI  are  assumed  to  be  in
+        ascending  time  order.  If this parameter is set to APPLY - the
+        default - then the GTI  information  accompanying  the  Level  0
+        files in their 2nd extension will be used.
+        
+        If  more  than  one  file  is  supplied, the files will be OR'ed
+        together but are specific for each input file.
+        
+        If this parameter is set to APPLY - the default - then  the  GTI
+        information  found in the 2nd extension is used, however, if the
+        input files contain more than 1 GTI, and the GTI information  is
+        contained  in  e.g. the 3rd extension (the 2nd GTI in the file),
+        then the user can use the APPLYnnn option. If this parameter  is
+        set  to  e.g.  APPLY003,  the code will automatically attempt to
+        apply any GTI information found in  the  3rd  extension  of  the
+        input files.
+        
+        Note  that  in  general  only  the GTI's included with each file
+        being input should be used; hence the default value of "APPLY".
+    
+    gtiandfile = "-" [string - file name or @filename]
+        The name and extension (specified with a +extnum appended to the
+        filename,  i.e.,  FITSFILE+2) of the input GTI information to be
+        applied to ALL of the files. These files  will  be  AND'ed  with
+        the  "GTIORFILES"  supplied  in the previous parameter to filter
+        out sections of data. This file applies  to  ALL  of  the  input
+        files  that  are  processed.   A  blank or "-" indicates that no
+        such additional GTI information should be applied.
+        
+        Multiple GTI files can be specified at the GTIANDFILE  parameter
+        by  entering  their  names in an ASCII file, and specifying this
+        ASCII file in response to the prompt ("@gtiandfiles").  Multiple
+        files  will be sorted and ANDed together.  Up to 100 GTIANDFILEs
+        can be accepted.  The good time intervals within each  file  are
+        assumed to be in ascending time order.
+        
+        If time intervals are supplied using the GTIANDFILE and also the
+        TIMEINT parameter, they will be ANDed to arrive at a global  set
+        of  time  intervals  to  be applied to all input files, although
+        users who mix the two approaches are  warned  to  take  care  to
+        take  into  account  the TIMEZERO keyword.  The TIMEZERO keyword
+        in the GTIANDFILES are added to the  specified  START  and  STOP
+        times  (as well as to the TSTART and TSTOP keyword) to calculate
+        the absolute times. Also, the  time-ranges  in  the  GTIANDFILES
+        are  expected  to  lie  between  the  specified TSTART and TSTOP
+        values. If the above seems confusing, it may  be  safer  to  use
+        either  the  GTIANDFILE  approach _or_ the TIMEINT approach, but
+        avoid combining them.
+    
+    (gticols = "START STOP") [string]
+        The names of the start and stop columns in the GTI file(s).
+    
+    outroot = "sac" [string - output file root-name]
+        The root for the output file name. For the token default OUTROOT
+        of  'sac',  the  output  spectral file will be 'sac.pha' and the
+        output  light  curve  file  'sac.lc',   unless   these   default 
+        extensions  are  over-ruled  by  use of the EXTENPHA and EXTENLC
+        parameters.
+    
+    (extenpha = ".pha") [string]
+        The suffix to be appended to OUTROOT to construct  the  name  of
+        the output FITS files containing the spectrum.
+    
+    (extenlc = ".lc") [string]
+        The  suffix  to  be appended to OUTROOT to construct the name of
+        the output FITS files containing the light curve.
+    
+    (phasefile = "-") [file name]
+        The name and extension of the input phase information  file.   A
+        blank  or  "-"  indicates  that  no  phase  checking  is  to  be 
+        performed. This must be an ASCII file and be in the same  format
+        as  that  written  by  XSELECT  or  Xronos.  Existence  of  this 
+        parameter is largely a historical relic; we advise  the  use  of
+        the  specific  time  intervals for cases where the cycle time is
+        similar  to  the  observation  length   (e.g.   binary   orbital 
+        periods),  and  the  use of the FASEBIN suite of tools for cases
+        where the cycle time is much shorter than the observation length
+        (e.g. pulsars).
+    
+    accumulate = "ONE or MANY" [string]
+        This  option  operates  in  conjunction  with  COLUMNS and tells
+        SAEXTRCT whether each column is to be maintained as  a  separate
+        vector,  or  if  they  are  all  to  be summed together into one
+        output column. The options are ONE, for one  output  column,  or
+        MANY,  for  a separate vector for each. For example, for XTE PCA
+        Standard Mode 2 data,  answering  ONE  would  produce  a  summed
+        spectrum  from  all  detectors  and layers, while answering MANY
+        would produce a spectrum for  every  detector/layer  combination
+        specified  by  the  COLUMNS  parameter,  in  OGIP  Spectral File
+        format #2.
+    
+    timecol = "TIME" [string]
+        The name of the column  in  the  input  file  containing  timing
+        information.   This value is case sensitive unless the SENSECASE
+        parameter is set to "no".  The value for time is assumed to be a
+        double  precision  scalar. Note that this column MUST be the one
+        that all TIME related keywords refer to as well as TIMEZERO  and
+        the  TSTART,  TSTOP,  and  GTI's.  Thus,  you  cannot specify an
+        'arbitrary' new column as the TIMECOL, since all  of  the  above
+        above  keywords must accurately describe the time-stamps in this
+        column.
+    
+    columns = [string of column names, @filename or GOOD]
+        The name(s) of the column(s) in the input file(s) containing the
+        integer vector(s) to be binned. The entire vector will be binned
+        unless additional filtering is provided.  Support extends for 40
+        separate  input  columns,  256  input channels, and an unlimited
+        number of time elements for each column.
+        
+        If columns = "GOOD" the Data  Descriptor  which  describes  each
+        column   will   be  parsed,  and  the  column  names  that  pass 
+        containing good science data will be sorted  and  used  for  the
+        accumulation.   If  columns  =  "ERROR"  or  "BACKEST", the Data
+        Descriptor which describes each column will be parsed,  and  the
+        appropriate  error  columns  or  background columns will be used
+        for the accumulation. [Note that the column names of  the  first
+        files  are stored, and all subsequent files will be searched for
+        those column names only.]
+        
+        Column names may be listed in an ASCII  file,  with  one  column
+        per line, and entered using the '@filename' syntax.
+    
+    (multiple = no) [boolean]
+        If  MULTIPLE=yes,  the BINSZ parameter will be interpreted as an
+        integer multiplier of the intrinsic  timing  resolution  of  the
+        data  (e.g.  to bin Binned Mode data up at precisely 4 times the
+        intrinsic  resolution  of  the   data,   users   should   supply 
+        "MULTIPLE=yes"  and  "BINSZ=4").   If  MULTIPLE=no  (the default
+        behavior), BINSZ is interpreted as the desired  binning  of  the
+        output lightcurve, in seconds.
+        
+        Use  of  this parameter is recommended for those cases where the
+        required binsize is  small,  and  to  specify  it  precisely  in
+        seconds  would  require  digits  beyond the sixth decimal place,
+        which the extractors' timing routines cannot support due to  the
+        intrinsic  limitations  of  computer  arithmetic.  (Keep in mind
+        that XTE timing resolutions are really an inverse  power  of  2;
+        eg.,   Good   Xenon  data  has  a  timing  resolution  of  2^-20 
+        seconds.)   See  the  BINSZ  parameter  discussion  for  further 
+        details on binning resolution.
+    
+    binsz = INDEF [real]
+        The binsize, in SECONDS, to use in producing the light curve.
+        
+        Use  decimal  expressions  for sub-second increments, e.g. 0.004
+        for 4 milliseconds. If the  supplied  BINSZ  is  less  than  the
+        minimum  time resolution of the first file then the binsize will
+        be reset to that time  resolution.   If  subsequent  files  have
+        larger  minimum  time  resolutions, they will be skipped and not
+        processed.  Bin-sizes have  a  minimum  resolution  of  0.000001
+        seconds;  anything  smaller  can cause problems both in accuracy
+        and resolution due to  the  intrinsic  limitations  of  computer
+        arithmetic.
+        
+        If  BINSZ=INDEF  (not  recommended!), 100 evenly sized bins will
+        be produced with a binsize of (TIMEMAX - TIMEMIN)/100.0.
+        
+        Users needing fine timing resolution in their  binning  can  set
+        MULTIPLE=yes.  If  MULTIPLE=yes,  the  BINSZ  parameter  will be
+        interpreted as an integer multiplier  of  the  intrinsic  timing
+        resolution  of  the  data  (e.g. to rebin Binned Mode data up at
+        precisely 4 times the intrinsic resolution of  the  data,  users
+        should supply "MULTIPLE=yes" and "BINSZ=4").
+    
+    (mfracexp = INDEF) [real] 
+        This  option,  active  only  when  LCMODE=RATE, sets the minimum
+        fractional part of a time bin that  must  be  filled  before  it
+        will  be  recorded  in  the  Light Curve (all events meeting the
+        filtering  criteria  will  be  included  in  the  Spectrum).  If 
+        MFRACEXP  is  set  to 0.0 or INDEF then this option is disabled.
+        The total number  of  bins  removed  from  the  Light  Curve  is
+        printed  out  but not the total number of events removed from by
+        thresholding.   Example:   if   BINSZ   =   10.0   seconds   and  
+        MFRACEXP=0.25,  any bin containing less than 2.5 seconds will be
+        removed.
+    
+    (tnull = real) [real]
+        This is the value that a bin or spectral value is  set  to  when
+        values  are  removed  by filtering, such as is done via MLCINTEN
+        and  MSPINTEN,  the  maximum  value  for  the  light  curve  and 
+        spectrum  respectively.  The default is to set the value to 0.0.
+        Another possibility would be to choose  a  negative  number  and
+        filter these out in downstream processing.
+    
+    (timezero = INDEF, numerical value, or FLOAT) [string] 
+        This  parameter was added in version 3.5.2, and was necessitated
+        by the different usage of  the  TIMEZERO  keyword  in  XTE  data
+        files  and  those  processed  by  Xronos.  For XTE, TIMEZERO (or
+        TIMEZERI and TIMEZERF) is added not only to the TIME column  but
+        also  to  the  TSTART  and  TSTOP  keywords  in  the  header, in
+        accordance with the OGIP standards. Thus the only time that  XTE
+        and  Xronos  will  agree  is if the TIMEZERO parameter is set to
+        0.0d0 (or INDEF), since this will result in a TIMEZERO of  0.0d0
+        in  the  output  files created. However, if high accuracy is the
+        goal of the user this can give rise to a serious problem,  since
+        7  or  8  significant digits will be lost to the integer part of
+        the time-stamp, significantly reducing the overall accuracy.
+        
+        To address the situation when the user wants  high-accuracy  and
+        does  not  plan  on  processing  any  produced  data  files with
+        Xronos, the user can specify a TIMEZERO  value  of  his  liking,
+        with  TSTART  and TSTOP shifted by the same TIMEZERO amount. The
+        numerical value specified in  TIMEZERO  is  globally  subtracted
+        from    all    time-stamps,    TSTART,   and   TSTOP   keywords.  
+        Alternatively TIMEZERO may be set to  FLOAT,  which  will  cause
+        the  first  time-stamp in the output light-curve to be 0.0d0 and
+        TIMEZERI and TIMEZERF to contain the value of the 0.0 timestamp.
+        
+        Note that negative values for timestamps and keywords can  occur
+        if  care  is  not  taken  when choosing an appropriate value for
+        TIMEZERO.
+    
+    printmode = LIGHTCURVE, SPECTRUM, or BOTH [string] 
+        Specifies the type(s) of file to be accumulated and written  out
+        after  processing  the  input  files.   If  PRINTMODE=BOTH  (the 
+        default), both a spectrum and a light  curve  will  be  created.
+        If  PRINTMODE=LIGHTCURVE,  a light curve will be created, but no
+        spectrum. If PRINTMODE=SPECTRUM, a  spectrum  will  be  created,
+        but no light curve.
+    
+    lcmode = SUM, RATE, MEAN, EVENT_SUM, or EVENT_RATE [string] 
+        Specifies  the  type  of  binning to do for the light-curve. SUM
+        outputs the summed total counts per bin. RATE outputs the  total
+        counts  per  bin  divided  by the binsize. MEAN outputs the mean
+        value of the binned quantity  during  each  time  bin.  SUM  and
+        EVENT_SUM  produce  the  same output, as do RATE and EVENT_RATE.
+        RATE is the accepted default for light curve generation.
+    
+    spmode = SUM, RATE, MEAN, EVENT_SUM, or EVENT_RATE [string] 
+        Specifies the type of binning  to  do  for  the  spectrum.   SUM
+        outputs  the  total  counts  per channel. RATE outputs the total
+        counts per channel, divided by the total time. MEAN outputs  the
+        mean  value  of  the  counts  in each channel. SUM and EVENT_SUM
+        produce the same output, as do RATE and EVENT_RATE.  SUM is  the
+        accepted default for spectrum generation.
+    
+    (mlcinten = INDEF) [double precision value] 
+        This  quantity  acts  as  a  maximum  value that the light-curve
+        quantities may not exceed.  Any  derived  count  rate  exceeding
+        this  value  is removed from the light curve, or set to TNULL if
+        only one column exceeds this value.
+    
+    (mspinten = INDEF) [double precision value] 
+        This quantity acts as a maximum value that the  spectral  counts
+        may  not  exceed. Any derived count rate exceeding this value is
+        removed from the spectrum, or set to TNULL if  only  one  column
+        exceeds this value.
+    
+    (writesum = "-") [string] 
+        List  of  column names, the contents of which will be summed and
+        written out as a keyword in  the  header  of  the  PHA  spectral
+        file.  An  ASCII  list  of  column-names  can  be read into this
+        parameter using the  "@filename"  syntax.  Column-name  matching
+        must be exact.
+    
+    (writemean = "-") [string] 
+        List of column names, the contents of which will be averaged and
+        written out as a keyword in  the  header  of  the  PHA  spectral
+        file.  An  ASCII  list  of  column-names  can  be read into this
+        parameter using the  "@filename"  syntax.  Column-name  matching
+        must be exact.
+    
+    timemin = INDEF [double precision real]
+        The  minimum  (or  start)  time to use in an accumulation.  This
+        value is given in seconds and must be in ABSOLUTE TIME  (MJD  is
+        not  included).   Thus if the first observation has a TIMEZERO =
+        4.150000 seconds and the  TSTART  =  64360000.000  and  TSTOP  =
+        64365000.000  and  you  want  to start one second after the data
+        begins, you would set TIMEMIN to be equal to TIMEZERO  +  TSTART
+        +  1.0  =  64360005.15000.  (The  FTOOLS script TIMETRANS may be
+        used to take a range of times and  convert  them  into  ABSOLUTE
+        TIME.)
+        
+        If  TIMEMIN  is set to INDEF, all time intervals are included in
+        creating the selected output.
+    
+    timemax = INDEF [double precision real] 
+        The maximum (or ending) time to use in an accumulation.
+        
+        See the usage notes  supplied  for  the  TIMEMIN  parameter  for
+        further  information.  If  TIMEMAX  is  set  to  INDEF, all time
+        intervals are included in creating the selected output.
+    
+    timeint = [string] [b1-b2,b3-b4,b5-b6 or @filename] 
+        To be used  to  specify  a  set  of  time  intervals,  given  in
+        ABSOLUTE  TIME,  to  be  used in creating the light-curve.  Only
+        times which fall within these  intervals  will  be  utilized  in
+        creating  the  final  light-curve  and spectrum.  The times used
+        must  be  in  the  form  XXX.nnnnnn  with  the   decimal   point 
+        explicitly  given,  or  unexpected  errors  may  occur.   Use of
+        TIMEINT supercedes values input for  TIMEMIN  and  TIMEMAX  when
+        the former are more restrictive than the latter.
+        
+        (The  FTOOLS  script  TIMETRANS  may  be  used to take ranges of
+        times and convert them into absolute time, and create  an  ASCII
+        file  which  can then be input into the extractor at the TIMEINT
+        prompt using "@ascii_filename_containing_times".)
+        
+        The TIMEINT file is an ASCII file containing pairs of start  and
+        stop  times,  one  pair  per  line,  with  no  dashes  or  other 
+        non-numerical characters.
+    
+    chmin = INDEF [integer]
+        Minimum energy channel to include in the accumulation.   If  set
+        to  INDEF  the  minimum  energy  channel  used is defined by the
+        input  files.   Channel  information   supplied   must   be   in 
+        "original"  or  absolute channels, prior to any on-board channel
+        binning that may have been performed by the EDS.  If, to take  a
+        simplified  example, the data files contain data grouped into 10
+        bins, the code will search CPIX to determine  in  which  channel
+        bin  CHMIN  exists, and that ENTIRE channel bin will be included
+        in the accumulation,  along  with  all  other  bins  up  to  and
+        including  the  bin  containing  CHMAX. If the first two channel
+        bins contain energy channels 0-10 and 11-50 and CHMIN is set  to
+        40, then ALL of the second channel bin will be included.
+        
+        If  no CPIX information is found, a one-to-one correspondence is
+        assumed  between  the  bin  channel  and  the  energy   detector 
+        channel,   with  the  first  channel  in  the  file  assumed  to 
+        correspond to energy channel 0, and the Nth channel in the  file
+        is set to correspond to the energy channel (N-1).
+    
+    chmax = INDEF [integer]
+        Maximum  energy  channel to include in analysis. If set to INDEF
+        the maximum energy channel used is defined by the  input  files.
+        See the usage notes for CHMIN for further details.
+    
+    chint = "INDEF,(1-25, 45-50, 76-255), (CPIX info), or @file" [string]
+        Pairs   of  minimum-maximum  channel  bins  to  include  in  the 
+        accumulation.  If set  to  INDEF,  all  channels  are  included.
+        Channel  information  supplied  must  be in "original" channels,
+        prior to  any  on-board  channel  binning  that  may  have  been
+        performed. This is the parameter  to  use when you want to rebin
+        existing binned data.
+        
+        Use  the  @filename  option if you have an ASCII file containing
+        Start_Chan Stop_Chan pairs. Such files may  be  created  by  the
+        FTOOLS script CHANTRANS.
+        
+        When  analyzing  data  from binned modes, it is recommended that
+        the boundaries supplied using CHINT  line  up  with  the  energy
+        channel  boundaries  specified  in  the  input  files processed.
+        Otherwise, unexpected results may occur  due  to  the  intrinsic
+        channel  resolution of the data processed. For example, if CHINT
+        specifies that original energy channels 150-200 be included  but
+        the  energy  binning  of  the file (specified by CPIX) is 0-155,
+        156-180, 180-255 then data from _all_ channels will be  included
+        in the PHA file -- presumably not the user's intent.
+    
+    chbin = "INDEF, string, or @filename" [string]
+        Use of this parameter is discouraged and  no support in  its use
+        can be offered.
+    
+    (ephem = INDEF) [real]
+        For  phase  filtering:  the Ephemeris of the zero phase given in
+        ABSOLUTE TIME. (See TIMEMIN for more information about  ABSOLUTE
+        TIME.)  Starting  time to begin periodic summation of results in
+        a given period of time. INDEF sets EPHEM to TIMEMIN.
+        
+        NB: The  EPHEM,  PERIOD  and  PHASEINT  parameters  are  largely
+        historical  relics;  we  advise  the  use  of  the specific time
+        intervals for cases where the  cycle  time  is  similar  to  the
+        observation  length  (e.g.  binary orbital periods), and the use
+        of the FASEBIN suite of tools for cases where the cycle time  is
+        much shorter than the observation length (e.g. pulsars).
+    
+    (period = INDEF) [real]
+        For  phase  filtering: the period to use when when performing an
+        accumulation (in seconds). INDEF or a blank negates  its  usage.
+        See notes for EPHEM.
+    
+    (phaseint = "INDEF") [string]
+        For  phase  filtering:  phase intervals to process as a function
+        of the period. Given as some decimal value of  the  total,  i.e.
+        0.0-0.1,0.2-5.0,0.7-1.0  will process the times that fall within
+        these intervals multiplied by the period. See notes for EPHEM.
+    
+    (obsdate = "MJDREF" or "numerical value") [string]
+        The keyword name containing the zero  start  date  of  the  time
+        column  of  the  input  file. The value of the keyword indate is
+        assumed to be in terms of Modified Julian Days.  A blank or  '-'
+        will  defeat  zero time checking for ALL of the input files. The
+        date of the earliest observation in all of the  files  processed
+        will  be  used  as the default. The output file zero time is set
+        equal to the input file zero time, and is written  in  the  same
+        keyword  as  the input file.  Same as GTIOBS in its effect. (The
+        default is MJDREF.)
+    
+    (obstime = "TSTART TSTOP") [string]
+        The keywords containing the start time  and  stop  time  of  the
+        input  files.  A blank will defeat zero time checking for ALL of
+        the input files. The date of the earliest observation in all  of
+        the  files  processed  will  be  used as the default. The output
+        file zero time is set equal to the input file zero time, and  is
+        written  in  the  same  keyword as the input file. (The defaults
+        are TSTART and TSTOP.)
+    
+    (sensecase = no) [boolean]
+        Whether the strings input to SAEXTRCT should be  interpreted  as
+        case sensitive.
+    
+    (chkit = yes) [boolean]
+        Whether to perform checks on all of the files. At the moment the
+        keywords checked in all files to  ensure  compatibility  of  the
+        data  are  TELESCOP  (the  observatory  or  mission), APPID (the
+        application ID), and OBJECT (the source), EXTNAM  (the  type  of
+        data  in the file - XTE/SA) and INSTRUME (PCA or HEXTE).  EXTNAM
+        and INSTRUME are compulsory, and the application will  abort  if
+        these  are  not  provided.  If a match on any of the other items
+        fails, a warning message is printed and processing continues.
+    
+    (clobber = yes) [boolean]
+        Whether existing output files are to be overwritten.
+    
+    (negative = "IGNORE") [string]
+        It is generally assumed that count rates  will  be  positive  or
+        zero,  and  that  negative  count  rates  that  are  not  TNULLs 
+        indicate an  overflow  or  a  file  corruption.   Therefore  the
+        default  behavior  is  to ignore negative quantities in the data
+        stream. To override this, set negative to SUM.
+    
+    (dryrun = no) [boolean]
+        This will run SAEXTRCT so that all input files and  columns  are
+        tested  for  compatibility  for  the  ACCUMULATE  option without
+        actually  processing  any  information.  A  report  is   written 
+        describing  the  formats  of  the columns and files and problems
+        that may cause uncertain results are flagged.   Before  a  truly
+        complex  SAEXTRCT  job,  setting  DRYRUN  =  YES  for an initial
+        run-through may prove to be a good sanity check.
+    
+    (bailout = no) [boolean]
+        The default behavior of the  extractors  is  to  deal  with  any
+        conflicting  or  ambiguous  inputs  as  best they can and run to
+        completion. For example,  if  a  GTI  file  is  specified  which
+        contains  no  data, or data that doesn't apply to the file being
+        input, it is ignored and the  code  will  continue.  Some  users
+        prefer  the  code  to  abort  rather  than ignore non-applicable
+        input, and this can be  achieved  by  setting  BAILOUT  to  YES,
+        which  forces an abort if _any_ input is non-standard, ambiguous
+        or nonsensical.
+    
+    (mode = "ql") [string]
+        This option  allows  the  PAR  file  to  be  updated  with  each
+        successful  completed run so that the defaults are changed (ql =
+        Query + Learn).  If tools are run with  mode=h,  the  code  will
+        take  all  existing  parameter  values  from  the parameter file
+        unless some or  all  are  overridden  on  the  calling  line  or
+        command  line.  This mode is useful for scripting, but should be
+        used with care.
+    
+    
+NOTES:
+    The code has been structured such that 1 billion  light  curve  bins
+    can  presently  be  accumulated.  If  more  than  that are required,
+    changing the parameter "itcycles" from 10,000  to  something  higher
+    and  recompiling  will increase the size. However, no current FTOOLS
+    can cope with such a large number of light curve bins.
+    
+    Dates used must all be of a consistent system. MJD is used  for  all
+    dates,  TIMESYS  is  used to determine the time system in use and is
+    automatically converted into seconds before processing begins.
+    
+    These codes were written to run on moderate memory machines and this
+    may  cause  a problem with excessive I/O for large files. If this is
+    suspected to be  a  problem  then  the  parameter  NARAY,  presently
+    256*500,   can  be  redefined  to  a  larger  size.  This  parameter 
+    determines the number of memory spaces reserved when processing  the
+    file.  Also NF is the maximum number of channels (currently 256) and
+    NE specifies the  maximum  number  of  TIME  elements  that  can  be
+    contained  within each channel.  ICHAN contain the maximum number of
+    time bins that are  supported.   Dynamic  memory  allocation  is  in
+    effect.
+    
+    
+    
+MODIFICATIONS:
+    Many  small  bug  fixes have been made, such that one should acquire
+    the absolute latest version before beginning processing of any large
+    files.  It  is possible that a "bug" identified below does not exist
+    in the current version.
+    
+    V3.4f:         This  is  an  EXTENSIVE  REWRITE  and  contains  many
+    enhancements,  most  of which should be transparent to the user, but
+    were necessary to increase the flexibility of the  tool.  The  major
+    structural   improvement  was  to  allow  the  user  to  analyze  an 
+    extensive data set with a very small time resolution.
+    
+    V3.5b:         Many warnings have now  been  changed  into  aborting
+    commands   since  a  cascade  effect  would  happen  and  since  the 
+    extractors can now be  applied  to  missions  other  than  XTE  some
+    warnings were errors for other missions.
+    
+            MAXMISS  added,  to  improve  processing  speed  when  in  a 
+    "cycling" mode - i.e., the  user  has  specified  a  bin-size  which
+    results  in  more  than  100K  light-bins  in  the  light curve. See
+    information above.
+    
+            The codes have been made  truly  case-insensitive  but  they
+    will  preserve the case of the columns as they are stored within the
+    original files.
+    
+            Previous warning messages that could cause the code to  fail
+    down  stream  have been made into termination errors. This will make
+    it so that after the message about the offending behavior, the  code
+    will abort without attempting to "fix" the problem.
+    
+            The  code  now  will  automatically attempt to APPLY the gti
+    information that is contained in the second extension  of  XTE  data
+    files.  This  is  called by setting GTIORFILE to APPLY. The user can
+    override this by setting GTIORFILE to "-".
+    
+    Known problems in this version:
+    
+            A phase-interval problem. At the moment GTI's  are  detected
+    by  blank regions in the output, so that when the codes generate the
+    GTI to append to the light curve or spectrum it does so  by  looking
+    for  blanks in the time-line. The maximum number allowed is 12800 at
+    the moment, but if a user uses a small bin-size and a  large  period
+    and  filters  on  multiple  phase  intervals it is easy to over-flow
+    this 12800 maximum. At the moment the only thing to do  is  for  the
+    user  to  divide the (TIMEMAX - TIMEMIN / PERIOD ) * number of phase
+    intervals and ensure that this does not  exceed  12000  or  so.  The
+    code  will  abort  if  it  does  since  that  will  cause a boundary
+    violation. This is being worked on  so  that  if  the  user  specify
+    phase  filtering  a  "PHASE  FILE"  will  be output in the form that
+    Xronos expects and  the  GTI  will  no  longer  include  such  phase
+    filtering information.
+    
+            A  minimum  bin-size  problem.  Unfortunately,  since double
+    precision values only contain 16 digits of accurate information (see
+    the  IEEE  standard on accuracy) and at the moment 8 digits are used
+    to specify the number of seconds for MET, we are only  left  with  8
+    digits  for  the  decimal  values  -  thus  the  extractors are only
+    accurate to 1.0D-8. Unfortunately, some of  the  files  specify  the
+    timing  resolution  of  the  satellite beyond 8 digits (although the
+    time-stamps  can  only  show   that   level   of   accuracy,   e.g., 
+    6.554523228973598E+07  or  65545232.28973598  so  anything after the
+    ...98 is inaccurate) can cause problem  when  processing  the  data.
+    Thus,  rounding  errors  can occur.  To avoid this, we recommend the
+    user does not specify a bin-size to an accuracy greater than 1.0D-8.
+    
+    
+    
+    Version SAEXTRCT_V3.5.2
+        
+        1) The total number of time-ranges that  can  be  filtered  upon
+        has  been raised from 512 to 12800. GROSSTIMEFILT may be used to
+        divide  up  data  into  more  manageable  pieces  -  note   that 
+        filtering  on  12800  time-ranges  for EACH data point will slow
+        your processing considerably, so it is in your best interest  to
+        filter your data in an optimum way.
+        
+        2)  The  output  light  curve  has  been  "shifted"  so that the
+        timestamps give the leading edge of the light-bin,  rather  than
+        the  center  of the light bin as it did in the past. This change
+        is reflected in the change in the TIMEPIXR keyword from  0.5  to
+        0.0.  This  change was made since Xronos no longer needs to have
+        the light-bin's timestamp given at the center of the bin.   Note
+        that  Xronos  cannot  accurately processed raw XTE data since it
+        does not incorporate the TIMEZERO keyword in  the  same  way  as
+        the XTE files. (See below for more information.)
+        
+        3)  In  version 3.5.1 the usage of TIMEZERO was made to obey the
+        standard XTE convention, i.e., that  TIMEZERO  must  be  applied
+        not  only  to  the  TIME  column  but  also  to TSTART and TSTOP
+        values, as recommended by the FITS working  group.  This  causes
+        an  incompatibility with Xronos, which adds TIMEZERO to the TIME
+        column, but NOT to the  TSTART  and  TSTOP  keywords.   Thus,  a
+        "timezero"  parameter  was  added to SA(SE)EXTRCT which can have
+        any value (INDEF is the default and will set TIMEZERO  =  0.0d0)
+        and   will   be   subtracted  from  the  actual  timestamps.  If 
+        "timezero" is set equal to "FLOAT" then the  value  of  TIMEZERO
+        will   "float"  to  the  earliest  value  such  that  the  first 
+        timestamp in the light-curve will  be  0.0d0,  and  TSTART  will
+        also  be  0.0d0  (since TIMEZERO must be added to TSTART as well
+        as the timestamp).
+        
+        4) ALL GTIANDFILEs and TIMEINT values are "merged"  together  to
+        form one large GTI filter.
+        
+        5)  All  GTI  files  input as GTIANDFILES and GTIORFILES are now
+        pre-filtered and compared against the TSTART  and  TSTOP  values
+        given  in  the  file.  It  was  discovered  that some users were
+        inputting GTI ranges well outside of the  TSTART  and  TSTOP  (+
+        TIMEZERO)    time-ranges,   causing   unexpected   problems   in  
+        calculating the valid ONTIME for science event  data.  This  was
+        solved  by  pre-filtering the GTI file based upon the TSTART and
+        TSTOP keywords given in that extension.   Basically,  the  codes
+        attempt to make allowance for common user errors.
+        
+        6)  CHINT and CHBIN can now understand channels specified in the
+        same format as the CPIX keyword, allowing  the  user  to  "copy"
+        the  pertinent parts of the CPIX keyword and input that into the
+        extractors. This will rebin or channel filter the original  data
+        based  upon these specifications. See the appropriate parameters
+        for more information.
+        
+        Version SAEXTRCT_V3.6:
+        
+        1) A problem that occurred for GTIANDFILES that  contained  only
+        1  row  has been corrected, as well as now checking for the case
+        where the user supplies  a  GTIANDFILE  or  TIMEINT  file  which
+        contains  NO  DATA.  Both  of these cases would cause all of the
+        data points in the files being processed to be filtered out.
+        
+        2)  Additional  information  is  now  written  to   the   screen 
+        describing  the  GTI information supplied to the program.  Also,
+        the TSTART+TIMEZERO and TSTOP+TIMEZERO specified  in  the  GTI's
+        are  now  rigidly  enforced  -  these keywords should accurately
+        describe the information in the extension.   In  the  past  this
+        has not necessarily been the case for some user inputs.
+        
+        3)  The  parameter "columns" now accepts as input either "ERROR"
+        or "BACKEST" such that it will now  find  those  columns,  name,
+        and  the  "GOOD"  option will automatically filter those columns
+        out. Note that it is not possible to select both GOOD and  ERROR
+        in  the  same  run. The user is instructed to run SAEXTRCT twice
+        in this instance, otherwise many other problems can occur.
+        
+        Version SAEXTRCT_V4.0:
+        
+        1) Certain parameters which were  vestigial  have  been  removed
+        and  are  no longer described in the help, others have been made
+        hidden.
+        
+        2) A problem with using  TIMEMIN  and  TIMEMAX  with  GTI  files
+        which  fell  way  outside  of  the  TIMEMIN and TIMEMAX has been
+        fixed.
+        
+        3) Several redundant keywords,  or  incorrectly  described  ones
+        have been removed, or fixed.
+    
+    Please report problems to xtehelp@athena.gsfc.nasa.gov.
+    
+    
+SEE ALSO
+    SEEXTRCT, CHANTRANS, TIMETRANS, SAPLOT, SACHIP

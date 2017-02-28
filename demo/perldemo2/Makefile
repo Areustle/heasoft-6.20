@@ -1,0 +1,13 @@
+HD_COMPONENT_NAME	= demo
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_SCRIPTS	= perldemo2
+
+HD_INSTALL_PERL_LIBS	= 
+
+HD_INSTALL_PFILES	= perldemo2.par
+
+HD_INSTALL_HELP		= perldemo2.html
+
+include ${HD_STD_MAKEFILE}

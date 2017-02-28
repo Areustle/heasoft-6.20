@@ -1,0 +1,665 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/attitude/tasks/aspcorr/aspcorr,v $
+# $Revision: 1.16 $
+# $Date: 2012/11/26 19:48:40 $
+#
+#	Adjust SKY image WCS keywords.
+#
+# $Log: aspcorr,v $
+# Revision 1.16  2012/11/26 19:48:40  rwiegand
+# Oops- missing sigil made string variable a constant.
+#
+# Revision 1.15  2012/08/16 15:59:26  rwiegand
+# Allow non-positive matchtol to skip catalog cross-referencing.
+#
+# Revision 1.14  2010/07/26 04:38:30  rwiegand
+# Recognize the defer.angle starid option.
+#
+# Revision 1.13  2010/07/22 14:56:19  rwiegand
+# Changed default star identification filtering to BASE_COUNT_RANGE.
+#
+# Revision 1.12  2008/07/02 15:34:12  rwiegand
+# Pass cleanup parameter to subtask.
+#
+# Revision 1.11  2008/03/28 15:03:51  rwiegand
+# Added rotate parameter which updates CROTA2.
+#
+# Revision 1.10  2007/10/05 19:19:12  rwiegand
+# Cosmetic changes and comments for alternate method at arriving at
+# residual rotation.
+#
+# Revision 1.9  2005/11/01 23:17:55  rwiegand
+# Caught up with a couple star identification parameter changes.
+#
+# Revision 1.8  2005/10/17 13:37:03  rwiegand
+# Updated tristarid parameter use from poscorr => errcorr.
+#
+# Revision 1.7  2005/08/31 13:22:51  rwiegand
+# Only open image file for rw if necessary.
+#
+# Revision 1.6  2005/08/29 11:49:37  rwiegand
+# Removed UVOT mission-dependency by adding srclist parameter.  Streamlined
+# starid parameter passing.
+#
+# Revision 1.5  2005/08/05 12:33:37  rwiegand
+# Pass zerobkg to uvotdetect.  Disable refine step of star matching.
+#
+# Revision 1.4  2005/07/18 12:39:12  rwiegand
+# Transfer quaternion between tasks using FITS keywords.
+#
+# Revision 1.3  2005/06/15 21:12:17  rwiegand
+# Added parameter for user to write aspect correction keywords.
+#
+# Revision 1.2  2005/05/18 21:10:33  rwiegand
+# Allow special value NONE for outhdu parameter.
+#
+# Revision 1.1  2005/04/19 19:33:08  rwiegand
+# Aspect correction utility.
+#
+
+use strict;
+
+package Aspect::Corrector;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use POSIX;
+use Astro::FITS::CFITSIO qw(:constants);
+use Math;
+
+use constant CRVAL_DIGITS => -12;
+
+
+
+# main
+{
+	my $tool = __PACKAGE__->new(version => 1.1);
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outhdu=string method=string inhdu=string
+				quat=string ra=real dec=real record=string rotate=boolean
+				srcfile=file starid=string catspec=file idfile=file
+				checksum=bool cleanup=bool history=bool chatter=int
+				) ],
+			noget => [ qw(quat ra dec inhdu starid catspec idfile) ],
+			);
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->doMethod
+		if $self->isValid;
+
+	$self->update
+		if $self->isValid;
+
+	$self->finalize
+		if $self->isValid;
+}
+
+
+
+sub isReal
+{
+	my ($s) = @_;
+
+	if ($s =~ /^-?\d+$/) {
+		return 1;
+	}
+
+	if ($s =~ /^-?\d*\.\d+([eE][-+]?\d+)?$/) {
+		return 1;
+	}
+
+	if ($s =~ /^-?\d+\.([eE][-+]?\d+)?$/) {
+		return 1;
+	}
+
+	return 0;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $fitsmode = $args->{outhdu} =~ /^NONE$/i ? READONLY : READWRITE;
+	my $path = $args->{infile};
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, $fitsmode, $status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to open $path for modification [$status]");
+		return;
+	}
+
+	$self->{fptr} = $fits;
+	my $hdus = 0;
+	if ($fits->get_num_hdus($hdus, $status)) {
+		$self->error(BAD_INPUT,
+				"unable to determine number of HDUs [$status]");
+		return;
+	}
+
+	my @hdu;
+	if ($args->{outhdu} =~ /^ALL$/i) {
+		for (my $i = 0; $i < $hdus; ++$i) {
+			push(@hdu, $self->resolveHDU($fits, $i));
+		}
+	}
+	elsif ($args->{outhdu} =~ /^NONE$/i) {
+		if ($args->{method} =~ /^STARID$/) {
+			$self->report('not applying correction to any HDUs');
+		}
+		else {
+			$self->error(BAD_INPUT,
+					'outhdu=NONE only makes sense when method=STARID');
+		}
+	}
+	else {
+		my @range = split(/,\s*/, $args->{outhdu});
+		foreach my $x (@range) {
+			if ($x =~ /-/) {
+				my ($first, $last) = split('-', $x, 2);
+				my $hdu1 = $self->resolveHDU($fits, $first);
+				my $hdu2 = $self->resolveHDU($fits, $last);
+				push(@hdu, $hdu1, $hdu2);
+				my $named = $hdu1->{name};
+				for (my $i = $hdu1->{num1}; $i < $hdu2->{num0}; ++$i) {
+					push(@hdu, $self->resolveHDU($fits, $i, name => $named));
+				}
+			}
+			else {
+				push(@hdu, $self->resolveHDU($fits, $x));
+			}
+		}
+	}
+
+	return if not $self->isValid;
+
+	$self->{hdu} = \@hdu;
+
+	my @record;
+	if ($args->{record} !~ /^NONE$/i) {
+		my $i = 0;
+		foreach my $s (split(',', $args->{record})) {
+			my $key = 'ASPCORR';
+			$key .= $i if $i;
+			push(@record, [ $key => $s ]);
+			++$i;
+		}
+	}
+	$self->{record} = \@record;
+}
+
+
+
+sub doMethod
+{
+	my ($self) = @_;
+
+	my $method = 'do' . uc($self->args->{method});
+
+	if ($self->can($method)) {
+		$self->$method();
+	}
+	else {
+		$self->error(BAD_INPUT, "invalid method '$method'");
+	}
+}
+
+
+sub doRADEC
+{
+	my ($self) = @_;
+
+	$self->{ra} = $self->getParameter('ra');
+	$self->{dec} = $self->getParameter('dec');
+}
+
+
+sub doQUAT
+{
+	my ($self) = @_;
+
+	my $quat = $self->getParameter('quat');
+	my @q = split(' ', $quat);
+	$self->{quat} = $self->qualifyQuaternion(@q);
+
+	if ($self->isValid) {
+		if (not $self->args->{rotateFlag}) {
+			$self->warning('the quaternion is applied to the reference pixel'
+					. ' but not the whole image');
+		}
+	}
+}
+
+
+sub qualifyQuaternion
+{
+	my ($self, @q) = @_;
+
+	if (@q != 4) {
+		$self->error(BAD_INPUT, 'quaternion does not have 4 elements');
+	}
+	else {
+		foreach my $q (@q) {
+			if (not isReal($q)) {
+				$self->error(BAD_INPUT,
+						"quaternion element '$q' is invalid");
+			}
+		}
+	}
+
+	if ($self->isValid) {
+		my $norm = sqrt($q[0]**2 + $q[1]**2 + $q[2]**2 + $q[3]**2);
+		my $errnorm = 1 - $norm;
+		if (abs($errnorm) > 1e-10) {
+			$self->error(BAD_INPUT,
+					"invalid quaternion [1-norm $errnorm]");
+		}
+		else {
+			my $invnorm = 1.0 / $norm;
+			foreach my $q (@q) {
+				$q *= $invnorm;
+			}
+		}
+	}
+
+	return \@q;
+}
+
+
+sub doSTARID
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $hdu = $self->getParameter('inhdu');
+	$self->getParameter('srcfile');
+	$self->getParameter('starid');
+	$self->getParameter('catspec');
+	$self->getParameter('idfile');
+
+	if ($self->isValid) {
+		my %outer = (
+			unradius => 0,
+			reflist => 'NONE',
+
+			matchtol => undef,
+			uncount => undef,
+			unmag => undef,
+
+			cntcorr => 5,
+			poscorr => 120,
+			errcorr => 2,
+			rotcorr => 60,
+		);
+
+		my %inner = (
+			'n.observation' => 30,
+			'n.reference' => 50,
+
+			'doublet.err' => 2,
+			'doublet.min' => 60,
+			'triplet.min' => 10,
+
+			'mag.err' => 1,
+			'mag.max' => 25,
+			'mag.min' => 10,
+
+			'min.matches' => 6,
+			'group.angle' => 2,
+			'group.delta' => 3,
+			'defer.angle' => 2,
+
+			'filter.ignore' => 0.1,
+			'filter.mode' => 'BASE_COUNT_RANGE',
+			'filter.base' => 1,
+			'filter.median' => 1,
+			'filter.count' => 3,
+			'filter.range' => 0.3,
+			'refilter.base' => 1,
+			'refilter.median' => 1,
+
+			'sep.sources' => -1,
+			expand => 'NONE',
+
+			chatter => 3,
+			clobber => 'no',
+		);
+
+		foreach my $par (qw(n.primary n.secondary n.catalog
+				rot.err
+				expand expand.radius expand.dist expand.mag expand.worst
+				)) {
+			$inner{$par} = undef;
+		}
+
+		foreach my $kv (split(/\s+/, $args->{starid})) {
+			my ($key, $value) = split('=', $kv, 2);
+			if ($key =~ /^NONE$/i) {
+			}
+			elsif (exists($outer{$key})) {
+				$outer{$key} = $value;
+			}
+			elsif (exists($inner{$key})) {
+				$inner{$key} = $value;
+			}
+			else {
+				$self->warning("ignoring bogus tristarid parameter $kv");
+			}
+		}
+
+		# how to pretty up the order?
+		my $starid = '';
+		foreach my $key (keys(%inner)) {
+			$starid .= "$key=$inner{$key} "
+				if defined($inner{$key});
+		}
+
+		# remove the undefined values
+		foreach my $key (keys(%outer)) {
+			if (not defined($outer{$key})) {
+				delete($outer{$key});
+			}
+		}
+
+		$outer{starid} = $starid;
+
+		my $command = $self->buildCommand('tristarid',
+				infile => $args->{srcfile},
+				catspec => $args->{catspec},
+				outfile => $args->{idfile},
+				%outer,
+				cleanup => $args->{cleanup},
+				chatter => 3,
+				);
+		$self->shell($command);
+		return if not $self->isValid;
+	}
+
+	my @q;
+	{
+		my $status = 0;
+		my $fits = Astro::FITS::CFITSIO::open_file(
+				$args->{idfile}, READONLY, $status);
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to open $args->{idfile} [$status]");
+			return;
+		}
+		my $header = $fits->read_header;
+		$fits->close_file($status);
+		for (my $i = 0; $i < 4; ++$i) {
+			my $key = 'ASPQ' . $i;
+			if (exists($header->{$key})) {
+				$q[$i] = $header->{$key};
+			}
+			else {
+				$self->error(BAD_INPUT, "missing $key");
+			}
+		}
+	}
+
+	if (@q == 4) {
+		$self->{quat} = $self->qualifyQuaternion(@q);
+		if ($self->isValid) {
+			my $str = join(' ', map { sprintf('%.16e', $_) } @{ $self->{quat} });
+			$self->report("solution: quaternion $str");
+		}
+	}
+	else {
+		$self->error(BAD_INPUT, "no correction found");
+	}
+}
+
+
+sub resolveHDU
+{
+	my ($self, $fits, $hdu, %args) = @_;
+
+	my %hdu;
+
+	my $status = 0;
+	my $type = 0;
+	my $header;
+
+	if ($hdu =~ /^\d+$/) {
+		$fits->movabs_hdu($hdu + 1, $type, $status);
+		$hdu{num0} = $hdu;
+		$hdu{num1} = $hdu + 1;
+	}
+	else {
+		my $version = 0;
+		if ($fits->movnam_hdu(ANY_HDU, $hdu, $version, $status)) {
+			# invalid HDU reported below
+		}
+		else {
+			my $hdunum = 0;
+			$fits->get_hdu_num($hdunum);
+			$hdu{num0} = $hdunum - 1;
+			$hdu{num1} = $hdunum;
+			$hdu{name} = $hdu;
+		}
+	}
+
+
+	my $tag = "HDU $hdu{num0} +1";
+	my $bitpix = 0;
+	my $naxis = 0;
+	my @naxis;
+
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to resolve HDU '$hdu'");
+	}
+
+	elsif ($fits->get_img_parm($bitpix, $naxis, \@naxis, $status)) {
+		$self->error(BAD_FITS,
+				"unable to get $tag image parameters [$status]");
+	}
+
+	else {
+		$hdu{header} = $fits->read_header;
+		if ($args{named} and not $hdu{name}) {
+			my %tmp;
+			$self->storeHeaderKeywords($hdu{header},
+					hash => \%tmp,
+					keys => [ qw(EXTNAME HDUNAME) ],
+					optional => 1,
+					);
+			if ($tmp{EXTNAME} or $tmp{HDUNAME}) {
+				$hdu{name} = $tmp{EXTNAME} || $tmp{HDUNAME};
+			}
+			else {
+				$self->warning("unable to determine name for HDU '$hdu'");
+			}
+		}
+
+		$hdu{wcs} = $self->getWCS($hdu{header});
+	}
+
+	return \%hdu;
+}
+
+
+
+sub update
+{
+	my ($self) = @_;
+
+	my $method = $self->args->{method};
+
+	if ($method =~ /^RADEC$/i or $method =~ /^QUAT$/i) {
+		$self->updateImages;
+	}
+	elsif ($method =~ /^STARID$/i) {
+		# if attfile, updateAttitude?
+		$self->updateImages;
+	}
+}
+
+
+
+sub updateImages
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $fits = $self->{fptr};
+
+	foreach my $hdu (@{ $self->{hdu} }) {
+
+		my $status = 0;
+
+		my $crota2 = undef;
+
+		if ($self->{quat}) {
+			# apply rotation
+			my $wcs = $hdu->{wcs};
+			my $u = Math::rd2unit(Math::toRadians($wcs->{CRVAL1}),
+					Math::toRadians($wcs->{CRVAL2}));
+			my $v = Math::v3q($u, $self->{quat});
+			my ($ra_r, $dec_r) = Math::v3rdl($v);
+			$self->{ra} = Math::toDegrees($ra_r);
+			$self->{dec} = Math::toDegrees($dec_r);
+
+			if ($args->{rotateFlag}) {
+				my ($nx, $ny) = Math::createSystem($v);
+				my $nxhat = Math::v3q($nx, $self->{quat});
+				my $px = Math::v3dot($nxhat, $nx);
+				my $py = Math::v3dot($nxhat, $ny);
+				my $radians = atan2($py, $px);
+				$crota2 = $wcs->{CROTA2} + Math::toDegrees($radians);
+			}
+		}
+
+		my $type = 0;
+		if ($fits->movabs_hdu($hdu->{num1}, $type, $status)) {
+			$self->error(BAD_FITS,
+					"unable to move to HDU $hdu->{num0} +1 [$status]");
+		}
+
+		elsif ($fits->update_key_dbl(CRVAL1 => $self->{ra},
+				CRVAL_DIGITS, 'WCS reference value', $status)) {
+			$self->error(BAD_FITS,
+					"unable to update CRVAL1 [$status]");
+		}
+
+		elsif ($fits->update_key_dbl(CRVAL2 => $self->{dec},
+				CRVAL_DIGITS, 'WCS reference value', $status)) {
+			$self->error(BAD_FITS,
+					"unable to update CRVAL2 [$status]");
+		}
+
+		elsif (defined($crota2) and $fits->update_key_dbl(CROTA2 => $crota2,
+				CRVAL_DIGITS, 'WCS rotation angle', $status)) {
+			$self->error(BAD_FITS,
+					"unable to update CROTA2 [$status]");
+		}
+
+		else {
+			my $tag = "HDU $hdu->{num0}";
+			if ($hdu->{name}) {
+				$tag .= "[$hdu->{name}]";
+			}
+			$self->report("updated $tag CRVAL to $self->{ra}, $self->{dec}")
+				if $self->chatter(2);
+		}
+
+		foreach my $r (@{ $self->{record} }) {
+			if ($fits->update_key_str($r->[0] => $r->[1], '', $status)) {
+				$self->error(BAD_FITS,
+						"unable to set $r->[0] to $r->[1] [$status]");
+			}
+		}
+
+#		if ($self->{quat} and $self->isValid) {
+#			# calculate residual rotation quaternion
+#			my $wcs = $hdu->{wcs};
+#			my $deltaRA = $self->{ra} - $wcs->{CRVAL1};
+#			my $deltaDEC = $self->{dec} - $wcs->{CRVAL2};
+#			my $qRA = constructQuat([ 0, 0, 1 ], Math::toRadians($deltaRA));
+#			my $angle = Math::toRadians($self->{ra});
+#			my $qDEC = constructQuat([ sin($angle), -cos($angle), 0 ],
+#					Math::toRadians($deltaDEC));
+#			my $qApplied = Math::productOfQuats($qRA, $qDEC);
+#			my $qResidual = Math::getQuatOfChange($qApplied, $self->{quat});
+#print "qResidual => @$qResidual\n";
+#			my $arcmin = 60*Math::toDegrees(2*POSIX::acos($qResidual->[3]));
+#			my $qTest = Math::productOfQuats($qApplied, $qResidual);
+#			#	qTest == $self->{quat}
+#			for (my $i = 0; $i < 4; ++$i) {
+#				$fits->update_key_dbl("ASPR$i" => $qResidual->[$i],
+#						15, 'Residual quaternion', $status);
+#			}
+#			if ($status) {
+#				$self->error(BAD_OUTPUT, 'unable to store residual quaternion');
+#			}
+#		}
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub constructQuat
+{
+	my ($unit, $radians) = @_;
+	my $cos = cos($radians / 2);
+	my $sin = sin($radians / 2);
+	if ($cos < 0) {
+		# want to flip all quaternion elements
+		$cos = -$cos;
+		$sin = -$sin;
+	}
+	my $q = [
+		$unit->[0] * $sin,
+		$unit->[1] * $sin,
+		$unit->[2] * $sin,
+		$cos,
+	];
+	return $q;
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+
+		my $fits = $self->{fptr};
+		my $update = $args->{outhdu} !~ /^NONE$/i;
+
+		$self->putParameterHistory($fits)
+			if $update;
+
+		my $status = 0;
+		$fits->close_file($status);
+
+		# this is expensive, so try to avoid it
+		$self->updateChecksums($args->{infile})
+			if ($update and $args->{checksumFlag});
+	}
+}
+

@@ -1,0 +1,1 @@
+#define HXD_TRNGRADE_OK 1

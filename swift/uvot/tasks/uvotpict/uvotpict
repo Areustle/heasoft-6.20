@@ -1,0 +1,537 @@
+#!/usr/bin/perl
+# $Revision: 1.18 $
+# $Source: /headas/headas/swift/uvot/tasks/uvotpict/uvotpict,v $
+# $Date: 2011/03/02 15:51:34 $
+#
+# $Log: uvotpict,v $
+# Revision 1.18  2011/03/02 15:51:34  rwiegand
+# Use SimpleFITS for interacting with StarID::SourceTable.
+#
+# Revision 1.17  2006/06/21 18:23:06  rwiegand
+# The UVOTPICT_DISPLAY environment variable can be set to cause the ds9
+# drawing to employ Xvfb.
+#
+# Revision 1.16  2005/12/05 13:51:50  rwiegand
+# Separate parameters for showing input source catalog sources with matches
+# versus those without matches.
+#
+# Revision 1.15  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.14  2005/10/17 12:35:27  rwiegand
+# Source table module relocated.
+#
+# Revision 1.13  2005/09/07 18:32:25  rwiegand
+# Draw somewhat larger circles around matched sources.
+#
+# Revision 1.12  2005/08/29 12:05:39  rwiegand
+# Load showcat parameter.
+#
+# Revision 1.11  2005/07/29 14:11:17  rwiegand
+# Updated default Skyview server.  Made string constant parameter values
+# case insensitive.  Only load input sources if showcat is true.
+#
+# Revision 1.10  2005/06/20 15:20:00  rwiegand
+# Use PostScript level 1.  Adjusted where labels appear in plot.
+#
+# Revision 1.9  2005/03/21 14:06:21  rwiegand
+# Reduced size of circles drawn around matched sources.
+#
+# Revision 1.8  2005/03/04 19:44:56  rwiegand
+# Picture changes from Martin.
+#
+# Revision 1.7  2004/10/17 11:31:00  rwiegand
+# Added parameter for size of picture.
+#
+# Revision 1.6  2004/08/26 19:44:44  rwiegand
+# Only show catalog objects from source list in output if they correspond
+# to a packet source.
+#
+# Revision 1.5  2004/06/17 21:28:30  rwiegand
+# Added parameter for passing in list error circles.  Updated to use new
+# HEAdas perl task support.
+#
+# Revision 1.4  2004/06/03 20:29:17  rwiegand
+# Unit test for uvotpict tool.
+#
+# Revision 1.3  2004/05/20 20:03:43  rwiegand
+# Added Postscript output option.
+#
+# Revision 1.2  2004/04/28 18:16:37  rwiegand
+# Refinements to grid and labels.
+#
+# Revision 1.1  2004/04/27 16:08:20  rwiegand
+# Tool to create a UVOT finding chart using Skyview.
+#
+
+use strict;
+
+package UVOT::Picture;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+use FileHandle;
+
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+use SimpleFITS;
+
+use Math;
+use StarID::SourceTable;
+use WebQuery;
+
+
+
+# main
+{
+	my $task = UVOT::Picture->new(
+			tool => 'uvotpict',
+			version => 'v1.3',
+			);
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(infile=file outfile=file
+				extname=string outformat=string
+				ra=real dec=real arcmin=real reflist=string
+				showmatch=bool showunmatch=bool
+				skyfile=string skyserver=string skysurvey=string
+				exitds9=bool clobber=bool cleanup=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadSourceTable
+		if $self->isValid;
+
+	$self->fetchSkyImage
+		if $self->isValid;
+
+	$self->grabSkyKeywords
+		if $self->isValid;
+
+	$self->createDetailedImage
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$args->{outformat} = lc($args->{outformat});
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile)) {
+			my $value = $args->{$key};
+			if ($value !~ /^NONE$/i and -e $value) {
+				$self->error(BAD_OUTPUT,
+					"output $value exists and clobber not set");
+			}
+		}
+	}
+
+	# parse reflist
+	if ($args->{reflist} !~ /^NONE$/i) {
+		my @refstr = split(',', $args->{reflist});
+		my @ref;
+		my $posReal = qr(\d+\.\d+);
+		foreach my $str (@refstr) {
+
+			my %pos;
+
+			if ($str =~ /^(\w+):($posReal)([-+]$posReal)~($posReal)$/) {
+				$pos{ID} = $1;
+				$pos{RA} = $2;
+				$pos{DEC} = $3;
+				$pos{ERROR} = $4;
+			}
+			elsif ($str =~ /^(\w+):($posReal)([-+]$posReal)$/) {
+				$pos{ID} = $1;
+				$pos{RA} = $2;
+				$pos{DEC} = $3;
+			}
+
+			if (exists($pos{ID})) {
+				push(@ref, \%pos);
+				$self->{alphaPos} ||= \%pos;
+			}
+		}
+
+		$self->{references} = \@ref;
+	}
+	else {
+		$self->{references} = [ ];
+	}
+
+	$self->{sources} = [ ];
+}
+
+
+sub fetchSkyImage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	if ($args->{skyfile} !~ /^SKYVIEW$/i) {
+		my $spec = $self->parseInputURL($args->{skyfile});
+		if (not -f $spec->{filebase}) {
+			$self->error(BAD_INPUT, "bad SKY image '$args->{skyfile}'");
+		}
+		else {
+			$self->{skyfits} = $args->{skyfile};
+			$self->report("SKY image '$args->{skyfile}' given by parameter");
+		}
+		return;
+	}
+
+	my $path = $self->temporary('sky', ext => '.fits');
+
+	my $pos = sprintf('%.3f %+.3f', $args->{ra}, $args->{dec});
+	my $survey = $args->{skysurvey};
+
+	my $degrees = ($args->{arcmin} / 60) || 0.35;
+
+	my $fetch = WebQuery->new(
+		host => $args->{skyserver},
+		url => '/cgi-bin/pskcall',
+		method => 'POST',
+		file => $path,
+		input => [
+			"VCOORD=$pos",
+			"SURVEY=$survey",
+			"SFACTR=$degrees",
+		],
+		args => { chatter => $args->{chatter} },
+		);
+
+	$fetch->execute;
+
+	if (not $fetch->isValid) {
+		$self->error(BAD_EXECUTE,
+			"attempt to retrieve SKY image from $args->{skyserver} failed");
+	}
+	else {
+		$self->{skyfits} = $path;
+		$self->report("grabbed SKY image $path");
+	}
+
+}
+
+
+
+sub loadSourceTable
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $path = $args->{infile};
+
+	my $simple = SimpleFITS->readonly($path);
+	my $status = $simple->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to move to open $path [$status]");
+		return;
+	}
+
+	if ($args->{showmatchFlag} or $args->{showunmatchFlag}) {
+
+		my $loader = StarID::SourceTable->new(tool => $self->{tool});
+
+		$self->{sources} = $loader->loadFile($path,
+				simple => $simple,
+				extname => $args->{extname},
+				columns => [ qw(REFID STARID RA DEC) ],
+				scale => 'degrees',
+				);
+
+		my $count = @{ $self->{sources} };
+		$self->report("loaded $count sources from $args->{infile}");
+	}
+
+	my $header;
+	$simple->readheader($header);
+	$self->storeHeaderKeywords($header,
+			keys => [ qw(RA_PNT DEC_PNT OBS_ID DATE-OBS) ],
+			);
+
+	$status = $simple->close->status;
+}
+
+
+sub grabSkyKeywords
+{
+	my ($self) = @_;
+
+	my $path = $self->{skyfits};
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT,
+			"unable to open $path [$status]");
+		return;
+	}
+
+	my $header = $fits->read_header;
+
+	$fits->close_file($status);
+
+	$self->storeHeaderKeywords($header,
+			keys => [ qw( NAXIS1 NAXIS2 CTYPE1 CTYPE2
+				CRPIX1 CRPIX2 CRVAL1 CRVAL2 CDELT1 CDELT2
+			) ],
+			);
+
+	$self->storeHeaderKeywords($header,
+			keys => [ qw(CUNIT1 CUNIT2 CROTA2) ],
+			optional => 1,
+			);
+
+	$self->{CUNIT1} ||= 'deg';
+	$self->{CUNIT2} ||= 'deg';
+
+	$self->{CROTA2} ||= 0;
+
+	if ($self->{CTYPE1} ne 'RA---TAN' or $self->{CTYPE2} ne 'DEC--TAN') {
+		$self->error(BAD_INPUT,
+			"bad image CTYPEn [$self->{CTYPE1}/$self->{CTYPE2}]");
+	}
+	else {
+		$self->{TYPE} = '-TAN';
+	}
+
+	if ($self->{CUNIT1} ne 'deg' or $self->{CUNIT2} ne 'deg') {
+		$self->error(BAD_INPUT,
+			"bad image CUNITn [$self->{CUNIT1}/$self->{CUNIT2}]");
+	}
+}
+
+
+sub createDetailedImage
+{
+    my ($self) = @_;
+
+	my $args = $self->args;
+
+    my $regions = $self->temporary('pict', ext => '.reg');
+
+    my $fh = FileHandle->new($regions, 'w');
+    if (not $fh) {
+        $self->error(BAD_OUTPUT,
+            "unable to create regions file $regions: $!");
+        return;
+    }
+
+    $fh->print(q(# Region file format: DS9 version 3.0
+global select=1 edit=1 move=1 delete=1 include=1 fixed=0 source
+));
+
+    # error circles
+    $fh->print("global color=yellow\n");
+	foreach my $p (@{ $self->{references} }) {
+		if ($p->{ERROR}) {
+    		$fh->print("image;circle($p->{RA}d,$p->{DEC}d,$p->{ERROR}d)\n");
+		}
+	}
+
+    # green circles for matches
+	if ($args->{showmatchFlag}) {
+    	$fh->print("global color=green\n");
+
+		foreach my $s (@{ $self->{sources} }) {
+
+			next if $s->{REFID} < 0;
+			next if $s->{STARID} !~ /\d+/;
+
+    		$fh->print("image;circle($s->{RA}d, $s->{DEC}d,4)\n");
+		}
+	}
+
+    # white circles for unmatched
+	if ($args->{showunmatchFlag}) {
+    	$fh->print("global color=white\n");
+
+		foreach my $s (@{ $self->{sources} }) {
+
+			next if $s->{REFID} < 0;
+			next if $s->{STARID} =~ /\d+/;
+
+    		$fh->print("image;circle($s->{RA}d, $s->{DEC}d,4)\n");
+		}
+	}
+
+	# title
+	my $x = $self->{NAXIS2} * 0.5;
+	my $y = $self->{NAXIS2} * 1.15;
+
+	$fh->print(qq(global color=black font="courier 14 bold"\n));
+	$fh->print("image;text($x,$y) # text={UVOT Finding Chart}\n");
+
+	my $y = $self->{NAXIS2} * 1.08;
+	$fh->print("image;text($x,$y) # text={OBSID $self->{OBS_ID} / DATE-OBS $self->{'DATE-OBS'}}\n");
+
+    $fh->close;
+
+	my $grid = "$ENV{HEADAS}/refdata/uvotpict.grd";
+
+	if (my $dispcmd = $ENV{UVOTPICT_DISPLAY}) {
+		my $display = $self->getVirtualDisplay($dispcmd);
+		$ENV{DISPLAY} = ":$display.0";
+	}
+
+    my $command = 'ds9 -pagesetup orientation landscape '
+		. " -file $self->{skyfits}"
+		. ' -zoom to fit -zoom 0.65 -cmap b -linear -zscale'
+		. " -region $regions"
+		. " -grid skyformat degrees -grid load $grid -grid yes"
+		# make grid delta a function of image size
+		;
+
+	if ($args->{outformat} eq 'postscript') {
+		$command .= ' -print destination file'
+				. " -print filename $args->{outfile}"
+				. ' -print level 1'
+				. ' -print';
+	}
+	else {
+		$command .= " -saveas $args->{outformat} $args->{outfile}";
+	}
+
+	$command .= ' -exit'
+		if $args->{exitds9} eq 'yes';
+
+    $self->shell($command);
+}
+
+
+sub getVirtualDisplay
+{
+	my ($self, $dispcmd) = @_;
+
+	my $display;
+
+	my $result = $self->shell("ps -fu $ENV{LOGNAME} | grep Xvfb");
+	foreach my $line (@{ $result->{lines} }) {
+		if ($line =~ /Xvfb\s+:(\d+)/) {
+			$display = $1;
+			$self->report("found Xvfb on display $display");
+		}
+	}
+
+	if (not $display) {
+		if ($dispcmd =~ /:(\d+)/) {
+			$self->shell("$dispcmd &");
+			$display = $1;
+		}
+		else {
+			$self->warning("did not find display in '$dispcmd'");
+		}
+	}
+
+	return $display;
+}
+
+
+sub wcsRand
+{
+	my ($self, $n) = @_;
+
+	my $naxis = $self->{'NAXIS' . $n};
+	my $crpix = $self->{'CRPIX' . $n};
+	my $crval = $self->{'CRVAL' . $n};
+	my $cdelt = $self->{'CDELT' . $n};
+
+	my $degrees = $crval + (rand() * $naxis - $crpix) * $cdelt;
+	my $radians = Math::degreesToRadians($degrees);
+
+	return $radians;
+}
+
+
+sub createTestSources
+{
+	my ($self) = @_;
+
+	my @sources;
+	for (my $i = 0; $i < $self->{testSources}; ++$i) {
+		push(@sources, {
+				RA => $self->wcsRand(1),
+				DEC => $self->wcsRand(2),
+			});
+	}
+	$self->{sources} = \@sources;
+}
+
+
+sub convertDegreesToPixels
+{
+	my ($self, $deg) = @_;
+
+	my $pixels = abs($deg / $self->{CDELT1});
+	# was $deg * UVOT::Convert::PLATE_SCALE_d / $self->{binning};
+
+	return $pixels;
+}
+
+
+sub rd2xy
+{
+	my ($self, $rad, $decd) = @_;
+
+	my ($xpix, $ypix);
+
+	my $status = 0;
+	Astro::FITS::CFITSIO::fits_world_to_pix(
+			$rad, $decd,
+			$self->{CRVAL1}, $self->{CRVAL2},
+			$self->{CRPIX1}, $self->{CRPIX2},
+			$self->{CDELT1}, $self->{CDELT2},
+			$self->{CROTA2}, $self->{TYPE},
+			$xpix, $ypix,
+			$status,
+			);
+
+	# offset for ds9 drawing
+	$xpix += 0.5;
+	$ypix += 0.5;
+
+	$self->report(sprintf('ra %.2f dec %.2f => %.2f %.2f',
+		$rad, $decd, $xpix, $ypix));
+
+	return ($xpix, $ypix);
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	return if $self->args->{cleanup} ne 'yes';
+
+	foreach my $file ($self->temporaries) {
+		if (-f $file) {
+			if (not unlink($file)) {
+				$self->warning("cleanup: unable to unlink $file: $!");
+			}
+		}
+	}
+}
+

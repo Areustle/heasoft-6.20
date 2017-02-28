@@ -1,0 +1,286 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/pointxform/pointxform,v $
+# $Revision: 1.1 $
+# $Date: 2005/03/03 19:25:20 $
+#
+#	xformpix
+#		Transform coordinates from one system to another.
+#
+#
+# $Log: pointxform,v $
+# Revision 1.1  2005/03/03 19:25:20  rwiegand
+# Convert coordinates between telescope definition (TELDEF) systems.
+#
+
+use strict;
+
+package Transform::Coordinates;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+
+use Astro::Convert;
+
+
+# main
+{
+	my $task = Transform::Coordinates->new;
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->transformCoordinates
+		if $self->isValid;
+
+	$self->finalize
+		if $self->isValid;
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				from=string to=string x=real y=real
+				teldeffile=file alignfile=file attfile=file
+				ra=real dec=real roll=real time=real
+				fromworld=boolean
+				cleanup=boolean chatter=int
+			) ],
+			noget => [ qw(ra dec roll time) ],
+			);
+
+	my $args = $self->args;
+
+	my @keys = qw(teldeffile alignfile);
+	if ($args->{time} > 0) {
+		push(@keys, $args->{attfile});
+	}
+
+	foreach my $key (@keys) {
+		if (not -f $args->{$key}) {
+			$self->error(BAD_INPUT, "invalid $key $args->{$key}");
+		}
+		else {
+			$self->{$key} = $args->{$key};
+			my $tag = substr($key, 0, length($key) - 4);
+			my $status = 0;
+			my $fits = Astro::FITS::CFITSIO::open_file(
+					$args->{$key}, READONLY, $status);
+			if ($status) {
+				$self->error(BAD_INPUT,
+						"unable to open FITS $key $args->{$key} [$status]");
+			}
+			else {
+				my $header = $fits->read_header;
+				$fits->close_file($status);
+				Task::FITS::cleanHeaderStrings($header);
+				$self->{$tag} = $header;
+			}
+		}
+	}
+
+	return if not $self->isValid;
+
+	if ($args->{attfile} =~ /^NONE$/) {
+		foreach my $arg (qw(ra dec roll)) {
+			$self->{$arg} = $self->getParameter($arg);
+		}
+		$self->{attfile} = 'NONE';
+	}
+	else {
+		# take nominal pointing from attfile {RA,DEC,PA}_PNT
+
+		$self->getParameter('time');
+		$self->{attfile} = $args->{attfile};
+
+		my $status = 0;
+		my $fits = Astro::FITS::CFITSIO::open_file(
+				$args->{attfile}, READONLY, $status);
+		if ($status) {
+			$self->error(BAD_INPUT,
+				"unable to open $args->{attfile} [$status]");
+		}
+		else {
+			my $header = $fits->read_header;
+			$fits->close_file($status);
+			my %TRANS = (
+				RA_PNT   => 'ra',
+				DEC_PNT  => 'dec',
+				PA_PNT   => 'roll',
+			);
+			foreach my $key (qw(RA_PNT DEC_PNT PA_PNT)) {
+				if (not exists($header->{$key})) {
+					$self->error(BAD_INPUT,
+						"unable to read $key from $args->{attfile}");
+				}
+				else {
+					$self->{$TRANS{$key}} = $header->{$key};
+				}
+			}
+		}
+	}
+}
+
+
+sub transformCoordinates
+{
+	my ($self, $ra, $dec, $roll) = @_;
+
+	my $args = $self->args;
+
+	my $teldef = $self->{teldef};
+	$args->{time} ||= 0;
+
+	my %common = (
+		task  => $self,
+
+		from => $args->{from},
+
+		teldef => $self->{teldeffile},
+
+		attfile => $self->{attfile},
+		misstime => $args->{time},
+
+		ra => $self->{ra},
+		dec => $self->{dec},
+		roll => $self->{roll},
+
+		toWorld => 1,    # always report WCS values
+
+		fromWorld => $args->{fromworldFlag},
+
+		points => [ [ $args->{x}, $args->{y} ] ],
+		fitsToFrom => -(1 - $teldef->{$args->{from} . 'XPIX1'}),
+	);
+
+
+	# determine how many segments
+	my $probe = 1;
+	while (exists($teldef->{"COE_X${probe}_A"})) {
+		++$probe;
+	}
+	my @segment = ($probe > 1) ? (1 .. $probe - 1) : (0);
+
+	my %to = map { $_ => 1 } split(/,/, $args->{to});
+	my $toAll = $args->{to} =~ /^ALL$/i;
+
+	# collect transform descriptions
+	my @to;
+	for (my $i = 0; exists($teldef->{"COORD$i"}); ++$i) {
+		my $system = $teldef->{'COORD' . $i};
+		next if $system eq $args->{from};
+		push(@to, $system)
+			if ($toAll or $to{$system});
+	}
+
+	my @xform;
+	if ($args->{from} eq 'RAW') {
+		foreach my $segment (@segment) {
+			foreach my $to (@to) {
+				push(@xform, {
+						to => $to,
+						segment => $segment,
+					});
+				if ($segment > 0) {
+					$xform[-1]{fromtag} = "RAW[$segment]";
+				}
+			}
+		}
+	}
+	else {
+		foreach my $to (@to) {
+			if ($to eq 'RAW') {
+				foreach my $segment (@segment) {
+					push(@xform, {
+							to => $to,
+							segment => $segment,
+						});
+					if ($segment > 0) {
+						$xform[-1]{totag} = "RAW[$segment]";
+					}
+				}
+			}
+			else {
+				push(@xform, { to => $to, segment => 0 });
+			}
+		}
+	}
+
+	my $helper = Astro::Convert->new(task => $self,
+			args => { chatter => $self->chatter },
+			alignfile => $args->{alignfile},
+			defer => 1,
+			);
+
+	my $last = '';
+	foreach my $xform (@xform) {
+
+		$helper->convert(
+				%common,
+				to => $xform->{to},
+				segment => $xform->{segment},
+				toToFITS => 1 - $teldef->{$xform->{to} . 'XPIX1'},
+				);
+
+		my $o = $helper->{objects}[0];
+
+		# only create the attfile once
+		$common{attfile} = $helper->{attfile};
+
+		my $fromtag = $xform->{fromtag} || $args->{from};
+
+		if ($fromtag ne $last) {
+			$last = $fromtag;
+			my $unit = $teldef->{$args->{from} . '_UNIT'};
+			my $formatted;
+			my ($worldx, $worldy);
+			if ($args->{fromworldFlag}) {
+				$worldx = $args->{x};
+				$worldy = $args->{y};
+			}
+			else {
+				my $fromWCS = $helper->getWCS($args->{from});
+				my $toFITS = -$common{fitsToFrom};
+				($worldx, $worldy) = $self->pixToWorld(
+						$fromWCS, $args->{x} + $toFITS, $args->{y} + $toFITS);
+			}
+			$formatted = sprintf('%.4f, %.4f [%.4f, %.4f %s]',
+					$o->{fromPix1}, $o->{fromPix2},
+					$worldx, $worldy, $unit);
+			$self->report("$fromtag $formatted");
+		}
+
+		{
+			my $totag = $xform->{totag} || $xform->{to};
+			my $unit = $teldef->{$xform->{to} . '_UNIT'};
+			my $formatted = sprintf('%.4f, %.4f [%.4f, %.4f %s]',
+					$o->{toPix1}, $o->{toPix2},
+					$o->{toWorld1}, $o->{toWorld2}, $unit);
+			$self->report("\t=> $totag $formatted");
+		}
+	}
+
+}
+
+
+

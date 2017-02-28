@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_SUBDIRS		= Clock Date HEAGen Task
+
+HD_INSTALL_PERL_LIBS	= Task.pm
+
+include ${HD_STD_MAKEFILE}

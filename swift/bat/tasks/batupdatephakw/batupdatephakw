@@ -1,0 +1,458 @@
+#!/usr/bin/perl
+#
+# File: batupdatephakw
+#
+# Description:  
+#
+# Author: Kiran Patel (Global Science & Technology,Inc)
+# Date:   04 Feb 2005
+#
+# Calling sequence:
+#
+#  updatekeywds.pm { <spectrumfitsfile> <auxfitsfile>}
+#
+#     If no arguments are passed, then error message indicating no
+#     files could be opened.
+#
+#     When arguments are provided, there must be one:
+#           <spectrumfitsfile> and followed by <auxfitsfile>  with 
+#           the full path name of the target files 
+#
+#  Returns:
+#     Script status:
+#      0 = successful execution 
+#             However, the auxfile is created may not have been transferred, 
+#      1 = execution failure
+#             due to bad environment, missing fits files, etc.
+#
+#     In either case, see stdout for a detailed explanation.
+#
+#  File Dependencies:
+#
+#  Algorithm:
+#
+#  In general, check that all files or directories exist and are
+#  readable or writeable as necessary. Returns an execution failed status
+#  if file checks fail.
+#
+#  Open the auxillary fits file produced by batmaskwtevt utility 
+#  Fill the arrays with TIME PCODEFR and MSKWTSQF keyword values
+#
+#  Open the spectrum file 
+#  Read the TIME values into an arrray 
+#  If the matching time in the spectrum file found in the auxillary file
+#    then get the corresponding table entry and rewrite the PCODEFR and
+#    MSKWTSQF keywords in the spectrum file
+#  else the matching time in the spectrum file not found then
+#    return 0 with an explanation 
+#  Endif
+#
+#
+use HEACORE::HEAINIT;
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+$status = 0;
+eval {
+    $status = headas_main(\&batupdatephakw);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub batupdatephakw {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    $taskname = "batupdatephakw";
+    $taskvers = "1.4";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batupdatephakw_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+
+# ==================================================================
+# Delete extraneous keywords (if they are to become columns, or if
+# they do not belong to a spectrum extension).
+sub batupdatephakw_delkeys {
+    my ($fits) = (@_);
+
+    # Delete the old keywords to prevent confusion
+    Astro::FITS::CFITSIO::fits_write_errmark();
+    $fits
+	    ->delkey("PCODEFR") ->setstatus(0)
+	    ->delkey("MSKWTSQF")->setstatus(0)
+	    ->delkey("NGOODPIX")->setstatus(0)
+	    ->delkey("BAT_XOBJ")->setstatus(0)
+	    ->delkey("BAT_YOBJ")->setstatus(0)
+	    ->delkey("BAT_ZOBJ")->setstatus(0);
+    Astro::FITS::CFITSIO::fits_clear_errmark();
+}    
+
+# ==================================================================
+# Manipulate Type I spectra
+sub batupdatephakw_pha1 {
+    my ($fits,$auxtime,$auxpcodefr,$auxmskwtsqf,$auxngoodpix,$auxobjx,$auxobjy,$auxobjz) = (@_);
+    my (@timelist, @tstoplist, @dtlist);
+    my ($auxtime_num,$i,$j);
+
+    $auxtime_num = @$auxtime;
+    @timelist  = ($fits->readkey("TSTART"));
+    @tstoplist = ($fits->readkey("TSTOP"));
+    if ($fits->status()) {
+	print "ERROR: could not read TSTART/TSTOP keywords\n";
+	return $fits->status();
+    }
+
+    # Update the size of time array
+    $timelist_num = @timelist;
+
+    # Search time from spectrum file to the nearest (earlier) time in aux file
+    $j = 0;
+    $tstart = $timelist[$j];
+    if (@tstoplist) {
+	$tstop = $tstoplist[$j];
+    } elsif (@dtlist) {
+	$tstop = $tstart + $dtlist[$j];
+    } else {
+	$tstop = $tstart;
+    }
+    $time = 0.5*($tstart + $tstop);
+    
+    for ($i=$auxtime_num-1; $i >= 0; $i--) {
+	last if ($auxtime[$i] < $time);
+    }
+    $ifound = $i;
+
+    if ($ifound < 0) {
+	warn "WARNING: spectral time $time comes before first auxiliary time ($auxtime[0])";
+	$ifound = 0;
+    }
+
+    $status = $fits 
+	->writekey("PCODEFR", $auxpcodefr[$ifound]) 
+	->writekey("MSKWTSQF",$auxmskwtsqf[$ifound])
+	->writekey("NGOODPIX",$auxngoodpix[$ifound])
+	->writekey("BAT_XOBJ",$auxobjx[$ifound])	  
+	->writekey("BAT_YOBJ",$auxobjy[$ifound])	  
+	->writekey("BAT_ZOBJ",$auxobjz[$ifound])    
+	->status();
+    
+    print "Row Time AuxTime PCODEFR BAT_XOBJ BAT_YOBJ\n";
+    print "$row $time $auxtime[$ifound] $auxpcodefr[$ifound] $auxobjx[$ifound] ".
+	"$auxobjy[$ifound]\n";
+
+    die "ERROR: Could not BAT spectral keywords to $infile" if ($status);
+
+    return $status;
+}
+
+# ==================================================================
+# Manipulate Type II spectra
+sub batupdatephakw_pha2 {
+    my ($fits,$auxtime,$auxpcodefr,$auxmskwtsqf,$auxngoodpix,$auxobjx,$auxobjy,$auxobjz) = (@_);
+    my (@timelist, @tstoplist, @dtlist);
+    my ($auxtime_num,$i,$j);
+
+    $auxtime_num = @$auxtime;
+    @timelist = $fits->readcol("TIME",{type=>TDOUBLE});
+    $status = $fits->status();
+    # print ("Status of Readcol=$status\n");
+    
+    Astro::FITS::CFITSIO::fits_write_errmark();
+    @tstoplist = $fits->readcol("TIME_STOP",{type=>TDOUBLE});
+    if ($fits->status()) {
+	@dtlist = $fits->setstatus(0)->readcol("TELAPSE",{type=>TDOUBLE});
+	if ($fits->status()) {
+	    @dtlist = $fits->setstatus(0)->readcol("EXPOSURE",{type=>TDOUBLE});
+	}
+	if ($fits->status()) {
+	    undef(@dtlist);
+	    $fits->setstatus(0);
+	}
+    }
+
+
+    # For Type II spectra, create columns with the correct names, if
+    # they don't already exist.
+    if ($fits->colnum("PCODEFR") < 0) {
+	$fits
+	    ->insertcol({TTYPE=>["PCODEFR","Partial coding fraction"],
+			 TFORM=>"1D"})
+	    ->setstatus(0);
+    }
+    if ($fits->colnum("MSKWTSQF") < 0) {
+	$fits
+	    ->insertcol({TTYPE=>["MSKWTSQF", "Half-variance of mask weights"],
+			 TFORM=>"1D"})
+	    ->setstatus(0);
+    }
+    if ($fits->colnum("BAT_XOBJ") < 0) {
+	$fits 
+	    ->insertcol({TTYPE=>["BAT_XOBJ", "BAT_X position of the source"],
+			 TFORM=>"1D",
+			 TUNIT=>["cm"]})
+	    ->setstatus(0);
+    }
+    if ($fits->colnum("BAT_YOBJ") < 0) {
+	$fits
+	    ->insertcol({TTYPE=>["BAT_YOBJ", "BAT_Y position of the source"],
+			 TFORM=>"1D",
+			 TUNIT=>["cm"]})
+	    ->setstatus(0);
+    }
+    if ($fits->colnum("BAT_ZOBJ") < 0) {
+	$fits
+	    ->insertcol({TTYPE=>["BAT_ZOBJ", "BAT_Z position of the source"],
+			 TFORM=>"1D",
+			 TUNIT=>["cm"]})
+	    ->setstatus(0);
+    }
+    if ($fits->colnum("NGOODPIX") < 0) {
+	$fits
+	    ->insertcol({TTYPE=>["NGOODPIX", "Number of enabled detectors"],
+			 TFORM=>"1J"})
+	    ->setstatus(0);
+    }
+    Astro::FITS::CFITSIO::fits_clear_errmark();
+
+    # Error checking
+    if (($fits->colnum("PCODEFR") < 0) ||
+	($fits->colnum("MSKWTSQF") < 0) ||
+	($fits->colnum("BAT_XOBJ") < 0) ||
+	($fits->colnum("BAT_YOBJ") < 0) ||
+	($fits->colnum("BAT_ZOBJ") < 0) ||
+	($fits->colnum("NGOODPIX") < 0)) {
+	die "ERROR: Could not create required columns in the spectral file";
+    }
+
+    # Update the size of time array
+    $timelist_num = @timelist;
+
+    # Search time from spectrum file to the nearest (earlier) time in aux file
+    for ($j=0; $j < $timelist_num; $j++) {
+	$tstart = $timelist[$j];
+	if (@tstoplist) {
+	    $tstop = $tstoplist[$j];
+	} elsif (@dtlist) {
+	    $tstop = $tstart + $dtlist[$j];
+	} else {
+	    $tstop = $tstart;
+	}
+	$time = 0.5*($tstart + $tstop);
+
+	for ($i=$auxtime_num-1; $i >= 0; $i--) {
+	    last if ($auxtime->[$i] < $time);
+	}
+	$ifound = $i;
+
+	if ($ifound < 0) {
+	    warn "WARNING: spectral time $time comes before first auxiliary time ($auxtime[0])";
+	    $ifound = 0;
+	}
+
+	$row = $j+1;
+	$status = $fits
+	    ->writecol("PCODEFR", {rows=>$row}, $auxpcodefr->[$ifound])
+	    ->writecol("MSKWTSQF",{rows=>$row}, $auxmskwtsqf->[$ifound])
+	    ->writecol("NGOODPIX",{rows=>$row}, $auxngoodpix->[$ifound])
+	    ->writecol("BAT_XOBJ",{rows=>$row}, $auxobjx->[$ifound])
+	    ->writecol("BAT_YOBJ",{rows=>$row}, $auxobjy->[$ifound])
+	    ->writecol("BAT_ZOBJ",{rows=>$row}, $auxobjz->[$ifound])    
+	    ->status();
+	
+	if ($j == 0) {
+	    print "Row Time AuxTime PCODEFR BAT_XOBJ BAT_YOBJ\n";
+	}
+	print "$row $time $auxtime->[$ifound] $auxpcodefr->[$ifound] $auxobjx->[$ifound] ".
+	    "$auxobjy->[$ifound]\n";
+
+	die "ERROR: Could not write row $row of $infile" if ($status);
+    }
+
+    # Delete the old keywords to prevent confusion
+    batupdatephakw_delkeys($fits);
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batupdatephakw_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+# updatekeywds - read auxfile created by batmaskwtevt utility into memory
+#              - and open spectrum file to be updated
+#
+# $filename1 - auxfile file to read
+# $filename2 - spectrum file to modify
+# @time      - upon output, array reference to TIME data
+# @pcodefr   - upon output, array reference to PCODEFR data
+# @mskwtsqf  - upon output, array refernece to MSKWTSQF data
+# @header    - upon output, hash reference to header keywords
+#
+# RETURNS: nothing
+#
+# EXCEPTIONS: none
+#
+    my ($auxtime,$auxpcodefr,$auxmskwtsqf);
+    my ($fits_aux, $fits_spec, $dir, $fptr);
+
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('auxfile', $auxfile)) == 0 || die "error getting auxfile parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    print "$taskname $taskvers\n";
+    print "--------------------------------------------------------\n";
+
+    $filenames[0] = $auxfile;
+    $filenames[1] = $infile;
+
+    #  Verify that two files exist 
+    die "ERROR: Auxiliary file $auxfile does not exist" if (!-e $auxfile);
+    die "ERROR: Spectrum file $infile does not exist" if (!-e $infile);
+
+    # Use the standard CFITSIO routine to open a FITS file
+    $fits_aux = SimpleFITS->open("<$filenames[0]")->move("BAT_OBJ_POS");
+    $status = $fits_aux->status();
+    die "ERR: Could not open auxilary file $filenames[0] for reading" if ($status);
+
+    # Read all rows in the file
+    @auxtime = $fits_aux->readcol("TIME",{type=>TDOUBLE});
+    @auxpcodefr = $fits_aux->readcol("PCODEFR", {type=>TDOUBLE});
+    @auxmskwtsqf = $fits_aux->readcol("MSKWTSQF",{type=>TDOUBLE});
+    @auxobjx = $fits_aux->readcol("BAT_XOBJ",{type=>TDOUBLE});
+    @auxobjy = $fits_aux->readcol("BAT_YOBJ",{type=>TDOUBLE});
+    @auxobjz = $fits_aux->readcol("BAT_ZOBJ",{type=>TDOUBLE});
+    @auxngoodpix = $fits_aux->readcol("NGOODPIX",{type=>TINT});
+    $status = $fits_aux->status();
+    $fits_aux->setstatus(0)->close();
+    
+    die "ERROR: Could not read columns from $auxfile" if ($status);
+
+    # Update the array sizes of TIME, PCODEFR, MSKWTSQF
+    $auxtime_num = @auxtime;
+    $auxpcodefr_num =  @auxpcodefr;
+    $auxmskwtsqf_num =  @auxmskwtsqf;
+
+    # print (" $auxtime_num, $auxpcodefr_num, $auxmskwtsqf_num\n");
+    # print (" $auxtime[0],$auxtime[1],$auxtime[2],$auxtime[3]\n");
+
+    # Use the standard CFITSIO routine to open a FITS file with read-write access
+    $fits = SimpleFITS->open("+<$infile")->move(2);
+    $status = $fits->status();
+    die "ERR: Could not open spectrum file $infile for reading & writing" if ($status);
+
+    while ($fits->status() == 0) {
+
+	# Check for type I / type II spectral file format
+	$phatype = 1;
+	$hduclas1 = $fits->readkey("HDUCLAS1");
+	$hduclas2 = $fits->readkey("HDUCLAS2");
+	$hduclas3 = $fits->readkey("HDUCLAS3");
+	$fits->setstatus(0);
+	$hduclas4 = $fits->readkey("HDUCLAS4");
+	$fits->setstatus(0);
+	if ( $chatter >= 5 ) { print "  (HDUCLAS3=$hduclas3 HDUCLAS4=$hduclas4)\n"; }
+	# Note this change because of lame OGIP spectral format documentation
+	# originally said HDUCLAS3 == 'TYPE:II', later revised (May 2009) to 
+	# say HDUCLAS4 == 'TYPE:II'
+	if ("$hduclas3" =~ m/TYPE:II/ || "$hduclas4" =~ m/TYPE:II/ ) {
+	  $phatype = 2;
+	}
+	if ( $chatter >= 5 ) { print "  (found type $phatype spectral file)\n"; }
+
+	# Read all rows in the file
+	# $colname = $fits->colname(1);
+	# $nrows = $fits->nrows();
+	# $ncols = $fits->ncols();
+	# print "colname=$colname nrows=$nrows ncols=$ncols\n";
+	
+	if ($hduclas1 !~ m/SPECTRUM/) {
+	    # Not a spectrum: simply delete any confusing keywords
+	    $status = 0;
+	    $fits->setstatus(0);
+	    batupdatephakw_delkeys($fits);
+
+	} else {
+
+	    # Yes, it is a spectrum.  Update it, depending on the type
+	    # of the spectral file.
+	    if ($phatype == 1) {
+		$status = batupdatephakw_pha1($fits,\@auxtime,\@auxpcodefr,\@auxmskwtsqf,
+					      \@auxngoodpix,\@auxobjx,\@auxobjy,\@auxobjz);
+	    } else {
+		$status = batupdatephakw_pha2($fits,\@auxtime,\@auxpcodefr,\@auxmskwtsqf,
+					      \@auxngoodpix,\@auxobjx,\@auxobjy,\@auxobjz);
+	    }
+	    
+	    # ===== 
+	    # Write history keywords
+	    HDpar_stamp($fits->handle(), 0, $status);
+	}
+
+	# Move to next extension
+	Astro::FITS::CFITSIO::fits_write_errmark();
+	$fits->move("+1");
+	Astro::FITS::CFITSIO::fits_clear_errmark();
+	if ($fits->status() == BAD_HDU_NUM || $fits->status() == END_OF_FILE) {
+	    $fits->setstatus(0);
+	    last;
+	}
+    }
+
+    $status = $fits->status();
+    $fits->setstatus(0)->close();
+    print "--------------------------------------------------------\n";
+    print "DONE\n";			# return value
+
+    return $status;
+}
+
+
+

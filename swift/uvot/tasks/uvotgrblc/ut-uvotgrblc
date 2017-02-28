@@ -1,0 +1,132 @@
+#!/usr/bin/perl
+#
+#	uvotgrblc unit test
+#
+#
+
+use strict;
+
+package Test::UVOTgrblc;
+use base qw( Task::HEAdas );
+use Task qw( :codes );
+
+use FileHandle;
+
+# main
+{
+    my $tool = Test::UVOTgrblc->new;
+
+    $tool->{tool}    = 'ut-uvotgrblc';
+    $tool->{version} = 0.1;
+
+    $tool->unitTest;
+
+    exit( $tool->{code} );
+}
+
+sub execute {
+    my ( $self ) = @_;
+
+    $self->pilOptions( options => [ qw( input=string 
+                                        output=string 
+                                        chatter=int 
+                                        clobber=bool ) ],
+                       get     => 1 );
+
+    $self->validate
+      if $self->isValid;
+
+    $self->runUvotgrblc
+      if $self->isValid;
+}
+
+sub validate {
+    my ( $self ) = @_;
+
+    # validate environment
+    $self->validateEnvironment( qw( FTOOLS ) );
+
+    # validate input/output directories
+    foreach my $key ( qw( input ) ) {
+        my $arg = $self->args->{$key};
+        if ( not -d $arg ) {
+            $self->fatal( BAD_INPUT, "invalid $key directory: $arg" );
+        }
+    }
+}
+
+sub runUvotgrblc {
+    my ( $self ) = @_;
+
+    my $args = $self->args;
+
+    my $input  = $args->{input};
+    my $output = $args->{output};
+
+    # input files
+    my $inskimg  = "$input/sw00111529000uvv_sk.img";
+    my $ineximg  = "$input/sw00111529000uvv_ex.img";
+    my $insumim  = "$input/sw00111529000uvv_sk_sum.img";
+    my $insumex  = "$input/sw00111529000uvv_ex_sum.img";
+    my $template = "$input/sw00111529000_uvvsrab.lc";
+
+    # output file
+    my $outbase  = "ut00111529000";
+    my $outfile  = "$output/${outbase}_uvvsrab.lc";
+
+    # check that inputs exists at least
+    foreach my $file ( $inskimg, $ineximg, $insumim, $insumex ) {
+        if ( !-f $file ) {
+            $self->fatal( BAD_INPUT, "bad input file: $file" );
+        }
+    }
+
+    my $clobb = $self->args->{clobber} ? 'yes' : 'no';
+    my %args = ( 
+                 skyimg       => $inskimg,
+                 expimg       => $ineximg,
+                 sumsky       => $insumim,
+                 sumexp       => $insumex,
+                 outdir       => $output,
+                 outstem      => $outbase,
+                 srcra        => 49.7125,
+                 srcdec       => -46.39556,
+                 sigmacust    => 3.0,
+                 autobkg      => 'yes',
+                 extinct      => 'no',
+                 doplots      => 'no',
+                 trigtime     => 0.0,
+                 appendcurves => 'no',
+                 centroid     => 'no',
+                 dogrbsearch  => 'no',
+                 chatter      => $self->args->{chatter},
+                 clobber      => $clobb,
+                 cleanup      => 'yes'
+    );
+
+    my $command = $self->buildCommand( 'uvotgrblc', %args );
+    $self->shell( $command );
+
+    if ( $self->isValid ) {
+        my $command =
+          $self->buildCommand(
+                               'ftverify',
+                               infile  => $outfile,
+                               outfile => 'STDOUT',
+          );
+        $self->shell( $command );
+    }
+
+    if ( $self->isValid ) {
+        my $command =
+          $self->buildCommand(
+                               'ftdiff',
+                               infile1 => $template,
+                               infile2 => $outfile,
+                               reltol  => 1e-3,
+                               exclude => 'CREATOR,DATE,DATASUM',
+          );
+        $self->shell( $command );
+    }
+}
+

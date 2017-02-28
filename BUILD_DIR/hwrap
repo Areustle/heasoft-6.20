@@ -1,0 +1,170 @@
+#! /bin/sh
+#
+# hwrap: Create a wrapper environment for HEASOFT tasks to prevent
+#        clashes with other software packages (e.g. XMM-SAS, CIAO).
+# 
+#        This script takes as its argument the location of an existing
+#        HEASOFT installation (i.e. what would typically be defined by the
+#        user as HEADAS in their environment), and creates a new directory
+#        (by default under the directory specified by the first argument, or
+#        in a location specified by an optional second argument) into which
+#        symbolic links will be added for each of the tasks found in the
+#        user's $HEADAS/bin directory.  Each symbolic link will have the
+#        name of an existing FTOOL from $HEADAS/bin but all will point to
+#        to a wrapper script (created below) which sets up the standard
+#        HEADAS environment and then executes the task that was invoked.
+#
+#        * For users of the Xspec Python module:
+#          A task named "pyxspec" will be created which wraps to "python"
+#          (which is assumed to be in the users' PATH) and exports the
+#          environment variables necessary for accessing the Xspec Python
+#          module.
+#
+#        * For batch mode processing or scripting HEASOFT tasks:
+#          If a user prefers to override the standard "local" part of the
+#          PFILES variable ($HOME/pfiles by default), they may set an
+#          environment variable "HEADAS_LOC_PFILES" prior to running a task,
+#          and that variable will be used to define the "local" part of the
+#          exported PFILES variable, i.e. one will effectively have:
+#
+#              PFILES="$HEADAS_LOC_PFILES;$HEADAS/syspfiles"
+# 
+# Authors: Bryan Irby & James Peachey (NASA Goddard Space Flight Center)
+# 
+# Version: 1.0 Initial revision (April 2013).
+# 
+#-------------------------------------------------------------------------------
+SHELL=/bin/sh; export SHELL
+#-------------------------------------------------------------------------------
+
+# Name of the wrapper script:
+the_one_script="fwrap"
+the_one_dir="heasoft_wrap"
+
+#-------------------------------------------------------------------------------
+
+# Get path to this script and startdir:
+scripthome=`echo $0 | sed "s:/*[^/]*$::"`
+if [ "x$scripthome" = x ]; then
+  scripthome=.
+fi
+scripthome=`cd $scripthome; pwd`
+
+startdir=`pwd`
+
+#-------------------------------------------------------------------------------
+
+# Require as input the location of an installed $HEADAS directory:
+if [ "x$1" = x ]; then
+   echo "Please specify the location of your HEADAS installation, for example:"
+   echo ""
+   echo "   `basename $0` /path/to/my/heasoft-6.13/i686-pc-linux-gnu-libc2.5"
+   echo ""
+   echo "You may also specify an optional second argument providing the desired"
+   echo "location of the output $the_one_dir directory.  By default heasoft_wrap"
+   echo "will be created under the directory specified by the first argument."
+   exit 1
+else
+   heasoft_bin_dir="$1/bin"
+   heasoft_green_dir="$1/$the_one_dir"
+   if [ "x$2" != x ]; then
+      if [ ! -d $2 ]; then
+         echo "Destination directory $2 does not exist."
+         exit 1
+      else
+         heasoft_green_dir="$2/$the_one_dir"
+      fi
+   fi
+fi
+
+# Verify the input location:
+if [ -d $heasoft_bin_dir -a -f $heasoft_bin_dir/hmake ]; then
+   heasoft_tasks=`/bin/ls -1 $heasoft_bin_dir`
+else
+   echo "Could not find a valid HEASoft bin directory - exiting"
+   exit 1
+fi
+
+# Create the new "green" bin directory here:
+echo "Populating new directory..."
+echo ""
+echo "     $heasoft_green_dir"
+echo ""
+if [ ! -d $heasoft_green_dir ]; then mkdir $heasoft_green_dir; fi
+
+# Create the wrapper script:
+cat > $heasoft_green_dir/$the_one_script <<EOHEADER
+#!/bin/sh
+#
+# $the_one_script: Wrap to HEASOFT tasks to avoid environment conflicts.
+#
+# Task to be executed is basename of \$0:
+headas_task=\`echo \$0 | sed 's:.*/::'\`
+
+# Clear variables that might otherwise be "polluted":
+if [ x\$LD_LIBRARY_PATH != x ]; then
+   export LD_LIBRARY_PATH=""
+fi
+if [ x\$DYLD_LIBRARY_PATH != x ]; then
+   export DYLD_LIBRARY_PATH=""
+fi
+#if [ x\$PATH != x ]; then
+#   export PATH=""
+#fi
+if [ x\$PFILES! = x ]; then
+   export PFILES=""
+fi
+if [ x\$PERLLIB! = x ]; then
+   export PERLLIB=""
+fi
+if [ x\$PERL5LIB! = x ]; then
+   export PERL5LIB=""
+fi
+if [ x\$PYTHONPATH! = x ]; then
+   export PYTHONPATH=""
+fi
+
+# Initialize HEADAS:
+export HEADAS="$1"
+. \$HEADAS/headas-init.sh
+
+# Test for customized local PFILES variable:
+if [ x\$HEADAS_LOC_PFILES != x ]; then
+   PFILES="\$HEADAS_LOC_PFILES;\$HEADAS/syspfiles"
+   export PFILES
+fi
+
+# Execute the task:
+exec \$HEADAS/bin/\$headas_task "\$@"
+EOHEADER
+chmod +x $heasoft_green_dir/$the_one_script
+
+# Create a Python wrapper for Xspec:
+cat > $heasoft_green_dir/pyxspec <<EOHEADER
+#!/bin/sh
+
+# Initialize HEADAS:
+export HEADAS="$1"
+. \$HEADAS/headas-init.sh
+
+# Start python:
+exec python "\$@"
+EOHEADER
+chmod +x $heasoft_green_dir/pyxspec
+
+# Enter the "green" bin directory and link every task listed in
+# $HEADAS/bin to the wrapper script:
+cd $heasoft_green_dir
+for task in $heasoft_tasks; do
+
+   if [ -L $heasoft_bin_dir/$task -o -f $heasoft_bin_dir/$task ]; then
+      ln -sf $the_one_script $task
+   else
+      echo "Something may be wrong: did not find $task"
+   fi
+
+done
+cd $startdir
+
+# echo a setup instruction:
+echo "To use HEASOFT, prepend that directory to your PATH."

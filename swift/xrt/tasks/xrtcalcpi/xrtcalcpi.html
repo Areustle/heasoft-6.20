@@ -1,0 +1,194 @@
+<! XRTCALCPI (APRIL 2011)  >                           
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>xrtcalcpi help file</title>
+</head>
+
+<body>
+<BODY BGCOLOR="#FFFFFF" TEXT="#000000" LINK="#9690CC">
+<h2>NAME</h2>
+xrtcalcpi -- Calculate PI column values of XRT event files (PC, WT and PD modes) 
+<h2>USAGE</h2>
+<tt>xrtcalcpi  infile  outfile hdfile [parameter =<value>] </tt>
+<h2>DESCRIPTION</h2>
+
+'xrtcalcpi' calculates the Pulse Invariant (PI) values of Swift XRT event files
+for data obtained with the Photon Counting (PC), Windowed Timing (WT) and Photodiode 
+(PD) readout modes. The PI values are corrected for average positional gain variation 
+(Charge Transfer Inefficiency, CTI) and for changes of the gain with 
+temperature and time. 
+Moreover, the charge loss due to a single bad pixel (a "charge trap") within a column of the CCD
+can also be corrected by the task.
+The PI column as well as the keyword XRTPI in the output file are updated by this task.</br>
+<p>
+By setting the parameter 'corrtype' to 'NOMINAL', the 'xrtcalcpi' task calculates the PI values 
+using the PHA values, stored in the PHA column of the input event file, the gain and a set of coefficients 
+describing the average spatial dependence of the gain. The coefficient values have been 
+evaluated from on-ground calibration data at three fixed temperature of the CCD
+and are periodically updated using the results of the in-flight calibration data analysis.
+</br> 
+The gain information is stored in the XRT calibration gain files which are included in CALDB. 
+There is one similarly formatted gain calibration file for each readout mode.
+The coefficients describing the gain and its average spatial dependence for the three temperatures values 
+are stored in the arrays GC0 - GC5 of the FITS files in CALDB. 
+The GC1 and GC2 coefficients are energy 
+dependent following a broken power-law model with indices 'beta1' and 'beta2' and break 
+energy value, in PI units, 'ecti'.  By default, the values of 'beta1', 'beta2' and 'ecti' are read from 
+the CALB gain files. The user may specify in input their values by setting the parameter 'userctipar' to 'yes'.
+</br>
+The PI values calculation is the result of an interpolation on temperature and on time.
+First, for each event the two rows valid for the epochs closest to the time of the 
+observation are chosen. Then for each row, given the temperature of the frame, 
+the task performs a temperature interpolation of the gain coefficients between 
+the two nearest temperatures to the one of the frame, thus obtaining two sets
+of  coefficients for two contiguous timestamps.
+Finally, a second interpolation with respect to time between these two sets of 
+coefficients is performed. 
+<p> 
+By setting the parameter 'corrtype' to 'TOTAL' (default), in addition to the PI calculation described above, 
+the task also applies a specific column to column correction to account for the effect of the charge traps. This 
+correction is calculated by adding an energy offset to the events falling within column segments affected 
+by a charge loss due to a trap. A broken power-law energy dependence for the charge trap correction is 
+also applied by the task. The energy offset is calculated through an iterative algorithm with the number of 
+steps set by the parameter 'offsetniter' value.
+</br>
+The charge traps information (location on the CCD, offset, energy dependence) is stored 
+in the XRT calibration gain files included in CALDB. Optionally (parameter 'userctcorrpar=yes'), the 
+broken power-law energy dependence of the charge trap correction can be supplied by the user through 
+the parameters 'alpha1', 'alpha2' and 'ebreak'. 
+</br>
+Note that when this correction is applied, the task uses a different set of GC coefficients (GC0_TRAP, GC1_TRAP, 
+GC2_TRAP, GC3_TRAP, GC4_TRAP, GC5_TRAP) and a different set of parameters for the GC1/GC2 energy dependence 
+(BETA1_TRAP, BETA2_TRAP, E_CTI_TRAP) read from the CALDB gain files.
+<p>
+The task allows to store in a specific column (PI_NOM) of the output event file the PI values obtained 
+without the charge traps correction (parameter 'savepinom' set to 'yes').
+<p>
+'xrtcalcpi' by default uses the XRT gain file, appropriate  for each mode, stored 
+in CALDB, but it can be replaced with an input gain file supplied by the user 
+(parameter 'gainfile'). The user-provided gain file must have the 
+same format as the XRT gain file in the Calibration Database.</br>
+<p> 
+The algorithm describing the spatial dependence of gain is expressed in raw 
+coordinates, RAWX and RAWY.
+For the timing modes (WT and PD), for which the telemetry does not contain complete 
+spatial information, 'xrtcalcpi' accounts for the positional gain correction assuming 
+all events at the source location. 
+For the WT mode, the RAWX coordinate of the event is known and
+the RAWY is obtained by transforming the DETY column value.
+For the Photodiode mode the event detector coordinates are read from the 
+DETX/DETY columns of the event file and transformed in RAWX/RAWY.
+<p>   
+The unit of the PI column is set to 10 eV per channel.
+Users can adjust the PI values via the parameter 'offset' and 'gainnom'. 
+These values can be obtained with the XSPEC command 'gain' that provides a 
+slope and a constant. The parameter 'offset' should be set equal to the
+constant obtained by the XSPEC 'gain' command and the parameter 'gainnom' should be set 
+equal to the slope obtained by the XSPEC 'gain' command multiplied by the default value of
+eV per channel (10). 
+
+<h2>PARAMETERS</h2>
+<dl>
+<dt>infile [file name]
+<dd>Name  of  the  input event FITS file. Unix-compressed files are allowed,
+except when the output file is set to NONE and the input file is overwritten.
+<p>        
+<dt>outfile [file name]
+<dd>Name of output event FITS file. The value 'NONE' will cause the input file to be overwritten.
+<p>        
+<dt>hdfile [file name]
+<dd>Name of the input Housekeeping Header Packets FITS file.
+<p>
+<dt>(gainfile = CALDB) [file name] 
+<dd> Name of the gain file.  If the parameters is set to CALDB, the file
+is read from the calibration database.
+<p>
+<dt>(gainnom = -99.9 ) [real] 
+<dd>If 'gainnom' is set to a positive values, allows to adjust the PI values by 
+changing the channel-to-energy relation.
+<p>
+<dt>(offset = 0.0)  [real]
+<dd>This parameter allows users to specify an offset (in keV) in the
+channel-energy relationship.
+<p>
+<dt>(randomflag=yes) [boolean]
+<dd>If 'randomflag'=yes (default) the PHA values will be randomized.
+<p>
+<dt>(seed = -1457) [integer]
+<dd>Random number generator seed, used to randomize the PHA values.
+<p>
+<dt>(corrtype = TOTAL) [string]
+<dd>Method to calculate PI values (TOTAL,NOMINAL).
+<p>
+<dt>(userctcorrpar = no) [boolean]
+<dd>If 'userctcorrpar'=yes the parameters for the energy dependence of charge trap correction (alpha1, alpha2, ebreak) 
+are input by the user.
+<p>
+<dt>(alpha1 = 0) [real]
+<dd>Power-law index of charge trap correction energy dependence below ebreak (used only if userctcorrpar=yes)
+<p>
+<dt>(alpha2 = 0) [real]
+<dd>Power-law index of charge trap correction energy dependence above ebreak (used only if userctcorrpar=yes)
+<p>
+<dt>(ebreak = 1) [real]
+<dd>Energy break (PI unit) of charge trap correction energy dependence (used only if userctcorrpar=yes)
+<p>
+<dt>(userctipar = no) [boolean]
+<dd>If set to 'yes', the parameters to descbride the GC1/GC2 energy dependence are input by the user through the 
+parameters 'beta1', 'beta1', 'ecti'. If set to 'no', the 'beta1', 'beta1', 'ecti' values are read from the CALDB
+gain files.
+<p>
+<dt>beta1 [real]
+<dd>Power-law index for the GC1/GC2 energy dependence below break energy. This parameter is used only if 'userctipar' is set to 'yes'.
+<p>
+<dt>beta2 [real]
+<dd>Power-law index for the GC1/GC2 energy dependence above break energy . This parameter is used only if 'userctipar' is set to 'yes'.
+<p>
+<dt>ecti [real]
+<dd>Energy reference for the GC1/GC2 energy dependence. This parameter is used only if 'userctipar' is set to 'yes'.
+<p>
+<dt>(offsetniter = 2) [integer]
+<dd>Number of iterations for the calculation of the charge traps offset values.
+<p>
+<dt>(savepioffset = no) [boolean]
+<dd>If set to 'yes' the charge traps offset values are stored in the PI_OFFSET column of the output event file.
+<p>
+<dt>(savepinom = no) [boolean]
+<dd>If set to 'yes' the PI values calculated with the NOMINAL method are stored in the PI_NOM column of the output event file.
+<p> 
+<dt>(clobber=no) [boolean]
+<dd>If 'clobber'=yes and outfile=filename, the file with the same name
+will be overwritten if it exists.
+<p>
+<dt>(history=yes) [boolean]
+<dd>If 'history=yes' the parameter values and other information are written in HISTORY keywords.
+<p>
+<dt>(chatter = 2) [integer]
+<dd>Chatter Level (min=0, max=5)
+</dl>    
+<h2>EXAMPLES</h2>
+<ol>
+<li>Calculte the PI column for the input file sw00111622000xwtw2po_uf.evt.gz
+   and write the values in the output file 'outfile.fits'.
+   All other columns as well as the GTI extension present in the input file 
+   will be copied to the output file without changes.
+<p>    
+<pre> xrtcalcpi infile=sw00111622000xwtw2po_uf.evt.gz 
+outfile=outfile.fits hdfile=sw00111622000xhd.hk.gz </pre>
+<p>
+</ol>
+<h2>BUGS</h2>
+
+
+
+<h2>SEE ALSO</h2>
+
+<h2>LAST MODIFIED</h2>
+February 2012
+</body>
+</html>
+

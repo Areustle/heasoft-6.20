@@ -1,0 +1,187 @@
+NAME
+    corpileup -- read SIS event file affected by pile-up, and output 
+		 pile-up-corrected spectrum
+
+USAGE
+    corpileup inevent outpha
+ 
+DESCRIPTION
+    This task reads an SIS event file affected by the event pile-up, estimates
+    amounts of the pile-up, and outputs a spectrum in which pile-up effects are
+    corrected as much as possible.  Works only for 1CCD mode observations.
+
+    This program finds a point source position, discards a circular region 
+    around the source where pile-up is too significant to be corrected, 
+    estimates amount of the pile-up, and calculates the pile-up free 
+    (supposedly) energy spectrum.
+
+    This task divides the event file into many time segments, and calculates 
+    pile-up for each segment separately, so that effect of the attitude 
+    fluctuation is taken into account.
+
+    Pileup is corrected in the following manner.
+    First, Let's assume the following conventions: 
+        img0:    raw image (affected by piled-up) 
+	img1:    simulated incident image
+	pha0:    raw spectrum (affected by the pile-up)
+	pha1:    simulated incident spectrum
+	pha2:    simulated spectrum affected by the piled-up 
+	pha3:    estimated spectrum of only the events causing pile-up 
+
+    0. The region where flux is higher than 0.023 cnt/pixel/exposure is
+    determined to be discarded in the following process (the flux
+    threshold has been determined empirically).
+
+    1. img0 and pha0 are produced from the input raw event file.
+
+    2. Chip is divided into many annuli so that each annulus has approximately
+     a constant flux level.  Events for each annulus are considered separately
+    in the following step (but combined to create spectra and images).
+
+    3. For each annulus, time order (= read-out order) of all the events from 
+    all the read-out is randomized.
+
+    4. Let's consider a particular annulus in the i-th read-out in which N 
+    events are originally detected.  N events are picked up from the 
+    randomized event series (and recorded as img1 and pha1), and input on a 
+    "virtual chip", and resultant charge distributions on the chip are 	
+    simulated. The on-board event detection algorithm is applied on the 
+    virtual chip.  
+
+    Note that the number of the simulated events detected on the virtual chip 
+    should be less or equal to N due to pile-up.  More events are picked-up 
+    from the randomized event series (and added to img1 and pha1), until N 
+    simulated events are detected. The simulated events detected on the 
+    virtual chip are recorded as pha2.
+
+    5. Repeat 4 for all the CCD read-out (each 4-sec).
+
+    6. Calculate the pure pile-up spectrum as pha3 = pha2 - pha1.
+
+    7. Correct pile-up as output-pha = pha0 - pha3. Statistical error
+    of the output pha file is calculated assuming that events in pha0 and pha3 
+    follow the Poisson distribution.
+
+
+PARAMETERS  
+
+    inevent [filename]
+	The input event file. Proper screening (including hot-pixel removal) 
+	should be already applied. 
+
+    outpha [filename]
+        The output pileup-corrected spectrum file name.
+
+   (timebin = 720) [real]
+        The event file is divided into time segments of which duration 
+	is specified by this parameter. The satellite attitude should be stable
+	within this time interval. This parameter is useful when the attitude 
+	is not stable.
+
+    coorsys (coorsys =  det ) [string]
+        Specify the coordinate  used for the source position. 
+	It can take raw, det or sky.  
+
+    tentcenx (tentcentx = 456 ) [real] 
+        The X coordinate of tentative source position. This task searches
+	for the source position within a 50 pixel radius circle  within
+	the tentative position.
+
+    tentceny (tentcenty = 456) [real] 
+        The Y coordinate of tentative source position. This task searches
+	for the source position within a 50 pixel radius circle within the
+	tentative position.
+
+    (disr=-99) [real]
+        Radius of the circle within which events are discarded for the
+	processing. If this parameter is negative, the radius whithin which 
+	the  flux exceeds the 0.023 cnt/pixel/exposure threshold is calculated
+	and used.
+
+    (pha0 = corpileup_raw.spec) [filename]
+        File name of the observed raw spectrum.
+
+    (pha1 = corpileup_sim_inc.spec) [filename]
+        File name of the simulated incident spectrum. 
+
+    (pha2 = corpileup_sim_out.spec) [filename]
+	File name of the simulated piled-up spectrum. 
+
+    (pha3 = corpileup_sim_pile-up.spec) [filename]
+	File name of the pure pile-up spectrum.
+
+    (img0 = corpileup_raw.img) [filename]
+   	Observed RAW image of the chip.  
+	Note that the original RAWX and RAWY values are defined 
+	in the ranges of 0-425 and 0-422 respectively, and the corpileup 
+	creates images in this range (i.e., lower left pixel corresponds to 
+	RAWX=0 and RAWY=0).
+
+	On the other hand, "Active Pixels" on the chip which can detect X-ray
+	photons start from RAWX=6 and RAWY=1, and these are specified in the 
+	event file header as the TLMIN* keywords.  Consequently, the lower left
+	pixel of the RAW image created with xselect/extractor corresponds to 
+	RAWX=6 and RAWY=1.  This difference has to be taken into account to 
+	precisely compare the RAW images created by corpileup and xselect. 
+
+   (img1 = corpileup_sim_inc.img) [filename]
+        File name of the simulated incident image in the RAW coordinates. 
+	PSF center within the radius specified by the "disc" parameter
+	is discarded. 
+
+   (psf = corpileup_psf.qdp) [filename]
+	Name of the QDP format file of the PSF created from the input event 
+	file.  Unit of the x-axis is the radius in pixel and that of y-axis
+	is counts/pixel/exposure. 
+
+   (clobber = no) [boolean]
+        If yes, the output files will be overwrittern. 
+
+FAQ
+    Q. How can I start?
+    A. Make or obtain a calibrated and screened (hot-pixel-removed) SIS event 
+    file, only from the region you are interested (usually within some radius
+    from a bright point source), then use this task. You may want to use the 
+    entire chip instead, in that case region selection is not needed.
+
+    Q. What kind of ARF should I use?
+    A. From the input event file you are going to use, create a dummy SIS 
+    spectrum only for the purpose of making ARF with ascaarf.  Region selection
+    have to be made so that the same detector region corpileup uses is 
+    selected. The source position and the radius of the discarded circle by
+    corpileup is recorded in the HISTORY header of the output spectral file.
+
+    Q. The output psf by corpileup is strange, e.g., the peak is dull and 
+    broad. It does not reach the 0.023 cnt/pixel/exposure threshold.
+    A. You should suspect the source position determination.  Check the source
+    center position corpileup outputs on the screen, and compare it with the
+    image created with other tools such as xselect. If they are significantly 
+    different, specify the correct center position with tentcenx and tentceny 
+    parameters (either in 'det' or 'sky' coordinates).
+
+    Make sure that you are using the CORRECT COORDINATE ('det','sky' or 'raw') 
+    specified with the coorsys parameter, and that the source position is 
+    given WITHOUT binning. To remove the default binning in xselect,
+    enter 'set xybinsize 1'.
+
+    Q. "Warning. loopcounter=20 at ring **" is printed out frequently.  And/or
+    the output image has a "black hole" NOT centered on the point source, or 
+    does not have such a black hole at all.  
+    A. Suspect the source position determination. Specify the tentative source
+     position (tentcenx and tentceny options).
+
+    Q. My target is masked on board. Can I use this task?
+    A. Not now. Contact kotani@milkyway.gsfc.nasa.gov
+
+    Q. The observation mode is FAINT. Can I use this task?
+    A. Yes.  Use the event files after converted to the BRIGHT or BRIGHT2 mode.
+
+    Q. Telemetry is saturated. Can I use this task?
+    A. Yes. Be sure that the source position is determined correctly.
+
+HISTORY
+    ver 1.0 1997/07/25 by taro kotani (kotani@milkyway.gsfc.nasa.gov)
+    ver 1.2 1997/12/02 fixed minor bugs, improved efficiency by taro kotani
+    ver 1.3 1999/11/02 ftoolization by Ning Gan.
+    ver 1.5 2000/01/12 final FTOOL version. 
+

@@ -1,0 +1,462 @@
+\chapter{Fortran interface}
+\raggedbottom
+
+\section{Programming PLT}
+After using the QDP/PLT software for a while, some people would like
+to see more sophisticated features such as the ability to read binary
+files, or to add different vectors together.
+Although the author is always willing to take suggestions (and even
+to implement some of these suggestions),
+the PLT design goal is to implement new features in as general manner
+as possible.
+Thus if you need to read a particular file format,
+or to manipulate data in a particular manner,
+you should implement your own front end to the PLT subroutine.
+This is simple to do since the QDP program cleanly separates reading
+of the file from actually calling the PLT routine.
+
+This chapter describes how to call the RDQDP and PLT subroutines.
+Also listed is the complete source code for the QDP program.
+Although QDP can be used as an example of how to call PLT,
+it is perhaps too simple.
+Therefore the DEMO Fortran program more clearly shows how to do this.
+Finally there are instructions on how to create your own user-defined
+function that, when linked with the QDP/PLT software, can be used with
+the \verb@Model@ and \verb@Fit@ commands.
+
+Although PLT uses several other internal routines, you are discouraged
+from directly using these routines in your code.
+This is because PLT continues to evolve,
+and there is no way that the author can add the functionality required
+without the ability to modify the internal interfaces.
+There are no plans to modify the calling sequence for all the
+routines described in this chapter.
+
+\pagebreak
+\section{Subroutine RDQDP}
+The calling sequence for the \verb@RDQDP@ subroutine is:
+\medskip
+\begin{verbatim}
+      SUBROUTINE RDQDP(ICHAT, LUNIN, CNAM, Y, MXPTS, IERY, MXVEC,
+     :   NROW, NPTS, NVEC, CMD, MXCMD, NCMD, IER)
+      INTEGER   MXPTS, MXVEC, MXCMD
+      CHARACTER CNAM*(*), CMD(MXCMD)*(*)
+      REAL      Y(MXPTS)
+      INTEGER   IERY(MXVEC)
+      INTEGER   ICHAT, LUNIN, NROW, NPTS, NVEC, NCMD, IER
+C---
+C Opens and reads a QDP file.
+C---
+C ICHAT     I    >10 means print comment lines, >0 print row/col info.
+C LUNIN     I    <>0 means file already open on LUN.
+C CNAM      I/O  File name.
+C Y           O  The data array
+C MXPTS     I    The actual size of the Y array.
+C IERY        O  The PLT error flag array
+C MXVEC     I    The actual size of the IERY array
+C NROW        O  Maximum number of rows that the file could contain.
+C NPTS,NVEC   O  Needed by PLT
+C CMD         O  Command array (MXCMD input dimension).
+C NCMD        O  Number of commands read
+C IER         O  =-1 if user entered EOF, =0 file read, =1 no file read.
+\end{verbatim}
+\medskip
+
+There are several ways to specify a file to be read by RDQDP.
+RDQDP will go through the following steps to determine what
+file to read.
+Once a file has been determined the remaining steps will be skipped.
+Specifically RDQDP will do the following:
+
+\begin{itemize}
+\item If the variable \verb@LUNIN@ is non-zero then RDQDP
+will assume that the input file has already been opened and is attached to
+the specified unit number.
+
+\item If the variable \verb@CNAM@ is non-blank, then RDQDP
+opens a file with the specified name.
+
+\item At this point it is necessary to obtain a file name from an
+external source and the parser is called to handle this.
+If this is the first time the parser has been called in the current
+program, an attempt will be made to read the command line.
+If a QDP file name is found on the command line, then that file is opened.
+
+\item If no file name could be found, or the file could not be
+opened, then RDQDP will prompt the user for an input file name.
+If the user enters an end-of-file (\verb@^Z@ under VMS, or \verb@/*@
+under all systems), then RDQDP will exit with \verb@IER@=-1.
+If the user enters a blank line for the file name, RDQDP will
+exit \verb@IER@$>$0.
+Of course, if the user enters a valid file name, then that file is
+opened, and \verb@IER@ will return a value of 0.
+\end{itemize}
+
+Once a file has been opened, and if \verb@MXCMD@$>$1, RDQDP
+will add a \verb@LAbel F@ command to the \verb@CMD@ array that contains
+the name of the file actually opened.
+Of course, if the file contains a \verb@LAbel F@ command, then that
+command will overwrite the label that RDQDP creates.
+
+\verb@ICHAT@ is the `chatter' flag.
+If \verb@ICHAT@$>$10 then RDQDP will display lines that have
+\verb@!@ in the first column, on your terminal screen.
+Displaying these lines, provides a useful way to confirm that
+RDQDP has opened the correct file.
+Such comment lines are completely ignored,
+and the comments will be removed from any other line containing a comment.
+RDQDP examines the beginning of each line and if the
+line contains a QDP command, RDQDP proceeds to interpret
+the command and set the appropriate variables to be passed to PLT.
+If the line starts with a PLT command and \verb@NCMD@$<$\verb@MXCMD@,
+then RDQDP will increment \verb@NCMD@ and add the line to the
+\verb@CMD@ array.
+For lines containing data, RDQDP interprets the line into
+real numbers and stores these numbers in the \verb@Y@ array.
+
+The RDQDP routine does not open and read any indirect command files,
+but just stores the command in the \verb@CMD@ array.
+Therefore you cannot use an indirect command file to contain
+the data array.
+Since the calling program determines the size of the \verb@CMD@ array
+it is sometimes useful to store all PLT commands in an indirect command
+file and to add one line to the QDP file to read the indirect file.
+When PLT reads an indirect file it will accept command lines
+up to 250 characters long, and there is no limit to the number of
+lines that can be read.
+
+When RDQDP reads the first data line, it determines the
+number of columns in that line.
+Based on the number of columns, and the size of \verb@MXPTS@
+passed in, RDQDP calculates the maximum number
+of rows that would fit into the \verb@Y@ array.
+If the \verb@ICHAT@$>0$, RDQDP will then display on the terminal
+the number of columns, the numbers of vectors (calculated from the
+data from in any \verb@READ@ lines), and the maximum number of
+rows.
+
+\pagebreak
+\section{Subroutine PLT}
+The calling sequence for the \verb@PLT@ subroutine is:
+\medskip
+\begin{verbatim}
+      SUBROUTINE PLT(Y, IERY, MXROW, NPTS, NVEC, CMD, NCMD, IER)
+      REAL      Y(*)
+      INTEGER   IERY(*), MXROW, NPTS, NVEC, NCMD, IER
+      CHARACTER CMD(*)*(*)
+C---
+C General plot subroutine.
+C---
+C Y(*)      I    The data array.  The array should be dimensioned
+C                Y(MXROW,MXCOL) where MXROW and MXCOL are the actual
+C                sizes of the arrays in the calling program.
+C                MXCOL=NVEC+NSERR+2*NTERR  where NSERR is the number
+C                of vectors that have symmetric errors and NTERR
+C                is the number of vectors that have two-sided errors.
+C IERY(*)   I    =-1 plot errors as SQRT(Y)
+C                = 0 no errors.
+C                =+1 explicit symmetric errors.
+C                =+2 for two-sided errors
+C MXROW     I    The actual first dimension of the Y array.
+C NPTS      I    The number of points to plot (NPTS<=MXROW).
+C NVEC      I    The number of vectors to be plotted.
+C CMD(*)    I    Array of commands.
+C NCMD      I    Number of commands.
+C IER         O  Error flag, =-1 if user entered EOF, =0 otherwise.
+\end{verbatim}
+\medskip
+It is important to remember that the variable \verb@NVEC@ does not
+refer to the number of columns of data but rather the number of vectors.
+Each vector must have one entry in the \verb@IERY@ array that
+describes the type of error on that vector.
+Depending on the type of error, each vector can be composed of one,
+two, or three columns of data.
+To calculate the number of columns needed by the vectors,
+let \verb@NSERR@ be the number of vectors with symmetric errors
+(\verb@IERY(I)@$=$1) and \verb@NTERR@ the number with two sided errors
+(\verb@IERY(I)@$=$2).
+The total number of columns \verb@MXCOL@ will be given by
+\verb@MXCOL=NVEC+NSERR+2*NTERR@.
+
+The variable \verb@MXROW@ contains the physical first dimension of
+the \verb@Y@ array.
+Thus the calling program should dimension \verb@Y@ to be
+\verb@(MXROW,MXCOL)@ or the Fortran equivalent \verb@(MXROW*MXCOL)@.
+The variable \verb@NPTS@ contains the number of rows that contain
+valid data.
+All rows from \verb@NPTS+1@ to \verb@MXROW@ will be ignored.
+When PLT starts it will execute \verb@NCMD@ lines from the \verb@CMD@
+array.
+Any valid PLT command can be entered into this array.
+For example, one line could contain a reference to an indirect command
+file, and this would cause PLT to execute all commands found in this
+file.
+If the command list contains the \verb@EXit@ command, then PLT will
+exit when this command executes and any commands following the \verb@EXit@
+will be ignored.
+Since PLT does not actually plot any data until all the commands are
+executed, it is a good idea to precede an \verb@EXit@ with a \verb@Plot@
+command, since that will force a plot to be produced.
+
+If PLT exits normally, {\it i.e.}, with the the \verb@EXit@ command,
+then \verb@IER@ is set to zero.
+If the user enters an end-of-file then PLT exits with \verb@IER@$<$0.
+
+\pagebreak
+\section{The QDP program}
+The complete source code for the \verb@QDP@ program is:
+\medskip
+\begin{verbatim}
+C Program QDP, the Quick and Dandy Plotter.
+C Reads and plots a QDP file.
+C---
+C [AFT]
+C---
+      INTEGER   MXPTS, MXVEC, MXCMD
+      PARAMETER (MXPTS=131072)
+      PARAMETER (MXVEC=64)
+      PARAMETER (MXCMD=50)
+C
+      CHARACTER CMD(MXCMD)*100
+      CHARACTER CNAM*72
+      REAL      Y(MXPTS)
+      INTEGER   IERY(MXVEC)
+      INTEGER   ICHAT, IER, LUN, NCMD, NPTS, NROW, NVEC
+C---
+  100 CNAM=' '
+      ICHAT=0
+      LUN=0
+      CALL RDQDP(ICHAT, LUN, CNAM, Y, MXPTS, IERY, MXVEC,
+     :   NROW, NPTS, NVEC, CMD, MXCMD, NCMD, IER)
+      IF(IER.NE.0) GOTO 900
+      CALL PLT(Y,IERY,NROW,NPTS,NVEC,CMD,NCMD,IER)
+      IF(IER.LT.0) GOTO 100
+C---
+  900 CONTINUE
+      END
+\end{verbatim}
+\medskip
+
+The QDP program calls the RDQDP subroutine to read the QDP file,
+and then passes the data read to PLT.
+The parameter statements show that this version can read a file
+containing up to 131,072 numbers,
+up to 64 different vectors, and up to 50 PLT command lines.
+RDQDP sets the size of the array dimensions to make maximum use of the
+data array.
+For example, if you read a file containing two columns, then you
+could read up to 65536 rows of data.
+If the file contains 64 vectors and none of the vectors contains errors,
+{\it i.e.}, there are 64 columns of numbers,
+then the maximum number of rows will be 2048.
+If, however, all 64 vectors contain two-sided errors,
+then only 512 rows can be read.
+Each PLT command line can be at most 100 characters long.
+
+QDP sets both \verb@CNAM=' '@ and \verb@LUN=0@ to force RDQDP to prompt
+for a QDP file name.
+If the file is opened, then RDQDP reads the file, and
+initializes all the variables needed by the PLT routine.
+If RDQDP has set \verb@IER@$=$0 then some data has been read and hence the
+PLT routine is called.
+
+PLT interprets the PLT commands and plots the data.
+If the user enters an end-of-file character at the \verb@PLT>@ prompt,
+PLT exits with \verb@IER@$=$-1.
+This causes the QDP program to loop back and call RDQDP again.
+For normal exits, \verb@IER@$=$0, the QDP program quietly exits.
+
+\pagebreak
+\section{The DEMO program}
+The file {\tt XANADU:[PLOT.QDP]DEMO.FOR} contains a simple Fortran
+program that creates the necessary arrays and then calls the PLT
+subroutine.
+The complete source code for the {\tt DEMO.FOR} program is:
+\medskip
+\begin{verbatim}
+C---
+C DEMO.FOR demonstrates how to call PLT from a Fortran program.
+C---
+C [AFT]
+C---
+      INTEGER   MXROW, MXCOL, MXVEC, MXCMD
+      PARAMETER (MXROW=200, MXCOL=3, MXVEC=2, MXCMD=10)
+      CHARACTER CMD(MXCMD)*72
+      REAL      Y(MXROW, MXCOL)
+      INTEGER   IERY(MXVEC), NVEC, NPTS, NCMD, IER
+      INTEGER   I
+C---
+C Create two vectors.  The first vector will contain the X locations
+C and a symmetric error (with constant value of 0.5).  The second
+C vector will contain X*X and no error.
+      NVEC=2
+      IERY(1)=1
+      IERY(2)=0
+      NPTS=100
+      DO 190 I=1,NPTS
+         Y(I,1)=I
+         Y(I,2)=.5
+         Y(I,3)=Y(I,1)*Y(I,1)
+  190 CONTINUE
+C---
+C Now add a couple of commands, to make plot look nicer.
+      CMD(1)='LAB X Time (sec)'
+      CMD(2)='LAB Y Distance (m)'
+      CMD(3)='LAB T Made with DEMO.FOR'
+      CMD(4)='LINE STEP 2'
+      NCMD=4
+C---
+C Call the PLT subroutine.
+      CALL PLT(Y, IERY, MXROW, NPTS, NVEC, CMD, NCMD, IER)
+      END
+\end{verbatim}
+\medskip
+
+\verb@DEMO.FOR@ was written as an example to show how the various
+parameters are initialized before calling PLT.
+In the program, {\tt NVEC=2} tells PLT to expect two vectors;
+{\tt IERY(1)=1} tells PLT that the first vector contains symmetric errors
+and, hence, is composed of two columns;
+and {\tt IERY(2)=0} tells PLT
+that the second vector does not have errors.
+The \, {\tt DO~190} \, loop fills 100 points of these two vectors.
+The \verb@Y@ array is large enough to contain up to 200 points.
+The first column of the \verb@Y@ array contains the $x$-values, which
+run from 1 to 100; the second column contains the errors
+(constant value 0.5); and
+the third column contains $x^2$.
+After the \verb@Y@ array is initialized, the \verb@CMD@ array is
+initialized with four PLT commands.
+The first three commands define labels, and the last command creates
+a stepped-line plot.
+
+The file {\tt XANADU:[PLOT.QDP]DEMO.COM}
+will compile and link the {\tt DEMO.FOR} program on a VMS system.
+This file can be used as an example
+for linking other routines that call PLT.
+It is necessary to link with both the XANLIB library
+and the PGPLOT graphics library.
+
+\pagebreak
+\section{A user function}
+The calling sequences for the four subroutines required to create
+a user component are:
+\medskip
+\begin{verbatim}
+      SUBROUTINE UINFO(IPAR, CNAME, NPAR)
+      INTEGER   IPAR, NPAR
+      CHARACTER CNAME*(*)
+C---
+C IPAR    I    The parameter number.
+C CNAME     O  The name of the parameter IPAR.  Note if IPAR=0, then
+C              -return the name of the model.
+C NPAR      O  The number of parameters in your user model.
+C---
+C*********
+      SUBROUTINE ULIMIT(PVAL, PLIM, NT, NPAR)
+      REAL      PVAL(*), PLIM(3,*)
+      INTEGER   NT, NPAR
+C---
+C PVAL(*)   I/O  The current parameter values
+C PLIM(1,*) I    If <0 then the corresponding parameter is frozen
+C NT        I    Pointer to first parameter value in array PVAL(*)
+C NPAR      I    Number of parameters
+C---
+C*********
+      REAL FUNCTION UFNY(X, PVAL, NT, NPAR)
+      REAL      X, PVAL(*)
+      INTEGER   NT, NPAR
+C---
+C X       I    The current X value
+C PVAL    I    The current parameter values
+C NT      I    Pointer to first parameter value in array PVAL(*)
+C NPAR    I    Number of parameters
+C---
+C*********
+      SUBROUTINE UDERIV(X, PVAL, PLIM, DERIV, NT, NPAR)
+      REAL      X, PVAL(*), PLIM(3,*), DERIV(*)
+      INTEGER   NT, NPAR
+C---
+C X       I    The current X value
+C PVAL    I    The current parameter values
+C PLIM    I    The constraints array
+C DERIV     O  The calculated derivative
+C NT      I    Pointer to first parameter value in array PVAL(*)
+C NPAR    I    Number of parameters
+C---
+\end{verbatim}
+\newpage
+
+The file \verb@XANADU:[LIB.UFNY]UFNYDEMO.FOR@ contains the source
+code for the built-in \verb@DEMO@ user component.  You should copy
+that file and use it as a template for any file that you create.
+
+When FIT starts, it calls UINFO with \verb@IPAR@ set equal to 0 to
+obtain the
+name of the user component and the number of parameters.  This component
+name will be included in the names of the built-in components, and
+therefore, should not match any existing component name (such as \verb@CONS@,
+\verb@LINE@, {\it etc.}).  If the user component is selected, then UINFO
+will be called for each parameter to obtain the name of that parameter.
+
+ULIMIT is always called after any parameter values have been changed
+and before UFNY is called.
+The purpose of ULIMIT is twofold.
+First, it should check the parameter values in \verb@PVAL@ and adjust
+any that may cause a problem in UFNY (for example, if UFNY divides
+by a parameter value, then ULIMIT should ensure that the parameter
+does not equal zero).
+Second, ULIMIT can be used to set up any initial data that UFNY needs.
+Since, UFNY is often called many times with the same parameter set,
+this can result in an increase in speed.
+The parameter values are stored in \verb@PVAL(NT)@ to \verb@PVAL(NT+NPAR-1)@.
+The \verb@PLIM@ array contains \verb@SIG@, \verb@PLO@, and \verb@PHI@.
+If \verb@PLIM(1,I)@ is less than zero,
+then that parameter is frozen and you should not adjust the parameter
+value.
+Also, if \verb@PLIM(2,I)@$<$\verb@PLIM(3,I)@, then an effective range
+is active and you should not adjust a parameter outside that range.
+
+UFNY is the function that actually calculates user component at
+location \verb@X@ with parameter values given by \verb@PVAL@.
+
+UDERIV should calculate the derivative of the UFNY function with respect
+to each parameter.  The version contained in \verb@UFNYDEMO.FOR@
+evaluates the derivative numerically and hence you may be able to
+use it without modification.  If you use that method you should try
+to scale the problem so that parameter values are in the range .1-100;
+values outside this range work, but the convergence can be slower.
+
+If \verb@PLIM(1,I)=-1@ then that parameter is frozen and hence you do not
+need to calculate the derivative.  If \verb@PLIM(1,I)<-1@ then the parameter
+has been set equal to another parameter and you should calculate the
+derivative in the normal manner (the FIT routine assumes that the
+derivative has been correctly calculated).
+
+If you are able to compute the analytic derivative of your function with
+respect to the parameter values, then you should use it, because an accurate
+derivative can greatly improve the fitting process.  NOTE: slow
+convergence is most often due to the derivative being incorrectly
+calculated.  If you find that $\chi^2$ drops slowly, and that FIT is
+unable to precisely locate the minimum, then you should carefully
+check both your equations and the UDERIV implementation for typical
+errors, such as an incorrect sign.
+
+Once you have a working function, you should test it in PLT.
+Use the {\tt MOdel~?} command to see whether your component is listed.
+If not make sure you have linked a new version,
+and that your are running that new version.
+Next define a model that is composed only of your new component,
+and enter a resonable set of parameters.
+Do not attempt to fit at this time,
+but rather just plot the data and model.
+Use the {\tt Fit~Plot~200} command to ensure that the function is
+evaluated at 200 points over the visible range.
+Is the plotted function what you expected?
+If it is not then you should carefully examine your code.
+
+Once the function is doing what you expect, then you can try to fit
+it.  If certain parameter values can cause a program crash, then you
+should write a version of ULIMIT that prohibits these values.
+
+\flushbottom

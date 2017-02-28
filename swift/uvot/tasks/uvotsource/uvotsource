@@ -1,0 +1,1868 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotsource/uvotsource,v $
+# $Revision: 1.50 $
+# $Date: 2013/06/24 17:58:39 $
+# 
+# $Log: uvotsource,v $
+# Revision 1.50  2013/06/24 17:58:39  rwiegand
+# Include the aperture, large scale sensitivity, and detector sensitivity
+# corrections in the upper limit calculations (previously, only coincidence
+# loss was included).  Added the CORR_RATE_LIMIT columns and derive the MAG_LIM,
+# MAG_HZ_LIM, MAG_AA_LIM, FLUX_AA_LIM, FLUX_HZ_LIM columns from CORR_RATE_LIMIT
+# instead of COI_RATE_LIMIT.
+#
+# Revision 1.49  2012/07/27 16:47:20  rwiegand
+# Include SATURATED column in output table.
+#
+# Revision 1.48  2011/02/28 17:10:09  rwiegand
+# Moved flux density calculations to library.  Identify UVOT magnitudes
+# as Vega system.
+#
+# Revision 1.47  2011/02/09 21:08:04  rwiegand
+# Changes to support multiple magnitude systems.
+#
+# Revision 1.46  2010/06/30 20:42:26  rwiegand
+# Added subpixel parameter.
+#
+# Revision 1.45  2010/06/29 19:13:03  rwiegand
+# Updated uvotconvreg parameter name.
+#
+# Revision 1.44  2010/04/30 21:08:33  rwiegand
+# Implemented detector sensitivity correction.
+#
+# Revision 1.43  2009/07/24 18:02:59  rwiegand
+# Display lambda / frequency with flux density.  Prettied up assorted
+# formatting.  Bonus formatting features exposed to user.
+#
+# Revision 1.42  2009/07/23 13:48:38  rwiegand
+# Report filter, detection significance, and background limit sigma in source
+# section and remove them from all of the other lines.  Put units at start
+# of each section instead of on each value line.
+#
+# Revision 1.41  2009/07/22 00:45:32  rwiegand
+# Keep background statistical and systematic errors separate when displayed
+# to screen and written to FITS.  Updated aperture correction interface.
+#
+# Revision 1.40  2009/07/20 20:20:03  rwiegand
+# Statistical and systematic errors are presented separately in FITS and
+# screen output.  Added SYS_ERR column which reflects value of syserr for
+# each row.  Added extprec parameter for user adjustment of number of digits
+# displayed to screen.
+#
+# Revision 1.39  2009/03/31 20:50:22  rwiegand
+# Added expfile parameter which checks whether regions are fully in FOV.
+# Changed default value of apercorr to CURVEOFGROWTH.
+#
+# Revision 1.38  2008/10/16 18:34:57  rwiegand
+# Use a regular expression for numbers that allows scientific notation.
+#
+# Revision 1.37  2008/09/05 15:20:27  rwiegand
+# Replaced rename with Task::moveFile which uses File::Copy to support
+# cross-filesystem 'moves'.
+#
+# Revision 1.36  2008/08/18 15:47:39  rwiegand
+# Made output parameter more flexible.  Store most corrected rate and error
+# in CORR_RATE(_ERR).  Store frame time in FRAMTIME column.
+#
+# Revision 1.35  2008/07/02 15:45:59  rwiegand
+# Allow grism detector input image.
+#
+# Revision 1.34  2008/04/22 20:15:26  rwiegand
+# Updated default fwhmsig to 3%.  Allow user to control uvotapercorr fwhmsig
+# value for apercorr=CURVEOFGROWTH.
+#
+# Revision 1.33  2008/04/09 14:58:17  rwiegand
+# Added centroid parameter.
+#
+# Revision 1.32  2008/03/25 19:51:18  rwiegand
+# When setting up standard region, allow shapes in source region other than
+# circle.  Report most corrected rate (which is currently LSS_RATE).
+#
+# Revision 1.31  2007/11/05 22:54:04  rwiegand
+# Write undefined DETX/DETY if necessary.
+#
+# Revision 1.30  2007/11/01 16:14:03  rwiegand
+# Added FILTER to set of columns output.
+#
+# Revision 1.29  2007/10/30 20:30:09  rwiegand
+# Allow whitespace before comma in region files.  Work harder to get SRCAPT.
+#
+# Revision 1.28  2007/10/25 13:49:18  rwiegand
+# Added support for large scale sensitivity (LSS).  Added RA and DEC columns
+# along with LSS related columns.
+#
+# Revision 1.27  2007/10/23 21:29:10  rwiegand
+# Renamed parameter method => apercorr with values NONE|CURVEOFGROWTH.
+#
+# Revision 1.26  2007/09/14 15:23:34  rwiegand
+# Set MET to middle of exposure and update TIMEPIXR accordingly.
+#
+# Revision 1.25  2007/08/21 18:21:24  rwiegand
+# Corrected the field printed for raw background rate.
+#
+# Revision 1.24  2007/07/17 14:42:23  rwiegand
+# Added parameters for PSF CALDB file and frame time.
+#
+# Revision 1.23  2007/06/14 15:26:09  rwiegand
+# Added parameter for calculating systematic errors.  Look up filter center
+# wavelengths in calibration file.
+#
+# Revision 1.22  2007/05/21 20:51:34  rwiegand
+# Removed duplicate output column.
+#
+# Revision 1.21  2007/05/21 17:11:41  rwiegand
+# Placed source photometry in library.  Added support for generating a FITS
+# tables of results.
+#
+# Revision 1.1  2007/04/30 19:43:58  wiegand
+# Initial revision
+#
+# Revision 1.20  2007/03/29 21:51:20  rwiegand
+# No longer set RATE_BKG to 0 for RATE < RATE_LIMIT.
+#
+# Revision 1.19  2007/03/28 16:55:02  rwiegand
+# Updated to handle region files with coordinate system on separate line
+# from shape.  Updated mean wavelengths of filters.
+#
+# Revision 1.18  2007/03/14 17:32:53  rwiegand
+# Added zerofile and coinfile parameters (forwarded to uvotmag).
+#
+# Revision 1.17  2007/02/08 15:44:43  rwiegand
+# Include exposure with reported values.
+#
+# Revision 1.16  2007/02/06 20:59:42  rwiegand
+# Pass srcarea to uvotmag.
+#
+# Revision 1.15  2007/01/18 16:07:15  rwiegand
+# Applied Wayne Landsman's patch to forward frametime to uvotmag.
+#
+# Revision 1.14  2006/11/06 13:21:24  rwiegand
+# Take frame time from FRAMTIME keyword (if available).
+#
+# Revision 1.13  2006/11/03 15:04:48  rwiegand
+# Added a correction from Wayne Landsman: error in background was not being
+# accounted for in net error.
+#
+# Revision 1.12  2006/05/24 21:43:46  rwiegand
+# Updated UVOT frame time.
+#
+# Revision 1.11  2006/03/08 20:11:45  rwiegand
+# Changed default output parameter to ALL.  Added output in mJy.
+#
+# Revision 1.10  2005/10/13 13:06:44  rwiegand
+# More formatting games.
+#
+# Revision 1.9  2005/10/13 12:14:17  rwiegand
+# Do not complain in image parameter does not correspond to a regular file
+# since it could have FITS specifiers.
+#
+# Revision 1.8  2005/10/12 22:55:14  rwiegand
+# Reimplemented.
+#
+# Revision 1.5  2005/08/11 18:24:10  still
+# Alteration to code to follow changes in uvotmag tool.
+# system calls removed. More significance calculations.
+#
+# Revision 1.4  2005/04/07 15:26:49  still
+# Add functionality to output results in flux and count rate units.
+#
+# Revision 1.3  2005/03/20 16:20:32  still
+# 2003-03-20: Fixed bug in background subtraction (Martin Still).
+#
+# Revision 1.2  2005/03/18 02:46:20  still
+# 2005-03-17: Updated help file with 'filter' parameter description and
+# fixed minor bug in STDOUT layout.
+#
+# Revision 1.1  2005/03/17 21:21:55  still
+# This tool calculates source magnitudes and magnitude limits from images.
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Math;
+use Math::Polynomial;
+
+use SimpleFITS;
+# use Astro::FITS::CFITSIO qw(:constants);
+
+use StarID::SourceTable;
+use UVOT::Calibration;
+use UVOT::Source;
+
+
+my %FORMAT_FIXED = (
+	wantfig => 2,	# number of significant digits desired in result
+
+	base => 3,		# base number of digits after decimal
+
+	extlimit => 2,	# number of digits which will be added to attempt minfig
+					# before switching to scientific notation
+);
+
+
+{
+	my $task = __PACKAGE__->new(version => 3.3);
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			checkInput
+			loadImageHeader
+			loadCalibration
+			checkRegionFiles
+			checkFOV
+			ingestRegionFiles
+			centroid
+			makeStandardRegion
+			processImage
+			reportResults
+			writeTable
+			mergeTable
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(options => [ qw(
+				image=file srcreg=string bkgreg=file
+				sigma=real apercorr=string frametime=string fwhmsig=real
+				zerofile=string coinfile=string psffile=string lssfile=string
+				sensfile=string
+				expfile=string syserr=boolean deadtimecorr=boolean
+				output=string outfile=file centroid=boolean extprec=integer
+				subpixel=integer
+				cleanup=boolean clobber=boolean chatter=integer
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	if ($self->chatter(4)) {
+		$self->report(join("\n\t", "Got parameters:",
+				"image = $args->{image}",
+				"srcreg = $args->{srcreg}",
+				"bkgreg = $args->{bkgreg}",
+				"sigma = $args->{sigma}",
+				"apercorr = $args->{apercorr}",
+				"output = $args->{output}",
+				"cleanup = $args->{cleanup}",
+				"clobber = $args->{clobber}",
+				"chatter = $args->{chatter}"));
+	}
+
+	# determine which sections to output
+	my @output = map { uc($_) } split(/\s*,\s*/, $args->{output});
+	my %output = map { $_ => 1 } @output;
+	if ($output{ALL}) {
+		foreach my $which (qw(MAG:VEGA MAG:AB RATE RAW FLUX FLUXJ)) {
+			$output{$which} = 1;
+		}
+	}
+	$self->{OUTPUT} = \%output;
+
+	foreach my $key (qw(srcreg bkgreg)) {
+		if ($args->{$key} !~ /^NONE$/i) {
+			$args->{$key} =~ s/\s+$//;
+			if (not -f $args->{$key}) {
+				$self->error(BAD_INPUT,
+						"$key $args->{$key} does not exist");
+			}
+			else {
+				$self->{$key} = $args->{$key};
+			}
+		}
+	}
+
+	if (not $self->{srcreg}) {
+		$self->{srcreg} = $self->{bkgreg};
+	}
+
+	$self->{WRITE_OUTFILE} = $args->{outfile} !~ /^NONE$/i;
+	if ($args->{clobberFlag}) {
+		if ($self->{WRITE_OUTFILE} and -e $args->{outfile}) {
+			unlink($args->{outfile})
+				or $self->warning("unable to remove $args->{outfile} [$!]");
+		}
+	}
+
+	$self->{STAT_TAG} = ' (stat)';
+	$self->{SYS_TAG} = ' (sys)';
+	if (defined($ENV{UVOTSOURCE_STAT_TAG})) {
+		$self->{STAT_TAG} = $ENV{UVOTSOURCE_STAT_TAG};
+	}
+	if (defined($ENV{UVOTSOURCE_SYS_TAG})) {
+		$self->{SYS_TAG} = $ENV{UVOTSOURCE_SYS_TAG};
+	}
+
+	$self->{ERR_TAG} = " +/- ";
+	if (defined($ENV{UVOTSOURCE_ERR_TAG})) {
+		$self->{ERR_TAG} = $ENV{UVOTSOURCE_ERR_TAG};
+	}
+
+	$self->{SUBPIXELS} = $ENV{UVOT_SOURCE_SUBPIXELS} || $args->{subpixel} || 8;
+}
+
+
+
+sub checkImage
+{
+	my ($self, $path, $extspec) = @_;
+
+	my $status = 0;
+	my $bitpix = 0;
+	my $naxis = 0;
+	my @naxes;
+	my $header;
+
+	my $fits = SimpleFITS->readonly($path);
+
+	if (not $fits) {
+		$self->error(BAD_INPUT, "unable to open $path");
+	}
+	elsif ($fits->handle->get_img_parm($bitpix, $naxis, \@naxes, $status)) {
+		$self->error(BAD_INPUT,
+				"unable to get $path image parameters [$status]");
+	}
+	elsif ($naxis != 2) {
+		$self->report("$path is not a 2 dimensional image")
+			if $self->chatter(3);
+	}
+	else {
+		my $status = $fits->readheader($header, clean => 1)->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to read $path header");
+		}
+		$self->{IMAGE_PATH} = $path;
+		$self->{INPUT_EXTSPEC} = $extspec;
+		$self->{HEADER} = $header;
+	}
+
+	if ($fits) {
+		undef($fits);
+	}
+}
+
+
+sub checkInput
+{
+	my ($self) = @_;
+
+	$self->report("Checking quality of input files")
+			if $self->chatter(2);
+
+	my $args = $self->args;
+
+	my $imagespec = $self->parseInputURL($args->{image});
+	if (length($imagespec->{extspec})) {
+		# extension specified
+		$self->checkImage($args->{image}, $imagespec->{extspec});
+	}
+	else {
+		# no extension specified
+		#	check primary then first extension for a 2d image
+		$self->checkImage($args->{image} . '+0', 0);
+		$self->checkImage($args->{image} . '+1', 1)
+			if not $self->{IMAGE_PATH};
+	}
+
+	if (not $self->{IMAGE_PATH}) {
+		$self->error(BAD_INPUT,
+				"unable to determine image from $args->{image}");
+	}
+
+	if ($self->isValid) {
+		$self->report("$self->{IMAGE_PATH}: OK")
+			if $self->chatter(4);
+	}
+
+
+	foreach my $key (qw(srcreg bkgreg)) {
+		my $regfile = $self->{$key};
+		my $fh = FileHandle->new($regfile);
+		my @lines = <$fh>;
+		$fh->close;
+		$self->{$key . 'lines'} = \@lines;
+	}
+}
+
+
+
+sub checkRegionFiles
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $shapeRE = qr/\w+\s*\(.+\)/;
+	my @regexp = ($shapeRE);
+
+	if ($self->{isSKY}) {
+		push(@regexp, qr/fk5|icrs|j2000/);
+	}
+	elsif ($self->{isDET}) {
+		push(@regexp, qr/wcss\s*;\s*(?:fk5|icrs|j2000)/);
+	}
+
+	foreach my $par (qw(srcreg bkgreg)) {
+		$self->checkRegionLines($args->{$par},
+				$self->{$par . 'lines'},
+				\@regexp,
+				);
+	}
+}
+
+
+sub checkFOV
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	if (uc($args->{expfile}) eq 'NONE') {
+		$self->verbose("not checking whether regions are in FOV")
+			if $self->chatter(4);
+		return;
+	}
+
+	# determine exposure map extension
+	#	allow user to explicitly specify
+	#	otherwise prefer EXTNAME/HDUNAME match
+	#	otherwise INPUT_EXTSPEC
+
+	my $expfull = $args->{expfile};
+	my $expspec = $self->parseInputURL($args->{expfile});
+	if (length($expspec->{extspec})) {
+		# explicitly specified
+	}
+	else {
+		my $header = $self->{HEADER};
+		my $extension = $header->{EXTNAME} || $header->{HDUNAME};
+		if (not defined($extension)) {
+			$extension = $self->{INPUT_EXTSPEC};
+		}
+
+		$expfull .= "[$extension]";
+	}
+
+	my $status = SimpleFITS->readonly($expfull)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to move to exposure map HDU $expfull [$status]");
+		return;
+	}
+
+	my @regions = ($args->{srcreg}, $args->{bkgreg});
+
+	# check each region
+	my $command = $self->buildCommand('uvotinteg',
+			infile => $expfull,
+			regfile => join(',', @regions),
+			operation => 'FOV',
+			subpixels => $self->{SUBPIXELS},
+			);
+
+	my $result = $self->shell($command);
+	foreach my $line (@{ $result->{lines} }) {
+		if ($line =~ /^monitor: fov: (\d\.\d+)/) {
+			my $containment = $1;
+			my $region = shift(@regions);
+			$self->verbose("$region containment is $containment");
+			if ($containment < 1) {
+				$self->error(BAD_INPUT, "$region is not fully in FOV");
+			}
+		}
+	}
+}
+
+
+sub checkRegionLines
+{
+	my ($self, $regfile, $lines, $relist) = @_;
+
+	my @lines = @$lines;
+
+	foreach my $re (@$relist) {
+		my $match = grep { /$re/ } @lines;
+		if (not $match) {
+			$self->error(BAD_INPUT,
+				"$regfile is not a compatible region file [did not match $re]");
+		}
+	}
+
+	if ($self->isValid and $self->chatter(4)) {
+		$self->report("$regfile: looks OK");
+	}
+}
+
+
+sub makeRegionFile
+{
+	my ($self, $par, $srcreg) = @_;
+
+	my $regtag = 'tmp' . $par;
+	my $tmpreg = $self->temporary($regtag, ext => '.reg');
+	$self->{$regtag} = $tmpreg;
+
+	unlink($tmpreg);
+	my $fh = FileHandle->new($tmpreg, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $tmpreg [$!]");
+	}
+	else {
+		my $lines = $self->{$par . 'lines'};
+		my @exclude;
+		my $first = 1;
+		my $system = 'image';
+		my $movedExclude = 0;
+		foreach my $line (@$lines) {
+			if ($line =~ /^\s*(\w+\s*;\s*)?-\s*\w*\(/) {
+                push(@exclude, $line);
+            }
+            else {
+                $fh->print($line);
+				$movedExclude = @exclude;
+                if ($line =~ /^\s*(\w+)\s*$/) {
+					$system = $1;
+                }
+                elsif ($line =~ /^\s*(?:(\w+)\s*;)?\s*(\w+)\((\S+?)\s*,\s*(\S+?)\s*,\s*(.+?)\)/) {
+					my $subsys = $1 || $system;
+					my $shape = $2;
+					my $size = $5;
+					if ($srcreg and $first) {
+						$self->{PRIMARY_SOURCE_REGION} = {
+							SHAPE => $shape,
+							SIZE => $size,
+						};
+						$self->storeRegionFilePosition($subsys, $3, $4);
+					}
+					$first = 0;
+                } 
+            }
+        }
+
+		foreach my $line (@exclude) {
+			$fh->print($line);
+		}
+
+		$fh->close;
+
+		if ($movedExclude) {
+			$self->warning("moved exclude regions to end of region file");
+		}
+	}
+
+	return $tmpreg;
+}
+
+
+sub convertSkyRegionFileToImage
+{
+	my ($self, $par, $srcreg) = @_;
+
+	my $lines = $self->{$par . 'lines'};
+
+	my @statement;
+
+	foreach my $line (@$lines) {
+
+		next if ($line =~ /^\s*$/); # ignore blank
+
+		next if ($line =~ /^\s*#/); # ignore comment
+
+		$line =~ s/^\s+//;
+		$line =~ s/\s+$//;
+
+		push(@statement, split(/\s*;\s*/, $line));
+	}
+
+	my @include;
+	my @exclude;
+
+	my $wcs = '-';
+	my $system = 'image';
+	my $global = '';
+	my $first = 1;
+
+	foreach my $s (@statement) {
+
+		if ($s =~ /^global (.+)/) {
+			$global = $1;
+			# print "global '$global'\n";
+		}
+		elsif ($s =~ /^wcs(\w)$/) {
+			if ($wcs ne '-' and $wcs ne $1) {
+				$self->error(BAD_INPUT, "region file wcs changed from $wcs to $1");
+			}
+			$wcs = $1;
+			print "wcs '$wcs'\n";
+		}
+		elsif ($s =~ /^(fk5|icrs|j2000)$/) {
+			$system = $1;
+			print "system '$system'\n";
+		}
+		elsif ($s =~ /^(\w+)\s*\((.+?)\)/) {
+			my $shape = $1;
+			my @p = split(/\s*,\s*/, $2);
+			print "shape '$shape' with parameters " . join('|', @p) . "\n";
+			push(@include, $s);
+			if ($srcreg and $first) {
+				$first = 0;
+				$self->{PRIMARY_SOURCE_REGION} = {
+						SHAPE => $shape,
+						SIZE => join(', ', @p[2..$#p])
+						};
+				$self->storeRegionFilePosition($system, $p[0], $p[1]);
+			}
+		}
+		elsif ($s =~ /^-\s*(\w+)\s*\((.+?)\)/) {
+			my $shape = $1;
+			my @p = split(/\s*,\s*/, $2);
+			print "exclusion shape '$shape' with parameters " . join('|', @p) . "\n";
+			push(@exclude, $s);
+		}
+		else {
+			print "warning: unexpected statement '$s'\n";
+		}
+	}
+
+	# determine temporary files
+	my $regtag = 'tmp' . $par;
+	my $tmpreg = $self->temporary("$regtag.user", ext => '.reg');
+	my $imagereg = $self->temporary("$regtag.image", ext => '.reg');
+
+	unlink($tmpreg);
+	my $fh = FileHandle->new($tmpreg, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $tmpreg [$!]");
+		return;
+	}
+
+	if ($system =~ /fk5|j2000|icrs/) {
+		$fh->print("fk5\n");
+	}
+
+	foreach my $e (@include, @exclude) {
+		$fh->print("$e\n");
+	}
+
+	# warn if any exclude regions were relocated
+	if (@exclude) {
+		my $count = @exclude;
+		$self->warning("moved $count exclude regions to end of region file");
+	}
+
+	$fh->close;
+
+	if ($self->isValid) {
+
+		$self->{$regtag} = $imagereg;
+
+		my $command = $self->buildCommand('uvotconvreg',
+				infile => $tmpreg,
+				wcsfile => $self->{IMAGE_PATH},
+				outfile => $imagereg,
+				wcs => $wcs,
+				);
+		$self->shell($command);
+	}
+
+}
+
+
+sub storeRegionFilePosition
+{
+	my ($self, $system, $rastr, $decstr) = @_;
+
+	# TODO: if $rastr and $decstr end in d (for degrees),
+	# $system doesn't matter
+
+# example from perlfaq4
+    my $reNumber = qr(
+        [+-]?          # first, match an optional sign *and space*
+        (              # then match integers or f.p. mantissas:
+            \d+\.\d+   # mantissa of the form a.b
+            |\d+\.     # mantissa of the form a.
+            |\.\d+     # mantissa of the form .b
+            |\d+       # integer of the form a
+        )
+        ([eE][+-]?\d+)?  # finally, optionally match an exponent
+    )x;
+
+
+	if ($rastr =~ /^($reNumber)d$/ and $decstr =~ /^($reNumber)d$/) {
+		$system = 'fk5';
+		chop($rastr);
+		chop($decstr);
+	}
+
+	if ($system !~ /^(fk5|icrs|j2000)$/) {
+		$self->error(BAD_INPUT,
+				"unhandled region system $system for determining sky position");
+	}
+	else {
+		if ($rastr =~ /^$reNumber$/) {
+			$self->{RAdeg} = $rastr;
+		}
+		elsif ($rastr =~ /^(\d+):(\d+):(\d+(?:\.\d+)?)$/) {
+			$self->{RAdeg} = 15 * ($1 + $2 / 60 + $3 / 3600);
+		}
+		else {
+			$self->error(BAD_INPUT, "unexpected source RA $rastr");
+		}
+
+		if ($decstr =~ /^$reNumber$/) {
+			$self->{DECdeg} = $decstr;
+		}
+		elsif ($decstr =~ /^([-+]?)(\d+):(\d+):(\d+(?:\.\d+)?)$/) {
+			my $sign = $1 eq '-' ? -1 : 1;
+			$self->{DECdeg} = $sign * ($2 + $3 / 60 + $4 / 3600);
+		}
+		else {
+			$self->error(BAD_INPUT, "unexpected source DEC $decstr");
+		}
+	}
+
+	if (defined($self->{RAdeg}) and defined($self->{DECdeg})) {
+	}
+	else {
+		$self->error(BAD_INPUT,
+				"unable to determine position from $system, $rastr, $decstr");
+	}
+}
+
+
+sub ingestRegionFiles
+{
+	my ($self) = @_;
+
+	if ($self->{isDET}) {
+		$self->convertSkyRegionFileToImage(bkgreg => 0);
+		$self->convertSkyRegionFileToImage(srcreg => 1);
+	}
+	else {
+		$self->makeRegionFile(bkgreg => 0);
+		$self->makeRegionFile(srcreg => 1);
+	}
+}
+
+
+sub makeStandardRegion
+{
+	my ($self) = @_;
+
+	my $image = $self->{IMAGE};
+
+	my $tmpreg = $self->temporary('std', ext => '.reg');
+	$image->{STD_PATH} = $tmpreg;
+	my $fh = FileHandle->new($image->{STD_PATH}, 'w');
+
+	my $radius = $self->{COINCIDENCE}{COIAPT};
+
+	$fh->print("fk5; circle($self->{RAdeg}, $self->{DECdeg}, $radius\")\n");
+	$fh->close;
+
+	if ($self->{isDET}) {
+		my $imagereg = $self->temporary('std.image', ext => '.reg');
+		my $command = $self->buildCommand('uvotconvreg',
+				infile => $tmpreg,
+				wcsfile => $self->{IMAGE_PATH},
+				outfile => $imagereg,
+				wcs => 'S',
+				);
+		$self->shell($command);
+		$image->{STD_PATH} = $imagereg;
+	}
+}
+
+
+
+sub centroid
+{
+	my ($self) = @_;
+	my $args = $self->args;
+	if (not $args->{centroidFlag}) {
+		return;
+	}
+
+	if ($self->{isDET}) {
+		# to implement this, run uvotinteg with sysname PIXEL then convert
+		# the result to sky coordinates (applying distortion)
+		$self->warning("centroiding detector image not available");
+		return;
+	}
+
+	my $command = $self->buildCommand('uvotinteg',
+			infile => $self->{IMAGE_PATH},
+			regfile => $self->{tmpsrcreg},
+			operation => 'CENTROID',
+			sysname => 'WORLD',
+			format => 'centroid: %.6f, %.6f',
+			);
+	my $result = $self->shell($command);
+	return if not $self->isValid;
+
+	if ($result->{output} =~ /centroid: (\d+\.\d+), ([-+]?\d+\.\d+) \[deg\]/) {
+		$self->{RAdeg} = $1;
+		$self->{DECdeg} = $2;
+	}
+	else {
+		$self->error(BAD_EXECUTE, 'unable to determine centroid');
+		return;
+	}
+
+	$self->{tmpsrcreg} = $self->temporary('centsrc', ext => '.reg');
+	my $fh = FileHandle->new($self->{tmpsrcreg}, 'w');
+	my $first = $self->{PRIMARY_SOURCE_REGION};
+	$fh->print("fk5; $first->{SHAPE}($self->{RAdeg}, $self->{DECdeg}, $first->{SIZE})\n");
+	$fh->close;
+	$self->{IMAGE}{SRCREG} = $self->{tmpsrcreg};
+}
+
+
+sub loadImageHeader
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->report("Reading image keywords")
+		if $self->chatter(2);
+
+	my $header = $self->{HEADER};
+
+	my %keyword = (
+		TELESCOP => 'SWIFT',
+		INSTRUME => 'UVOTA',
+		EXTNAME => undef,
+		TSTART => undef,
+		TSTOP => undef,
+		NAXIS1 => undef,
+		NAXIS2 => undef,
+		FILTER => undef,
+		FRAMTIME => UVOT::Calibration::DEFAULT_FRAMETIME_s,
+	);
+
+	my %image = (
+		FITSEXT => $self->{IMAGE_PATH},
+	);
+
+	while (my ($key, $default) = each(%keyword)) {
+		if (not defined($header->{$key})) {
+			if (defined($default)) {
+				$image{$key} = $default;
+			}
+			else {
+				$self->error(BAD_INPUT, "$self->{IMAGE_PATH} missing $key");
+			}
+		}
+		else {
+			$image{$key} = $header->{$key};
+		}
+	}
+
+	if (uc($args->{frametime}) ne 'DEFAULT') {
+		$image{FRAMTIME} = $args->{frametime};
+	}
+
+	if ($header->{EXPOSURE}) {
+		$image{EXPOSURE} = $header->{EXPOSURE};
+	}
+	elsif ($header->{ONTIME}) {
+		$image{EXPOSURE} = $header->{ONTIME};
+	}
+	else {
+		$self->error(BAD_INPUT,
+				"$self->{IMAGE_PATH} missing EXPOSURE/ONTIME");
+	}
+
+	my $ctype1 = $header->{CTYPE1} || 'NONE';
+	if ($ctype1 eq 'RA---TAN') {
+		$self->{isSKY} = 1;
+		$image{AS2PP} = abs(3600 * $header->{CDELT1} * 3600 * $header->{CDELT2});
+	}
+	elsif ($ctype1 eq 'RAWX' or $ctype1 eq 'DETX') {
+		$self->{isDET} = 1;
+
+		my $binning = 1;
+		if ($header->{BINX}) {
+			$binning = $header->{BINX};
+		}
+		else {
+			$self->warning('missing BINX; assuming 1x1 binning');
+		}
+
+		$image{AS2PP} = (0.5 * $binning) ** 2;
+
+	}
+	else {
+		$image{AS2PP} = 1;
+		$self->warning("CTYPE1=$header->{CTYPE1}; assuming 1 arcsec^2/pixel");
+	}
+	$image{PLATE_SCALE} = sqrt($image{AS2PP});
+
+	$self->{IMAGE} = \%image;
+}
+
+
+
+
+sub loadCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my %coincidence;
+	UVOT::Calibration::loadCoincidenceLoss($self, \%coincidence,
+			PAR => $args->{coinfile},
+			PAR_NOTE => 'coinfile',
+			HEADER => $self->{HEADER},
+			DEADTIME_CORRECTED => $args->{deadtimecorrFlag},
+			);
+	$self->{COINCIDENCE} = \%coincidence;
+
+	my %colortable;
+	UVOT::Calibration::loadColorTable($self, \%colortable,
+			PAR => $args->{zerofile},
+			PAR_NOTE => 'zerofile',
+			HEADER => $self->{HEADER},
+			);
+	$colortable{NULL} = 99;
+	$colortable{SYS_ERR} = $args->{syserrFlag};
+	$self->{COLORTABLE} = \%colortable;
+
+	my %reef;
+	UVOT::Calibration::loadEncircledEnergy($self, \%reef,
+			PAR => $args->{psffile},
+			PAR_NOTE => 'psffile',
+			HEADER => $self->{HEADER},
+			);
+	$self->{CAL_PSF} = \%reef;
+
+	my %lss;
+	if (uc($args->{lssfile}) ne 'NONE') {
+		UVOT::Calibration::loadLargeScaleSensitivity($self, \%lss,
+				PAR => $args->{lssfile},
+				PAR_NOTE => 'lssfile',
+				HEADER => $self->{HEADER},
+				);
+	}
+	else {
+		$lss{NONE} = 1;
+	}
+	$self->{CAL_LSS} = \%lss;
+
+	my %senscorr;
+	$self->{CAL_SENSCORR} = \%senscorr;
+
+	if (uc($args->{sensfile}) ne 'NONE') {
+		UVOT::Calibration::loadDetectorSensitivity($self, \%senscorr,
+				PAR => $args->{sensfile},
+				PAR_NOTE => 'sensfile',
+				HEADER => $self->{HEADER},
+				);
+	}
+	else {
+		$senscorr{NONE} = 1;
+	}
+
+}
+
+
+
+sub processImage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $image = $self->{IMAGE};
+	$image->{HEADER} = $self->{HEADER};
+	$image->{XY_TYPE} = 'RADEC';
+	$image->{X} = $image->{RA} = $self->{RAdeg};
+	$image->{Y} = $image->{DEC} = $self->{DECdeg};
+
+	$image->{SRC_PATH} = $self->{tmpsrcreg};
+	$image->{BKG_PATH} = $self->{tmpbkgreg};
+
+	$image->{FWHM_UNCERTAINTY_percent} = $args->{fwhmsig};
+	$image->{SYS_ERR} = $args->{syserrFlag} ? 'T' : 'F';
+	$image->{SUBPIXELS} = $self->{SUBPIXELS};
+
+	UVOT::Source::processImage($self, $image,
+			COINCIDENCE => $self->{COINCIDENCE},
+			COLORTABLE => $self->{COLORTABLE},
+			CAL_LSS => $self->{CAL_LSS},
+			APERCORR => $args->{apercorr},
+			NSIGMA => $args->{sigma},
+			CAL_PSF => $self->{CAL_PSF},
+			CAL_SENSCORR => $self->{CAL_SENSCORR},
+			);
+}
+
+
+sub reportIndented
+{
+	my ($self, @report) = @_;
+ 
+	if (not @report) {
+		return;
+	}
+
+	my @indented;
+ 
+	foreach my $line (@report) {
+		if ($line =~ /(\S+):/) {
+			my $spaces = ' ' x (20 - length($1));
+			push(@indented, $spaces . $line);
+		}
+		else {
+			push(@indented, $line);
+		}
+	}
+
+	if ($ENV{UVOTSOURCE_SECTION_BLANK}) {
+		push(@indented, '');
+	}
+ 
+	$self->report(join("\n", @indented));
+}
+ 
+ 
+sub reportResults
+{
+	my ($self) = @_;
+ 
+	my $args = $self->args;
+
+	my $hdu = $self->{IMAGE};
+ 
+	{
+		my $extprec = $self->args->{extprec};
+		my $form = sprintf('%%.%df', 5 + $extprec);
+		my $RAdeg = sprintf($form, $self->{RAdeg});
+		my $DECdeg = sprintf($form, $self->{DECdeg});
+		my ($raHMS, $decDMS) = radecDegreesToSexagesimal($self,
+				$self->{RAdeg}, $self->{DECdeg});
+		my $expform = sprintf('%%.%df', 2 + $extprec);
+		my $sigform = sprintf("%%.%df sigma$self->{STAT_TAG}", 1 + $extprec);
+		my @report = (
+			'Source',
+			"Position: RA = $raHMS, Dec = $decDMS (J2000)",
+			"Position: RA = $RAdeg, Dec = $DECdeg (J2000)",
+			sprintf("Exposure: $expform s", $hdu->{EXPOSURE}),
+			"Filter: $hdu->{FILTER}",
+			sprintf("Significance: $sigform", $hdu->{NSIGMA}),
+			sprintf("Background-limit: $sigform", $args->{sigma}),
+		);
+		$self->reportIndented(@report);
+	}
+ 
+	my $output = $self->{OUTPUT};
+ 
+	if ($output->{MAG} or $output->{'MAG:VEGA'}) {
+		my @report = $self->formatMag($hdu, 'Vega');
+		$self->reportIndented(@report);
+	}
+ 
+	if ($output->{'MAG:AB'}) {
+		my @report = $self->formatMag($hdu, 'AB');
+		$self->reportIndented(@report);
+	}
+ 
+	if ($output->{FLUX}) {
+		my @report = $self->formatFlux($hdu);
+		$self->reportIndented(@report);
+	}
+ 
+	if ($output->{RATE}) {
+		my @report = $self->formatRate($hdu);
+		$self->reportIndented(@report);
+	}
+ 
+	if ($output->{RAW}) {
+		my @report = $self->formatRawRate($hdu);
+		$self->reportIndented(@report);
+	}
+ 
+	if ($output->{FLUXJ}) {
+		my @report = $self->formatFluxJ($hdu);
+		$self->reportIndented(@report);
+	}
+ 
+}
+ 
+ 
+ 
+sub formatMag
+{
+	my ($self, $hdu, $system) = @_;
+ 
+	if (not $hdu->{$system . '_MAG'}) {
+		$self->warning("$system magnitudes not available")
+			if $self->chatter(3);
+		return;
+	}
+
+	my $args = $self->args;
+ 
+	my @formed;
+	my $lfilter = "\L$hdu->{FILTER}";
+	push(@formed, "UVOT $lfilter magnitude ($system system)");
+ 
+	my $mag;
+
+	my %tmp;
+	foreach my $key (qw(MAG MAG_BKG MAG_LIM MAG_COI_LIM
+			MAG_ERR_STAT MAG_ERR_SYS)) {
+		$tmp{$key} = $hdu->{$system . '_' . $key};
+	}
+
+	# change the reference
+	$hdu = \%tmp;
+ 
+	my $form = sprintf("%%.%df", 2 + $args->{extprec});
+ 
+	if ($hdu->{MAG} <= $hdu->{MAG_COI_LIM}) {
+		$mag = sprintf("< $form", $hdu->{MAG_COI_LIM});
+	}
+	elsif ($hdu->{MAG} >= $hdu->{MAG_LIM}) {
+		$mag = sprintf("> $form", $hdu->{MAG_LIM});
+	}
+	else {
+		my $format = join('', $form,
+				$self->{ERR_TAG}, $form, $self->{STAT_TAG},
+				$self->{ERR_TAG}, $form, $self->{SYS_TAG});
+		$mag = sprintf($format, $hdu->{MAG}, $hdu->{MAG_ERR_STAT}, $hdu->{MAG_ERR_SYS});
+	}
+ 
+	push(@formed, sprintf("Source: %s", $mag));
+ 
+	push(@formed, sprintf("Background: $form arcsec^-2", $hdu->{MAG_BKG}));
+ 
+	push(@formed, sprintf("Background-limit: $form", $hdu->{MAG_LIM}));
+ 
+	push(@formed, sprintf("Coincidence-limit: $form", $hdu->{MAG_COI_LIM}));
+ 
+	return @formed;
+}
+ 
+ 
+ 
+sub formatScientific
+{
+	my ($self, $value, $spec, $staterr, $syserr) = @_;
+ 
+	my $args = $self->args;
+ 
+	$spec ||= { };
+
+	my $test = sprintf('%.6e', $value);
+	my ($mantissa, $exponent) = split('e', $test);
+ 
+	$exponent += 0; # string to number
+ 
+	my $base = defined($spec->{base}) ? $spec->{base} : 2;
+	my $form = sprintf("%%.%df", $base + $args->{extprec});
+ 
+	my $formValue = sprintf($form, $value * 10 ** -$exponent);
+ 
+	my $formed = $formValue;
+;
+	if (defined($staterr)) {
+		my $formStat = sprintf($form, $staterr * 10 ** -$exponent);
+
+		my $formSys = '';
+		if (defined($syserr)) {
+			$formSys = sprintf($form, $syserr * 10 ** -$exponent);
+		}
+
+		$formed .= "$self->{ERR_TAG}$formStat$self->{STAT_TAG}";
+
+		if (length($formSys)) {
+				$formed .= "$self->{ERR_TAG}$formSys$self->{SYS_TAG}";
+		}
+
+		$formed .= " x 10^$exponent";
+	}
+	else {
+		$formed = "$formValue x 10^$exponent";
+	}
+ 
+	return $formed;
+}
+ 
+ 
+
+# determine the apparent number of significant digits in a fixed decimal string
+#	12.32 => 4
+#	0.001 => 1
+#	10 => 2
+sub significantDigits
+{
+	my ($str) = @_;
+	$str =~ s/^[0.]+//;
+	$str =~ s/\.//;
+	return length($str);
+}
+
+ 
+sub formatFixed
+{
+	my ($self, $value, $spec, $staterr, $syserr) = @_;
+ 
+	my $args = $self->args;
+ 
+	$spec ||= { };
+
+	foreach my $key (keys(%FORMAT_FIXED)) {
+		if (not exists($spec->{$key})) {
+			$spec->{$key} = $FORMAT_FIXED{$key};
+		}
+	}
+
+	my $extprec = $args->{extprec};
+
+	my $formed;
+	my $extloc = -1;
+	while (not $formed and $extloc < $spec->{extlimit}) {
+
+		++$extloc;
+
+		my $subfig = $spec->{base} + $extprec + $extloc;
+		my $form = sprintf("%%.%df", $subfig);
+
+		my $test = sprintf($form, $value);
+		my $sigfig = significantDigits($test);
+		if ($sigfig >= $spec->{wantfig} + $extprec) {
+			# acceptable string
+			if (defined($staterr)) {
+				# use same format for errors
+				my $statform = "$self->{ERR_TAG}$form$self->{STAT_TAG}";
+				my $statstr = sprintf($statform, $staterr);
+				my $sysstr = '';
+				if (defined($syserr)) {
+					my $sysform = "$self->{ERR_TAG}$form$self->{SYS_TAG}";
+					$sysstr = sprintf($sysform, $syserr)
+				}
+				$formed = "$test$statstr$sysstr";
+			}
+			else {
+				$formed = $test;
+			}
+		}
+	}
+
+	if (not $formed) {
+		$formed = $self->formatScientific($value, $spec, $staterr, $syserr);
+	}
+ 
+	return $formed;
+}
+ 
+ 
+ 
+sub formatFlux
+{
+	my ($self, $hdu) = @_;
+ 
+	my $args = $self->args;
+
+	my $lambdastr = '';
+	if (my $lambda = $self->{FLUX_LAMBDA_A}) {
+		my $tmpform = sprintf(' at %%.%df A', Math::max(0, $args->{extprec}));
+		$lambdastr = sprintf($tmpform, $lambda);
+	}
+ 
+	my @formed;
+	push(@formed, "Flux density [erg/s/cm^2/A$lambdastr]");
+ 
+	$hdu->{FLUX_AA_FORM} = $self->formatScientific($hdu->{FLUX_AA}, { },
+			$hdu->{FLUX_AA_ERR_STAT}, $hdu->{FLUX_AA_ERR_SYS});
+ 
+	$hdu->{FLUX_AA_BKG_FORM} = $self->formatScientific($hdu->{FLUX_AA_BKG}, { },
+			$hdu->{FLUX_AA_BKG_ERR_STAT}, $hdu->{FLUX_AA_BKG_ERR_SYS});
+ 
+	$hdu->{FLUX_AA_LIM_FORM} = $self->formatScientific($hdu->{FLUX_AA_LIM});
+	$hdu->{FLUX_AA_COI_LIM_FORM} = $self->formatScientific($hdu->{FLUX_AA_COI_LIM});
+ 
+	my $flux;
+	if ($hdu->{FLUX_AA} <= $hdu->{FLUX_AA_LIM}) {
+		$flux = sprintf('< %s', $hdu->{FLUX_AA_LIM_FORM});
+	}
+	elsif ($hdu->{FLUX_AA} >= $hdu->{FLUX_AA_COI_LIM}) {
+		$flux = sprintf('> %s', $hdu->{FLUX_AA_COI_LIM_FORM});
+	}
+	else {
+		$flux = sprintf('%s', $hdu->{FLUX_AA_FORM});
+	}
+ 
+	push(@formed, sprintf('Source: %s', $flux));
+ 
+	push(@formed, sprintf('Background: %s arcsec^-2', $hdu->{FLUX_AA_BKG_FORM}));
+ 
+	push(@formed, sprintf('Background-limit: %s', $hdu->{FLUX_AA_LIM_FORM}));
+ 
+	push(@formed, sprintf('Coincidence-limit: %s', $hdu->{FLUX_AA_COI_LIM_FORM}));
+ 
+	return @formed;
+}
+ 
+ 
+ 
+sub formatRate
+{
+	my ($self, $hdu) = @_;
+ 
+	my $args = $self->args;
+ 
+	my @formed;
+	push(@formed, "Corrected rate [count/s]");
+ 
+	my $rate;
+ 
+	my $spec = { base => 3, };
+	my $fixed = not $ENV{UVOTSOURCE_RATE_EXP};
+	my $method = $fixed ? 'formatFixed' : 'formatScientific';
+ 
+	if ($hdu->{CORR_RATE} <= $hdu->{CORR_RATE_LIMIT}) {
+		my $tmp = $self->$method($hdu->{CORR_RATE_LIMIT}, $spec);
+		$rate = "< $tmp";
+	}
+	elsif ($hdu->{CORR_RATE} >= $hdu->{COI_FRAME_LIMIT}) {
+		my $tmp = $self->$method($hdu->{COI_FRAME_LIMIT}, $spec);
+		$rate = "> $tmp";
+	}
+	else {
+		$rate = $self->$method($hdu->{CORR_RATE}, $spec, $hdu->{CORR_RATE_ERR});
+	}
+ 
+	push(@formed, "Source: $rate");
+ 
+	{
+		my $tmp = $self->$method($hdu->{COI_BKG_RATE}, $spec);
+		push(@formed, "Background: $tmp arcsec^-2");
+	}
+ 
+	{
+		my $tmp = $self->$method($hdu->{CORR_RATE_LIMIT}, $spec);
+		push(@formed, "Background-limit: $tmp");
+	}
+ 
+	{
+		my $tmp = $self->$method($hdu->{COI_FRAME_LIMIT}, $spec);
+		push(@formed, "Coincidence-limit: $tmp");
+	}
+ 
+	return @formed;
+}
+ 
+ 
+sub formatRawRate
+{
+	my ($self, $hdu) = @_;
+ 
+	my $args = $self->args;
+ 
+	my @formed;
+	push(@formed, "Raw rate [count/s]");
+ 
+	my $spec = { base => 3, };
+	my $fixed = not $ENV{UVOTSOURCE_RATE_EXP};
+	my $method = $fixed ? 'formatFixed' : 'formatScientific';
+
+	{
+		my $tmp = $self->$method($hdu->{NET1_RATE}, $spec,
+				$hdu->{NET1_RATE_ERR});
+		push(@formed, "Source: $tmp");
+	}
+
+	{
+		my $tmp = $self->$method($hdu->{RAW_BKG_RATE}, $spec);
+		push(@formed, "Background: $tmp arcsec^-2");
+	}
+ 
+	{
+		my $tmp = $self->$method($hdu->{RAW_RATE_LIMIT}, $spec);
+		push(@formed, "Background-limit: $tmp");
+	}
+ 
+	{
+		my $tmp = $self->$method($hdu->{RAW_FRAME_LIMIT}, $spec);
+		push(@formed, "Coincidence-limit: $tmp");
+	}
+ 
+	return @formed;
+}
+ 
+ 
+sub formatFluxJ
+{
+	my ($self, $hdu) = @_;
+ 
+	my $args = $self->args;
+ 
+	my @formed;
+
+	my $freqstr = '';
+	if (my $hz = $hdu->{FLUX_FREQ_Hz}) {
+		my $tmp = $self->formatScientific($hz, { base => 3, });
+		$freqstr = " at $tmp Hz";
+	}
+
+	push(@formed, "Flux density [mJy$freqstr]");
+ 
+	my $scientific = not $ENV{UVOTSOURCE_FLUXJ_FIXED};
+	my $method = $scientific ? 'formatScientific' : 'formatFixed';
+ 
+	my $flux;
+	if ($hdu->{FLUX_AA} <= $hdu->{FLUX_AA_LIM}) {
+		$flux = sprintf('< %s', $self->$method($hdu->{FLUX_HZ_LIM}));
+	}
+	elsif ($hdu->{FLUX_AA} >= $hdu->{FLUX_AA_COI_LIM}) {
+		$flux = sprintf('> %s', $self->$method($hdu->{FLUX_HZ_COI_LIM}));
+	}
+	else {
+		my @arg = ($hdu->{FLUX_HZ}, { },
+			$hdu->{FLUX_HZ_ERR_STAT}, 
+			$hdu->{FLUX_HZ_ERR_SYS}, 
+		);
+		$flux = $self->$method(@arg);
+	}
+ 
+	push(@formed, "Source: $flux");
+ 
+	my $fluxbkg;
+	{
+		my @arg = (
+			$hdu->{FLUX_HZ_BKG}, { },
+			$hdu->{FLUX_HZ_BKG_ERR_STAT},
+			$hdu->{FLUX_HZ_BKG_ERR_SYS},
+		);
+		$fluxbkg = $self->$method(@arg);
+	}
+ 
+	push(@formed, "Background: $fluxbkg arcsec^-2");
+ 
+	my $fluxlim = $self->$method($hdu->{FLUX_HZ_LIM});
+	push(@formed, "Background-limit: $fluxlim");
+ 
+	my $fluxcoi = $self->$method($hdu->{FLUX_HZ_COI_LIM});
+	push(@formed, "Coincidence-limit: $fluxcoi");
+ 
+	return @formed;
+}
+ 
+ 
+sub radecDegreesToSexagesimal
+{
+	my ($task, $ra, $dec) = @_;
+ 
+	my @sexagesimal;
+ 
+	if ($ra < 0 or $ra > 360 or $dec < -90 or $dec > 90) {
+		$task->error(BAD_INPUT,
+				"badly defined RA/Dec provided [$ra, $dec]");
+	}
+	else {
+		my $extprec = $task->args->{extprec};
+ 
+		# 2009 Jul 22: Stephen says to report RA with 1 more digit than Dec
+
+		my $rasfrac = 2 + $extprec;
+		my $raslen = 3 + $rasfrac;     # dd.dd [exprec=0]
+		my $decfrac = 1 + $extprec;    # dd.d
+		my $decslen = 3 + $decfrac;
+ 
+		# convert RA
+		my $tmp = $ra / 15;
+		my $ra_h = int($tmp);
+		$tmp = ($tmp - $ra_h) * 60;
+		my $ra_m = int($tmp);
+		$tmp = ($tmp - $ra_m) * 60;
+		my $ra_s = $tmp;
+
+		my $rastr = sprintf("%02dh %02dm %0${raslen}.${rasfrac}fs",
+				$ra_h, $ra_m, $ra_s);
+ 
+		# convert Dec
+		my $tmp = abs($dec);
+		my $dec_d = int($tmp);
+		$tmp = ($tmp - $dec_d) * 60;
+		my $dec_m = int($tmp);
+		$tmp = ($tmp - $dec_m) * 60;
+		my $dec_s = $tmp;
+
+		my $decstr = sprintf("%02dd %02dm %0${decslen}.${decfrac}fs",
+				$dec_d, $dec_m, $dec_s);
+ 
+		my $sign = ($dec < 0) ? '-' : '+';
+ 
+		push(@sexagesimal, $rastr, $sign .  $decstr);
+	}
+ 
+	return @sexagesimal;
+}
+ 
+
+sub writeTable
+{
+	my ($self) = @_;
+
+	# write out table of derived values
+
+	return if not $self->{WRITE_OUTFILE};
+
+	my $errorType = $self->args->{syserrFlag}
+			? 'Total (syserr=yes)' : 'Statistical (syserr=no)';
+
+	my @magColumnTemplate = (
+		{ NAME => 'MAG', TYPE => 'E', UNITS => 'mag',
+				LABEL => 'Magnitude from CORR_RATE', },
+		{ NAME => 'MAG_ERR', TYPE => 'E', UNITS => 'mag',
+				LABEL => $errorType . ' error in MAG', },
+		{ NAME => 'MAG_ERR_STAT', TYPE => 'E', UNITS => 'mag',
+				LABEL => 'Statistical error in MAG', },
+		{ NAME => 'MAG_ERR_SYS', TYPE => 'E', UNITS => 'mag',
+				LABEL => 'Systematic error in MAG', },
+		{ NAME => 'MAG_BKG', TYPE => 'E', UNITS => 'mag/arcsec2',
+				LABEL => 'Sky magnitude', },
+		{ NAME => 'MAG_BKG_ERR_STAT', TYPE => 'E', UNITS => 'mag/arcsec2',
+				LABEL =>  'Statistical error in MAG_BKG', },
+		{ NAME => 'MAG_BKG_ERR_SYS', TYPE => 'E', UNITS => 'mag/arcsec2',
+				LABEL =>  'Systematic error in MAG_BKG', },
+		{ NAME => 'MAG_BKG_ERR', TYPE => 'E', UNITS => 'mag/arcsec2',
+				LABEL =>  $errorType . ' error in MAG_BKG', },
+		{ NAME => 'MAG_LIM', TYPE => 'E', UNITS => 'mag',
+				LABEL => 'Limiting magnitude', },
+		{ NAME => 'MAG_LIM_SIG', TYPE => 'E', UNITS => 'sigma',
+				LABEL => 'Sigma for limiting magnitude', },
+		{ NAME => 'MAG_COI_LIM', TYPE => 'E', UNITS => 'mag',
+				LABEL => 'Coincidence limit magnitude', },
+
+		{ NAME => 'FLUX_AA', TYPE => 'E', UNITS => 'erg/s/cm2/A',
+				LABEL => 'Flux density', },
+		{ NAME => 'FLUX_AA_ERR_STAT', TYPE => 'E', UNITS => 'erg/s/cm2/A',
+				LABEL => 'Statistical error in FLUX_AA', },
+		{ NAME => 'FLUX_AA_ERR_SYS', TYPE => 'E', UNITS => 'erg/s/cm2/A',
+				LABEL => 'Systematic error in FLUX_AA', },
+		{ NAME => 'FLUX_AA_ERR', TYPE => 'E', UNITS => 'erg/s/cm2/A',
+				LABEL => $errorType . ' error in FLUX_AA', },
+		{ NAME => 'FLUX_AA_BKG', TYPE => 'E', UNITS => 'erg/s/cm2/A/arcsec2',
+				LABEL => 'Sky flux density', },
+		{ NAME => 'FLUX_AA_BKG_ERR_STAT', TYPE => 'E', UNITS => 'erg/s/cm2/A/arcsec2',
+				LABEL => 'Statistical error in FLUX_AA_BKG', },
+		{ NAME => 'FLUX_AA_BKG_ERR_SYS', TYPE => 'E', UNITS => 'erg/s/cm2/A/arcsec2',
+				LABEL => 'Systematic error in FLUX_AA_BKG', },
+		{ NAME => 'FLUX_AA_BKG_ERR', TYPE => 'E', UNITS => 'erg/s/cm2/A/arcsec2',
+				LABEL => $errorType . ' error in FLUX_AA_BKG', },
+		{ NAME => 'FLUX_AA_LIM', TYPE => 'E', UNITS => 'erg/s/cm2/A',
+				LABEL => 'Flux density corresponding to MAG_LIM', },
+		{ NAME => 'FLUX_AA_COI_LIM', TYPE => 'E', UNITS => 'erg/s/cm2/A',
+				LABEL => 'Coincidence limit flux density', },
+
+		# flux in milliJanskys
+		{ NAME => 'FLUX_HZ', TYPE => 'E', UNITS => 'mjy',
+				LABEL => 'Flux density in mJy', },
+		{ NAME => 'FLUX_HZ_ERR_STAT', TYPE => 'E', UNITS => 'mjy',
+				LABEL => 'Statistical error in FLUX_HZ', },
+		{ NAME => 'FLUX_HZ_ERR_SYS', TYPE => 'E', UNITS => 'mjy',
+				LABEL => 'Systematic error in FLUX_HZ', },
+		{ NAME => 'FLUX_HZ_ERR', TYPE => 'E', UNITS => 'mjy',
+				LABEL => $errorType . ' error in FLUX_HZ', },
+		{ NAME => 'FLUX_HZ_BKG', TYPE => 'E', UNITS => 'mjy/arcsec2',
+				LABEL => 'Sky flux density', },
+		{ NAME => 'FLUX_HZ_BKG_ERR_STAT', TYPE => 'E', UNITS => 'mjy/arcsec2',
+				LABEL => 'Statistical error in FLUX_HZ_BKG', },
+		{ NAME => 'FLUX_HZ_BKG_ERR_SYS', TYPE => 'E', UNITS => 'mjy/arcsec2',
+				LABEL => 'Systematic error in FLUX_HZ_BKG', },
+		{ NAME => 'FLUX_HZ_BKG_ERR', TYPE => 'E', UNITS => 'mjy/arcsec2',
+				LABEL => $errorType . ' error in FLUX_HZ_BKG', },
+		{ NAME => 'FLUX_HZ_LIM', TYPE => 'E', UNITS => 'mjy',
+				LABEL => 'Flux density corresponding to MAG_LIM', },
+		{ NAME => 'FLUX_HZ_COI_LIM', TYPE => 'E', UNITS => 'mjy',
+				LABEL => 'Coincidence limit flux density', },
+
+	);
+
+	my @magSystemColumns;
+	foreach my $system (split(',', $self->{COLORTABLE}{SYSTEMS})) {
+		foreach my $column (@magColumnTemplate) {
+			my %tmp = %$column;
+			if ($system ne 'Vega') {
+				$tmp{NAME} = join('_', $system, $column->{NAME});
+			}
+			$tmp{LABEL} = "$system $column->{LABEL}";
+			push(@magSystemColumns, \%tmp);
+		}
+	}
+
+	my @columns = (
+		{ NAME => 'MET', TYPE => 'D', UNITS => 's',
+				LABEL => 'Mission time' },
+		{ NAME => 'EXTNAME', TYPE => '12A',
+				LABEL => 'Image identifier' },
+		{ NAME => 'TSTART', TYPE => 'D', UNITS => 's',
+				LABEL => 'Image start time' },
+		{ NAME => 'TSTOP', TYPE => 'D', UNITS => 's',
+				LABEL => 'Image stop time' },
+		{ NAME => 'EXPOSURE', TYPE => 'E', UNITS => 's',
+				LABEL => 'Corrected exposure time' },
+		{ NAME => 'TELAPSE', TYPE => 'E', UNITS => 's',
+				LABEL => 'TSTOP - TSTART' },
+		{ NAME => 'TIME', TYPE => 'D', UNITS => 's',
+				LABEL => 'Offset from TIMEZERO' },
+		{ NAME => 'SRC_AREA', TYPE => 'E', UNITS => 'arcsec^2',
+				LABEL => 'Area of source extraction region' },
+		{ NAME => 'BKG_AREA', TYPE => 'E', UNITS => 'arcsec^2',
+				LABEL => 'Area of background region' },
+		{ NAME => 'STD_AREA', TYPE => 'E', UNITS => 'arcsec^2',
+				LABEL => 'Area of CoI aperture' },
+		{ NAME => 'PLATE_SCALE', TYPE => 'E', UNITS => 'arcsec/pix',
+				LABEL => 'Plate scale' },
+		{ NAME => 'RAW_TOT_CNTS', TYPE => 'E', UNITS => 'count',
+				LABEL => 'Total counts in source region' },
+		{ NAME => 'RAW_TOT_CNTS_ERR', TYPE => 'E', UNITS => 'count',
+				LABEL => 'Error in RAW_TOT_CNTS' },
+		{ NAME => 'RAW_BKG_CNTS', TYPE => 'E', UNITS => 'count',
+				LABEL => 'Total counts in background region' },
+		{ NAME => 'RAW_BKG_CNTS_ERR', TYPE => 'E', UNITS => 'count',
+				LABEL => 'Error in RAW_BKG_CNTS' },
+		{ NAME => 'RAW_STD_CNTS', TYPE => 'E', UNITS => 'count',
+				LABEL => 'Total counts in standard region' },
+		{ NAME => 'RAW_STD_CNTS_ERR', TYPE => 'E', UNITS => 'count',
+				LABEL => 'Error in RAW_STD_CNTS' },
+		{ NAME => 'RAW_TOT_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Measured count rate in source region' },
+		{ NAME => 'RAW_TOT_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in RATE_TOT_RATE' },
+		{ NAME => 'RAW_BKG_RATE', TYPE => 'E', UNITS => 'count/s/arcsec^2',
+				LABEL => 'Measured count rate in background region' },
+		{ NAME => 'RAW_BKG_RATE_ERR', TYPE => 'E', UNITS => 'count/s/arcsec^2',
+				LABEL => 'Error in RAW_BKG_RATE' },
+		{ NAME => 'RAW_STD_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Measured count rate in standard region' },
+		{ NAME => 'RAW_STD_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in RATE_STD_RATE' },
+
+		{ NAME => 'COI_STD_FACTOR', TYPE => 'E', UNITS => '',
+				LABEL => 'CoI factor for standard region' },
+		{ NAME => 'COI_STD_FACTOR_ERR', TYPE => 'E', UNITS => '',
+				LABEL => 'Error in COI_STD_FACTOR', },
+		{ NAME => 'COI_BKG_FACTOR', TYPE => 'E', UNITS => '',
+				LABEL => 'CoI factor for background region' },
+		{ NAME => 'COI_BKG_FACTOR_ERR', TYPE => 'E', UNITS => '',
+				LABEL => 'Error in COI_BKG_FACTOR', },
+		{ NAME => 'COI_TOT_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'CoI corrected rate in source region' },
+		{ NAME => 'COI_TOT_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in COI_TOT_RATE' },
+		{ NAME => 'COI_BKG_RATE', TYPE => 'E', UNITS => 'count/s/arcsec2',
+				LABEL => 'CoI corrected rate in background region' },
+		{ NAME => 'COI_BKG_RATE_ERR', TYPE => 'E', UNITS => 'count/s/arcsec2',
+				LABEL => 'Error in COI_BKG_RATE' },
+		{ NAME => 'COI_SRC_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Background subtracted, CoI corrected rate from source' },
+		{ NAME => 'COI_SRC_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in COI_SRC_RATE' },
+
+		{ NAME => 'AP_FACTOR', TYPE => 'E', UNITS => '',
+				LABEL => 'Aperture correction factor' },
+		{ NAME => 'AP_FACTOR_ERR', TYPE => 'E', UNITS => '',
+				LABEL => 'Error in AP_FACTOR' },
+		{ NAME => 'AP_COI_SRC_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Aperture corrected, CoI corrected rate from source' },
+		{ NAME => 'AP_COI_SRC_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in AP_COI_SRC_RATE' },
+
+		{ NAME => 'LSS_FACTOR', TYPE => 'E',
+				LABEL => 'LSS correction factor' },
+		{ NAME => 'LSS_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'LSS corrected rate from source' },
+		{ NAME => 'LSS_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in LSS_RATE' },
+
+		{ NAME => 'SENSCORR_FACTOR', TYPE => 'E',
+				LABEL => 'Sensitivity correction factor' },
+		{ NAME => 'SENSCORR_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Sensitivity corrected rate from source' },
+		{ NAME => 'SENSCORR_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in SENSCORR_RATE' },
+
+		{ NAME => 'CORR_RATE', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Source rate with all corrections' },
+		{ NAME => 'CORR_RATE_ERR', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Error in CORR_RATE' },
+
+		@magSystemColumns,
+
+		# needed for uvotmaghist
+		{ NAME => 'COI_RATE_LIMIT', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'CoI corrected rate limit', },
+		{ NAME => 'CORR_RATE_LIMIT', TYPE => 'E', UNITS => 'count/s',
+				LABEL => 'Rate limit with all corrections', },
+
+		{ NAME => 'FILTER', TYPE => '8A',
+				LABEL => 'Filter' },
+		{ NAME => 'RA', TYPE => 'D', UNITS => 'deg',
+				LABEL => 'Source Right Ascension' },
+		{ NAME => 'DEC', TYPE => 'D', UNITS => 'deg',
+				LABEL => 'Source Declination' },
+		{ NAME => 'DETX', TYPE => 'E', UNITS => 'pixel',
+				LABEL => 'Source TELDEF X position' },
+		{ NAME => 'DETY', TYPE => 'E', UNITS => 'pixel',
+				LABEL => 'Source TELDEF Y position' },
+
+		{ NAME => 'NSIGMA', TYPE => 'E',
+				LABEL => 'Source significance' },
+		{ NAME => 'FRAMTIME', TYPE => 'E', UNITS => 's',
+				LABEL => 'Frame time' },
+		{ NAME => 'SATURATED', TYPE => 'I',
+				LABEL => 'Is source saturated?' },
+
+		{ NAME => 'SYS_ERR', TYPE => 'L', UNITS => '',
+				LABEL => 'Do {MAG,FLUX*}_ERR include systematics?' },
+	);
+
+    my $cdfile = $self->temporary('his', ext => '.cdf');
+    my $cdfh = FileHandle->new($cdfile, 'w');
+	foreach my $c (@columns) {
+		$cdfh->print("$c->{NAME} $c->{TYPE} $c->{UNITS}\n");
+		$c->{NULL} = -999;
+	}
+    $cdfh->close;
+
+	my $image = $self->{IMAGE};
+	$image->{TELAPSE} = $image->{TSTOP} - $image->{TSTART};
+	$image->{MET} = $image->{TSTART} + $image->{TELAPSE} / 2;
+	$image->{TIME} = 0; # TIME column is created for use by uvotmaghist
+		# for reporting offset from TIMEZERO
+
+	if (not defined($image->{DETX})) {
+		$image->{DETX} = 'INDEF';
+		$image->{DETY} = 'INDEF';
+	}
+
+    my $datafile = $self->temporary('his', ext => '.dat');
+	my $hfh = FileHandle->new($datafile, 'w');
+	foreach my $c (@columns) {
+		my $key = $c->{KEY} || $c->{NAME};
+		if (not defined($image->{$key})) {
+			$image->{$key} = $c->{NULL};
+			$self->warning("$image->{FITSEXT} is missing $key");
+		}   
+		$hfh->print("$image->{$key}\n");
+	}
+
+    $hfh->close;
+
+
+#    $self->writeCardsToHandle($self->{cards}, $head);
+	my $headfile = $self->temporary('head', ext => '.txt');
+	my $head = FileHandle->new($headfile, 'w');
+	$head->print("
+EXTNAME = MAGHIST
+TELESCOP = $image->{TELESCOP} / Mission name
+INSTRUME = $image->{INSTRUME} / Instrument
+TIMEPIXR = 0.5 / Times relative to middle of bin
+");
+	my $i = 0;
+	foreach my $c (@columns) {
+		++$i;
+		if ($c->{LABEL}) {
+			$head->print("TTYPE$i = $c->{NAME} / $c->{LABEL}\n");
+		}
+	}
+	$head->close;
+
+	my $thisfile = $self->temporary('this', ext => '.fits');
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftcreate',
+				cdfile => $cdfile,
+				datafile => $datafile,
+				# headfile => $headfile,
+				outfile => $thisfile,
+				);
+		$self->shell($command);
+		$self->{THIS_OUTFILE} = $thisfile;
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('fthedit',
+				infile => "$thisfile+1",
+				keyword => '@' . $headfile,
+				);
+		$self->shell($command);
+	}
+
+# add some keywords to the primary
+	$head = FileHandle->new($headfile, 'w');
+	$head->print("
+TELESCOP = $image->{TELESCOP} / Mission name
+INSTRUME = $image->{INSTRUME} / Instrument
+"); 
+	$head->close;
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('fthedit',
+				infile => "$thisfile+0",
+				keyword => '@' . $headfile,
+				);
+		$self->shell($command);
+	}
+}
+
+
+
+sub mergeTable
+{
+	my ($self) = @_;
+
+	return if not $self->{WRITE_OUTFILE};
+
+	my $thisfile = $self->{THIS_OUTFILE};
+
+	my $args = $self->args;
+	my $outfile = $args->{outfile};
+	my $oldfile = $self->temporary('oldhis', ext => '.fits');
+
+	if (-e $outfile) {
+		$self->moveFile($outfile, $oldfile);
+		if ($self->isValid) {
+			my $tmpfile = $self->temporary('tmphis', ext => '.fits');
+			my $command = $self->buildCommand('ftmerge',
+					infile => "$oldfile,$thisfile",
+					outfile => $tmpfile,
+					);
+
+			$self->shell($command);
+			$self->moveFile($tmpfile, $outfile);
+		}
+	}
+	else {
+		$self->moveFile($thisfile, $outfile);
+	}
+}
+

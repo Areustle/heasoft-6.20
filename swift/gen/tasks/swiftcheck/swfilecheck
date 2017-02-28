@@ -1,0 +1,515 @@
+#! perl
+
+# $Source: /headas/headas/swift/gen/tasks/swiftcheck/swfilecheck,v $
+# $Revision: 1.1 $
+# $Date: 2006/01/24 14:48:59 $
+#
+#	A program to check Swift FITS file keywords.
+#
+#	optcheck parameter is comma delimited list with these possible values
+#		SWIFT		perform Swift data checks
+#		FTVERIFY	run ftverify?
+#		CHECKSUM	test HDU checksums
+#		TESTDATA	ftverift testdata parameter
+#		TESTFILL	ftverify testfill parameter
+#		HEASARC		check HEASARC conventions
+#		COMMENT		check keyword comments
+#
+#	special keyword checks
+#		MJDREF
+#		HDUNAME
+#		TSCAL
+#		TZERO
+#		TDIM
+#		TMINMAX		TDMIN, TDMAX, TLMIN, TLMAX
+#		TNULL
+#		RADEC_NOM
+#
+#
+# $Log: swfilecheck,v $
+# Revision 1.1  2006/01/24 14:48:59  rwiegand
+# Tools for checking Swift data.
+#
+# Revision 1.6  2005/11/30 15:57:42  wiegand
+# Made RA_NOM/DEC_NOM checks optional.
+#
+# Revision 1.5  2005/11/29 22:11:51  wiegand
+# Made a number of keyword checks optional based on the optcheck
+# parameter.  Added checks for TSTART, TSTOP, DATE-* keywords.
+#
+# Revision 1.4  2005/10/19 19:44:22  wiegand
+# Allow some alternate comments.
+#
+# Revision 1.3  2005/10/19 13:28:45  wiegand
+# Replaced checkKEYWORD methods with data.
+#
+# Revision 1.2  2005/10/18 19:32:30  wiegand
+# Reimplemented.
+#
+
+use strict;
+
+package Swift::FileCheck;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+
+
+my @KEYWORD_CHECKS = (
+	{ keyword => 'LONGSTRN', shouldNotExist => 1 },
+	{ keyword => 'CLOCKAPP', string => 'F' },
+	{ keyword => 'MJDREF', sub => sub {
+			my ($self, $header) = @_;
+			if ($self->{optcheck}{MJDREF} and $self->shouldNotExist(MJDREF => $header)) {
+				$self->warning('MJDREF should be replaced with MJDREFI/MJDREFF');
+			}
+		},
+	},
+	{ keyword => 'MJDREFI', number => 51910 },
+	{ keyword => 'MJDREFF', number => 7.4287037e-4 },
+	{ keyword => 'UTCFINIT', comment => qr(UTCF at TSTART) },
+	{ keyword => 'TSORTKEY', shouldNotExist => 1 },
+	{ keyword => 'TIERRELA', number => 1e-8, optional => 1 },
+	{ keyword => 'TIERABSO', number => 1, optional => 1 },
+	{ keyword => 'NAXIS' },
+	{ keyword => 'HDUNAME', sub => sub {
+			my ($self, $header) = @_;
+			if ($self->{hdu} == 1) {
+				if ($self->{optcheck}->{HDUNAME}
+						and $self->checkKeyword('HDUNAME', $header)) {
+					$self->warning("HDUNAME is required for the primary HDU");
+				}
+			}
+			elsif (exists($header->{HDUNAME})) {
+				$self->warning("HDUNAME should not exist in extensions");
+			}
+		},
+	},
+	{ keyword => 'DATAMISS', sub => sub {
+			my ($self, $header) = @_;
+			if ($self->checkKeyword('DATAMISS', $header, string => 'T', optional => 1)) {
+				$self->warning('DATAMISS should only be written value is T');
+			}
+		},
+	},
+	{ keyword => 'KEYMISS', sub => sub {
+			my ($self, $header) = @_;
+			if ($self->checkKeyword('KEYMISS', $header, string => 'T', optional => 1)) {
+				$self->warning('KEYMISS should only be written value is T');
+			}
+		},
+	},
+	{ keyword => 'FILTER', sub => sub {
+			my ($self, $header) = @_;
+			if (exists($header->{INSTRUME}) and $header->{INSTRUME} =~ /^UVOT[AB]$$/) {
+				$self->checkKeyword('FILTER', $header, optional => 1);
+			}
+		},
+	},
+	{ keyword => 'RA_NOM', sub => sub {
+			my ($self, $header) = @_;
+			my $opt = $self->{optcheck};
+			if ($opt->{RADEC_NOM} and $self->shouldNotExist('RA_NOM', $header)) {
+				$self->warning('RA_NOM should be replaced by RA_PNT');
+			}
+		},
+	},
+	{ keyword => 'DEC_NOM', sub => sub {
+			my ($self, $header) = @_;
+			my $opt = $self->{optcheck};
+			if ($opt->{RADEC_NOM} and $self->shouldNotExist('DEC_NOM', $header)) {
+				$self->warning('DEC_NOM should be replaced by DEC_PNT');
+			}
+		},
+	},
+	{ keyword => 'TSTART', sub => sub {
+			my ($self, $header) = @_;
+			if (not $header->{TSTART}) {
+				$self->badKeyword("keyword TSTART is missing");
+			}
+			elsif ($header->{TSTART} < $self->{minTSTART}) {
+				$self->badKeyword("TSTART $header->{TSTART} is less than min $self->{minTSTART}");
+			}
+			elsif ($header->{TSTART} > $self->{maxTSTART}) {
+				$self->badKeyword("TSTART $header->{TSTART} is greater than max $self->{maxTSTART}");
+			}
+			else {
+				# $self->verbose("TSTART $header->{TSTART} is in [$self->{minTSTART}, $self->{maxTSTART}]");
+			}
+		},
+	},
+	{ keyword => 'TSTOP', sub => sub {
+			my ($self, $header) = @_;
+			if (not $header->{TSTOP}) {
+				$self->badKeyword("keyword TSTOP is missing");
+			}
+			elsif ($header->{TSTOP} < $self->{TSTART}) {
+				$self->badKeyword("TSTOP $header->{TSTOP} is less than TSTART $header->{TSTART}");
+			}
+			elsif ($header->{TSTOP} > $self->{maxTSTART}) {
+				$self->badKeyword("TSTOP $header->{TSTOP} is greater than max $self->{maxTSTART}");
+			}
+		},
+	},
+	{ keyword => 'DATE-OBS', sub => sub {
+			my ($self, $header) = @_;
+			my $date = $header->{'DATE-OBS'};
+			if (not $date) {
+				$self->badKeyword("keyword DATE-OBS is missing");
+			}
+			elsif ($date lt $self->{minDATE}) {
+				$self->badKeyword("DATE-OBS $date is less than min $self->{minDATE}");
+			}
+			elsif ($date gt $self->{maxDATE}) {
+				$self->badKeyword("DATE-OBS $date is greater than max $self->{maxDATE}");
+			}
+			else {
+				# $self->verbose("DATE-OBS $date is in [$self->{minDATE}, $self->{maxDATE}]");
+			}
+		},
+	},
+	{ keyword => 'DATE-END', sub => sub {
+			my ($self, $header) = @_;
+			my $date = $header->{'DATE-END'};
+			my $date1 = $header->{'DATE-OBS'};
+			if (not $date) {
+				$self->badKeyword("keyword DATE-END is missing");
+			}
+			elsif ($date lt $date1) {
+				$self->badKeyword("DATE-END $date is less than DATE-OBS $date1");
+			}
+			elsif ($date gt $self->{maxDATE}) {
+				$self->badKeyword("DATE-END $date is greater than max $self->{maxDATE}");
+			}
+		},
+	},
+);
+
+
+
+# main
+{
+	my $task = __PACKAGE__->new;
+	$task->run;
+	exit($task->{code});
+}
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	my $args = $self->args;
+	my $opt = $self->{optcheck};
+
+	$self->runFtverify
+		if $self->isValid and $opt->{FTVERIFY};
+
+	$self->checkSwiftKeywords
+		if $self->isValid and $opt->{SWIFT};
+
+	$self->summary;
+}
+
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->{errors} = 0;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file optcheck=string clobber=boolean chatter=integer
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	my %optcheck;
+	$self->{optcheck} = \%optcheck;
+	if ($args->{optcheck} !~ /^NONE$/i) {
+		%optcheck = map { uc($_) => 1 } split(',', $args->{optcheck});
+	}
+
+	#   DB<10> x timegm(0,0,0,1,0,101)
+	#	0  978307200
+  	#	DB<11> x scalar(gmtime(978307200))
+	#	0  'Mon Jan  1 00:00:00 2001'
+	#	DB<13> x timegm(0,0,0,20,10,104)
+	#	0  1100908800
+	#	DB<14> x (1100908800-978307200)
+	#	0  122601600
+	#	DB<15> x scalar(gmtime(1100908800))
+	#	0  'Sat Nov 20 00:00:00 2004'
+	#	DB<16> 
+
+	my $unixEpoch = 978307200;
+	my $unixLaunch = 1100908800;
+	$self->{minTSTART} = $unixLaunch - $unixEpoch;
+	$self->{maxTSTART} = time - $unixEpoch + 86400;
+	$self->{minDATE} = '2004-11-20';
+	my @t = gmtime(time + 86400);
+	$self->{maxDATE} = sprintf('%d-%02d-%02d', $t[5] + 1900, $t[4] + 1, $t[3]);
+}
+
+
+
+sub booleanParValue
+{
+	my ($flag) = @_;
+	return $flag ? 'yes' : 'no';
+}
+
+
+sub runFtverify
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $opt = $self->{optcheck};
+
+	my $path = $self->temporary('ftverify');
+	my $command = $self->buildCommand('ftverify',
+			infile => $args->{infile},
+			outfile => $path,
+			errreport => 'w',
+			testdata => booleanParValue($opt->{TESTDATA}),
+			tchksum => booleanParValue($opt->{CHECKSUM}),
+			heasarc => booleanParValue($opt->{HEASARC}),
+			testfill => booleanParValue($opt->{TESTFILL}),
+			);
+	$self->shell($command);
+	if (not $self->isValid) {
+		my $fh = FileHandle->new($path);
+		$self->warning("ftverify log:\n", <$fh>);
+		undef($fh);
+	}
+	unlink($path);
+}
+
+
+sub checkSwiftKeywords
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->report("SWIFT conventions are being checked.");
+
+	my $fits = SimpleFITS->readonly($args->{infile});
+	if (my $status = $fits->status) {
+		$self->error(BAD_INPUT, "unable to open $args->{infile} [$status]");
+		return;
+	}
+
+	my $nhdu;
+	$fits->nhdu($nhdu);
+
+	for (my $i = 1; $i <= $nhdu; ++$i) {
+
+		my $header = '';
+		my $status = $fits->move($i)
+				->readheader($header, clean => 1)
+				->status;
+
+		$self->{hdu} = $i;
+
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to move to $args->{infile} HDU $i [$status]");
+		}
+		else {
+			$self->report("checking $args->{infile} extension $i");
+
+			foreach my $check (@KEYWORD_CHECKS) {
+				$self->checkKeyword($check->{keyword}, $header, %$check);
+			}
+
+
+			$self->checkColumns($header);
+		}
+	}
+}
+
+
+
+sub shouldNotExist
+{
+	my ($self, $key, $header) = @_;
+	my $out = 0;
+	if (exists($header->{$key})) {
+		$out = $self->badKeyword("keyword $key should be removed");
+	}
+	return $out;
+}
+
+
+sub checkKeyword
+{
+	my ($self, $key, $header, %args) = @_;
+
+	my $out = 0;
+
+	my $opt = $self->{optcheck};
+
+	if ($args{sub}) {
+		$args{sub}->($self, $header);
+	}
+	elsif ($args{shouldNotExist}) {
+		if (exists($header->{$key})) {
+			$out = $self->badKeyword("keyword $key should not be present");
+		}
+	}
+	elsif (not exists($header->{$key})) {
+		if (not $args{optional}) {
+			$out = $self->badKeyword("keyword $key is missing");
+		}
+	}
+	else {
+		if ($args{number}) {
+			if ($header->{$key} != $args{number}) {
+				$out = $self->badKeyword("keyword $key is $header->{$key} [expecting $args{number}]");
+			}
+		}
+		elsif ($args{string}) {
+			if ($header->{$key} ne $args{string}) {
+				$out = $self->badKeyword("keyword $key is $header->{$key} [expecting $args{string}]");
+			}
+		}
+		elsif ($args{re}) {
+			if ($header->{$key} !~ $args{re}) {
+				$out = $self->badKeyword("keyword $key is $header->{$key} [expecting $args{re}]");
+			}
+		}
+	}
+
+	if ($opt->{COMMENT} and $args{comment}) {
+		if (not exists($header->{$key})) {
+			# no keyword means no comment
+		}
+		elsif (not exists($header->{COMMENTS}{$key})) {
+			$out = $self->badKeyword("keyword $key is missing comment $args{comment}");
+		}
+		elsif ($header->{COMMENTS}{$key} !~ $args{comment}) {
+			my $comment = $header->{COMMENTS}{$key};
+			$out = $self->badKeyword("keyword $key has comment '$comment' [expecting $args{comment}]");
+		}
+	}
+
+	return $out;
+}
+
+
+
+sub badKeyword
+{
+	my ($self, $message) = @_;
+	$self->warning($message);
+	++$self->{errors};
+	return 1;
+}
+
+
+
+sub checkColumns
+{
+	my ($self, $header) = @_;
+
+	if (not exists($header->{XTENSION}) or
+			($header->{XTENSION} ne 'BINTABLE' and $header->{XTENSION} ne 'ASCTABLE')) {
+		# not a table;
+		return;
+	}
+
+	elsif (not exists($header->{TFIELDS})) {
+		$self->badKeyword("$header->{XTENSION} missing TFIELDS");
+	}
+
+	else {
+
+		my $opt = $self->{optcheck};
+
+		for (my $column = 1; $column <= $header->{TFIELDS}; ++$column) {
+			$self->checkKeyword('TUNIT' . $column, $header, re => qr(\w|\d), optional => 1,
+						# REW allow alternative comment
+						comment => qr(physical units? of field));
+
+			my $tzero = 'TZERO' . $column;
+			if (exists($header->{$tzero}) and $opt->{TZERO}) {
+				if ($header->{$tzero} == 0) {
+					$self->badKeyword("$tzero 0 serves no purpose");
+				}
+				$self->checkKeyword($tzero, $header, comment => qr(offset));
+			}
+
+			my $tscal = 'TSCAL' . $column;
+			if (exists($header->{$tscal}) and $opt->{TSCAL}) {
+				if ($header->{$tscal} == 1) {
+					$self->badKeyword("$tscal 1 serves no purpose");
+				}
+				# REW allow alternative comment
+				$self->checkKeyword($tscal, $header, comment => qr(data scaling|data are not scaled));
+			}
+
+			$self->checkKeyword('TFORM' . $column, $header,
+					# REW allow alternative comment
+					comment => qr(format of (?:the )?field));
+
+			$self->checkKeyword('TTYPE' . $column, $header, comment => qr(\w));
+
+			$self->checkKeyword('TDIM' . $column, $header, optional => 1,
+					# REW allow alternative comment
+					comment => qr(array dimensions|dimensionality of the array))
+				if $opt->{TDIM};
+
+			$self->checkKeyword('TDMIN' . $column, $header, optional => 1,
+					comment => qr(minimum column data value|Minimum value))
+				if $opt->{TMINMAX};
+
+			$self->checkKeyword('TDMAX' . $column, $header, optional => 1,
+					comment => qr(maximum column data value|Maximum value))
+				if $opt->{TMINMAX};
+
+			$self->checkKeyword('TLMIN' . $column, $header, optional => 1,
+					# REW allow alternative comments
+					comment => qr(minimum legal value|Minimum value|min value))
+				if $opt->{TMINMAX};
+
+			$self->checkKeyword('TLMAX' . $column, $header, optional => 1,
+					# REW allow alternative comments
+					comment => qr(maximum legal value|Maximum value|max value))
+				if $opt->{TMINMAX};
+
+			$self->checkKeyword('TNULL' . $column, $header, optional => 1,
+					# REW allow alternative comment
+					comment => qr(data null value|Illegal value for this column))
+				if $opt->{TNULL};
+		}
+	}
+}
+
+
+
+
+sub summary
+{
+	my ($self) = @_;
+
+	if ($self->{errors} > 0) {
+		$self->error(BAD_INPUT, "*** $self->{errors} errors were found ***");
+	}
+	else {
+		$self->report('no errors were found');
+	}
+}
+
+

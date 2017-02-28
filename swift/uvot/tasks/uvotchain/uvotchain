@@ -1,0 +1,793 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotchain/uvotchain,v $
+# $Revision: 1.7 $
+# $Date: 2005/11/02 15:19:30 $
+#
+#	This tool turns fairly raw UVOT event data into images.
+#
+# $Log: uvotchain,v $
+# Revision 1.7  2005/11/02 15:19:30  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.6  2004/05/05 15:20:50  rwiegand
+# FTOOLS no longer required.
+#
+# Revision 1.5  2003/11/26 20:44:36  rwiegand
+# Updated imagexform parameter list.
+#
+# Revision 1.4  2003/06/11 21:29:12  miket
+# global name change from uchain to uvotchain
+#
+# Revision 1.3  2003/03/24 22:07:54  rwiegand
+# Allow separate input and output directories.  Activate autoflush in uvotchain.
+#
+# Revision 1.2  2003/02/24 15:04:01  rwiegand
+# Include events at start and stop of range.  Specify column names and pixel
+# range for binning.
+#
+# Revision 1.1  2003/02/06 19:24:51  rwiegand
+# Prototype of user tool for converting event files to images.
+#
+
+use strict;
+
+package Uchain;
+
+require 5.005;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use IO::File;
+use DirHandle;
+
+
+# these are the SDC pipeline tapecat file classes which correspond
+# to the directory structure
+use constant FILE_CLASS_AUXILIARY    => 'aux';
+use constant FILE_CLASS_CALIBRATION  => 'calib';
+use constant FILE_CLASS_HOUSEKEEPING => 'hk';
+use constant FILE_CLASS_UNFILTERED   => 'unfiltered';
+use constant FILE_CLASS_UCHAIN       => 'uvotchain';
+
+# SDC pipeline file types
+use constant FILE_TYPE_ATTITUDE      => 'attitude';
+use constant FILE_TYPE_TELDEF        => 'teldef';
+
+
+# from 03691-DPUICD-01
+#	ICD for the ICU/DPU protocol for the UVOT
+use constant UVOT_MODE_EVENT         => 0x02;
+use constant UVOT_MODE_IMAGE         => 0x03;
+use constant UVOT_MODE_IMAGEANDEVENT => 0x04;
+
+use constant IMAGE_TYPE_RAW          => 'raw';
+use constant IMAGE_TYPE_SKY          => 'sky';
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	# autoflush output
+	my $fh = select(\*STDOUT);
+	$| = 1;
+	select($fh);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->preClean
+		if $self->args->{preclean} eq 'yes';
+
+	$self->parseJobParameters
+		if $self->isValid;
+
+	$self->parseCatalog
+		if $self->isValid;
+
+	$self->runCoordinator
+		if $self->isValid;
+
+	$self->parseExposureReport
+		if $self->isValid;
+
+	$self->extractImages
+		if $self->isValid;
+
+	$self->transformImages
+		if $self->isValid;
+
+	$self->packageImages
+		if $self->isValid;
+
+	# additional products?
+
+	$self->writeSummary;
+
+	$self->postClean
+		if $self->args->{postclean} eq 'yes';
+
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# ensure environment variables are set
+	foreach my $name (qw(HEADAS)) {
+		if (not exists($ENV{$name})) {
+			$self->error(BAD_INPUT,
+				"environment variable $name not set");
+		}
+		elsif (not -d $ENV{$name}) {
+			$self->error(BAD_INPUT,
+				"environment variable $name does not give a valid directory");
+		}
+	}
+
+	# disable prompting
+	$ENV{HEADASNOQUERY} = 1;
+
+	my $path = $self->args->{input};
+	if (not -d $path) {
+		$self->error(BAD_INPUT, "invalid input directory '$path'");
+	}
+}
+
+
+sub inputPath
+{
+	my ($self, $class, $name) = @_;
+
+	my $base = $self->args->{input};
+
+	my $path = "$base/$class/$name";
+
+	if (not -f $path) {
+		# hack
+		# check other extensions?
+		$path .= '.gz';
+	}
+
+	return $path;
+}
+
+
+sub outputPath
+{
+	my ($self, $class, $name) = @_;
+
+	my $base = $self->args->{output};
+
+	my $dir = "$base/$class";
+
+	if (not -d $dir) {
+		if (not mkdir($dir, 0777)) {
+			$self->warning("unable to create directory $dir: $!");
+		}
+	}
+
+	my $path = "$base/$class/$name";
+
+	return $path;
+}
+
+
+sub parseJobParameters
+{
+	my ($self) = @_;
+
+	my $basedir = $self->args->{input};
+	my $auxdir = $basedir . '/' . FILE_CLASS_AUXILIARY;
+	my $dh = DirHandle->new($auxdir);
+	if (not $dh) {
+		$self->error(BAD_INPUT,
+			"unable to open auxiliary input directory $auxdir: $!");
+		return;
+	}
+
+	my @names = $dh->read;
+	undef($dh);
+
+	# locate the job par file
+	my @filtered = grep { /job\.par/ } @names;
+	if (@filtered != 1) {
+		$self->error(BAD_INPUT,
+			"auxiliary input directory does not have exactly 1 job file");
+		return;
+	}
+
+	my $jobpar = $self->inputPath(FILE_CLASS_AUXILIARY, $filtered[0]);
+	my $open = ($jobpar =~ /\.gz/) ? "gunzip --stdout $jobpar|" : $jobpar;
+	my $fh = IO::File->new($open);
+	if (not $fh) {
+		$self->error(BAD_INPUT,
+			"unable to open job parameters file $jobpar: $!");
+		return;
+	}
+	my @lines = <$fh>;
+	undef($fh);
+
+	foreach my $line (@lines) {
+
+		next if $line =~ /^\s*#/;
+
+		my ($parameter, $type, $mode, $value, $min, $max, $comment) = split(/,/, $line, 7);
+		if ($value =~ /^"(.+?)"$/) {
+			# remove leading/trailing double quotes
+			$value = $1;
+		}
+
+		if (defined($comment)) {
+			$self->{job}{$parameter} = $value;
+		}
+		else {
+			$line =~ s/\s+$//;
+			$self->report("ignoring job parameters record: $line");
+		}
+	}
+
+}
+
+
+sub parseCatalog
+{
+	my ($self) = @_;
+
+	my $tapecat = $self->inputPath(FILE_CLASS_AUXILIARY, $self->{job}->{tapecat});
+	my $command = qq(ftlist '$tapecat' T columns=FILENAME,FILECLAS,TYPE);
+	my $result = $self->shell($command);
+	if ($result->{error}) {
+		$self->error(BAD_INPUT,
+			"unable to open catalog file $tapecat: $!");
+		return;
+	}
+
+	# do some sorting
+	my @auxiliary;
+	my @housekeeping;
+	my @calibration;
+	my @unfiltered;
+
+	foreach my $line (@{ $result->{lines} }) {
+
+		if ($line =~ m/^
+				\s*
+				\d+
+				\s+
+				(\S+)
+				\s+
+				(\w+)
+				\s+
+				(\w+)
+				\s*
+				/x) {
+
+			my $name  = $1;
+			my $class = $2;
+			my $type  = $3;
+
+			my %o = (
+				name => $name,
+				class => $class,
+				type => $type,
+				path => $self->inputPath($class, $name),
+			);
+
+			if ($class eq FILE_CLASS_AUXILIARY) {
+				push(@auxiliary, \%o);
+			}
+			elsif ($class eq FILE_CLASS_UNFILTERED) {
+				push(@unfiltered, \%o);
+			}
+			elsif ($class eq FILE_CLASS_HOUSEKEEPING) {
+				push(@housekeeping, \%o);
+			}
+			elsif ($class eq FILE_CLASS_CALIBRATION) {
+				push(@calibration, \%o);
+			}
+		}
+		elsif ($line =~ /^\s*$/) {
+		}
+		elsif ($line =~ /^\s*FILENAME/) {
+		}
+		else {
+			$line =~ s/\s+$//;
+			$self->report("ignoring tapecat record: $line");
+		}
+	}
+
+	$self->{auxiliary} = \@auxiliary;
+	$self->{housekeeping} = \@housekeeping;
+	$self->{calibration} = \@calibration;
+	$self->{unfiltered} = \@unfiltered;
+}
+
+
+sub locateAttitudeFile
+{
+	my ($self) = @_;
+
+	my $attitude = undef;
+
+	foreach my $o (@{ $self->{auxiliary} }) {
+
+		if ($o->{type} eq FILE_TYPE_ATTITUDE) {
+
+			if (defined($attitude)) {
+				$self->warning("overriding attitude file $attitude");
+			}
+
+			$attitude = $o->{path};
+		}
+	}
+
+	return $attitude;
+}
+
+
+sub determineEventListFilter
+{
+	my ($self, $events) = @_;
+
+	my $command = qq(ftlist '$events' K);
+	my $result = $self->shell($command);
+
+	my $filter = undef;
+
+	# find FILTER keyword in $result->{output}?
+
+	return $filter;
+}
+
+
+sub locateTeldefFile
+{
+	my ($self, $filter) = @_;
+
+	my $teldef = undef;
+
+	foreach my $o (@{ $self->{calibration} }) {
+
+		if ($o->{type} eq FILE_TYPE_TELDEF) {
+
+			# this should be a function of instrument and filter
+			# keywords instead of file name...
+			next if $o->{name} !~ /uvot/;
+
+			if (defined($teldef)) {
+				$self->warning("overriding teldef file $teldef");
+			}
+
+			$teldef = $o->{path};
+		}
+	}
+
+	return $teldef;
+}
+
+
+sub runCoordinator
+{
+	my ($self) = @_;
+
+	my $coordinator = ($self->args->{coordinator} || '') eq 'yes';
+	if (not $coordinator) {
+		$self->report("not re-applying filter distortion");
+		return;
+	}
+
+	my $attitude = $self->locateAttitudeFile;
+	if (not defined($attitude)) {
+		$self->warning("no attitude file found");
+		$attitude = 'NONE';
+	}
+
+	foreach my $o (@{ $self->{unfiltered} }) {
+
+		my $teldef = $self->locateTeldefFile($o->{filter});
+		if (not -f $teldef) {
+			$self->error(BAD_INPUT,
+				"unable to determine teldef file for $o->{path}");
+			return;
+		}
+
+		# coordinator call determined from pipeline Subs/Coordinates,
+		# input parameters taken from job.par
+
+		my $command = "coordinator input=$o->{path}"
+			. ' eventext=EVENTS'
+			. ' timecol=TIME'
+			. " teldef=$teldef"
+			. " attfile=$attitude"
+			. " ra=$self->{job}{ra}"
+			. " dec=$self->{job}{dec}"
+			. ' skyxnull=0'
+			. ' skyynull=0'
+			. ' aberration=yes'
+			. ' follow_sun=yes'
+			. ' randomize=yes'
+			. ' seed=-1956'
+			. ' timemargin=32'
+			;
+
+		my $result = $self->shell($command);
+		if ($result->{error}) {
+			$self->error(BAD_EXECUTE,
+				"problem running coordinator: $result->{output}");
+		}
+	}
+
+}
+
+
+sub parseExposureReport
+{
+	my ($self) = @_;
+
+	my @info = grep { $_->{name} =~ /uecat/ } @{ $self->{housekeeping} };
+	if (@info != 1) {
+		$self->error(BAD_INPUT,
+			"catalog does not contain exactly 1 exposure report");
+		return;
+	}
+
+	my $uecat = $info[0]->{path};
+	my $command = qq(ftlist '$uecat' T columns=MODEID,FILTERID,ESTART,ESTOP);
+	my $result = $self->shell($command);
+	if ($result->{error}) {
+		$self->error(BAD_INPUT,
+				"unable to list exposure report $uecat: $!");
+		return;
+	}
+
+	my @exposures;
+
+	foreach my $line (@{ $result->{lines} }) {
+
+		if ($line =~ m/^
+				\s*
+				\d+		# row
+				\s+
+				(\d+)	# mode
+				\s+
+				(\d+)	# filter
+				\s+
+				(\d+\.\d+)	# exposure start
+				\s+
+				(\d+\.\d+)	# exposure stop
+				\s*
+				/x) {
+
+			my $mode   = $1;
+			my $filter = $2;
+			my $start  = $3;
+			my $stop   = $4;
+
+			if ($mode eq UVOT_MODE_EVENT) {
+				push(@exposures, {
+						filter => $filter,
+						id => int($start),
+						start => $start,
+						stop => $stop,
+					});
+			}
+			elsif ($self->args->{imageandevent}
+					and ($mode eq UVOT_MODE_IMAGEANDEVENT)) {
+				push(@exposures, {
+						filter => $filter,
+						id => int($start),
+						start => $start,
+						stop => $stop,
+					});
+			}
+			else {
+				# uvotchain v0.1 doesn't care
+			}
+		}
+		elsif ($line =~ /^\s*$/) {
+		}
+		elsif ($line =~ /^\s*MODEID/) {
+		}
+		elsif ($line =~ /^\s*s\s+s/) {
+		}
+		else {
+			$line =~ s/\s+$//;
+			$self->report("ignoring exposure report record: $line");
+		}
+	}
+
+	$self->{exposures} = \@exposures;
+}
+
+
+# taken from uvot2fits/uvot.cc
+# should be replaced with FILTER keyword
+my %UVOT_FILTER_TAG = (
+	0 => 'blkd',	# Blocked
+	1 => 'g1uv', 	# Grism 1 (UV)
+	2 => 'uvw2',	# UVW2
+	3 => 'uvbv',	# V
+	4 => 'uvm2',	# UVM2
+	5 => 'g2vs',	# Grism 2 (Visible)
+	6 => 'uvw1',	# UVW1
+	7 => 'uvbu',	# U
+	8 => 'magn',	# Magnifier
+	9 => 'uvbb',	# B
+	10 => 'whit',	# White
+	11 => 'unkn',	# Unknown
+);
+
+sub getEventFile
+{
+	my ($self, $filter) = @_;
+
+	# this is a kludge
+	# I think the event files should have a FILTER keyword instead of
+	# relying on the naming convention
+	my $events = undef;
+
+	my $tag = 'u' . $UVOT_FILTER_TAG{$filter};
+
+	foreach my $o (@{ $self->{unfiltered} }) {
+
+		if ($o->{name} =~ /$tag/) {
+
+			if (defined($events)) {
+				$self->warning("multiple event files for filter $filter");
+			}
+
+			$events = $o->{path};
+		}
+	}
+
+	return $events;
+}
+
+
+sub extractImages
+{
+	my ($self) = @_;
+
+	foreach my $e (@{ $self->{exposures} }) {
+
+		# determine event file for $e->{filter}
+		my $events = $self->getEventFile($e->{filter});
+		if (not defined($events) or not -f $events) {
+			$self->error(BAD_EXECUTE,
+				"unable to find event file for filter $e->{filter}");
+			next;
+		}
+
+		my $hdu = "$events\[EVENTS]";
+		my $filter = "[TIME >= $e->{start} && TIME <= $e->{stop}]";
+		# my $binning = '[binb (RAWX,RAWY)=1:2048:8]';
+		my $binning = '[binb (RAWX,RAWY)=1:2048]';
+
+		my $name = "$e->{id}.raw";
+		my $output = $self->outputPath(FILE_CLASS_UCHAIN, $name);
+
+		my $command = "ftcopy '$hdu$binning$filter' $output";
+
+		my $result = $self->shell($command);
+		if ($result->{error}) {
+			$self->error(BAD_EXECUTE,
+				"failed to create image: $result->{output}");
+		}
+		elsif (not -f $output) {
+			$self->error(BAD_EXECUTE,
+				"missing image $output: $result->{output}");
+		}
+		else {
+			push(@{ $self->{images} }, {
+					id => $e->{id},
+					type => IMAGE_TYPE_RAW,
+					path => $output,
+					filter => $e->{filter},
+				});
+		}
+
+		# what keywords should be added?
+		#	compare to pipeline output
+	}
+}
+
+
+sub transformImages
+{
+	my ($self) = @_;
+
+	my $attitude = $self->locateAttitudeFile;
+	if (not defined($attitude)) {
+		$self->warning("no attitude file found");
+		$attitude = 'NONE';
+	}
+
+	my @rawImages = @{ $self->{images} };  # working copy
+
+	foreach my $image (@rawImages) {
+
+		my $name = "$image->{id}.sky";
+		my $output = $self->outputPath(FILE_CLASS_UCHAIN, $name);
+
+		# imagexform call determined from pipeline Subs/Coordinates,
+		# input parameters taken from job.par
+
+		my $teldef = $self->locateTeldefFile($image->{filter});
+		if (not defined($teldef) or not -f $teldef) {
+			$self->error(BAD_INPUT,
+				"unable to determine teldef file for $image->{path}");
+			return;
+		}
+
+		my $command = 'imagexform'
+			. " infile=$image->{path}"
+			. " outfile=$output"
+			. ' from=RAW'
+			. ' to=SKY'
+			. ' method=events'
+			. " teldef=$teldef"
+			. " attfile=$attitude"
+			. " ra=$self->{job}{ra}"
+			. " dec=$self->{job}{dec}"
+			. ' segment=0'		# don't care for UVOT
+			. ' aberration=yes'
+			. ' seed=-1956'
+			. ' zeronulls=yes'
+			;
+
+		my $result = $self->shell($command);
+		if ($result->{error}) {
+			$self->error(BAD_EXECUTE,
+				"problem running imagexform: $result->{output}");
+		}
+		elsif (not -f $output) {
+			$self->error(BAD_EXECUTE,
+				"missing sky image $output: $result->{output}");
+		}
+		else {
+			push(@{ $self->{images} }, {
+					type => IMAGE_TYPE_SKY,
+					id => $image->{id},
+					path => $output,
+					filter => $image->{filter},
+				});
+		}
+	}
+
+}
+
+
+sub packageImages
+{
+	my ($self) = @_;
+
+	# collect images of each type { raw, sky } for each filter
+	my %images = ();
+
+	foreach my $image (@{ $self->{images} }) {
+
+		my $key = "$image->{type}:$image->{filter}";
+
+		push(@{ $images{$key} }, $image);
+
+		# add the HDUNAME keyword
+		my $command = 'fthedit'
+			. " '$image->{path}'"
+			. ' keyword=HDUNAME'
+			. " value=$image->{id}"
+			. ' operation=add'
+			;
+
+		my $result = $self->shell($command);
+		if ($result->{error}) {
+			$self->error(BAD_EXECUTE,
+				"problem adding HDUNAME keyword: $result->{output}");
+		}
+	}
+
+	# package them up (ordered by time)
+
+	foreach my $key (keys(%images)) {
+
+		my ($type, $filter) = split(/:/, $key);
+
+		# what should we name this file?
+		my $name = "uvotchain.filter$filter.$type.FITS";
+		my $output = $self->outputPath(FILE_CLASS_UCHAIN, $name);
+
+		# add each image to $key package in time order
+		my @sorted = sort { $a->{id} <=> $b->{id} } @{ $images{$key} };
+		my $first = 1;
+		foreach my $image (@sorted) {
+
+			my $command = ($first ? 'ftcopy' : 'ftappend')
+				. " infile=$image->{path}"
+				. " outfile=$output"
+				;
+
+			$first = 0;
+
+			my $result = $self->shell($command);
+			if ($result->{error}) {
+				$self->error(BAD_EXECUTE,
+					"problem running $command: $result->{output}");
+				last;
+			}
+		}
+	}
+}
+
+
+sub writeSummary
+{
+	my ($self) = @_;
+}
+
+
+sub preClean
+{
+	my ($self) = @_;
+
+	my $dir = $self->outputPath(FILE_CLASS_UCHAIN, '');
+
+	my $dh = DirHandle->new($dir);
+	if (not $dh) {
+		$self->error(BAD_EXECUTE,
+			"unable to open directory $dir: $!");
+	}
+
+	my @names = $dh->read;
+	undef($dh);
+
+	foreach my $name (@names) {
+		my $path = "$dir/$name";
+		next if not -f $path;
+		unlink($path)
+			or $self->warning("unable to unlink $path: $!");
+	}
+}
+
+
+sub postClean
+{
+	my ($self) = @_;
+
+	# wipe out intermediate files
+	foreach my $o (@{ $self->{images} }) {
+
+		unlink($o->{path})
+			or $self->warning("unable to unlink $o->{path}: $!");
+	}
+}
+
+
+# main
+{
+	my $tool = bless({
+		tool => 'uvotchain',
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output
+			coordinator
+			preclean postclean
+			imageandevent
+			chatter
+			) ],
+
+		);
+
+	$tool->execute
+		if $tool->isValid;
+
+	exit($tool->{code});
+}
+
+

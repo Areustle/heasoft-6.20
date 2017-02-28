@@ -1,0 +1,11 @@
+HXDpi_DIR = ${HXD_MODULE_DIR}/HXDpi/2.4.2
+HXDpi = HXDpi.o
+HXDpiRPT = HXDpiRPT.o
+HXDpiFITS = HXDpiFITS.o
+
+HXDpi.o: $(HXDpi_DIR)/HXDpi.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDpi_DIR)/HXDpi.c
+HXDpiRPT.o: $(HXDpi_DIR)/HXDpiRPT.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDpi_DIR)/HXDpiRPT.c
+HXDpiFITS.o: $(HXDpi_DIR)/HXDpiFITS.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDpi_DIR)/HXDpiFITS.c

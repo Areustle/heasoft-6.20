@@ -1,0 +1,1599 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotimsum/uvotimsum,v $
+# $Revision: 1.30 $
+# $Date: 2011/03/25 19:53:50 $
+#
+#
+# $Log: uvotimsum,v $
+# Revision 1.30  2011/03/25 19:53:50  rwiegand
+# Was not recognizing method=FLAG.  Store WINDOW[XY]0, WINDOWD[XY], and BIN[XY]
+# keywords to the output.  Support excluding images which are disjoint from the
+# rest.
+#
+# Revision 1.29  2010/12/08 14:35:09  rwiegand
+# Use vector algebra (instead of spherical coordinates) to derive bounds
+# of summed image.
+#
+# Revision 1.28  2010/06/14 21:32:11  rwiegand
+# In response to swifthelp #2346, ignore the EXTVER keyword so that uvotimsum
+# output is valid uvotimsum input.
+#
+# Revision 1.27  2010/03/03 21:48:20  rwiegand
+# Use ftemplate instead of ftimgcreate for creating null image.
+#
+# Revision 1.26  2010/03/02 16:22:05  rwiegand
+# Only warn if an input file does not exist because it could correspond to
+# CFITSIO extended filename syntax.  Allow blank lines in @files.
+#
+# Revision 1.25  2010/02/24 21:03:58  rwiegand
+# Use name[extension] instead of name+extension since the former works for
+# both extension numbers and names while the latter only works for numbers.
+#
+# Revision 1.24  2009/10/26 17:13:23  rwiegand
+# Support summing LSS maps.
+#
+# Revision 1.23  2009/10/05 14:06:21  rwiegand
+# Support infile being a comma-delimited list of files or @filename.  Propagate
+# keywords which are consistent across input HDUs to the output.
+#
+# Revision 1.22  2009/01/21 18:46:43  rwiegand
+# Another correction for FRAMTIME- if input was missing FRAMTIME, the output
+# FRAMTIME was set to 0.
+#
+# Revision 1.21  2008/07/02 15:53:18  rwiegand
+# Support summing flag images.
+#
+# Revision 1.20  2008/05/07 14:20:26  rwiegand
+# Ignore SETTLING mode images by default.
+#
+# Revision 1.19  2008/03/28 17:53:38  rwiegand
+# Constrain FRAMTIME range of input.  Write mean FRAMTIME to output.
+# Use UVOT::Time to convert between MET and ISO/UTC.
+#
+# Revision 1.18  2007/12/19 16:11:11  rwiegand
+# Avoid causing errors if there is nothing to sum.
+#
+# Revision 1.17  2007/10/05 18:39:11  rwiegand
+# Reworked how keywords are filtered for headers.
+#
+# Revision 1.16  2007/08/29 19:19:47  rwiegand
+# Implemented weightfile parameter which allows user to specify weights
+# for each extension of infile.
+#
+# Revision 1.15  2007/06/21 15:53:39  rwiegand
+# Implemented maskfile parameter which is used to mask pixels in the images
+# being summed.
+#
+# Revision 1.14  2007/04/23 18:22:48  rwiegand
+# Have to move calculation of summed exposure after duplicate EXPIDs have
+# been removed.
+#
+# Revision 1.13  2006/09/14 17:31:11  rwiegand
+# Generate a warning instead of an error if there is nothing to sum.
+#
+# Revision 1.12  2006/04/13 18:46:14  rwiegand
+# Added support for excluding duplicate EXPIDs which can occur for
+# IMAGE&EVENT mode.
+#
+# Revision 1.11  2006/01/19 17:15:19  rwiegand
+# Changed default value of exclude parameter to ASPCORR:NONE.
+#
+# Revision 1.10  2006/01/19 14:57:02  rwiegand
+# Extended the exclude parameter to support excluding HDUs based on the
+# presence/value of the ASPCORR keyword.
+#
+# Revision 1.9  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.8  2005/05/23 13:53:12  rwiegand
+# Allow exclude parameter to include numbered ranges of HDUs.
+#
+# Revision 1.7  2005/04/04 15:19:21  rwiegand
+# Removed incorrect optimization in normalizeOutput for single HDU.
+#
+# Revision 1.6  2004/12/29 21:19:39  rwiegand
+# Implemented exclude parameter.
+#
+# Revision 1.5  2004/12/29 20:18:39  rwiegand
+# Specialized summing of exposure maps.
+#
+# Revision 1.4  2004/12/23 19:43:24  rwiegand
+# Added parameter to indicate whether summing exposure maps or images.
+# Also added (but did not implement) parameter for excluding extensions
+# from sum.
+#
+# Revision 1.3  2004/10/19 20:46:07  rwiegand
+# Rounded some numbers in an attempt to make results consistent.
+#
+# Revision 1.2  2004/10/18 22:16:06  rwiegand
+# Added unit test.
+#
+# Revision 1.1  2004/09/23 19:44:07  rwiegand
+# Relocated uvotimsum script and added tool that adds correctly oriented
+# images quickly.
+#
+# Revision 1.1  2004/08/05 20:03:00  rwiegand
+# Added noddy tool for summing [SKY] images.
+#
+
+use strict;
+
+package UVOT::Summer;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Math;
+use Astro::FITS::CFITSIO qw(:constants);
+use SimpleFITS;
+use UVOT::Time;
+use UVOT::Calibration;
+
+
+my @IMAGE_KEYWORDS = qw(
+	NAXIS NAXIS1 NAXIS2
+	CTYPE1 CTYPE2 CRPIX1 CRPIX2 CRVAL1 CRVAL2 CDELT1 CDELT2
+);
+
+my @UVOT_KEYWORDS = qw(
+	FILTER EXPID FRAMTIME
+);
+
+my @TIME_KEYWORDS = qw(
+	TSTART TSTOP EXPOSURE ONTIME
+);
+
+my @SKIP_KEY = qw(SIMPLE BITPIX HISTORY COMMENT COMMENTS
+	XTENSION EXTEND EXTVER PCOUNT GCOUNT
+	DATE-OBS DATE-END DATE
+	DATASUM CHECKSUM
+	ASPCORR DTELDEF);
+my %SKIP_KEY = map { ($_ => 1) } (
+	@IMAGE_KEYWORDS, @TIME_KEYWORDS, @SKIP_KEY);
+
+
+# main
+{
+	my $tool = UVOT::Summer->new(
+			version => '1.6',
+			);
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			inspectInput
+			studyExposures
+			findExtremes
+			prepareTemplate
+			prepareForSumming
+			sumImages
+			normalizeOutput
+			finalize)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file maskfile=file weightfile=file
+				method=string pixsize=real expmap=bool exclude=string
+				flexframetime=real ignoreframetime=bool
+				cleanup=bool clobber=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+	my $method = uc($args->{method});
+
+	if ($method eq 'XIMAGE') {
+		$self->{XIMAGE} = 1;
+		$self->validateEnvironment('FTOOLS')	# uses ximage
+	}
+	elsif ($args->{expmapFlag}) {
+		# to maintain backward compatibility
+		$self->{DATATYPE} = 'EXPMAP';
+	}
+	elsif ($method eq 'EXPMAP' or $method eq 'LSSMAP' or $method eq 'FLAG') {
+		$self->{DATATYPE} = $method;
+	}
+	else {
+		$self->{DATATYPE} = 'COUNT';
+		if ($method ne 'GRID' and $method ne 'COUNT') {
+			$self->warning("unrecognized method '$method'; will sum counts");
+		}
+	}
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile)) {
+			my $path = $args->{$key};
+			if (-e $path) {
+				$self->error(BAD_OUTPUT,
+						"$key '$path' exists and clobber not set");
+			}
+		}
+	}
+
+	$self->parseFileParameter('infile');
+
+	if (uc($args->{maskfile}) eq 'NONE') {
+		$self->{MASKFILE} = [ ];
+	}
+	else {
+		$self->{MASKING} = 1;
+		$self->parseFileParameter('maskfile');
+	}
+
+	$self->{EXPOSURE} = 0;
+
+	my %exclude;
+	if ($args->{exclude} !~ /^NONE$/i) {
+		foreach my $range (split(',', $args->{exclude})) {
+			
+			if ($range =~ /^(\d+)-(\d+)$/) {
+				map { $exclude{$_} = 1 } $1 .. $2;
+			}
+			elsif ($range =~ /^ASPCORR:\w+$/i) {
+				$exclude{uc($range)} = 1;
+			}
+			elsif ($range =~ /^DUPEXPID$/i) {
+				$exclude{DUPEXPID} = 1;
+			}
+			elsif ($range =~ /^SETTLING$/i) {
+				$exclude{SETTLING} = 1;
+			}
+			elsif ($range =~ /^OVERLAP:(\w+)$/i) {
+				my $mode = uc($1);
+				if ($mode eq 'WEAK' or $mode eq 'STRONG') {
+					$exclude{uc($range)} = 1;
+				}
+				else {
+					$self->error(BAD_INPUT, "unknown OVERLAP mode $range");
+				}
+			}
+			elsif ($range =~ /^DEFAULT$/i) {
+				$exclude{DUPEXPID} = 1;
+				$exclude{SETTLING} = 1;
+				$exclude{'ASPCORR:NONE'} = 1;
+			}
+			else {
+				# single HDU
+				$exclude{$range} = 1;
+			}
+		}
+	}
+
+	$self->{EXCLUDE_HASH} = \%exclude;
+
+	if (uc($args->{weightfile}) ne 'NONE')  {
+		$self->{WEIGHTING} = 1;
+		my $fh = FileHandle->new($args->{weightfile});
+		if (not $fh) {
+			$self->error(BAD_INPUT,
+					"unable to open weightfile $args->{weightfile} [$!]");
+		}
+		else {
+			$self->warning('using weightfile-'
+					. ' do not attempt photometry on output');
+			my $reReal = qr(\d*\.\d+|\d+\.\d*|\d+);
+			my %weight;
+			while (<$fh>) {
+				next if /^\s*$/;
+				next if /^\s*#$/;
+				if (/^(\w+)\s*:\s*(.+)\s*$/) {
+					my $key = $1;
+					my $value = $2;
+					if (Task::FITS::isReal($value)) {
+						$weight{$key} = $value;
+					}
+					else {
+						$self->warning("weightfile: invalid weight $_");
+					}
+				}
+				else {
+					chomp;
+					$self->warning("weightfile: ignoring $_");
+				}
+			}
+			undef($fh);
+			$self->{WEIGHTS} = \%weight;
+		}
+	}
+
+	$self->{tmpout} = $self->temporary('output');
+
+	if ($args->{lssmapFlag} and $self->{WEIGHTING}) {
+		$self->error(BAD_INPUT, "weighting does not make sense with lssmap");
+	}
+}
+
+
+
+# perfect and migrate to library?
+sub parseFileParameter
+{
+	my ($self, $key) = @_;
+
+	my @input;
+
+	my $value = $self->args->{$key};
+
+	if ($value =~ /^@(.+)/) {
+		my $path = $1;
+		my $fh = FileHandle->new($path);
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to open $key path $path [$!]");
+		}
+		else {
+			my @tmp = <$fh>;
+			undef($fh);
+			chomp(@tmp);
+			@input = grep { length > 0 } @tmp;
+		}
+	}
+	else {
+		@input = split(/,\s*/, $value);
+		if ($key eq 'infile' and @input == 1) {
+			$self->{SIMPLE_INPUT} = 1;
+		}
+	}
+
+	$self->{uc($key)} = \@input;
+
+	if (@input > 1 and $self->chatter(4)) {
+		$self->report(join("\n\t", "input files:", @input));
+	}
+
+	foreach my $path (@input) {
+		if (not -f $path) {
+			$self->warning("$path is not a regular file");
+		}
+	}
+}
+
+
+sub cleanQuotes
+{
+	my ($in) = @_;
+	my $out = $in;
+	if ($in =~ /^'(.+?)\s*'/) {
+		$out = $1;
+	}
+	return $out;
+}
+
+
+sub inspectInput
+{
+	my ($self) = @_;
+
+	my @hdus;
+	$self->{hdus} = \@hdus;
+
+	# collects keywords which are the same in all HDUs
+	$self->{HEADER} = { };
+
+	my @exclude;
+	$self->{EXCLUDE_LIST} = \@exclude;
+
+	foreach my $path (@{ $self->{INFILE} }) {
+		$self->inspectInputFile($path);
+		last if not $self->isValid;
+	}
+
+	$self->checkDuplicateExposures
+		if $self->isValid;
+
+	$self->checkOverlap
+		if $self->isValid;
+
+	$self->{sumCount} = scalar(@hdus);
+	if (not @exclude) {
+		push(@exclude, 'NONE');
+	}
+
+	if ($self->{sumCount}) {
+		$self->{'DATE-OBS'} = $self->formatTime($self->{TSTART});
+		$self->{'DATE-END'} = $self->formatTime($self->{TSTOP});
+	}
+
+	$self->timestamp('input inspected');
+}
+
+
+sub valueMismatch
+{
+	my ($v1, $v2) = @_;
+	if ($v1 =~ /^'(.+?)\s*'/) {
+		$v1 = $1;
+		if ($v2 =~ /^'(.+?)\s*'/) {
+			$v2 = $1;
+			return $v1 ne $v2;
+		}
+		# v2 not a string
+		return 1;
+	}
+
+	# numbers
+	my $diff = $v1 - $v2;
+	my $scale2 = $v1 * $v1 + $v2 * $v2;
+	if ($scale2) {
+		my $reldiff = $diff * $diff / $scale2;
+		return $reldiff > 1e-12;
+	}
+	else {
+		return 0;
+	}
+}
+
+
+sub inspectInputFile
+{
+	my ($self, $path) = @_;
+
+	my $fits = SimpleFITS->readonly($path);
+	my $status = 0;
+	$status = $fits->status if $fits;
+	if (not $fits or $status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my $numhdus = $fits->nhdu;
+
+	my @hdus;
+	my @exclude;
+
+	my $exclude = $self->{EXCLUDE_HASH};
+	my $HEADER = $self->{HEADER};
+
+	my %window = (
+		NULL => 1,
+		MINX => 2048,
+		MAXX => -1,
+		MINY => 2048,
+		MAXY => -1,
+		MINBIN => 100,
+		MAXBIN => -1,
+	);
+
+	# process all HDUs
+	for (my $hdu0 = 0; not $status and $hdu0 < $numhdus; ++$hdu0) {
+
+		my $error = 0;
+		my $type = 0;
+
+		$status = $fits->move($hdu0 +1)->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to move to HDU $hdu0 +1 [$status]");
+			last;
+		}
+
+		my $header;
+		$status = $fits->readheader($header)->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to load HDU $hdu0 +1 header [$status]");
+			last;
+		}
+
+		# TODO: refine the keys *after* excluding images
+		foreach my $key (keys(%$header)) {
+
+			next if $SKIP_KEY{$key};
+
+			my $keycard = sprintf('%-90s', sprintf('%-8s= 1', $key));
+			my $class = Astro::FITS::CFITSIO::fits_get_keyclass($keycard);
+			next if ($class == TYP_WCS_KEY);
+
+			my $value = $header->{$key};
+			if (not exists($HEADER->{$key})) {
+				$HEADER->{$key} = $value;
+				$HEADER->{COMMENTS}{$key} = $header->{COMMENTS}{$key};
+				next;
+			}
+
+			my $VALUE = $HEADER->{$key};
+			if (not defined($VALUE)) {
+				# key was already found to be inconstant
+			}
+			elsif (valueMismatch($value, $VALUE)) {
+				$HEADER->{$key} = undef;
+				$self->verbose("inconstant $key [$VALUE versus $value]")
+					if $self->chatter(5);
+			}
+			else {
+				# ok same value
+			}
+		}
+
+		# ignore non-image HDUs
+		$fits->handle->get_hdu_type($type, $status);
+		if ($type != IMAGE_HDU) {
+			next;
+		}
+
+		my %hdu;
+
+		my $skip = undef;
+		my $skipinfo = '';
+		my $name = $hdu0;
+		if ($header->{EXTNAME}) {
+			$name = cleanQuotes($header->{EXTNAME});
+		}
+		elsif ($header->{HDUNAME}) {
+			$name = cleanQuotes($header->{HDUNAME});
+		}
+
+		my $aspcorr = cleanQuotes($header->{ASPCORR} || 'NONE');
+		my $obsmode = cleanQuotes($header->{OBS_MODE} || 'NONE');
+
+		if ($exclude->{$hdu0}) {
+			$skip = $hdu0;
+		}
+		elsif ($exclude->{$name}) {
+			$skip = $name;
+		}
+		elsif ($exclude->{"ASPCORR:$aspcorr"}) {
+			$skip = $name;
+			$skipinfo = "ASPCORR:$aspcorr";
+		}
+		elsif ($exclude->{SETTLING} and $obsmode eq 'SETTLING') {
+			$skip = $name;
+			$skipinfo = 'OBS_MODE=SETTLING';
+		}
+
+		if (defined($skip)) {
+			push(@exclude, $skip);
+			$self->report("HDU [$skip] is on the exclude list $skipinfo")
+				if $self->chatter(2);
+			next;
+		}
+
+		if ($header->{NAXIS} != 2) {
+			$self->report("skipping HDU $hdu0 +1 [not 2d]")
+				if $self->chatter(2);
+			next;
+		}
+
+		$self->storeHeaderKeywords($header,
+				keys => \@IMAGE_KEYWORDS,
+				hash => \%hdu,
+				);
+
+		$self->updateWindow(\%window, $header);
+
+		$hdu{path} = $path;
+		$hdu{hdu0} = $hdu0;
+		$hdu{name} = $name;
+		$hdu{hduid} = "$path +$hdu0 [$name]";
+
+		if ($self->{XIMAGE}) {
+			$hdu{pathext} = "$path+$hdu0";
+		}
+		else {
+			$hdu{pathext} = $path . "[$name]";
+		}
+
+		if (not $self->isValid) {
+			# stuck
+		}
+		elsif ($hdu{CTYPE1} eq 'RA---TAN'
+				and $hdu{CTYPE2} eq 'DEC--TAN') {
+			$hdu{TYPE} = '-TAN';
+		}
+		else {
+			$self->error(BAD_INPUT,
+					"unexpected CTYPEn $hdu{CTYPE1}/$hdu{CTYPE2}");
+		}
+
+		$self->storeHeaderKeywords($header,
+				keys => [ @TIME_KEYWORDS, @UVOT_KEYWORDS ],
+				hash => \%hdu,
+				optional => 1,
+				);
+
+		if (exists($hdu{TSTART}) and
+				(not $self->{TSTART} or $hdu{TSTART} < $self->{TSTART})) {
+			$self->{TSTART} = $hdu{TSTART};
+		}
+
+		if (exists($hdu{TSTOP}) and
+				(not $self->{TSTOP} or $hdu{TSTOP} > $self->{TSTOP})) {
+			$self->{TSTOP} = $hdu{TSTOP};
+		}
+
+		push(@hdus, \%hdu);
+	}
+
+	# store summed WINDOW*, BIN* keywords
+	if (not $window{NULL} and not $window{INVALID}) {
+		$HEADER->{WINDOWX0} = $window{MINX};
+		$HEADER->{WINDOWY0} = $window{MINY};
+		$HEADER->{WINDOWDX} = $window{MAXX} - $window{MINX} + 1;
+		$HEADER->{WINDOWDY} = $window{MAXY} - $window{MINY} + 1;
+		$HEADER->{BINX} = $window{MAXBIN};
+		$HEADER->{BINY} = $window{MAXBIN};
+	}
+
+	if ($fits) {
+		$fits->close;
+		undef($fits);
+	}
+
+	push(@{ $self->{hdus} }, @hdus);
+	push(@{ $self->{EXCLUDE_LIST} }, @exclude);
+}
+
+
+sub updateWindow
+{
+	my ($self, $window, $header) = @_;
+
+	my @missing;
+	my %tmp;
+
+	# require the input to contain these keywords
+	foreach my $key (qw(WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY BINX BINY)) {
+		if (exists($header->{$key})) {
+			$tmp{$key} = $header->{$key};
+		}
+		else {
+			push(@missing, $key);
+		}
+	}
+
+	if (@missing) {
+		$self->warning("$header->{EXTNAME} header missing " . join(',', @missing));
+		$window->{INVALID} = 1;
+		return;
+	}
+
+	# require BINX and BINY to match
+	if ($header->{BINX} != $header->{BINY}) {
+		$self->warning("$header->{EXTNAME} has inconsistent BINX/BINY");
+		$window->{INVALID} = 1;
+		return;
+	}
+
+	if ($window->{MINX} > $header->{WINDOWX0}) {
+		$window->{MINX} = $header->{WINDOWX0};
+	}
+
+	my $maxx = $header->{WINDOWX0} + $header->{WINDOWDX} - 1;
+	if ($window->{MAXX} < $maxx) {
+		$window->{MAXX} = $maxx;
+	}
+
+	if ($window->{MINY} > $header->{WINDOWY0}) {
+		$window->{MINY} = $header->{WINDOWY0};
+	}
+
+	my $maxy = $header->{WINDOWY0} + $header->{WINDOWDY} - 1;
+	if ($window->{MAXY} < $maxy) {
+		$window->{MAXY} = $maxy;
+	}
+
+	if ($window->{MINBIN} > $header->{BINX}) {
+		$window->{MINBIN} = $header->{BINX};
+	}
+
+	if ($window->{MAXBIN} < $header->{BINX}) {
+		$window->{MAXBIN} = $header->{BINX};
+	}
+
+	$window->{NULL} = 0;
+}
+
+
+sub checkDuplicateExposures
+{
+	my ($self) = @_;
+
+	my $exclude = $self->{EXCLUDE_HASH};
+	if (not $exclude->{DUPEXPID}) {
+		return;
+	}
+
+	my @exclude;
+
+	# if two exposures included in the sum have the same EXPID, only include
+	# the larger one
+	my %byID;
+	foreach my $hdu (@{ $self->{hdus} }) {
+		my $id = $hdu->{EXPID} || "hdu0:$hdu->{hdu0}";
+		my $hduPixels = $hdu->{NAXIS1} * $hdu->{NAXIS2};
+		if (my $other = $byID{$id}) {
+			my $otherPixels = $other->{NAXIS1} * $other->{NAXIS2};
+			if ($otherPixels < $hduPixels) {
+				$byID{$id} = $hdu;
+				push(@exclude, $other->{name});
+				$self->report("excluding duplicate EXPID $other->{name} [size < $hdu->{name}]");
+			}
+			else {
+				push(@exclude, $hdu->{name});
+				$self->report("excluding duplicate EXPID $hdu->{name} [size <= $other->{name}]");
+			}
+		}
+		else {
+			$byID{$id} = $hdu;
+		}
+	}
+
+	my @clean = sort { $a->{hdu0} <=> $b->{hdu0} } values(%byID);
+	$self->{hdus} = \@clean;
+	push(@{ $self->{EXCLUDE_LIST} }, @exclude);
+}
+
+
+sub checkOverlap
+{
+	my ($self) = @_;
+
+	my $exclude = $self->{EXCLUDE_HASH};
+	my $checker = undef;
+
+	if ($exclude->{'OVERLAP:WEAK'}) {
+		$self->excludeOverlap('checkOverlapWeak');
+	}
+	elsif ($exclude->{'OVERLAP:STRONG'}) {
+		$self->excludeOverlap('checkOverlapStrong');
+	}
+}
+
+
+
+sub getCenterUnit
+{
+	my ($self, $hdu) = @_;
+
+	if (not $hdu->{centerUnit}) {
+		my $xpix = ($hdu->{NAXIS1} + 1) / 2;
+		my $ypix = ($hdu->{NAXIS2} + 1) / 2;
+		my ($ra_deg, $dec_deg) = $self->pixToWorld($hdu, $xpix, $ypix);
+		$hdu->{centerUnit} = Math::rd2unit(
+				Math::toRadians($ra_deg), Math::toRadians($dec_deg));
+	}
+
+	return $hdu->{centerUnit};
+}
+
+
+sub getHypot_rad
+{
+	my ($self, $hdu) = @_;
+	my $d1 = $hdu->{CDELT1} * $hdu->{NAXIS1};
+	my $d2 = $hdu->{CDELT2} * $hdu->{NAXIS2};
+	my $hypot_deg = Math::hypot($d1, $d2);
+	return Math::toRadians($hypot_deg);
+}
+
+
+sub toArcmin
+{
+	my ($rad) = @_;
+	return 60 * Math::toDegrees($rad);
+}
+
+
+sub checkOverlapWeak
+{
+	my ($self, $outer, $inner) = @_;
+
+	my $u1 = $self->getCenterUnit($outer);
+	my $u2 = $self->getCenterUnit($inner);
+
+	my $delta_rad = Math::u3angle($u1, $u2);
+
+	my $radius1_rad = $self->getHypot_rad($outer) / 2;
+	my $radius2_rad = $self->getHypot_rad($inner) / 2;
+
+	my $overlap = 0;
+	my $word = 'impossible';
+	if ($delta_rad < $radius1_rad + $radius2_rad) {
+		$word = 'possible';
+		$overlap = 1;
+	}
+
+	if ($self->chatter(6)) {
+		printf "%s h=%.1f / %s h=%.1f overlap $word delta=%.1f [arcmin]\n", 
+				$outer->{name}, $inner->{name},
+				toArcmin($radius1_rad), toArcmin($radius2_rad),
+				toArcmin($delta_rad);
+		# $self->verbose("$outer->{name} and $inner->{name} overlap $word");
+	}
+
+	return $overlap;
+}
+
+
+sub getSmallAxis_rad
+{
+	my ($self, $hdu) = @_;
+	my $d1 = abs($hdu->{CDELT1} * $hdu->{NAXIS1} / 2);
+	my $d2 = abs($hdu->{CDELT2} * $hdu->{NAXIS2} / 2);
+	my $small_deg = Math::min($d1, $d2);
+	return Math::toRadians($small_deg);
+}
+
+
+sub checkOverlapStrong
+{
+	my ($self, $outer, $inner) = @_;
+
+	my $u1 = $self->getCenterUnit($outer);
+	my $u2 = $self->getCenterUnit($inner);
+
+	my $delta_rad = Math::u3angle($u1, $u2);
+
+	my $radius1_rad = $self->getSmallAxis_rad($outer) / 2;
+	my $radius2_rad = $self->getSmallAxis_rad($inner) / 2;
+
+	my $overlap = 0;
+	my $word = 'uncertain';
+	if ($delta_rad < $radius1_rad + $radius2_rad) {
+		$word = 'certain';
+		$overlap = 1;
+	}
+
+	if ($self->chatter(6)) {
+		printf "%s h=%.1f / %s h=%.1f overlap $word delta=%.1f [arcmin]\n", 
+				$outer->{name}, $inner->{name},
+				toArcmin($radius1_rad), toArcmin($radius2_rad),
+				toArcmin($delta_rad);
+		# $self->verbose("$outer->{name} and $inner->{name} overlap $word");
+	}
+
+	return $overlap;
+}
+
+
+sub excludeOverlap
+{
+	my ($self, $checker) = @_;
+
+	my @exclude;
+
+	# Define the radius as hypot(NAXIS1, NAXIS2) * CDELT
+	# If the centers of two images are separated by more than
+	# the sum of their radii they cannot possibly overlap.
+
+	foreach my $outer (@{ $self->{hdus} }) {
+
+		my @overlap;
+
+		foreach my $inner (@{ $self->{hdus} }) {
+			next if ($outer == $inner);
+
+			if ($self->$checker($outer, $inner)) {
+				push(@overlap, $inner);
+			}
+		}
+
+		$outer->{overlap} = \@overlap;
+		$outer->{nOverlaps} = scalar(@overlap);
+		my $totalExposure = $outer->{EXPOSURE};
+		foreach my $hdu (@overlap) {
+			$totalExposure += $hdu->{EXPOSURE};
+		}
+		$outer->{overlapExposure} = $totalExposure;
+		if ($self->chatter(6)) {
+			printf "$outer->{name} has $outer->{nOverlaps} overlaps\n";
+		}
+	}
+
+	# determine the image with the most (possible) overlaps/exposure
+	my $best = undef;
+	foreach my $hdu (@{ $self->{hdus} }) {
+		next if (not $hdu->{nOverlaps});
+		if (not $best
+				or $hdu->{overlapExposure} > $best->{overlapExposure}
+				or $hdu->{nOverlaps} > $best->{nOverlaps}) {
+			$best = $hdu;
+		}
+	}
+
+	my %closure;
+	if ($best) {
+		my $expStr = sprintf('%.1f', $best->{overlapExposure});
+		$self->verbose("checkOverlap: selected $best->{name} with total associated exposure $expStr and $best->{nOverlaps} overlaps");
+
+		my @todo = ($best);
+		while (@todo) {
+			@todo = $self->findOverlapClosure(\%closure, @todo);
+		}
+	}
+
+	# only keep those which are in the closure
+	my @exclude;
+	my @clean;
+	foreach my $hdu (@{ $self->{hdus} }) {
+		my $name = $hdu->{name};
+		if ($closure{$name}) {
+			push(@clean, $hdu);
+		}
+		else {
+			push(@exclude, $name);
+			$self->report("excluding $name [outside primary overlap group]");
+		}
+	}
+
+	$self->{hdus} = \@clean;
+	push(@{ $self->{EXCLUDE_LIST} }, @exclude);
+}
+
+
+sub findOverlapClosure
+{
+	my ($self, $closure, @todo) = @_;
+
+	my @next;
+
+	foreach my $item (@todo) {
+		my $name = $item->{name};
+
+		# this is necessary only on the first / top call
+		$closure->{$name} = 1;
+
+		foreach my $sub (@{ $item->{overlap} }) {
+			my $subname = $sub->{name};
+			if (not $closure->{$subname}) {
+				$closure->{$subname} = 1;
+				push(@next, $sub);
+			}
+		}
+	}
+
+	return @next;
+}
+
+
+sub studyExposures
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{EXPOSURE} = 0;
+
+	my $expFrametimeSum = 0;
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+
+		if (not defined($hdu->{FRAMTIME})) {
+			$hdu->{FRAMTIME} = UVOT::Calibration::DEFAULT_FRAMETIME_s;
+			$self->warning("HDU $hdu->{hdu0} [$hdu->{name}] missing FRAMTIME; assuming $hdu->{FRAMTIME}");
+		}
+
+		if (defined($hdu->{EXPOSURE})) {
+			$self->{EXPOSURE} += $hdu->{EXPOSURE};
+			$expFrametimeSum += $hdu->{FRAMTIME} * $hdu->{EXPOSURE};
+		}
+
+		if (not $self->{minFRAMTIME}
+				or $hdu->{FRAMTIME} < $self->{minFRAMTIME}) {
+			$self->{minFRAMTIME} = $hdu->{FRAMTIME};
+		}
+
+		if (not $self->{maxFRAMTIME}
+				or $hdu->{FRAMTIME} > $self->{maxFRAMTIME}) {
+			$self->{maxFRAMTIME} = $hdu->{FRAMTIME};
+		}
+	}
+
+	if (not $self->{minFRAMTIME}) {
+		$self->{minFRAMTIME} = $self->{maxFRAMTIME}
+				= UVOT::Calibration::DEFAULT_FRAMETIME_s;
+	}
+
+	if ($self->{EXPOSURE} > 0) {
+		$self->{FRAMTIME} = $expFrametimeSum / $self->{EXPOSURE};
+	}
+	else {
+		$self->{FRAMTIME} = UVOT::Calibration::DEFAULT_FRAMETIME_s;
+	}
+
+	if ($self->{maxFRAMTIME} * (1 - $args->{flexframetime})
+			> $self->{minFRAMTIME}) {
+
+		$self->warning(sprintf('FRAMTIME range [%.6f, %.6f] exceeds %.3f',
+					$self->{minFRAMTIME}, $self->{maxFRAMTIME},
+					$args->{flexframetime}));
+
+		if ($args->{ignoreframetimeFlag}) {
+			$self->{FRAMTIME} = -1;
+			$self->warning('allowing FRAMTIME variation; will write FRAMTIME = -1');
+		}
+		else {
+			$self->error(BAD_INPUT, 'combining FRAMTIMEs not allowed; use ignoreframetime=yes to override');
+		}
+	}
+}
+
+
+sub formatTime
+{
+	my ($self, $met) = @_;
+	my $out = UVOT::Time::met2utc($self, $met);
+	return $out;
+}
+
+
+sub putKeycard
+{
+	my ($fh, $header, $key, $comments) = @_;
+
+	return if not defined($header->{$key});
+
+	my $record = "$key = $header->{$key}";
+	my $comment = $comments->{$key};
+	if ($comment) {
+		$record .= " / $comment";
+	}
+	$fh->print($record . "\n");
+}
+
+
+sub prepareTemplate
+{
+	my ($self) = @_;
+
+	return if not $self->{sumCount};
+
+	my $header = $self->{HEADER};
+
+	foreach my $key (qw(TSTART TSTOP DATE-OBS DATE-END)) {
+		$header->{$key} = $self->{$key};
+	}
+
+	my $keyfile = $self->temporary('template');
+	my $fh = FileHandle->new($keyfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_INPUT,
+				"unable to create $keyfile [$!]");
+		return;
+	}
+
+	$fh->print("
+SIMPLE = T
+BITPIX = 8
+NAXIS = 0
+");
+
+
+	my $COMMENTS = delete($header->{COMMENTS});
+	foreach my $key (qw(
+			TELESCOP INSTRUME OBS_ID TARG_ID SEG_NUM OBS_MODE
+			TSTART TSTOP DATE-OBS DATE-END
+			TLM2FITS RA_NOM DEC_NOM RA_PNT DEC_PNT PA_PNT
+			PROCVER SOFTVER CALDBVER SEQPNUM OBJECT RA_OBJ DEC_OBJ TRIGTIME
+			TIMESYS MJDREFI MJDREFF TIMEREF TASSIGN TIMEUNIT
+			EQUINOX RADECSYS
+			TIERRELA TIERABSO CLOCKAPP
+			)) {
+		putKeycard($fh, $header, $key, $COMMENTS);
+		delete($header->{$key});
+	}
+
+	# write remaining keys
+	foreach my $key (keys(%$header)) {
+		putKeycard($fh, $header, $key, $COMMENTS);
+	}
+
+	$fh->close;
+	$self->{KEYWORDS} = $keyfile;
+}
+
+
+sub instantiateTemplate
+{
+	my ($self, $outfile) = @_;
+
+	my $command = $self->buildCommand('ftemplate',
+			template => $self->{KEYWORDS},
+			outfile => $outfile,
+			);
+	$self->shell($command);
+}
+
+
+sub updateExtremesAux
+{
+	my ($self, $ra_deg, $dec_deg) = @_;
+
+	if (not defined($self->{MIN_XYZ})) {
+		$self->{MIN_XYZ} = [ 2, 2, 2 ];
+		$self->{MAX_XYZ} = [ -2, -2, -2 ];
+	}
+
+	my $min = $self->{MIN_XYZ};
+	my $max = $self->{MAX_XYZ};
+
+	my $ra_rad = Math::toRadians($ra_deg);
+	my $dec_rad = Math::toRadians($dec_deg);
+	my $v = Math::rdl2vector($ra_rad, $dec_rad, 1);
+
+	for (my $i = 0; $i < 3; ++$i) {
+		my $vi = $v->[$i];
+		if ($vi < $min->[$i]) {
+			$min->[$i] = $vi;
+		}
+		if ($vi > $max->[$i]) {
+			$max->[$i] = $vi;
+		}
+	}
+}
+
+
+sub updateExtremes
+{
+	my ($self, $hdu) = @_;
+
+	my ($ra0, $dec0) = $self->pixToWorld($hdu, 0.5, 0.5); # lower left
+	my ($ra1, $dec1) = $self->pixToWorld($hdu,
+			$hdu->{NAXIS1} + 0.5, $hdu->{NAXIS2} + 0.5);  # upper right
+
+	$hdu->{RA_LL} = $ra0; $hdu->{DEC_LL} = $dec0;
+	$hdu->{RA_UR} = $ra1; $hdu->{DEC_UR} = $dec1;
+
+	$self->updateExtremesAux($ra0, $dec0);
+	$self->updateExtremesAux($ra1, $dec1);
+
+	if (not defined($self->{minDELT}) or $hdu->{CDELT2} < $self->{minDELT}) {
+		$self->{minDELT} = $hdu->{CDELT2};
+	}
+
+	if (not defined($self->{maxDELT}) or $hdu->{CDELT2} > $self->{maxDELT}) {
+		$self->{maxDELT} = $hdu->{CDELT2};
+	}
+}
+
+
+sub findExtremes
+{
+	my ($self) = @_;
+	foreach my $hdu (@{ $self->{hdus} }) {
+		$self->updateExtremes($hdu);
+	}
+}
+
+
+sub updateDimensions
+{
+	my ($self, $wcs, $ra, $dec) = @_;
+
+	my ($x, $y) = $self->worldToPix($wcs, $ra, $dec);
+
+	my $width = int(2 * abs($x) + 0.5);
+	my $height = int(2 * abs($y) + 0.5);
+
+	if ($width > $self->{WIDTH}) {
+		$self->{WIDTH} = $width;
+	}
+
+	if ($height > $self->{HEIGHT}) {
+		$self->{HEIGHT} = $height;
+	}
+}
+
+
+
+sub sumImages
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $self->{sumCount}) {
+		$self->warning('no HDUs to sum');
+		return;
+	}
+
+	my $min = $self->{MIN_XYZ};
+	my $max = $self->{MAX_XYZ};
+
+	my $max_deg = 45;
+    if (Math::toDegrees(Math::v3angle($min, $max)) > $max_deg) {
+        $self->error(BAD_INPUT,
+				"sumImages: corners separated by more than $max_deg deg");
+		return;
+    }
+
+    my @mean;
+    for (my $i = 0; $i < 3; ++$i) {
+        $mean[$i] = ($min->[$i] + $max->[$i]) / 2;
+    }
+
+    my ($ra_rad, $dec_rad, $length) = Math::v3rdl(\@mean);
+
+	my $meanRA = sprintf('%.6f', Math::toDegrees($ra_rad));
+	my $meanDEC = sprintf('%.6f', Math::toDegrees($dec_rad));
+
+	my $pixSize = ($args->{pixsize} > 0)
+			? $args->{pixsize}
+			: $self->{maxDELT};
+
+	my %wcs = (
+		TYPE => '-TAN',
+		CRPIX1 => 1,
+		CRPIX2 => 1,
+		CRVAL1 => $meanRA,
+		CRVAL2 => $meanDEC,
+		CDELT1 => $pixSize,
+		CDELT2 => $pixSize,
+		CROTA2 => 0,
+	);
+
+	# determine the width and height of the output image based on its WCS
+	$self->{WIDTH} = 1;
+	$self->{HEIGHT} = 1;
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+		$self->updateDimensions(\%wcs, $hdu->{RA_LL}, $hdu->{DEC_LL});
+		$self->updateDimensions(\%wcs, $hdu->{RA_UR}, $hdu->{DEC_UR});
+	}
+
+	my $xout = $self->temporary('xout');
+
+	if ($self->{XIMAGE}) {
+
+		my $maxbin = 1;
+
+		foreach my $hdu (@{ $self->{hdus} }) {
+
+			$hdu->{maxAxis} = Math::max($hdu->{NAXIS1}, $hdu->{NAXIS2});
+
+			$hdu->{bin} = int($hdu->{CDELT2} / $self->{minDELT} + 0.5);
+			if ($hdu->{bin} > $maxbin) {
+				$maxbin = $hdu->{bin};
+			}
+		}
+
+		my $xcmd = "set exit_on_startfail 1; cey 2000;";
+		my $first = 1;
+
+		foreach my $hdu (@{ $self->{hdus} }) {
+
+			my $rebin = $maxbin / $hdu->{bin};
+
+			if ($first) {
+				# center the first image
+				my $ra = sprintf('%f', $meanRA);
+				my $dec = sprintf('%f', $meanDEC);
+				$xcmd .= " read/szx=$self->{WIDTH}/szy=$self->{HEIGHT}/rebin=$rebin"
+					. "/ra=$ra/dec=$dec '$hdu->{pathext}';"
+					;
+				$first = undef;
+			}
+			else {
+				$xcmd .= " read/size=$hdu->{maxAxis}"
+					. "/rebin=$rebin '$hdu->{pathext}';"
+					. " sum_image;" ;
+			}
+
+			$xcmd .= " save_image;" ;
+		}
+
+		$xcmd .= " write/fits '$xout';"
+				. " exit;";
+
+		my $command = "ximage \"$xcmd\" 2>&1";
+
+		$self->shell($command);
+	}
+	else {
+
+		my $command = $self->buildCommand('uvotimsum1',
+				infile   => $self->{tosumfile},
+				outfile  => $xout,
+				ra       => $meanRA,
+				dec      => $meanDEC,
+				pixsize  => $pixSize,
+				width    => $self->{WIDTH},
+				height   => $self->{HEIGHT},
+				datatype => $self->{DATATYPE},
+				exclude  => join(',', @{ $self->{EXCLUDE_LIST} }),
+				clobber  => $args->{clobber},
+				history  => $args->{history},
+				);
+
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('fthedit',
+				infile => $xout,
+				keyword => '@' . $self->{KEYWORDS},
+				operation => 'ADD',
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		rename($xout, $self->{tmpout})
+			or $self->error(BAD_OUTPUT,
+					"unable to rename $xout to $self->{tmpout} [$!]");
+	}
+}
+
+
+sub normalizeOutput
+{
+	my ($self) = @_;
+
+	return if not $self->isValid;
+
+	return if not $self->{sumCount};
+
+	# determine aggregate filter
+	my %filter;
+	foreach my $hdu (@{ $self->{hdus} }) {
+		if (not exists($hdu->{FILTER})) {
+			$filter{UNKNOWN} = 1;
+		}
+		else {
+			$filter{$hdu->{FILTER}} = 1;
+		}
+	}
+	my $filter = join('+', sort(keys(%filter)));
+
+
+	# copy primary and append result
+
+	my $tmp = $self->temporary('normal');
+
+	$self->instantiateTemplate($tmp);
+
+	if ($self->isValid) {
+
+		my $keys = '[col'
+			. " #EXTNAME='$filter';"
+			. " #FILTER='$filter';"
+			;
+
+		foreach my $key (qw(EXPOSURE TSTART TSTOP FRAMTIME)) {
+			if (defined($self->{$key})) {
+				$keys .= "#$key=$self->{$key};";
+			}
+			else {
+				$self->warning("unable to set $key keyword");
+			}
+		}
+
+		$keys .= ']';
+		my $command = $self->buildCommand('ftappend',
+				infile => "$self->{tmpout}+0$keys",
+				outfile => $tmp,
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		rename($tmp, $self->{tmpout})
+			or $self->error(BAD_OUTPUT,
+					"unable to rename $tmp to $self->{tmpout} [$!]");
+	}
+	
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->{sumCount}) {
+		$self->putParameterHistory($self->{tmpout})
+			if $self->isValid and $args->{historyFlag};
+
+		$self->updateChecksums($self->{tmpout})
+			if $self->isValid;
+
+		if ($self->isValid) {
+			rename($self->{tmpout}, $args->{outfile})
+				or $self->error(BAD_OUTPUT,
+					"unable to rename $self->{tmpout} to $args->{outfile} [$!]");
+		}
+	}
+
+}
+
+
+# If masking is active, every HDU in sum must have a corresponding mask
+# that will be identified by HDU name in $hdu->{maskext}.
+sub setMaskImages
+{
+	my ($self) = @_;
+
+	my @maskhdu;
+
+	foreach my $path (@{ $self->{MASKFILE} }) {
+		my $fits = SimpleFITS->readonly($path);
+		if (not $fits) {
+			$self->error(BAD_INPUT,
+					"unable to open mask file $path");
+			last;
+		}
+		my $status = $fits->status;;
+		my $nhdu = $fits->nhdu;
+		for (my $hdu0 = 0; $hdu0 < $nhdu; ++$hdu0) {
+			my $header;
+			$status = $fits->move($hdu0 +1)
+					->readheader($header, clean => 1)
+					->status;
+			if ($header->{NAXIS} == 2) {
+				my $name = $header->{EXTNAME} || $header->{HDUNAME} || '';
+				my %hdu = (
+					PATH => $path,
+					HDU0 => $hdu0,
+					NAME => $name,
+					EXT => $name || $hdu0,
+				);
+				push(@maskhdu, \%hdu);
+			}
+		}
+		$status = $fits->close->status;
+		undef($fits);
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to process mask file $path [$status]");
+			last;
+		}
+	}
+
+	# this overrides HDU number masks with the last file- a good reason
+	# to use HDU names especially with multiple files
+	my %maskTable;
+	foreach my $hdu (@maskhdu) {
+		$maskTable{$hdu->{NAME}} = $hdu;
+		$maskTable{$hdu->{HDU0}} = $hdu;
+	}
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+		my $hduname = $hdu->{name};
+		my $hdu0 = $hdu->{hdu0};
+		my $mask = $maskTable{$hduname} || $maskTable{$hdu0};
+		if ($mask) {
+			$hdu->{maskext} = $mask->{PATH} . "[$mask->{EXT}]";
+		}
+		else {
+			$self->error(BAD_INPUT, "no mask for HDU $hduname/$hdu0+1");
+			last;
+		}
+	}
+}
+
+
+sub prepareForSumming
+{
+	my ($self) = @_;
+
+	return if not $self->{sumCount};
+
+	if ($self->{MASKING} or $self->{WEIGHTING}) {
+		if ($self->{MASKING}) {
+			$self->setMaskImages;
+		}
+		if ($self->isValid) {
+			$self->maskImages;
+		}
+	}
+	else {
+		if ($self->{SIMPLE_INPUT}) {
+			$self->{tosumfile} = $self->args->{infile};
+		}
+		else {
+			$self->collectHDUs;
+		}
+	}
+}
+
+
+sub maskImages
+{
+	my ($self) = @_;
+
+	# we are constructing a new file with only those HDUs which are
+	# to be included in the sum, so nothing need be excluded
+	$self->{EXCLUDE_LIST} = [ 'NONE' ];
+
+	$self->{tosumfile} = $self->temporary('tosum', ext => '.fits');
+	$self->instantiateTemplate($self->{tosumfile});
+	return if not $self->isValid;
+
+	my $weights = $self->{WEIGHTS} || { };
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+		$self->verbose("masking/weighting $hdu->{hduid}");
+		my $weight = 1;
+		if (exists($weights->{$hdu->{hdu0}})) {
+			$weight = $weights->{$hdu->{hdu0}};
+		}
+		if (exists($weights->{$hdu->{name}})) {
+			$weight = $weights->{$hdu->{name}};
+		}
+		my $masked = $self->temporary('masked', ext => '.fits');
+		my $command;
+		if ($self->{MASKING}) {
+			my $expr;
+			if ($weight != 1) {
+				$expr = "(b>0) ? a*$weight : 0";
+			}
+			else {
+				$expr = "(b>0) ? a : 0";
+			}
+			$command = $self->buildCommand('ftpixcalc',
+					expr => $expr,
+					outfile => $masked,
+					a => $hdu->{pathext},
+					b => $hdu->{maskext},
+					c => 'NONE',
+					);
+		}
+		else {
+			$command = $self->buildCommand('ftpixcalc',
+					expr => "a*$weight",
+					outfile => $masked,
+					a => $hdu->{pathext},
+					b => 'NONE',
+					);
+		}
+
+		$self->shell($command);
+
+		my $copy = $self->buildCommand('ftappend',
+				infile => $masked,
+				outfile => $self->{tosumfile},
+				);
+		$self->shell($copy);
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub collectHDUs
+{
+	my ($self) = @_;
+
+	# we are constructing a new file with only those HDUs which are
+	# to be included in the sum, so nothing need be excluded
+	$self->{EXCLUDE_LIST} = [ 'NONE' ];
+
+	$self->{tosumfile} = $self->temporary('tosum', ext => '.fits');
+	$self->instantiateTemplate($self->{tosumfile});
+	return if not $self->isValid;
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+		$self->verbose("appending $hdu->{hduid}");
+
+		my $command = $self->buildCommand('ftappend',
+				infile => $hdu->{pathext},
+				outfile => $self->{tosumfile},
+				);
+		$self->shell($command);
+
+		last if not $self->isValid;
+	}
+}
+
+

@@ -1,0 +1,216 @@
+#!/usr/local/bin/perl
+#
+#   fapropos --
+#
+#   This program takes a search string, and searches the FTools help 
+#   directory to find the names of tasks that mention that word.
+#
+#
+#   $Id: fapropos,v 3.7 2013/01/24 21:41:28 irby Exp $
+#
+#   Jim Ingham 
+#   
+
+# Are we on VMS?
+if ($ENV{'HOME'} =~ /\$.*:\[.*\]|\[.*\]/) {
+    $VMS = 1;
+    push(@INC,"/ftools/bin_perl/");
+#    print "We are on VMS\n";
+}
+else {
+    $VMS = 0;
+    push(@INC,"$ENV{FTOOLS}/scripts");
+#    print "We are on UNIX\n";
+}
+
+require "utils.pl";
+use Getopt::Std;
+
+getopts('behlpsw');
+
+if ( defined $opt_h ) {
+    print<<EOHELP;
+
+                 ****** fapropos ******
+
+Searches Ftools help files for a given word (or words).
+
+SWITCHES:
+    -b  Searches only the brief description of each help file
+    -e  Print out the expression fapropos is using
+    -h  Gives this help
+    -l  List the matches, without the short description
+    -p  The arguments will be concatenated and passed straight to
+         the regular expression search.  This will facilitate entering
+         more complicated regular expressions.
+    -s  Makes the search case sensitive
+    -w  Makes matches for whole words only
+
+USAGE:
+
+fapropos [-s] arg1 arg2 ...
+
+	The arguments are taken as a list of regular expressions, and
+OR'ed before being applied to the text of the help files.  The only 
+restriction is that each expression cannot contain spaces.
+
+EXAMPLE:
+
+fapropos arf rmf
+
+Looks for tasks whose help files mention arf or rmf.
+
+EOHELP
+exit 0;
+
+}
+
+if ( !defined $ARGV[0] ) {
+    print "Enter keyword: ";
+    $keyword = <STDIN>;
+    chop $keyword;
+    if (defined $opt_p ) { 
+    } elsif (defined $opt_w) {
+        $keyword =~ s/ +/\\b|\\b/g;
+        $keyword = '\b'.$keyword.'\b';
+    } else {
+         $keyword =~ s/ +/|/g;
+    }
+} else {
+    if ( defined $opt_p ) {
+        $keyword = join("",@ARGV);
+    } elsif ( defined $opt_w ) {
+        $keyword = join('\b|\b',@ARGV);
+        $keyword = '\b'.$keyword.'\b';
+    } else {
+        $keyword = join("|",@ARGV);
+    }
+}
+
+if ( defined $opt_e ) {
+    print "Looking for: $keyword\n";
+}
+
+if ( $VMS ) {
+    $helpDir = "/ftools/help/";
+} else {
+    $helpDir = "$ENV{LHEA_HELP}";
+}
+
+$workDir = pwd;
+chdir $helpDir || die "Cannot change directory to $helpDir\n";
+
+opendir(DIR,".")|| die "Cannot read directory $helpDir\n";
+
+@files = grep(/.*\.txt/,readdir(DIR));
+@files = grep(!/ftools.txt/,@files);
+
+closedir(DIR);
+
+#print "Looking for keyword $keyword\n";
+
+if (defined $opt_s ) {
+    if ( ! defined $opt_b ) {
+        foreach $FILE (@files) {
+	    open(FILE) || die "Cannot open file $FILE\n";
+	    while ( <FILE> ) {
+	        if ( /$keyword/o ) {
+		    ($topic = $FILE ) =~ s/\.txt$//;
+		    push(@goodTopics,$topic);
+		    last;
+	        }
+	    }
+        }
+	close(FILE);
+    } else {
+        foreach $FILE (@files) {
+	open(FILE) || die "Cannot open file $FILE\n";
+	    while ( <FILE> ) {
+                last if ( /^USAGE/ );
+	        if ( /$keyword/o ) {
+		    ($topic = $FILE ) =~ s/\.txt$//;
+		    push(@goodTopics,$topic);
+		    last;
+	        }
+	    }
+        }
+	close(FILE);
+    }
+} else {
+    if ( ! defined $opt_b ) {
+        foreach $FILE (@files) {
+	    open(FILE) || die "Cannot open file $FILE\n";
+	    while ( <FILE>  ) {
+	        if ( /$keyword/oi ) {
+		    ($topic = $FILE ) =~ s/\.txt$//;
+		    push(@goodTopics,$topic);
+		    last;
+	        }
+	    }
+        }
+	close(FILE);
+    } else {
+        foreach $FILE (@files) {
+	open(FILE) || die "Cannot open file $FILE\n";
+	    while ( <FILE> ) {
+                last if (/^USAGE/);
+	        if ( /$keyword/oi ) {
+		    ($topic = $FILE ) =~ s/\.txt$//;
+		    push(@goodTopics,$topic);
+		    last;
+	        }
+	    }
+        }
+	close(FILE);
+    }
+}
+
+
+if ( $#goodTopics == -1 ) {
+    die "No matches found\n";
+} else {
+
+    if ( defined $opt_l ) {
+        print join("\n",@goodTopics),"\n";
+        exit 0;
+    }
+
+    open(FTOOLS,"ftools.txt")|| die 
+	"Cannot open FTools generic help file index\n";
+    @ftools = <FTOOLS>;
+    close FTOOLS;
+
+    $foundOne = 0;
+    $#sub = -1;
+
+    foreach $line (@ftools) {
+	if ( $line =~ /^\s*$/ ) {
+	    $foundOne = 0;
+	} elsif ( $line =~ /^\s*(\w+) -/ ) {
+	    $topic = $1;
+	    $foundOne = 0;
+	    foreach $goodTopic (@goodTopics) {
+		if ( $goodTopic eq $topic ) {
+		    push(@sub,$line);
+		    $foundOne = 1;
+		    last;
+		}
+	    } 
+	} elsif ( $line =~ /^\s/ ) {
+	    if ( $foundOne ) {
+		push(@sub,$line);
+	    }
+	} else { 
+	    if ( $#sub > -1 ) { 
+		push(@output,"\n$subHeading\n",@sub);
+		$#sub = -1;
+	    }
+	    $subHeading = $line;
+	}
+    }
+    print @output;
+}
+
+
+
+

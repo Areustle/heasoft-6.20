@@ -1,0 +1,742 @@
+#! perl
+
+# $Source: /headas/headas/swift/gen/tasks/swiftcheck/swobscheck,v $
+# $Revision: 1.1 $
+# $Date: 2006/01/24 14:48:59 $
+#
+#	tests taken from Ziqin Pan's uvot_check script which checks
+#	the completeness and obvious errors of UVOT level 1 data.
+#
+#	reprocessed data at
+#		swiftly:/local/data/swiftly1/dtsops/ftp/pub/archive/test
+#
+#
+# $Log: swobscheck,v $
+# Revision 1.1  2006/01/24 14:48:59  rwiegand
+# Tools for checking Swift data.
+#
+# Revision 1.5  2005/11/30 15:56:36  wiegand
+# Report observation being checked.  Avoid problem when missing
+# event files.
+#
+# Revision 1.4  2005/11/29 22:09:41  wiegand
+# Added parameter for optional checks.  Assorted cleanup.
+#
+# Revision 1.3  2005/10/19 19:43:01  wiegand
+# Post initial debugging.
+#
+# Revision 1.1  2005/10/18 17:44:40  wiegand
+# Initial revision
+#
+
+use strict;
+
+package Swift::Checker;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+use DirHandle;
+
+use SimpleFITS;
+
+use constant UVOT_MODE_EVENT => 2;
+use constant UVOT_MODE_IMAGE => 3;
+use constant UVOT_MODE_IMAGE_EVENT => 4;
+
+
+my @FILTER = (
+	{ code => 'bl', name => 'Blocked' },
+	{ code => 'gu', name => 'Grism1 UV' },
+	{ code => 'w2', name => 'UVW2' },
+	{ code => 'vv', name => 'V' },
+	{ code => 'm2', name => 'UVM2' },
+	{ code => 'gv', name => 'Grism2 V' },
+	{ code => 'w1', name => 'UVW1' },
+	{ code => 'uu', name => 'U' },
+	{ code => 'mg', name => 'Magnifier' },
+	{ code => 'bb', name => 'B' },
+	{ code => 'wh', name => 'White' },
+	{ code => 'un', name => 'Unknown' },
+);
+
+{
+	# assign filter IDs
+	my $id = 0;
+	foreach my $info (@FILTER) {
+		$info->{id} = $id;
+		++$id;
+	}
+}
+
+
+my @EVENT_HDU_KEYWORDS = (
+	{ keyword => 'NAXIS', number => 2 },
+	map { { keyword => $_ } } qw(
+			BITPIX NAXIS1 NAXIS2 TELESCOP INSTRUME EXTNAME
+			SEQPNUM OBJECT FILTER OBS_MODE DATAMODE
+			DATE-OBS DATE-END TIMEZERO TIMEUNIT
+			CLOCKAPP TSTART TSTOP TIMEREF TASSIGN TIERRELA TIERABSO TIMEPIXR
+			TIMEDEL TELAPSE ONTIME LIVETIME EXPOSURE
+	),
+);
+
+
+my @WINDOW_HDU_KEYWORDS = (
+	map { { keyword => $_} } qw(DATE-OBS DATE-END),
+);
+
+
+
+my @IMAGE_HDU_KEYWORDS = (
+	map { { keyword => $_ } } qw(
+			TELESCOP INSTRUME FILTER SEQPNUM
+			OBJECT OBS_ID TARG_ID SEG_NUM
+			DATE-OBS DATE-END
+			TIMESYS TIMEUNIT TIMEZERO TIMEREF CLOCKAPP TSTART TSTOP
+			TASSIGN TIERRELA TIERABSO TIMEPIXR EXPOSURE
+			CHECKSUM EXTNAME FILTER OBS_MODE EQUINOX RADECSYS
+			RA_OBJ DEC_OBJ
+	),
+);
+
+
+my @RE_IGNORE = (
+	qr(^SWIFT_TLE_ARCHIVE),
+	qr(^dts_ql.list$),
+	qr(^dts.list$),
+	qr(^control.par$),
+);
+
+
+
+# main
+{
+	my $task = __PACKAGE__->new;
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->iterateObservations
+		if $self->isValid;
+}
+
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+					obsdir=file emailfile=file logfile=file
+					swiftprefix=string passphrase=string subdirs=boolean
+					swfilecheck=boolean optcheck=string
+					clobber=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not -d $args->{obsdir}) {
+		$self->error(BAD_INPUT, "obsdir is not a directory");
+	}
+	else {
+		$self->{obsdir} = $args->{obsdir};
+	}
+
+	$self->{swiftprefix} = $args->{swiftprefix};
+
+	{
+		my $path = $args->{logfile};
+		if (-e $path) {
+			if (not $args->{clobberFlag}) {
+				$self->error(BAD_OUTPUT, "$path exists and clobber not set");
+			}
+			elsif (not unlink($path)) {
+				$self->error(BAD_OUTPUT, "unable to unlink $path [$!]");
+			}
+		}
+
+		if ($self->isValid) {
+			my $fh = FileHandle->new($path, 'w');
+			if (not $fh) {
+				$self->error(BAD_OUTPUT, "unable to create $path [$!]");
+			}
+			else {
+				$self->{loghandle} = $fh;
+			}
+		}
+	}
+
+	my %optcheck;
+	$self->{optcheck} = \%optcheck;
+	if ($args->{optcheck} !~ /^NONE$/i) {
+		%optcheck = map { uc($_) => 1 } split(',', $args->{optcheck});
+	}
+}
+
+
+sub problem
+{
+	my ($self, $message) = @_;
+	$self->warning($message);
+	$self->{loghandle}->print($message, "\n");
+}
+
+
+
+sub iterateObservations
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @obsdirs;
+
+	if ($args->{subdirsFlag}) {
+		@obsdirs = dirContents($self->{obsdir});
+	}
+	else {
+		my %dir = (
+			dir => "$self->{obsdir}/..",
+			full => $self->{obsdir},
+			name => $self->{obsdir},
+		);
+		@obsdirs = (\%dir);
+	}
+
+	foreach my $dirinfo (@obsdirs) {
+		$self->checkObservationDirectory($dirinfo);
+	}
+}
+
+
+
+sub checkObservationDirectory
+{
+	my ($self, $obsdir) = @_;
+
+	$self->timestamp("checking observation $obsdir->{name}");
+
+	my %obsfile;
+	my $uvotExposureReport;
+
+	my $prefix = $self->{swiftprefix};
+	my $reSwiftFile = qr(^$prefix([0-9]{11})(\w+\.[^.]+)(\..+)?$);
+
+	$self->iterateDirectory($obsdir->{full}, sub {
+				my ($info) = @_;
+				if ($info->{name} =~ $reSwiftFile) {
+					$info->{obsid} = $1;
+					$info->{filetype} = $2;
+					$info->{encoding} = $3;
+
+					# store this file by type
+					my $list = $obsfile{$info->{filetype}} || [ ];
+					push(@$list, $info);
+					$obsfile{$info->{filetype}} = $list;
+
+					if ($info->{filetype} =~ 'uer.hk') {
+						$uvotExposureReport = $info;
+					}
+					$self->verbose(join("\n\t", "file $info->{name}",
+							"obsid $info->{obsid}",
+							"filetype $info->{filetype}",
+							"encoding $info->{encoding}"))
+						if $self->chatter(5);
+
+					$self->checkFile($info);
+				}
+				elsif ($self->ignoreFile($info)) {
+				}
+				else {
+					$self->warning("ignoring $info->{full}");
+				}
+			});
+
+	if ($uvotExposureReport) {
+		$self->checkUVOTExposureReport($uvotExposureReport, \%obsfile);
+	}
+	else {
+		$self->warning("no UVOT exposure report found in $obsdir->{full}");
+	}
+}
+
+
+sub ignoreFile
+{
+	my ($self, $info) = @_;
+	foreach my $re (@RE_IGNORE) {
+		if ($info->{name} =~ $re) {
+			return 1;
+		}
+	}
+	return undef;
+}
+
+
+
+sub getFilterInfoForID
+{
+	my ($self, $filterID) = @_;
+	if ($filterID >= 0 and $filterID < @FILTER) {
+		return $FILTER[$filterID];
+	}
+	$self->problem("getFilterInfoForID($filterID) out of range");
+	return undef;
+}
+
+
+
+sub checkUVOTExposureReport
+{
+	my ($self, $report, $obsfiles) = @_;
+
+	$self->report("checking UVOT exposure report $report->{full}");
+
+	my @exposure;
+	my $path = $report->{full};
+	my $status = SimpleFITS->readonly($path)
+			->move('EXPREPORT')
+			->loadtable(\@exposure)
+			->status;
+	if ($status) {
+		$self->problem("unable to load $path [$status]");
+	}
+	else {
+		my %eventcheck;
+		my %imagecheck;
+
+		foreach my $e (@exposure) {
+			$e->{ID} = $e->{FTCOARSE};
+
+			my $filterInfo = $self->getFilterInfoForID($e->{FILTER});
+			if (not $filterInfo) {
+				next;
+			}
+
+			my $code = $filterInfo->{code};
+
+			if ($e->{MODEID} == UVOT_MODE_IMAGE) {
+				my $filetype = "u${code}_sk.img";
+				my $list = $imagecheck{$filetype} || [ ];
+				push(@$list, { exposure => $e,
+							EXTNAME => "${code}$e->{ID}I" });
+				$imagecheck{$filetype} = $list;
+			}
+
+			elsif ($e->{MODEID} == UVOT_MODE_EVENT) {
+				my $filetype = "u${code}po_uf.evt";
+				my $list = $eventcheck{$filetype} || [ ];
+				push(@$list, { exposure => $e });
+				$eventcheck{$filetype} = $list;
+			}
+
+			elsif ($e->{MODEID} == UVOT_MODE_IMAGE_EVENT) {
+				my $filetype = "u${code}_sk.img";
+				my $list = $imagecheck{$filetype} || [ ];
+				push(@$list, { exposure => $e,
+							EXTNAME => "${code}$e->{ID}I" });
+				push(@$list, { exposure => $e,
+							EXTNAME => "${code}$e->{ID}E" });
+				$imagecheck{$filetype} = $list;
+
+				$filetype = "u${code}po_uf.evt";
+				$list = $eventcheck{$filetype} || [ ];
+				push(@$list, { exposure => $e });
+				$eventcheck{$filetype} = $list;
+			}
+
+			else {
+				$self->problem("unhandled UVOT MODEID $e->{MODEID}");
+			}
+		}
+
+		foreach my $filetype (sort(keys(%imagecheck))) {
+			my $peek = $obsfiles->{$filetype};
+			if (not $peek) {
+				$self->warning("no $filetype files to check");
+				next;
+			}
+			my @files = @$peek;
+			if (not @files) {
+				$self->problem("no $filetype files");
+			}
+			else {
+				$self->checkImages($imagecheck{$filetype},
+						{ filetype => $filetype }, @files);
+			}
+		}
+
+		foreach my $filetype (sort(keys(%eventcheck))) {
+			my $peek = $obsfiles->{$filetype};
+			if (not $peek) {
+				$self->warning("no $filetype files to check");
+				next;
+			}
+			my @files = @$peek;
+			if (not @files) {
+				$self->problem("no $filetype files");
+			}
+			else {
+				$self->checkEvents($eventcheck{$filetype}, @files);
+			}
+		}
+
+	}
+}
+
+
+sub getFileHDUs
+{
+	my ($self, $file) = @_;
+
+	my $nhdu = 0;
+	my $fits = SimpleFITS->readonly($file->{full});
+	if (not $fits) {
+		$self->problem("unable to open $file->{full}");
+		return;
+	}
+
+	my @hdu = $self->getSimpleHDUs($fits);
+	foreach my $hdu (@hdu) {
+		$hdu->{_file} = $file;
+	}
+
+	$fits->close;
+
+	return @hdu;
+}
+
+
+sub getSimpleHDUs
+{
+	my ($self, $fits) = @_;
+
+	my $nhdu = $fits->nhdu;
+
+	my @hdu;
+	for (my $i = 1; $i <= $nhdu; ++$i) {
+		my $header = '';
+		my $status = $fits->move($i)
+				->readheader($header, clean => 1)
+				->status;
+
+		if ($status) {
+			$self->problem("unable to move to HDU $i [$status]");
+		}
+		else {
+			$header->{_hdu1} = $i;
+			push(@hdu, $header);
+		}
+	}
+
+	return @hdu;
+}
+
+
+
+sub checkImages
+{
+	my ($self, $expcheck, $info, @files) = @_;
+
+	$self->report('checkImages:', join(',', map { $_->{full} } @files));
+
+	my @hdu;
+	foreach my $file (@files) {
+		my @filehdu = $self->getFileHDUs($file);
+		if ($filehdu[0]->{_hdu1} != 1) {
+			$self->problem("first HDU in $file->{full} is not HDU 1");
+		}
+		push(@hdu, @filehdu);
+	}
+
+	my %hdu = map { ($_->{EXTNAME} || 'PRIMARY' => $_) } @hdu;
+
+	foreach my $check (@$expcheck) {
+
+		my $exp = $check->{exposure};
+
+		my $header = $hdu{$check->{EXTNAME}};
+
+		if (not $header) {
+			$self->problem("missing image $check->{EXTNAME}");
+		}
+		else {
+			$self->checkKeywords($header, \@IMAGE_HDU_KEYWORDS);
+		}
+	}
+}
+
+
+sub checkEvents
+{
+	my ($self, $check, @files) = @_;
+
+	$self->report('checkEvents:', join(',', map { $_->{full} } @files));
+
+	my %window;
+
+	foreach my $file (@files) {
+
+		$self->inspectEventFile($file);
+
+		# check the GTI extension of each exposure
+		my %hdu = map { (($_->{EXTNAME} || 'PRIMARY') => $_) } @{ $file->{hdus} };
+
+		foreach my $entry (@{ $file->{window} || [ ] }) {
+			$window{$entry->{EXPID}} = $entry;
+			my $gtiext = 'GTI' . $entry->{EXPREF};
+			if (not $hdu{$gtiext}) {
+				$self->problem("missing $gtiext for $entry->{EXPID}");
+			}
+			else {
+				$self->checkGTI($hdu{$gtiext});
+			}
+		}
+	}
+
+	# locate the WINDOW row for each exposure
+	foreach my $c (@$check) {
+		my $exposure = $c->{exposure};
+		if (not $window{$exposure->{ID}}) {
+			$self->problem("missing WINDOW entry for $exposure->{ID}");
+		}
+
+		# check exposure rate
+	}
+
+}
+
+
+
+sub checkGTI
+{
+	my ($self, $hdu) = @_;
+	$self->checkForColumn($hdu, qw(START STOP));
+	my $duration = 0;
+	foreach my $entry (@{ $hdu->{_GTIs} }) {
+		$duration += $entry->{STOP} - $entry->{START};
+	}
+	$hdu->{_GTI_TOTAL} = $duration;
+}
+
+
+sub checkForColumn
+{
+	my ($self, $header, @columns) = @_;
+	my %found;
+	for (my $i = 1; $i <= $header->{TFIELDS}; ++$i) {
+		my $ttype = "TTYPE$i";
+		$found{$header->{$ttype}} = 1;
+	}
+
+	foreach my $name (@columns) {
+		if (not $found{$name}) {
+			$self->problem("$header->{EXTNAME} missing $name column");
+		}
+	}
+}
+
+
+sub inspectEventFile
+{
+	my ($self, $file) = @_;
+
+	my $fits = SimpleFITS->readonly($file->{full});
+	if (not $fits) {
+		$self->problem("unable to open $file->{full}");
+		return;
+	}
+
+	my @hdu = $self->getSimpleHDUs($fits);
+	my %hdu = map { (($_->{EXTNAME} || 'PRIMARY') => $_) } @hdu;
+
+	if ($hdu{EVENTS}) {
+		$self->checkKeywords($hdu{EVENTS}, \@EVENT_HDU_KEYWORDS);
+	}
+	else {
+		$self->problem("missing EVENTS extension");
+	}
+	$self->checkForColumn($hdu{EVENTS}, qw(TIME QUALITY));
+
+	if ($hdu{WINDOW}) {
+		$self->checkKeywords($hdu{WINDOW}, \@WINDOW_HDU_KEYWORDS);
+	}
+	else {
+		$self->problem("missing WINDOW extension");
+	}
+
+	my @window;
+	$fits->move('WINDOW')
+			->loadtable(\@window)
+			;
+
+	# load the GTI tables
+	foreach my $hdu (@hdu) {
+		if ($hdu->{EXTNAME} =~ /^GTI\d+$/) {
+			$hdu->{_GTIs} = [ ];
+			$fits->move($hdu->{_hdu1})
+					->loadtable($hdu->{_GTIs});
+		}
+	}
+
+	$fits->close;
+
+	$file->{hdus} = \@hdu;
+	$file->{window} = \@window;
+}
+
+
+sub checkKeyword
+{
+	my ($self, $key, $header, %args) = @_;
+	my $out = 0;
+	if (not exists($header->{$key})) {
+		if (not $args{optional}) {
+			$out = $self->badKeyword("keyword $key is missing");
+		}
+	}
+	else {
+		if ($args{number}) {
+			if ($header->{$key} != $args{number}) {
+				$out = $self->badKeyword("keyword $key is $header->{$key} [expecting $args{number}]");
+			}
+		}
+		elsif ($args{string}) {
+			if ($header->{$key} ne $args{string}) {
+				$out = $self->badKeyword("keyword $key is $header->{$key} [expecting $args{string}]");
+			}
+		}
+		elsif ($args{re}) {
+			if ($header->{$key} !~ $args{re}) {
+				$out = $self->badKeyword("keyword $key is $header->{$key} [expecting $args{re}]");
+			}
+		}
+	}
+
+	if ($args{comment}) {
+		if (not exists($header->{$key})) {
+			# no keyword means no comment
+		}
+		elsif (not exists($header->{COMMENTS}{$key})) {
+			$out = $self->badKeyword("keyword $key does not have comment [$args{comment}]");
+		}
+		elsif ($header->{COMMENTS}{$key} !~ $args{comment}) {
+			my $comment = $header->{COMMENTS}{$key};
+			$out = $self->badKeyword("keyword $key has comment '$comment' [expecting $args{comment}]");
+		}
+	}
+
+	return $out;
+}
+
+
+sub checkKeywords
+{
+	my ($self, $header, $keylist) = @_;
+
+	foreach my $check (@$keylist) {
+		$self->checkKeyword($check->{keyword}, $header, %$check);
+	}
+}
+
+
+sub dirContents
+{
+	my ($dir) = @_;
+
+	my $dh = DirHandle->new($dir);
+	if (not $dh) {
+		die("unable to open $dir [$!]");
+	}
+
+	my @names = $dh->read;
+	undef($dh);
+
+	my @contents;
+	foreach my $name (@names) {
+		next if $name eq '.';
+		next if $name eq '..';
+		my $path = "$dir/$name";
+		my %info = (
+			dir => $dir,
+			name => $name,
+			full => $path,
+		);
+		push(@contents, \%info);
+	}
+
+	return @contents;
+}
+
+
+
+sub iterateDirectory
+{
+	my ($self, $dir, $filesub, $dirsub) = @_;
+
+	my @contents = dirContents($dir);
+
+	foreach my $info (@contents) {
+		if (-d $info->{full}) {
+			if ($dirsub) {
+				$dirsub->($info);
+			}
+			else {
+				# recurse by default
+				$self->iterateDirectory($info->{full}, $filesub, $dirsub);
+			}
+		}
+		elsif (-f $info->{full}) {
+			$filesub->($info);
+		}
+	}
+}
+
+
+
+
+sub checkFile
+{
+	my ($self, $info) = @_;
+
+	my $args = $self->args;
+	if (not $args->{swfilecheckFlag}) {
+	}
+	elsif ($info->{filetype} =~ /\.html$/) {
+		$self->report("not running swfilecheck on $info->{full}")
+			if $self->chatter(5);
+	}
+	elsif ($info->{filetype} =~ /\.par$/) {
+		$self->report("not running swfilecheck on $info->{full}")
+			if $self->chatter(5);
+	}
+	elsif ($info->{filetype} =~ /\.gif$/) {
+		$self->report("not running swfilecheck on $info->{full}")
+			if $self->chatter(5);
+	}
+	else {
+		my $command = $self->buildCommand('swfilecheck',
+				infile => $info->{full},
+				outfile => 'swfilecheck.out',
+				optcheck => $args->{optcheck},
+				);
+		$self->shell($command);
+	}
+}
+
+

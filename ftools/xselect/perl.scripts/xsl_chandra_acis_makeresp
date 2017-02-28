@@ -1,0 +1,301 @@
+#! /usr/bin/perl 
+$version ="2.00";
+$date  ="2008-04-24";
+$author = "kaa";
+
+# This script makes the Chandra ACIS rmf and arf. It is run by the xselect
+# routine xsl_rspsav.
+# Updated 02/22/05 to support the CIAO 3.2 mkacisrmf program which replaces
+# mkrmf
+# Updated 02/23/07 for consistency with CIAO 3.4 and to use heatool instead
+# of older ftools. Also improved search for the bad pixel file. Note that 
+# should really be using mkarf for point sources and mkwarf for extended 
+# sources per CXC recommendation but at the moment using mkwarf for all 
+# sources. Probably should also add an option for the user to specify their
+# own bad pixel file.
+# Updated 04/16/08 to make a decision whether to use the mkacisrmf or mkrmf
+# tools based on the CXC criteria.
+# Updated 04/24/08 to v2.00 which runs either mkwarf or mkarf depending on
+# whether or not the source is extended then either mkacisrmf or mkrmf depending
+# on whether the CTI correction has been performed.
+
+# we need CIAO...
+
+if($ENV{'ASCDS_BIN'} !~/\S/) 
+{
+    print "\n You need to set up CIAO to calculate this response.\n\n";
+    exit(0);
+}
+
+# Check that we were given an input filename
+
+if(@ARGV < 1 || @ARGV > 2)
+{
+    print "\n usage : xsl_chandra_acis_makeresp infile extended?\n";
+    exit(0);
+}
+
+$infile  = $ARGV[0];
+$extended = "no";
+if (@ARGV == 2) {
+    $extended = $ARGV[1];
+}
+
+if (!($extended eq "yes" || $extended eq "no")) {
+    print "$extended is not a recognised value of the extended? parameter\n";
+    print "please use yes or no\n";
+}
+
+# get the rootname
+
+$dot = index($infile,".");
+$rootname = substr($infile, 0, $dot);
+
+$rmffile = $rootname . ".rmf";
+$arffile = $rootname . ".arf";
+$wgtfile = $rootname . ".wgt";
+
+# the difficult part of this script is to fix the ardlib parameter file
+# first construct the bad pixel filename.
+
+$command = "ftkeypar infile=$infile+0 keyword=BPIXFILE";
+system($command);
+($bpixfile = `pget ftkeypar svalue`) =~ tr/'\n//d;
+
+if ( index($bpixfile,"/") != -1 ) {
+  $temp = reverse($bpixfile);
+  $temp = substr($temp,0,index($temp,"/"));
+  $bpixfile = reverse($temp);
+}
+
+# now need to look around to try to find a copy of this file...
+
+($bpixpath = `find ../ -name $bpixfile -print`) =~ tr/\n//d;
+
+if (-r $bpixpath) {
+
+# found the bad pixel file. Now need to find which chips are in use and
+# update the ardlib file. First find which DS number is used for CCD_ID.
+
+    $done = "no";
+    $i = 1;
+    while ( $done eq "no" ) {
+	$keyname = "DSTYP" . $i;
+	$command = "ftkeypar $infile+0 $keyname >& /dev/null";
+	system($command);
+	($exist = `pget ftkeypar exist`) =~ tr/\n//d;
+	if ( $exist eq "yes" ) {
+	    ($dstype = `pget ftkeypar svalue`) =~ tr/\n//d;
+	    if ( $dstype eq "CCD_ID" ) {
+		$done = "yes";
+		$keyname = "DSVAL" . $i;
+            }
+	}
+	$i = $i + 1;
+	if ( $i > 100 ) {
+	    $done = "yes";
+	}
+    }
+
+    if ( $exist eq "no" ) {
+	print "Unable to find a DSTYP# keyword for CCD_ID\n";
+	exit;
+    }
+
+# now can read the DSVAL keyword to get the chips used
+
+   $command = "ftkeypar $infile+0 $keyname >& /dev/null";
+   system($command);
+   $value = `pget ftkeypar value`;
+   $chip = substr($value, 1, 1);
+   @chipno = ($chip);
+   for $i (2..6) {
+       $command = "ftkeypar $infile+0 $i" . "DSVAL1 >& /dev/null";
+       system($command);
+       ($exist = `pget ftkeypar exist`) =~ tr/\n//d;
+       if ( $exist eq "yes" ) {
+	   $value = `pget ftkeypar value`;
+	   $chip = substr($value, 1, 1);
+	   push(@chipno,$chip);
+       }
+   }   
+
+   foreach $c (@chipno) {
+       $command = "pset ardlib AXAF_ACIS" . $c . "_BADPIX_FILE = $bpixpath\[BADPIX" . $c . "\]";
+       print $command, "\n";
+       system($command);
+   }
+} else {
+   print "I cannot find the bad pixel file $bpixfile - ardlib not set\n";
+   print "This script searches for the file in the path ../ i.e. it moves\n";
+   print "up one directory level and then searches the tree below its current\n";
+   print "position. This file is likely in the primary sub-directory of the\n";
+   print "Chandra dataset.\n";
+   exit;
+}
+
+# run mkarf or mkwarf
+
+if ($extended eq "yes") {
+
+    $wmapfile = $infile."[WMAP]";
+    $command = "mkwarf infile='$wmapfile' outfile=$arffile weightfile=$wgtfile spectrumfile=none egridspec=0.3:11:0.01 feffile=CALDB clobber=yes";
+    print "\n",$command,"\n";
+    system($command);
+
+} else {
+
+# for the case of a point source we need to run mkarf which requires us to work
+# out a mess of other information. First we need to create the aspect history file
+# which requires knowing the event filename. 
+
+    $command = "ftkeypar $infile+0 FILIN001";
+    system($command);
+    ($eventfile = `pget ftkeypar value`) =~ tr/\n \'//d;
+
+# now we need to know the name of the aspect file
+
+    ($asolfile = `find . -name "pcad*_asol1.fits" -print`) =~ tr/\n//d;
+    if ( !(-e $asolfile) ) {
+	($asolfile = `find .. -name "pcad*_asol1.fits" -print`) =~ tr/\n//d;
+    }
+    $asphistfile = $rootname . ".asp";
+
+    $command = "asphist infile=$asolfile outfile=$asphistfile evtfile=$eventfile clobber=yes dtffile='' verbose=0";
+    print $command,"\n";
+    system($command);
+
+# now find the source chip coordinates using dmstat on the input event file with
+# the region filter taken from the REGION extension of the spectrum.
+
+    $tmpfile = $rootname . ".tmp";
+    $command = "dmcopy infile='$eventfile\[sky=region\($infile\[REGION\]\)\]' outfile=$tmpfile clobber=yes";
+    print $command,"\n";
+    system($command);
+
+    $command = "ftstat infile='$tmpfile\[col chipx\]' >& /dev/null";
+    system($command);
+    ($chipx = `pget ftstat mean`) =~ tr/\n \'//d;
+    $command = "ftstat infile='$tmpfile\[col chipy\]' >& /dev/null";
+    system($command);
+    ($chipy = `pget ftstat mean`) =~ tr/\n \'//d;
+    $command = "ftstat infile='$tmpfile\[col ccd_id\]' >& /dev/null";
+    system($command);
+    ($ccd_id = `pget ftstat mean`) =~ tr/\n \'//d;
+    $command = "ftstat infile='$tmpfile\[col x\]' >& /dev/null";
+    system($command);
+    ($x = `pget ftstat mean`) =~ tr/\n \'//d;
+    $command = "ftstat infile='$tmpfile\[col y\]' >& /dev/null";
+    system($command);
+    ($y = `pget ftstat mean`) =~ tr/\n \'//d;
+
+    unlink $tmpfile;
+
+# find the FEF file for this chip and position
+
+    $command = "acis_fef_lookup $eventfile $ccd_id $chipx $chipy >& /dev/null";
+    print $command,"\n";
+    system($command);
+    ($feffile = `pget acis_fef_lookup outfile`) =~ tr/\n//d;
+
+# check whether we are using the grating
+
+    $command = "ftkeypar $infile+0 GRATING";
+    system($command);
+    ($grating = `pget ftkeypar value`) =~ tr/\n \'//d;
+
+# construct the detector subsystem name (this is a real pain - why doesn't mkarf
+# just accept the ccd_id number).
+
+    if ( $ccd_id > 3 ) {
+	$detnum = $ccd_id - 4;
+	$detname = "ACIS-S" . $detnum;
+    } else {
+	$detname = "ACIS-I" . $ccd_id;
+    }
+
+# now finally run mkarf
+
+    $command = "mkarf asphistfile=$asphistfile outfile=$arffile sourcepixelx=$x sourcepixely=$y engrid='0.3:11:0.01' obsfile='$eventfile\[EVENTS\]' detsubsys=$detname grating=$grating maskfile=NONE verbose=0 clobber=yes";
+    print "\n",$command,"\n";
+    system($command);
+
+unlink $asphistfile;
+
+}
+
+# run mkacisrmf or mkrmf to make the rmf. Need to work out which to use. The current
+# rule is to use mkacisrmf in the following cases
+#   * all -120 ACIS data taken in (V)FAINT mode that has the time-dependent gain 
+#     adjustment  and CTI correction applied
+#   * -120 ACIS GRADED mode data on the back-illuminated chips (ACIS-S1 and S3) 
+#     only that has the time-dependent gain adjustment applied
+#   * -110 ACIS data taken on the back-illuminated chips (ACIS-S1 and S3) only 
+#     that has the time-dependent gain adjustment applied
+# get the information we need to make the decision
+
+$command = "ftkeypar $infile+0 DATAMODE";
+system($command);
+($datamode = `pget ftkeypar value`) =~ tr/\n \'//d;
+$command = "ftkeypar $infile+0 GAINFILE";
+system($command);
+($gainfile = `pget ftkeypar value`) =~ tr/\n\'//d;
+$gainversion = substr($gainfile, $#gainfile-5,1);
+
+$backside = "no";
+foreach $c (@chipno) {
+    if ( $c eq "7" ) { $backside = "yes"; }
+    if ( $c eq "5" ) { $backside = "yes"; }
+}
+
+$command = "ftkeypar $infile+0 FP_TEMP";
+system($command);
+($fptemp = `pget ftkeypar value`) =~ tr/\n//d;
+$fptemp = $fptemp - 273.15;
+if ( $fptemp > -125 && $fptemp < -115 ) {
+    $fptemp = -120;
+} elsif ( $fptemp >= -115 && $fptemp < -105 ) {
+    $fptemp = -110;
+} else {
+    print "Focal plane temperature is $fptemp C which I do not know how to handle\n";
+    exit;
+}
+
+# set up the cases where mkacisrmf is used
+$usemkacisrmf = "no";
+if ( $gainversion >= 4 ) {
+    if ( ($fptemp == -120 && ($datamode eq "FAINT" || $datamode eq "VFAINT")) ||
+         ($fptemp == -120 && $datamode eq "GRADED" && $backside eq "yes") ||
+	 ($fptemp == -110 && $backside eq "yes") ) { $usemkacisrmf = "yes" };
+}
+
+$logfile = $rootname . ".log";
+
+if ($extended eq "yes") {
+    if ($usemkacisrmf eq "yes") {
+	$command = "mkacisrmf infile=CALDB outfile=$rmffile wmap=$infile energy=0.3:11:0.01 channel=1:1024:1 logfile=$logfile chantype=PI gain=CALDB clobber=yes";
+    } else {
+	$command = "mkrmf infile=CALDB outfile=$rmffile weights=$wgtfile axis1=\"energy=0.3:11:0.01\" axis2=\"pi=1:1024:1\" logfile=$logfile clobber=yes";
+    }
+} else {
+    if ($usemkacisrmf eq "yes") {
+	$command = "mkacisrmf infile=CALDB outfile=$rmffile wmap=$infile energy=0.3:11:0.01 channel=1:1024:1 ccd_id=$ccd_id chipx=$chipx chipy=$chipy logfile=$logfile chantype=PI gain=CALDB clobber=yes";
+    } else {
+	$command = "mkrmf infile=$feffile outfile=$rmffile axis1=\"energy=0.3:11:0.01\" axis2=\"pi=1:1024:1\" logfile=$logfile clobber=yes";
+    }
+}
+print "\n",$command,"\n";
+system($command);
+
+# clean up temporary files
+
+unlink $logfile, $wgtfile;
+
+# set the RESPFILE and ANCRFILE keywords in the spectrum to point to the
+# files that have been created
+
+$command = "fthedit $infile\[SPECTRUM\] RESPFILE add $rmffile";
+system($command);
+$command = "fthedit $infile\[SPECTRUM\] ANCRFILE add $arffile";
+system($command);
+

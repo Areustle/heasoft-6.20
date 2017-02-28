@@ -1,0 +1,6 @@
+PROJECT(pget)
+
+ADD_EXECUTABLE(pget pget.c)
+TARGET_LINK_LIBRARIES(pget ape)
+
+INSTALL_TARGETS(/bin pget)

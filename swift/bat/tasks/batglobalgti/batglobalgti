@@ -1,0 +1,146 @@
+#!/usr/bin/perl
+#
+# File: batglobalgti
+#
+# Description:  Retrieve global good/bad science times
+#
+# Author: Craig Markwardt
+# Date:   2006-09-19
+#
+#
+#  Algorithm:
+#
+#  The BAT global good/bad time gti file is retrieved, usually from
+#  CALDB.  This file is scanned for the user's desired QUALITY
+#  filter.
+#
+use HEACORE::HEAINIT;
+
+my $taskname = "batglobalgti";
+my $taskvers = "1.3";
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+$status = 0;
+eval {
+    $status = headas_main(\&batglobalgti);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub batglobalgti {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batglobalgti_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batglobalgti_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter);
+
+    ($status = PILGetString('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+    ($status = PILGetString('expr', $expr)) == 0 || die "error getting expr parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    print "$taskname $taskvers\n" if ($chatter >= 1);
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+    print "  Selecting entries with '$expr'\n" if ($chatter >= 2);
+
+    # Check for CALDB and retrieve
+    if ("$infile" =~ m/CALDB/i) {
+      # XXX NOTE: the hack by assuming "now" as the time
+      $cmd = "quzcif mission=Swift instrument=BAT detector=- filter=- codename=STDGTI ".
+	"date='now' time='00:00:00' expr='-' retrieve='NO' ";
+
+      print "$cmd\n" if ($chatter >= 5);
+      @result = `$cmd`;
+      die "ERROR: CALDB query failed with error: @result\n" if ($?);
+      $inspec = "$result[0]";
+      chomp($inspec);
+
+      # Format is "filename   extension"
+      @inlist = split(/ +/,$inspec);
+      $infile = "$inlist[0]";
+
+      # Defend against possible remote-CALDB
+      if ("$infile" !~ m/^(http|ftp):/i and not -f "$infile") {
+	die "ERROR: CALDB query failed to find the BAT global GTI file";
+      }
+
+      $extno  = "$inlist[1]";
+    }
+    if ($extno eq "") { $extno = "1"; }
+
+    $file_expr  = "$infile";
+    $file_expr .= "[$extno]" if ($extno);
+    $file_expr .= "[$expr]"  if ($expr !~ m/NONE/i);
+
+    $cmd = "ftcopy infile='$file_expr' outfile='$outfile'";
+    print "$cmd\n" if ($chatter >= 5);
+
+    print "clobber=$clobber\n" if ($chatter >= 5);
+    unlink ($outfile) if ($clobber);
+    system($cmd);
+    die "ERROR: could not create '$outfile'" if (! -f "$outfile");
+    
+    system("ftlist infile='$outfile' option='H' | grep rows") if ($chatter >= 2);
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+    print "DONE\n" if ($chatter >= 1);
+
+    return 0;
+}
+
+
+

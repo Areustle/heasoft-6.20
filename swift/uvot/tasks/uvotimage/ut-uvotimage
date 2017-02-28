@@ -1,0 +1,163 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotimage/ut-uvotimage,v $
+# $Revision: 1.7 $
+# $Date: 2008/05/07 14:40:19 $
+#
+#	ut-uvotimage
+#
+#
+# $Log: ut-uvotimage,v $
+# Revision 1.7  2008/05/07 14:40:19  rwiegand
+# Exclude DATASUM keyword when comparing results.
+#
+# Revision 1.6  2007/11/15 18:17:02  rwiegand
+# Prepared new unit test data set.
+#
+# Revision 1.5  2007/07/17 21:11:37  rwiegand
+# Hacked out UVM2 and UVW2 results checking since input event files do not
+# contain proper columns.  Need to update input data to current uvot2fits.
+#
+# Revision 1.4  2006/11/13 21:59:59  rwiegand
+# Exclude DTELDEF when comparing results.
+#
+# Revision 1.3  2005/11/09 15:07:42  rwiegand
+# Added an absolute tolerance.
+#
+# Revision 1.2  2005/11/04 16:32:28  rwiegand
+# Write products to the output directory.
+#
+# Revision 1.1  2005/11/03 23:06:35  rwiegand
+# Added unit test and help file.
+#
+
+use strict;
+
+package Test::UVOTImage;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = Test::UVOTImage->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string caldb=boolean chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotimage
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotimage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{caldbFlag}) {
+		$self->warning('caldb=yes has no effect');
+	}
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @names = qw(
+		um2.evt
+		uw1.evt
+		uvv_rw.img
+		uuu_rw.img
+	);
+
+	my @infiles = map { "$input/$_" } @names;
+
+	my @args = (
+		infile	=> join(',', @infiles),
+		prefix	=> "$output/Q",
+		attfile	=> "$input/sw00130088000sat.fits",
+		ra		=> 278.1231,
+		dec		=> 26.3045,
+		roll	=> 40.1304,
+
+		chatter	=> 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	foreach my $path ($args{attfile}, @infiles) {
+		if (not -f $path) {
+			$self->fatal(BAD_INPUT, "missing $path");
+		}
+	}
+	return if not $self->isValid;
+
+	{
+		my $command = $self->buildCommand('uvotimage', @args);
+		$self->shell($command);
+	}
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	foreach my $name (qw(Qum2_rw.img Quuu_rw.img Quvv_rw.img
+			Qum2_sk.img Quuu_sk.img Quvv_sk.img)) {
+		my $template = "$input/$name";
+		my $output = "$output/$name";
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $template,
+				infile2 => $output,
+				tolerance => 1e-3,
+				reltol => 0.01,
+				exclude => 'DATASUM,DTELDEF',
+				);
+		$self->shell($command);
+	}
+}
+

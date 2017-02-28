@@ -1,0 +1,17 @@
+HD_COMPONENT_NAME	= attitude
+
+HD_COMPONENT_VERS	= 
+
+HD_LIBRARY_ROOT		= geomag
+
+HD_LIBRARY_SRC_f	= geocal.f geomag.f starksubs.f
+
+HD_FFLAGS		= ${HD_STD_FFLAGS}
+
+HD_SHLIB_LIBS		= ${HD_STD_CLIBS} ${F77LIBS4C}
+
+HD_ADD_SHLIB_LIBS	= yes
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+include ${HD_STD_MAKEFILE}

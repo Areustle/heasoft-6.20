@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_LIBS	= Manip.pm
+
+HD_PERL_SUBDIR		= Date
+
+include ${HD_STD_MAKEFILE}

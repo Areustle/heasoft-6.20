@@ -1,0 +1,150 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotgcn/waiter,v $
+# $Revision: 1.3 $
+# $Date: 2011/11/07 15:53:15 $
+#
+# $Log: waiter,v $
+# Revision 1.3  2011/11/07 15:53:15  rwiegand
+# Fixed shutdown when secondary is successful.
+#
+# Revision 1.2  2004/06/29 20:11:53  rwiegand
+# Streamlined and signals children by pid instead of process group.
+#
+# Revision 1.1  2004/06/17 21:44:48  rwiegand
+# UVOT GRB Coordinates Network (GCN) tools.
+#
+
+use strict;
+
+use Getopt::Long;
+use IO::Select;
+
+use constant COMPLETED => 0;
+use constant BAD_USAGE => 1;
+use constant TIMED_OUT => 2;
+use constant FAILURE   => 3;
+
+
+
+{
+	my $primary = '';
+	my $secondary = '';
+
+	my $delta = 3;
+	my $limit = 100;
+
+	my @kids;
+	my $finish = sub {
+		my ($code, $text) = @_;
+		print "debug: interrupting @kids\n";
+		if (@kids) {
+			my $count = kill('ALRM', @kids);
+			print "debug: signalled $count sub-processes\n";
+			print "result: $text\n";
+		}
+		exit($code);
+	};
+
+	if (not Getopt::Long::GetOptions(
+			'primary=s' => \$primary,
+			'secondary=s' => \$secondary,
+			'delta=i' => \$delta,
+			'limit=i' => \$limit,
+			)) {
+		$finish->(BAD_USAGE, 'unable to parse options');
+	}
+
+	if (not $primary or not $secondary) {
+		$finish->(BAD_USAGE, 'missing primary/secondary command(s)');
+	}
+
+	my $start = time;
+
+	if (my $pid = open(PRIMARY, "$primary|")) {
+		# in parent
+		print "started $primary [pid=$pid]\n";
+		push(@kids, $pid);
+	}
+	else {
+		$finish->(FAILURE, "unable to start primary [$!]");
+	}
+
+	if (my $pid = open(SECONDARY, "$secondary|")) {
+		# in parent
+		print "started $secondary [pid=$pid]\n";
+		push(@kids, $pid);
+	}
+	else {
+		$finish->(FAILURE, "unable to start secondary [$!]");
+	}
+
+	my @handles = (\*PRIMARY, \*SECONDARY);
+	my $selector = IO::Select->new(@handles);
+
+	my $secondaryGood = 0;
+
+	while ($selector->count > 0) {
+
+		my $elapsed = time - $start;
+		if ($elapsed > $limit) {
+			if ($secondaryGood) {
+				$finish->(COMPLETED, 'secondary completed');
+			}
+			else {
+				$finish->(TIMED_OUT, 'timed out');
+			}
+		}
+
+		# this could be tightened
+		my @ready = $selector->can_read($delta);
+		foreach my $handle (@ready) {
+			my $tag = 'invalid';
+			if ($handle == \*PRIMARY) {
+				$tag = 'primary';
+			}
+			elsif ($handle == \*SECONDARY) {
+				$tag = 'secondary';
+			}
+			else {
+				print "uhoh: bogus handle $handle\n";
+			}
+
+			my $text = <$handle>;
+			if (not defined($text)) {
+				$selector->remove($handle);
+				my $close = close($handle) ? 0 : $!;
+				my $os = $?;
+				my $bad = $os || $close;
+				my $word = $bad ? 'bad' : 'good';
+				my $code = $os >> 8;
+				my $signal = $? & 0xff;
+				print "$tag: $word: code=$code signal=$signal os=$os close=$close\n";
+				if (not $close) {
+					if (not $os) {
+						if ($tag eq 'primary') {
+							$finish->(COMPLETED, 'primary completed');
+						}
+						else {
+							$secondaryGood = 1;
+						}
+					}
+				}
+				else {
+					print "uhoh: unable to close $tag [$!]\n";
+				}
+			}
+			else {
+				$text =~ s/\s+$//;
+				print "$tag: $text\n";
+			}
+		}
+	}
+
+	if ($secondaryGood) {
+		$finish->(COMPLETED, 'secondary completed');
+	}
+
+	$finish->(FAILURE, 'tasks failed');
+}
+

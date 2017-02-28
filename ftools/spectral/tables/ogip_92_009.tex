@@ -1,0 +1,529 @@
+\documentclass[11pt]{article}
+\setlength{\parindent}{0pt}             % No indent at start of paragraphs
+\setlength{\parskip}{\baselineskip}     % Blank line between paragraphs
+\setlength{\textwidth}{16.6cm}          % Text width
+\setlength{\textheight}{22cm}         % Text height
+\setlength{\oddsidemargin}{-8mm}        % LH margin width
+%\setlength{\evensidemargin}{0pt}        % LH margin width
+\pagestyle{myheadings}
+\markboth{}{OGIP Memo 92-009 (XSPEC Table Model File Format)}
+\setlength{\topmargin}{.5cm}
+\setlength{\headsep}{10mm}
+\setcounter{totalnumber}{10}            % Max no. floats allowed per page
+\setcounter{topnumber}{3}               % Max no. floats allowed at top
+\setcounter{bottomnumber}{3}            % Max no. floats allowed at bottom
+
+\begin{document}
+
+OGIP Memo 92-009
+\vspace{1cm}
+\begin{center}
+\Large
+
+\Large
+{\bf The File Format for XSPEC Table Models}
+
+\normalsize
+
+Keith A Arnaud
+\small
+
+Code 662, \\
+NASA/GSFC, \\
+Greenbelt, MD20771
+
+\normalsize
+Version: 2000 May 3
+
+\vspace{2cm}
+\section*{SUMMARY}
+
+\begin{minipage}[t]{13cm}
+The file format used for XSPEC table model files is described.
+
+Intended audience: users of XSPEC who wish to write their own table models.
+\end{minipage}
+\end{center}
+
+\newpage
+\section{INTRODUCTION}
+
+XSPEC has three models that allow a user to specify a filename from
+which the model spectra will be read. These models are {\bf atable}
+for additive models, {\bf mtable} for multiplicative models, and
+{\bf etable} for exponential multiplicative models.
+
+The basic concept of a table model is that the file contains an
+N-dimensional grid of model spectra with each point on the grid
+having been calculated for particular values of the N parameters
+in the model. It is up to the creator of the table model file to
+decide what an appropriate spacing is for each parameter. XSPEC
+will interpolate on the grid to get the spectrum for the parameter
+values required at that point in the fit. There is the option for
+each parameter of linear or logarithmic interpolation.
+
+N-dimensional grids of model spectra can get rather large so a
+simplifying trick is available. If a parameter is decoupled from
+the other parameters and adds to the model spectrum in a linear
+fashion then it can be set up as an ``additional parameter''.
+If there are N ``interpolation'' (ie standard) and M additional
+parameters then the grid of model spectra will be N-dimensional
+with each point on the grid containing M+1 model spectra. The
+first of these spectra is for the model with all the additional
+parameters being zero. The Ith spectrum (I=2,...,M+1) is the difference
+between the first spectrum and the spectrum from the model with
+the I-1th additional parameter set to one and all the other additional
+parameters set to zero.
+
+An example of the use of additional parameters is a low density,
+collisional, plasma model where the contribution from each heavy
+element can be stored as a separate spectrum. In this case, there
+is one interpolation parameter (the temperature) and as many
+additional parameters as there are heavy elements in the model.
+
+The {\bf atable} model requires the table model to contain spectra
+in units of photons/cm$^2$/s (the standard for additive models
+models). XSPEC will include a normalization parameter. The
+{\bf mtable} model requires a table model to contain multiplicative
+factors by which an additive model is to be modified.
+The {\bf etable} model takes the numbers in the table model,
+multiplies them by -1 and exponentiates them. This is primarily
+intended for absorption models and is set up this way so that
+elemental abundances can be treated as additional parameters.
+For all these models XSPEC will add a redshift parameter if the
+REDSHIFT keyword in the table model file is set to true.
+
+
+\section{A historical note}
+
+This file format supercedes the non-FITS format used in XSPEC
+prior to v8.6. This old format was a direct-access binary file
+and was not easily internally documented or transported across
+disparate systems. XSPEC used a different direct-access binary 
+file format to store the model spectra tables used in the raymond
+model and this suffered from the same problems.
+
+The new FITS file format described here and is used both for
+the table models and for the raymond model. This has the spinoff
+that a file created for the raymond model can be read as a
+table model thus providing greater flexibility for users wanting
+to run the raymond model using a different grid of temperatures
+or different energy bins.
+
+\section{The FITS file format}
+
+\subsection{Primary header}
+
+The file will contain a header and a number of BINTABLE extensions.
+The main header will include the following information :
+
+\begin{enumerate}
+\item MODLNAME - the name of the model (string of 12 characters max).
+\item MODLUNIT - the units for the model (string of 12 characters max).
+\item REDSHIFT - whether redshift is to be a parameter (logical).
+\item ADDMODEL - whether this is an additive model (logical).
+\end{enumerate}
+
+It should also include the standard OGIP keywords :
+
+\begin{tabbing}
+aaaaaaaaaaaaaaaaaaaaa\=bbbbbbbbbbbbbbbbbb\kill
+HDUCLASS             \> 'OGIP'           \\
+HDUCLAS1             \> 'XSPEC TABLE MODEL'    \\
+HDUVERS              \> '1.0.0'          \\
+\end{tabbing}
+
+\subsection{PARAMETERS extension}
+
+There will be a BINTABLE extension called PARAMETERS containing the 
+parameter definitions and tabulated values. The header keywords will be :
+
+\begin{enumerate}
+\item NINTPARM - the number of interpolated parameters (integer).
+\item NADDPARM - the number of additional parameters (integer).
+\end{enumerate}
+
+and the columns will be :
+
+\begin{tabbing}
+aaaaaaaaaaaaaaaaaaaaa\=bbbbb\=ccccccccccccccccccccccccccccccccccccccccccccccccccccc\kill
+NAME      \> 12A \> name of the parameter.\\
+METHOD    \> J   \> interpolation method (0 if linear, 1 if logarithmic)\\
+INITIAL   \> E   \> initial value in the fit for the parameter\\
+DELTA     \> E   \> parameter delta used in fit (if negative parameter is frozen)\\
+MINIMUM   \> E   \> hard lower limit for parameter value\\
+BOTTOM    \> E   \> soft lower limit for parameter value\\
+TOP       \> E   \> soft upper limit for parameter value\\
+MAXIMUM   \> E   \> hard upper limit for parameter value\\
+NUMBVALS  \> J   \> the number of tabulated parameter values\\
+VALUE     \> nE  \> the tabulated parameter values (n is NUMBVALS)\\
+\end{tabbing}
+
+Neither METHOD or VALUE are set for the additional parameters. The six
+numbers in the INITIAL vector are the start, delta, low, bottom, top,
+and high parameter values.
+
+This extension should also include the standard OGIP keywords :
+
+\begin{tabbing}
+aaaaaaaaaaaaaaaaaaaaa\=bbbbbbbbbbbbbbbbbb\kill
+HDUCLASS             \> 'OGIP'           \\
+HDUCLAS1             \> 'XSPEC TABLE MODEL'    \\
+HDUCLAS2             \> 'PARAMETERS'    \\
+HDUVERS              \> '1.0.0'          \\
+\end{tabbing}
+
+\subsection{ENERGIES extension}
+
+There will be a BINTABLE extension called ENERGIES containing the
+energy bins. The columns ENERG\_LO and ENERG\_HI comprise the lower
+and upper energy of each spectral bin. Note that the bins must be
+contiguous (ie energ\_hi(i) = energ\_lo(i+1)).
+
+This extension should also include the standard OGIP keywords :
+
+\begin{tabbing}
+aaaaaaaaaaaaaaaaaaaaa\=bbbbbbbbbbbbbbbbbb\kill
+HDUCLASS             \> 'OGIP'           \\
+HDUCLAS1             \> 'XSPEC TABLE MODEL'    \\
+HDUCLAS2             \> 'ENERGIES'    \\
+HDUVERS              \> '1.0.0'          \\
+\end{tabbing}
+
+\subsection{SPECTRA extension}
+
+The grid of spectra appear in the last extension as a BINTABLE called
+SPECTRA. The first element in each row is a vector of interpolation 
+parameter values for that spectrum, the second is the spectrum, and the 
+3rd-(NADDPARM+2)th columns are the contributions due to the additional
+parameters. The parameter value column is PARAMVAL, the interpolated
+parameter column is INTPSPEC, and the additional parameter columns are
+ADDSPXXX. The spectra are ordered with the last parameter changing
+fastest.
+
+This extension should also include the standard OGIP keywords :
+
+\begin{tabbing}
+aaaaaaaaaaaaaaaaaaaaa\=bbbbbbbbbbbbbbbbbb\kill
+HDUCLASS             \> 'OGIP'           \\
+HDUCLAS1             \> 'XSPEC TABLE MODEL'    \\
+HDUCLAS2             \> 'MODEL SPECTRA'    \\
+HDUVERS              \> '1.0.0'          \\
+\end{tabbing}
+
+\section{The WFTBMD routine}
+
+Fortran and C subroutines are available to create an output file, write 
+the PARAMETERS and ENERGIES extensions, write the header for the 
+SPECTRA extension, then return with the output file open in the 
+correct place to start writing the tabulated spectra. These routine
+can be found in the HEAsoft source distribution as the files 
+\$HEADAS/../ftools/spectral/tables/wftbmd.\{f,c\}. The calling sequence for the
+Fortran subroutine is as follows...
+
+\begin{verbatim}
+      SUBROUTINE wftbmd(outfil, infile, modlnm, modunt, nintpm, naddpm,
+     &                  qrdshf, qaddtv, addnam, addivl, intnam, intivl, 
+     &                  intntb, intmth, maxtab, inttab, nenerg, energy, 
+     &                  ounit, ierr, status, contxt)
+
+      INTEGER nintpm, naddpm, maxtab, nenerg
+      INTEGER ounit, ierr, status
+      INTEGER intntb(nintpm), intmth(nintpm)
+      REAL addivl(6, naddpm), intivl(6, nintpm)
+      REAL inttab(maxtab, nintpm), energy(nenerg)
+      CHARACTER*(*) outfil, infile, modlnm, modunt, contxt
+      CHARACTER*(*) addnam(naddpm), intnam(nintpm)
+      LOGICAL qrdshf, qaddtv
+
+c Subroutine to open the FITS file and write out all the header information
+c down to the point of actually writing the model spectra. At this point
+c returns so that the main program can read and write one model spectrum at
+c a time.
+
+c Arguments :
+c    outfil      c*(*)     i: FITS filename
+c    infile      c*(*)     i: Name of original file
+c    modlnm      c*(*)     i: The name of the model
+c    modunt      c*(*)     i: The model units
+c    nintpm      i         i: The number of interpolation parameters
+c    naddpm      i         i: The number of additional parameters
+c    qrdshf      l         i: Redshift flag
+c    qaddtv      l         i: If true this is an additive table model
+c    addnam      c*(*)     i: Names of the additional parameters
+c    addivl      r         i: Initial values of the additional parameters
+c    intnam      c*(*)     i: Names of the interpolation parameters
+c    intivl      r         i: Initial values of the interpolation parameters
+c    intntb      i         i: Number of tabulated values for interpolation params.
+c    intmth      i         i: Interpolation method for interpolation parameters
+c    maxtab      i         i: The size of the first dimension in inttab
+c    inttab      r         i: The tabulated parameter values.
+c    nenerg      i         i: Number of energies (one more than spectral bins)
+c    energy      r         i: Energies
+c    ounit       i         o: The I/O unit in use.
+c    ierr        i         o: error
+c                             1 = failed to open FITS file
+c                             2 = failed to write primary header
+c                             3 = failed to write parameter extension
+c                             4 = failed to write energy extension
+c                             5 = failed to create model spectra extension
+c    status      i         o: FITSIO status
+c    contxt      c*(*)     o: Error diagnostic string
+
+c  HDUVERS1 1.0.0
+\end{verbatim}
+
+\section{Examples}
+
+There are two programs in the FTOOLS distribution that create XSPEC
+table models. These are {\bf mekal} and {\bf raysmith}.
+
+\subsection{A Raymond-Smith plasma emission model file}
+
+This file has one interpolation parameter, the temperature,
+and 14 additional parameters, the abundances of selected heavy 
+elements.
+
+\begin{verbatim}
+SIMPLE  =                    T / file does conform to FITS standard
+BITPIX  =                    8 / number of bits per data pixel
+NAXIS   =                    0 / number of data axes
+EXTEND  =                    T / FITS dataset may contain extensions
+COMMENT   FITS (Flexible Image Transport System) format defined in Astronomy and
+COMMENT   Astrophysics Supplement Series v44/p363, v44/p371, v73/p359, v73/p365.
+COMMENT   Contact the NASA Science Office of Standards and Technology for the
+COMMENT   FITS Definition document #100 and other FITS information.
+CONTENT = 'MODEL   '           / spectrum file contains time intervals and event
+FILENAME= '/local/home/genji/kaa/MODELFILES/raysmith.mod' / File that FITS was p
+ORIGIN  = 'NASA/GSFC'          / origin of FITS file
+MODLNAME= 'raym smith'         / Model name
+MODLUNIT= 'photons/cm^2/s'     / Model units
+REDSHIFT=                    T / If true then redshift will be included as a par
+ADDMODEL=                    T / If true then this is an additive table model
+HDUCLASS= 'OGIP    '           / format conforms to OGIP standard
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUVERS = '1.0.0   '           / version of format
+END
+ 
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / 8-bit bytes
+NAXIS   =                    2 / 2-dimensional binary table
+NAXIS1  =                  204 / width of table in bytes
+NAXIS2  =                   13 / number of rows in table
+PCOUNT  =                    0 / size of special data area
+GCOUNT  =                    1 / one data group (required keyword)
+TFIELDS =                   10 / number of fields in each row
+TTYPE1  = 'NAME    '           / label for field   1
+TFORM1  = '12A     '           / data format of the field: ASCII Character
+TTYPE2  = 'METHOD  '           / label for field   2
+TFORM2  = 'J       '           / data format of the field: 4-byte INTEGER
+TTYPE3  = 'INITIAL '           / label for field   3
+TFORM3  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE4  = 'DELTA   '           / label for field   4
+TFORM4  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE5  = 'MINIMUM '           / label for field   5
+TFORM5  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE6  = 'BOTTOM  '           / label for field   6
+TFORM6  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE7  = 'TOP     '           / label for field   7
+TFORM7  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE8  = 'MAXIMUM '           / label for field   8
+TFORM8  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE9  = 'NUMBVALS'           / label for field   9
+TFORM9  = 'J       '           / data format of the field: 4-byte INTEGER
+TTYPE10 = 'VALUE   '           / label for field  10
+TFORM10 = '40E     '           / data format of the field: 4-byte REAL
+EXTNAME = 'PARAMETERS'         / name of this binary table extension
+HDUCLASS= 'OGIP    '           / format conforms to OGIP standard
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUCLAS2= 'PARAMETERS'         / extension containing parameter info
+HDUVERS = '1.0.0   '           / version of format
+NINTPARM=                    1 / Number of interpolation parameters
+NADDPARM=                   12 / Number of additional parameters
+END
+ 
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / 8-bit bytes
+NAXIS   =                    2 / 2-dimensional binary table
+NAXIS1  =                    8 / width of table in bytes
+NAXIS2  =                 1600 / number of rows in table
+PCOUNT  =                    0 / size of special data area
+GCOUNT  =                    1 / one data group (required keyword)
+TFIELDS =                    2 / number of fields in each row
+TTYPE1  = 'ENERG_LO'           / label for field   1
+TFORM1  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE2  = 'ENERG_HI'           / label for field   2
+TFORM2  = 'E       '           / data format of the field: 4-byte REAL
+EXTNAME = 'ENERGIES'           / name of this binary table extension
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUCLAS2= 'ENERGIES'           / extension containing energy bin info
+HDUVERS = '1.0.0   '           / version of format
+END
+ 
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / 8-bit bytes
+NAXIS   =                    2 / 2-dimensional binary table
+NAXIS1  =                83204 / width of table in bytes
+NAXIS2  =                   40 / number of rows in table
+PCOUNT  =                    0 / size of special data area
+GCOUNT  =                    1 / one data group (required keyword)
+TFIELDS =                   14 / number of fields in each row
+TTYPE1  = 'PARAMVAL'           / label for field   1
+TFORM1  = '1E      '           / data format of the field: 4-byte REAL
+TTYPE2  = 'INTPSPEC'           / label for field   2
+TFORM2  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT2  = 'photons/cm^2/s'     / physical unit of field
+TTYPE3  = 'ADDSP001'           / label for field   3
+TFORM3  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT3  = 'photons/cm^2/s'     / physical unit of field
+TTYPE4  = 'ADDSP002'           / label for field   4
+TFORM4  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT4  = 'photons/cm^2/s'     / physical unit of field
+TTYPE5  = 'ADDSP003'           / label for field   5
+TFORM5  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT5  = 'photons/cm^2/s'     / physical unit of field
+TTYPE6  = 'ADDSP004'           / label for field   6
+TFORM6  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT6  = 'photons/cm^2/s'     / physical unit of field
+TTYPE7  = 'ADDSP005'           / label for field   7
+TFORM7  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT7  = 'photons/cm^2/s'     / physical unit of field
+TTYPE8  = 'ADDSP006'           / label for field   8
+TFORM8  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT8  = 'photons/cm^2/s'     / physical unit of field
+TTYPE9  = 'ADDSP007'           / label for field   9
+TFORM9  = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT9  = 'photons/cm^2/s'     / physical unit of field
+TTYPE10 = 'ADDSP008'           / label for field  10
+TFORM10 = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT10 = 'photons/cm^2/s'     / physical unit of field
+TTYPE11 = 'ADDSP009'           / label for field  11
+TFORM11 = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT11 = 'photons/cm^2/s'     / physical unit of field
+TTYPE12 = 'ADDSP010'           / label for field  12
+TFORM12 = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT12 = 'photons/cm^2/s'     / physical unit of field
+TTYPE13 = 'ADDSP011'           / label for field  13
+TFORM13 = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT13 = 'photons/cm^2/s'     / physical unit of field
+TTYPE14 = 'ADDSP012'           / label for field  14
+TFORM14 = '1600E   '           / data format of the field: 4-byte REAL
+TUNIT14 = 'photons/cm^2/s'     / physical unit of field
+EXTNAME = 'SPECTRA '           / name of this binary table extension
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUCLAS2= 'MODEL SPECTRA'      / extension containing model spectra
+HDUVERS = '1.0.0   '           / version of format
+END
+\end{verbatim}
+
+\subsection{A two-parameter table model}
+
+This file has two interpolation parameters and no additional
+parameters.
+
+\begin{verbatim}
+SIMPLE  =                    T / file does conform to FITS standard
+BITPIX  =                    8 / number of bits per data pixel
+NAXIS   =                    0 / number of data axes
+EXTEND  =                    T / FITS dataset may contain extensions
+COMMENT   FITS (Flexible Image Transport System) format defined in Astronomy and
+COMMENT   Astrophysics Supplement Series v44/p363, v44/p371, v73/p359, v73/p365.
+COMMENT   Contact the NASA Science Office of Standards and Technology for the
+COMMENT   FITS Definition document #100 and other FITS information.
+CONTENT = 'MODEL   '           / spectrum file contains time intervals and event
+FILENAME= '/home/lhea1/netzer/xmodels/slope07_c05l.at' / File that FITS was prod
+ORIGIN  = 'NASA/GSFC'          / origin of FITS file
+MODLNAME= 'model   '           / Model name
+MODLUNIT= 'photons/cm^2/s'     / Model units
+REDSHIFT=                    T / If true then redshift will be included as a par
+ADDMODEL=                    T / If true then this is an additive table model
+HDUCLASS= 'OGIP    '           / format conforms to OGIP standard
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUVERS = '1.0.0   '           / version of format
+END
+ 
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / 8-bit bytes
+NAXIS   =                    2 / 2-dimensional binary table
+NAXIS1  =                  124 / width of table in bytes
+NAXIS2  =                    2 / number of rows in table
+PCOUNT  =                    0 / size of special data area
+GCOUNT  =                    1 / one data group (required keyword)
+TFIELDS =                   10 / number of fields in each row
+TTYPE1  = 'NAME    '           / label for field   1
+TFORM1  = '12A     '           / data format of the field: ASCII Character
+TTYPE2  = 'METHOD  '           / label for field   2
+TFORM2  = 'J       '           / data format of the field: 4-byte INTEGER
+TTYPE3  = 'INITIAL '           / label for field   3
+TFORM3  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE4  = 'DELTA   '           / label for field   4
+TFORM4  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE5  = 'MINIMUM '           / label for field   5
+TFORM5  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE6  = 'BOTTOM  '           / label for field   6
+TFORM6  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE7  = 'TOP     '           / label for field   7
+TFORM7  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE8  = 'MAXIMUM '           / label for field   8
+TFORM8  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE9  = 'NUMBVALS'           / label for field   9
+TFORM9  = 'J       '           / data format of the field: 4-byte INTEGER
+TTYPE10 = 'VALUE   '           / label for field  10
+TFORM10 = '20E     '           / data format of the field: 4-byte REAL
+EXTNAME = 'PARAMETERS'         / name of this binary table extension
+HDUCLASS= 'OGIP    '           / format conforms to OGIP standard
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUCLAS2= 'PARAMETERS'         / extension containing parameter info
+HDUVERS = '1.0.0   '           / version of format
+NINTPARM=                    2 / Number of interpolation parameters
+NADDPARM=                    0 / Number of additional parameters
+END
+ 
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / 8-bit bytes
+NAXIS   =                    2 / 2-dimensional binary table
+NAXIS1  =                    8 / width of table in bytes
+NAXIS2  =                  209 / number of rows in table
+PCOUNT  =                    0 / size of special data area
+GCOUNT  =                    1 / one data group (required keyword)
+TFIELDS =                    2 / number of fields in each row
+TTYPE1  = 'ENERG_LO'           / label for field   1
+TFORM1  = 'E       '           / data format of the field: 4-byte REAL
+TTYPE2  = 'ENERG_HI'           / label for field   2
+TFORM2  = 'E       '           / data format of the field: 4-byte REAL
+EXTNAME = 'ENERGIES'           / name of this binary table extension
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUCLAS2= 'ENERGIES'           / extension containing energy bin info
+HDUVERS = '1.0.0   '           / version of format
+END
+ 
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / 8-bit bytes
+NAXIS   =                    2 / 2-dimensional binary table
+NAXIS1  =                  844 / width of table in bytes
+NAXIS2  =                  300 / number of rows in table
+More?[yes] 
+PCOUNT  =                    0 / size of special data area
+GCOUNT  =                    1 / one data group (required keyword)
+TFIELDS =                    2 / number of fields in each row
+TTYPE1  = 'PARAMVAL'           / label for field   1
+TFORM1  = '2E      '           / data format of the field: 4-byte REAL
+TTYPE2  = 'INTPSPEC'           / label for field   2
+TFORM2  = '209E    '           / data format of the field: 4-byte REAL
+TUNIT2  = 'photons/cm^2/s'     / physical unit of field
+EXTNAME = 'SPECTRA '           / name of this binary table extension
+HDUCLAS1= 'XSPEC TABLE MODEL'  / model spectra for XSPEC
+HDUCLAS2= 'MODEL SPECTRA'      / extension containing model spectra
+HDUVERS = '1.0.0   '           / version of format
+END
+\end{verbatim}
+
+\end{document}
+
+
+
+
+
+
+
+

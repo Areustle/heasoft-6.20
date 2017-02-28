@@ -1,0 +1,19 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_CXXTASK		= sdss2xsp
+
+HD_CXXTASK_SRC_cxx	= sdss2xsp.cxx
+
+HD_CXXFLAGS		= ${HD_STD_CXXFLAGS}
+
+HD_CXXLIBS		= ${HD_LFLAGS} -l${HEASP} -l${CCFITS} ${HD_STD_CXXLIBS}
+
+HD_INSTALL_TASKS	= ${HD_CXXTASK}
+
+HD_INSTALL_PFILES	= sdss2xsp.par
+
+HD_INSTALL_HELP		= sdss2xsp.html
+
+include ${HD_STD_MAKEFILE}

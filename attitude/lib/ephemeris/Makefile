@@ -1,0 +1,15 @@
+HD_COMPONENT_NAME	= attitude
+
+HD_COMPONENT_VERS	= 
+
+HD_LIBRARY_ROOT		= ephemeris
+
+HD_LIBRARY_SRC_c	= ephemeris.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+HD_INSTALL_HEADERS	= ephemeris.h
+
+include ${HD_STD_MAKEFILE}

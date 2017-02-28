@@ -1,0 +1,216 @@
+#! perl
+
+# $Source: /headas/headas/swift/gen/tasks/swiftround/swiftround,v $
+# $Revision: 1.1 $
+# $Date: 2007/11/01 22:48:11 $
+#
+#
+# $Log: swiftround,v $
+# Revision 1.1  2007/11/01 22:48:11  rwiegand
+# Tool to perform rounding on images in FITS files.
+#
+
+
+use strict;
+
+package Swift::Round;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+
+
+# main
+{
+	my $task = __PACKAGE__->new(version => '1.0');
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			roundInput
+			finalize
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file round=real bitpix=integer
+				force=boolean checksum=boolean cleanup=boolean
+				history=boolean clobber=boolean chatter=integer
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	my $path = $args->{outfile};
+	if (-e $path) {
+		if (not $args->{clobberFlag}) {
+			$self->error(BAD_OUTPUT,
+					"$path exists and clobber not set");
+		}
+		else {
+			if (unlink($path)) {
+				$self->error(BAD_OUTPUT,
+						"$path exists and unable to clobber [$!]");
+			}
+		}
+	}
+
+}
+
+
+
+sub roundInput
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $fits = SimpleFITS->readonly($args->{infile});
+	if (my $status = $fits->status) {
+		$self->error(BAD_INPUT, "unable to open $args->{infile} [$status]");
+		return;
+	}
+
+	my $factor = $args->{round};
+	$self->{roundfile} = $self->temporary('round');
+	my $keycol0 = "[col #SWROUND=$factor]";
+
+	my $nhdu;
+	$fits->nhdu($nhdu);
+	for (my $hdu0 = 0; $self->isValid and $hdu0 < $nhdu; ++$hdu0) {
+
+		$fits->move($hdu0 + 1);
+
+		# determine whether this HDU is an image or not
+		my $header;
+		$fits->readheader($header, clean => 1);
+
+		my $tmpfile;
+		my $keycol = '';
+
+		if ($self->shouldRound($header)) {
+			$tmpfile = $self->temporary('round');
+			$keycol = $keycol0;
+			my $command = $self->buildCommand('ftpixcalc',
+					outfile => $tmpfile,
+					expr => "round(a/$factor)*$factor",
+					a => "$args->{infile}+$hdu0",
+					b => 'NONE',
+					bitpix => $args->{bitpix},
+					history => 'NO',
+					);
+			$self->shell($command);
+		}
+		else {
+			$tmpfile = "$args->{infile}+$hdu0";
+		}
+
+		if (not -e $self->{roundfile}) {
+			my $command = $self->buildCommand('ftcopy',
+					infile => $tmpfile . $keycol,
+					outfile => $self->{roundfile},
+					copyall => 'no',
+					);
+			$self->shell($command);
+		}
+		else {
+			my $command = $self->buildCommand('ftappend',
+					infile => $tmpfile . $keycol,
+					outfile => $self->{roundfile},
+					);
+			$self->shell($command);
+		}
+	}
+}
+
+
+sub shouldRound
+{
+	my ($self, $header) = @_;
+
+	my $args = $self->args;
+
+	my $x = $header->{XTENSION} || 'IMAGE';
+
+	if ($x eq 'IMAGE') {
+		if ($header->{NAXIS} > 0) {
+			if ($args->{forceFlag}) {
+				return 1;
+			}
+			elsif (exists($header->{SWROUND})) {
+				return 0;
+			}
+			else {
+				return 1;
+			}
+		}
+		else {
+			return 0;
+		}
+	}
+	else {
+		# not an IMAGE
+		return 0;
+	}
+}
+
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		$self->putParameterHistory($self->{roundfile});
+	}
+
+	if ($self->isValid and $args->{checksumFlag}) {
+
+		my $command = $self->buildCommand('ftchecksum',
+				infile => $self->{roundfile},
+				update => 'yes',
+				datasum => 'yes',
+				);
+		$self->shell($command . ' 2>&1', { report => 4 });
+	}
+
+	if ($self->isValid) {
+
+		my $output = $args->{outfile};
+
+		rename($self->{roundfile}, $output)
+			or $self->error(BAD_OUTPUT,
+					"unable to rename $self->{roundfile} to $output [$!]");
+	}
+
+	$self->addTemporary($self->{roundfile})
+		if $self->{roundfile};
+
+}
+
+

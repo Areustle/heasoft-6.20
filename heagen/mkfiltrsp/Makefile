@@ -1,0 +1,19 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_CXXTASK		= mkfiltrsp
+
+HD_CXXTASK_SRC_cxx	= mkfiltrsp.cxx
+
+HD_CXXFLAGS		= ${HD_STD_CXXFLAGS}
+
+HD_CXXLIBS		= ${HD_LFLAGS} -l${HEASP} -l${CCFITS} ${HD_STD_CXXLIBS}
+
+HD_INSTALL_TASKS	= ${HD_CXXTASK}
+
+HD_INSTALL_PFILES	= mkfiltrsp.par
+
+HD_INSTALL_HELP		= mkfiltrsp.html
+
+include ${HD_STD_MAKEFILE}

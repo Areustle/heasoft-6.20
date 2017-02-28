@@ -1,0 +1,387 @@
+#!/usr/bin/perl
+#
+#  ut_xrtpipeline_im
+#
+#
+#
+# Changes:
+#           0.1.0 - 04/08/2004 - CS First working version
+#           0.1.1 - 05/08/2004 - FT Adapted for xrtpipeline task
+#           0.1.2 - 06/10/2004 - FT Bug fixed on loops for checks
+#                                   Changed CALDB 'badpix' and 'onboard', region and
+#                                   evtrange CALDB file names 
+#           0.1.3 - 10/12/2004 - FT updated for Build 11 support
+#           0.1.4 - 13/12/2004 - BS Bug fixed
+#           0.1.5 - 13/01/2005 - BS Deleted 'caldbdir' input parameter
+#           0.1.6 - 31/01/2005 - FT Deleted 'ledfile' input parameter from xrtpipeline call
+#                                   added 'pntra','pntdec','pntroll'
+#           0.1.7 - 16/02/2005 - BS Added 'inarffile' input par
+#           0.1.8 - 22/03/2005 - FT Updated for Build 13
+#           0.1.9 - 24/03/2005 - FT xspec -> xspec11
+#           0.2.0 - 31/05/2005 - FT added trfile input parameter
+#                              - changed 'aux' -> 'auxil'
+#                              - added 'pdbiasdiff' input parameter
+#                              - changed 'pdbiasth' value from -99 to 300
+#           0.2.1 - 07/06/2005 - FT added 'aspectgtiexpr' input parameter
+#           0.2.2 - 30/06/2005 - BS added 'phas1thr', 'pcmaxtemp', 'wtbiasnevents', wtbiasdiff',
+#                                'imbiasdiff' and 'immaxtemp'
+#                              - Replaced 'inarffile' with 'pcinarffile, 'wtinarffile'
+#                                and 'pdinarffile'
+#                              - Added check on 'xrtwtcorr' executable
+#           0.2.3 - 28/10/2005 - Added build 17 new input parameters
+#           0.2.4 - 10/03/2006 - Added new input parameters:
+#                                'pccorrectlc', 'colfile' and mkfgtiexpr
+#           0.2.5 - 08/11/2006 - Added new input parameters:
+#                                'wtbiasmode' and 'wtnframe'
+#           0.2.6 - 09/02/2007 - Added new input parameters:
+#                                'wtbiasth' and 'wtnpixels'
+#           0.2.7 - 09/03/2007 - Added new input parameter 'usecleanmap'
+#                              - changed 'iterate' value from no to yes
+#                              - Added new input parameter 'acsscreen'
+#           0.2.8 - 03/04/2007 - Removed 'usecleanmap' for xrthotpix call
+#                              - Added 'gradeiterate' for xrthotpix call
+#                              - Changed 'pccorrectlc' parameter to 'correctlc'
+#           0.2.9 - 12/07/2007 - Added 'thrfile' input parameter
+#           0.3.0 - 14/11/2007 - Added 'enfile' input parameter
+#                              - Changed Dataset
+#                              - Removed 'tprec' input parameter
+#           0.3.1 - 06/10/2008 - Added 'lcwtnframe' and 'lcpcnframe' input parameters
+#           0.3.2 - 12/03/2009 - Added 'picorrtype' input parameter
+#           0.3.3 - 30/04/2009 - Added 'pcphasconffile' input parameter
+#           0.3.4 - 21/07/2009 - Replaced xspec11 with xspec
+#           0.3.5 - 19/05/2010 - Added 'stattfile' and 'stwtbinsize' input parameters
+#           0.3.6 - 13/10/2016 - Remove parameter 'applytamcorr'
+#                              - Remove parameter 'tamfile'
+#                              - Remove parameter 'tamrefx1'
+#                              - Remove parameter 'tamrefy1'
+#                              - Remove parameter 'tamrefx2'
+#                              - Remove parameter 'tamrefy2'
+#                              - Remove parameter 'attcorrout'
+
+
+use strict;
+use ut_xrtobj;
+
+# main
+{
+# Object Istances
+    my $ut = ut_xrtobj->new(
+			    name    => "xrtpipeline",
+			    utname    => "ut_xrtpipeline_im",
+			    version => "0.3.6",
+			    );
+    
+# Set Common Parameter
+
+    my $input = $ut->getParam("input_dir");
+    my $output = $ut->getParam("output_dir") . "/" . $ut->getParam("utname");
+    $ut->setParam("output_dir",$output);
+    my $chat = $ut->getParam("chatter");
+    my $clobber = $ut->getParam("clobber");
+
+
+    my $Split = 40;
+    my $Randomize = "no";
+    my $headas = $ENV{'HEADAS'};
+    my $display="no";
+# Environment Setting
+   $ENV{HEADASNOQUERY} = 0;
+
+
+# Environment check
+    my @chk_env = (
+		   "LHEASOFT", 
+		   "HEADAS",
+                   "CALDB"
+		   );
+    $ut->checkEnvironment(@chk_env)
+        if $ut->isValid;
+    
+    my $ArchDir="ut_xrtpipeline/00132247000_im";
+    
+    
+# I/O Directory Check
+    $ut->checkIODirectory()
+        if $ut->isValid;
+
+# Check Input Files Check
+    my @chk_inp = (
+		   "$input/$ArchDir/auxil/sw00132247000sat.fits.gz",
+		   "$input/$ArchDir/xrt/image_rw/sw00132247000xim_rw.img.gz",
+		   "$input/$ArchDir/xrt/hk/sw00132247000xhd.hk.gz",
+		   );
+
+    $ut->checkExist("Input", @chk_inp)
+	if $ut->isValid;
+    
+# Prototype Check
+   my @chk_proto = (
+#		      "$input/$ArchDir/prototypes/ut_xrtpipeline_im_s.attorb",
+#		      "$input/$ArchDir/prototypes/ut_xrtpipeline_im_s.mkf",
+		      "$input/$ArchDir/prototypes/ut_xrtpipeline_im_xhdtc.hk",
+		      "$input/$ArchDir/prototypes/ut_xrtpipeline_im_ximrwclbp.fits",
+		      "$input/$ArchDir/prototypes/ut_xrtpipeline_im_ximrwcl.img",
+		      "$input/$ArchDir/prototypes/ut_xrtpipeline_im_ximsk.img",
+		    );
+
+    my @chk_output = (
+#		      "$output/sw00132247000s.attorb",
+#		      "$output/sw00132247000s.mkf",
+		      "$output/sw00132247000xhdtc.hk",
+		      "$output/sw00132247000xim_rwclbp.fits",
+		      "$output/sw00132247000xim_rwcl.img",
+		      "$output/sw00132247000xim_sk.img",
+		      );
+
+
+#    $ut->checkExist("Prototype", @chk_proto)
+#	 if $ut->isValid;
+
+# Executables Files Check
+    my @chk_exe = (
+		   "xrtpipeline", 
+		   "xrtflagpix", 
+		   "xrtpcgrade", 
+		   "xrtcalcpi",
+		   "xrtfilter",
+		   "xrtscreen",
+		   "xrttimetag",
+		   "xrtevtrec",
+		   "xrtimage",
+		   "xrtpdcorr",
+		   "xrtwtcorr",
+		   "xrtproducts",
+		   "xrthkproc",
+		   "xrttam",
+		   "det2att",
+		   "attcombine",
+		   "xrtmkarf",
+		   "prefilter",
+		   "makefilter",
+		   "maketime",
+		   "coordinator",
+		   "fselect",
+		   "pquery2",
+		   "fkeypar",
+		   "xselect",
+		   "xspec",
+		   "swiftxform",
+		   "getxform",
+		   "imagetrans",
+		   "getwcs",
+		   "ftcopy",
+		   "xrtpipeline",
+		   "fverify", 
+		   "pquery2",
+		   "quzcif",
+		   "fparkey",
+		   "ximage",
+		   "fhisto",
+		   "fplot",
+		   "ftchecksum",
+		   "ftdiff",
+		   "xrtversion",
+		   );
+
+    $ut->checkExecutable(@chk_exe)
+        if $ut->isValid;
+
+# Task Files Check
+    my %par_task = (
+
+		    indir       => "$input/$ArchDir",
+		    outdir      => $output,
+		    steminputs  => "sw00132247000",
+		    stemoutputs => "DEFAULT",
+		    obsmodescreen => "no",
+		    datamode    => "ALL",
+		    clobber     => $clobber,
+		    chatter     => $chat,
+		    history     => "yes",
+		    entrystage  => 1,
+		    exitstage   => 3,
+		    evtfilesfromarchive => "yes",
+		    createmkffile       => "yes",
+		    cleanup     => "yes",
+		    cleancols   => "yes",
+		    pntra       => "POINT",
+		    pntdec      => "POINT",
+		    pntroll     => "POINT",
+		    thrfile     => "NONE",
+		    extractproducts => "yes",
+		    bpfile      => "CALDB",
+		    bptable     => "CALDB",
+		    userbpfile  => "NONE",
+		    overstatus  => "yes",
+		    srcfile     => "CALDB",
+		    phas1thr    => 80,
+		    pcmaxtemp   => 0.0,
+		    pcsplit     => $Split,
+		    gradefile   => "CALDB",
+		    ascagrade     => "no",
+		    runcoordinator => "yes",
+		    eventext       => "EVENTS",
+		    timecol        => "TIME",
+		    attfile        => "DEFAULT",
+		    stattfile      => "DEFAULT",
+		    teldef         => "CALDB",
+		    scteldef       => "CALDB",
+		    aberration     => "no",
+		    attinterpol    => "no",
+		    follow_sun     => "yes",
+		    randomizecoordinator => $Randomize,
+		    seedcoordinator      => -1956,
+		    timemargin           => 32.,
+		    pcgainfile       => "CALDB",
+		    wtgainfile       => "CALDB",
+		    pdgainfile       => "CALDB",
+		    seedxrtcalcpi  => -1457,
+		    randomizexrtcalcpi => $Randomize,
+		    pcgainnom      => -99.9,
+		    wtgainnom      => -99.9,
+		    pdgainnom      => -99.9,
+		    pcoffset       => 0.0,
+		    wtoffset       => 0.0,
+		    pdoffset       => 0.0,
+		    picorrtype     => "NOMINAL",
+		    savepinom      => "no",
+		    hdfile         => "DEFAULT",
+		    trfile         => "none",
+		    outfile        => "DEFAULT",
+		    srcra          => "POINT",
+		    srcdec         => "POINT",
+		    outcols        => "CALDB",
+		    orbmode        => "TLE_TEXT2",
+		    orbfile        => "$headas/refdata/TLE_dummy.fits",
+		    leapfile       => "$headas/refdata/leapsec.fits",
+		    rigfile        => "$headas/refdata/rigidity.data",
+		    origin         => "NASA/GSFC",
+		    interval       => 1,
+		    enfile         => "DEFAULT",
+		    mkfconfigfile  => "CALDB",	
+		    configfile     => "NONE",
+		    mkffile        => "DEFAULT",
+#		    tprec          => 0.001,
+		    gtiext         => "GTI",
+		    createattgti   => "no",
+		    createinstrgti => "yes",
+		    usrgtifile     => "NONE",
+		    hkrangefile    => "CALDB",
+		    gtiexpr        => "NONE",
+		    mkfgtiexpr        => "NONE",
+		    evtrangefile   => "CALDB",
+		    exprpcgrade    => "NONE",
+		    exprwtgrade    => "NONE",
+		    exprpdgrade    => "NONE",
+		    evtgtiscreen   => "yes",
+		    evtscreen      => "yes",
+		    acsscreen      => "no",
+		    exprpc         => "NONE",
+		    exprwt         => "NONE",
+		    exprpd         => "NONE",
+		    npixels        => 1850,
+		    percent        => 50,
+		    usesrcdettimetag   => "no",
+		    usesrcdethkproc    => "yes",
+		    srcdetx            => "300",
+		    srcdety            => "300",
+		    pdbiasnevents  => 20,
+		    pdbiasnclip    => 1,
+		    pdbiasnsigma   => 2,
+		    pdbiasth       => 300,
+		    pdbiasdiff     => 20,
+		    biaspdfile     => "CALDB",
+		    pdbiasmethod   => "SG",
+		    pdbiasfittol   => "1.E-8",
+		    pdbias         => -99,
+		    pdbiasnframe   => 5,
+		    wtbiasnevents  => 20,
+		    wtbiasdiff     => 4095,
+		    wtnframe       => 20,
+		    wtbiasmode     => "M20P",
+		    wtbiasth       => 200,
+		    wtnpixels      => 20,
+		    pcphasconffile => "CALDB",
+		    imcleansrc     => "yes",
+		    biasimfile     => "CALDB",
+		    imbias         => -99,
+		    imbiasdiff     => 20,
+		    immaxtemp      => 0.0,
+		    wtevent        => $Split,
+		    wtsplit        => $Split,
+		    pdevent        => $Split,
+		    pdsplit        => $Split,
+		    addcol         => "yes",
+		    delnull        => "yes",
+		    flagneigh      => "yes",
+		    pcregionfile   => "DEFAULT",
+		    wtregionfile   => "DEFAULT",
+		    pcbinsize      => 2.5,
+		    wtbinsize      => 1.0,
+		    stwtbinsize    => 0.1,
+		    pdbinsize      => 1.0,
+		    pcrmffile      => "CALDB",
+		    wtrmffile      => "CALDB",
+		    pdrmffile      => "CALDB",
+		    mirfile        => "CALDB",
+		    pcinarffile    => "CALDB",
+		    wtinarffile    => "CALDB",
+		    pdinarffile    => "CALDB",
+		    transmfile     => "CALDB",
+		    psffile        => "CALDB",
+		    vigfile        => "CALDB",
+		    psfflag        => "yes",
+		    display        => $display,
+		    plotdevice     => "gif",
+		    cleanbp        => "yes",
+		    subbias        => "yes",
+		    imgtiscreen    => "no ",
+		    runxrthotpix   => "yes",
+		    gradeiterate    => "yes",
+		    cellsize       => 5,
+		    impfac         => 1000.0,
+		    logpos         => -5.3,
+		    bthresh        => 3,
+		    phamin         => 0,
+		    phamax         => 4095,
+		    cleanflick     => "yes",
+		    iterate        => "yes",
+		    hotneigh       => "no",
+		    method         => "AREA",
+		    zeronulls      => "yes",
+		    runaspect      => "yes",
+		    aspectgtiexpr  => "none",
+		    createexpomap  => "no",
+		    useexpomap     => "no",
+		    vigflag        => "no",
+		    energy         => 1.5,
+		    colfile        => "CALDB",
+		    correctlc      => "no",
+		    lcwtnframe     => 10,
+		    lcpcnframe     => 5,
+		    mkfgtiexpr     => "NONE",
+		    );
+    
+    $ut->runTask(%par_task)
+	if $ut->isValid;
+
+    if($ut->isValid)
+    {    
+	
+# fverify
+
+	for (my $i = 0; $i <= $#chk_output; $i++) {
+	    $ut->fverify($chk_output[$i]);
+	}
+
+	
+	
+# ftdiff
+	for (my $i = 0; $i <= $#chk_output; $i++) {
+	    $ut->ftdiff($chk_output[$i],
+			$chk_proto[$i] );
+	}
+    }
+
+    $ut->delete();
+}

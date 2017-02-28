@@ -1,0 +1,2605 @@
+#! /usr1/local/bin/perl5
+use Getopt::Std;
+$version = "0.51";
+
+# The screening script for asca data
+@version_history = (
+"     Version    Date      Author     Reason                                ",
+"----------------------------------------------------------                 ",
+"       .10    07/02/94  J. Ingham    Original                              ",
+"       .20    08/03/94  J. Ingham    Fixed grade selection                 ",
+"                                     Added -m and -d flags                 ",
+"       .21    08/16/94  J. Ingham    Added T_DY_NT and T_SAA to obscat sel ",
+"                                     Added useLowBR                        ",
+"       .22    08/28/94  J. Ingham    removed grep(/${xselses}/,\@what)      ",
+"                                     the {'s caused a crash under OSF      ",
+"       .30    08/28/94  J. Ingham    Added TKASCASCREEN                    ",
+"       .31    09/02/94  J. Ingham    \$| = 1 for WISH for ascascreen on Dec ",
+"       .32    09/08/94  J. Ingham    Preserve Class Bindings For Listbox B1",
+"                                     and Entry in Get_a_number             ",
+"       .33    09/20/94  J. Ingham    Split out the TK and CL interfaces    ",
+"                                     Use CL options for TKASCASCREEN       ",
+"                                     Added Grade Selection for FAST mode   ",
+"                                     Added free choice of Bit Rates        ",
+"                                     Filter by Bit Rate BEFORE mode selection",
+"                                     Run grade selection AFTER sisclean    ",
+"                                     Get MKFilter version Number           ",
+"                                     Lots of stuff to get Fonts and sizes right",
+"       .34    10/06/94 J. Ingham     New routine for getting ccdThresh     ",
+"                                     CCDPOW -> CCDLST in Minor Mode display",
+"       .35    01/30/95 J. Ingham     Search for WISH along users path      ",
+"                                     Don't clear the region for GIS        ",
+"                                     Some debugging stuff (-x & -c flags)  ",
+"       .36    03/27/95 J. Ingham     Added -e flag, & support for processing products",
+"       .37    04/03/95 J. Ingham     Added the RBM_CONT parameter.",
+"                                     Added Support for the ad*.unf files",
+"       .38    09/04/96 K. Mukai      Modified stdout messages for FAST mode",
+"                                     based on new information from ISAS",
+"       .39    01/23/97 L. Brown      Changed default thresholds for T_DY_NT ",
+"                                     and T_SAA.  Made unf the default file ",
+"                                     extension.  Pointed ascascreen at the",
+"                                     FTOOLS version of itkwish by default.",
+"       .40    03/10/97 Srilal W.     Changed standard region selection      ",
+"                                     (also, cut-off region is now an ellipse ",
+"       .41    05/08/97 L. Brown     Fixed to use New Regime locations of ",
+"                                     $FTOOLS/itkwish and refdata. ",
+"       .42    05/31/97 L. Brown/K. Ebisawa  New defaults for GIS screening  ",
+"                                     added  (details in CVS log)          ",
+"                                     NOTE: version .42 shipped with FTOOLS4.0",
+"                                     but was labeled .39 ",
+"       .43    07/07/97 K. Arnaud     Fixed bug that caused the filtering ",
+"                                     to be lost when reading a single input",
+"                                     file ",
+"       .44    12/04/97 K. Arnaud     Updated for xselect 1.4 and improved",
+"                                     help",  
+"       .45    02/27/98 P. Wilson     Added ability to calculated SIS PIXL",
+"                                     thresholds, and simplified handling of",
+"                                     CCDLST",
+"       .46    06/17/98 P. Wilson     Updated ffilecat filename handling to",
+"                                     expect and remove the +0 at end of name",
+"       .47    06/26/98 P. Wilson     Added -f option for specifying extra",
+"                                     file filtering conditions",
+"       .48    06/30/98 P. Wilson     Added -a option for specifying that",
+"                                     all minor modes be processed together",
+"       .49    07/06/98 P. Wilson     Added clobber flag, !, for session name",
+"       .50    07/20/98 P. Wilson     Use new gtifilter() function in fselect",
+"                                     instead of fdump'ing and expanding it",
+"                                     in PIXL calc_thresh function",
+"       .51    02/25/99 K. Arnaud     Added xselect command to force detector",
+"                                     coordinates",
+"----------------------------------------------------------                 ");
+#
+
+# Are we on VMS?
+if ($ENV{'HOME'} =~ /\$.*:\[.*\]|\[.*\]/) {
+    $VMS = 1;
+#    print "We are on VMS\n";
+}
+else {
+    $VMS = 0;
+#    print "We are on UNIX\n";
+}
+
+
+# This pushes the directory where the executible is stored into the 
+# search path for the require statement.
+# On some systems, $0 contains the full path, 
+if ( $0 =~ /\// ) {
+    $0 =~ m#^(.*)/([^/]+)$#;
+    $execdir = $1;
+    ($programName = $2) =~ tr/a-z/A-Z/;
+}
+
+# Otherwise, use which to find it...  Be careful, since if anything in the
+# users .cshrc prints to the screen, it will show up here.
+
+else {
+    @fromwhich = `which $0`;
+    ($execdir = $fromwhich[$#fromwhich]) =~ m#^(.*)/([^/]+)$#;
+    $execdir = $1;
+    ($programName = $2) =~ tr/a-z/A-Z/;
+}
+
+$programName =~ tr/\n//;
+
+push(@INC,$execdir);
+
+require "utils.pl";
+
+#
+# Are we running tkascascreen, or ascascreen:
+#
+
+if ( $0 =~ /tkascascreen$/ ) {
+    $useTK = 1;
+    require 'tkinterface.pl';
+}
+else {
+    $useTK = 0;
+    require 'interface.pl';
+}
+#
+# Empty the xsel.log file, so that you will not append to it...
+#
+unlink('xsel.log');
+
+# Read in the options:
+getopts('acde:f:hmqvw:x:');
+
+#Test for the file extension...
+
+if ( defined $opt_e ) {
+    $exten = $opt_e;
+} else {
+    $exten = 'unf';
+}
+
+#============================================================#
+# These are some useful defines:
+
+@instruments = ('SIS0','SIS1','GIS2','GIS3');
+
+@filekeys = ('SIS0 - FAINT',   
+	     'SIS0 - BRIGHT',  
+	     'SIS0 - BRIGHT2',  
+	     'SIS0 - FAST',    
+	     'SIS1 - FAINT',   
+	     'SIS1 - BRIGHT',  
+	     'SIS1 - BRIGHT2',  
+	     'SIS1 - FAST',    
+	     'GIS2 - PH',      
+	     'GIS2 - MPC',     
+	     'GIS3 - PH',      
+	     'GIS3 - MPC' );
+
+%filexpr =('SIS0 - FAINT',   '^(ft|ad).*[sS]0.{3}01[HhMmLl]\\.', 
+	   'SIS0 - BRIGHT',  '^(ft|ad).*[sS]0.{3}02[HhMmLl]\\.', 
+	   'SIS0 - BRIGHT2',  '^(ft|ad).*[sS]0.{3}12[HhMmLl]\\.', 
+	   'SIS0 - FAST',    '^(ft|ad).*[sS]0.{3}03[HhMmLl]\\.', 
+	   'SIS1 - FAINT',   '^(ft|ad).*[sS]1.{3}01[HhMmLl]\\.', 
+	   'SIS1 - BRIGHT',  '^(ft|ad).*[sS]1.{3}02[HhMmLl]\\.', 
+	   'SIS1 - BRIGHT2',  '^(ft|ad).*[sS]1.{3}12[HhMmLl]\\.', 
+	   'SIS1 - FAST',    '^(ft|ad).*[sS]1.{3}03[HhMmLl]\\.', 
+	   'GIS2 - PH',      '^(ft|ad).*[gG]2.{3}70[HhMmLl]\\.', 
+	   'GIS2 - MPC',     '^(ft|ad).*[gG]2.{3}71[HhMmLl]\\.',
+	   'GIS3 - PH',      '^(ft|ad).*[gG]3.{3}70[HhMmLl]\\.',
+	   'GIS3 - MPC',     '^(ft|ad).*[gG]3.{3}71[HhMmLl]\\.'
+	    );
+
+%stdcatlist = ('SIS0', 'ONTIME NEVENTS BIT_RATE',
+	       'SIS1', 'ONTIME NEVENTS BIT_RATE',
+	       'GIS2', 'ONTIME NEVENTS HV_RED HVH_LVL HVL_LVL BIT_RATE',
+	       'GIS3', 'ONTIME NEVENTS HV_RED HVH_LVL HVL_LVL BIT_RATE');
+@sis0_obslist = ('S0CCDMOD','S0CCDLST','S0_ARENA');
+@sis0_obstype = ('','\'','');
+@sis1_obslist = ('S1CCDMOD','S1CCDLST','S1_ARENA');
+@sis1_obstype = ('','\'','');
+@gis2_obslist = ('RAWXBINS','RISEBINS',
+		 'TIMEBINS','PHA_BINS','POS_DET');
+@gis2_obstype = ('','','','','\'');
+@gis3_obslist = ('RAWXBINS','RISEBINS',
+		 'TIMEBINS','PHA_BINS','POS_DET');
+@gis3_obstype = ('','','','','\'');
+@strformat = ( "\%8s","\%8s","\%8s","\%8s","\%8s",
+	      "\%8s","\%8s");
+%catsel = ( 'SIS0' , 'ONTIME>100&&NEVENTS>0',
+	   'SIS1' , 'ONTIME>100&&NEVENTS>0',
+	   'GIS2', 'ONTIME>100&&NEVENTS>0&&HV_RED==\'OFF\''.
+	   '&&HVH_LVL==3&&HVL_LVL==4' ,
+	   'GIS3', 'ONTIME>100&&NEVENTS>0&&HV_RED==\'OFF\''.
+	   '&&HVH_LVL==3&&HVL_LVL==4' );
+push(@strformat,@strformat);
+%catlist  = ('SIS0 - FAINT', join(" ",@sis0_obslist),   
+	     'SIS0 - BRIGHT', join(" ",@sis0_obslist),  
+	     'SIS0 - BRIGHT2', join(" ",@sis0_obslist),
+	     'SIS0 - FAST', 
+	     "S0CCDMOD S0CCDLST S0_ARENA S0_ARIO0 S0_ARIO1 S0_ARIO2 S0_ARIO3",
+            'SIS1 - FAINT',  join(" ",@sis1_obslist),   
+	     'SIS1 - BRIGHT',  join(" ",@sis1_obslist),  
+	     'SIS1 - BRIGHT2',  join(" ",@sis1_obslist),
+	     'SIS1 - FAST', 
+	     "S1CCDMOD S1CCDLST S1_ARENA S1_ARIO0 S1_ARIO1 S1_ARIO2 S1_ARIO3",
+	     'GIS2 - PH',  join(" ",@gis2_obslist),     
+	     'GIS2 - MPC', 'TIMEBINS PHA_BINS',     
+	     'GIS3 - PH',  join(" ",@gis3_obslist),     
+	     'GIS3 - MPC' , 'TIMEBINS PHA_BINS' 
+	     );
+%catformat  = ('SIS0 - FAINT',  join(" ",@strformat[0..2])."\n",
+	       'SIS0 - BRIGHT', join(" ",@strformat[0..2])."\n",
+	       'SIS0 - BRIGHT2', join(" ",@strformat[0..2])."\n",
+	       'SIS0 - FAST',   join(" ",@strformat[0..6])."\n",
+	       'SIS1 - FAINT',  join(" ",@strformat[0..2])."\n", 
+	       'SIS1 - BRIGHT', join(" ",@strformat[0..2])."\n", 
+	       'SIS1 - BRIGHT2', join(" ",@strformat[0..2])."\n", 
+	       'SIS1 - FAST',   join(" ",@strformat[0..6])."\n", 
+	       'GIS2 - PH',     join(" ",@strformat[0..4])."\n",
+	       'GIS2 - MPC',   join(" ",@strformat[0..1])."\n",
+	       'GIS3 - PH',    join(" ",@strformat[0..4])."\n",
+	       'GIS3 - MPC' ,  join(" ",@strformat[0..1])."\n"
+	       );
+
+# End of defines
+#============================================================
+
+# Set $pause to 0, then only pause before GatherResponses  
+# if we get some output 
+
+$pause = 0;
+
+# Set the Bit Rates to 0:
+
+$BitRate{'HIGH'} = $BitRate{'LOW'} = $BitRate{'MEDIUM'} = 0;
+
+# If we are not using TK, we have to fake up a few things...
+
+if ( !$useTK ) {
+    $endQuote = "";
+    open(WISH,">&STDOUT")|| die "Unable to dup STDOUT\n";
+
+# STDOUT and WISH are properly synched on the SUN, but not on the Dec...
+# So...
+    select WISH;
+    $| = 1;
+    select STDOUT;
+}
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+if ( defined $opt_x ) {
+    print "This will all go to the file $opt_x, you will have to ^C out.\n";
+}
+
+$defaults = 0;
+$most_events = 0;
+$all_events = 0;
+
+if ( defined $opt_q ) {
+    $writeonly = 1;
+    &print_text("\nOkay, I'll only write the xco file\n");   
+    &print_text( "To use it, say: ");                      
+    &print_text( "xselect \@output_root.xco\n\n");
+}
+if (defined $opt_m && defined $opt_a) {
+    die "\nCannot simultaneously choose ALL and MOST events.\n" ;
+}
+if (defined $opt_m ) {
+    &print_text( "\nI will choose the minor mode with the most events.\n");
+    $most_events = 1;
+}
+if (defined $opt_a ) {
+    &print_text( "\nI will choose all the minor modes.\n");
+    $all_events = 1;
+}
+if (defined $opt_d ) {
+    &print_text( "\nOkay, I will use the defaults.\n");
+    $defaults = 1;
+}
+if ( defined $opt_v ) {
+    print "           --- $programName V.$version ---\n";
+    print join("\n",@version_history),"\n";
+    exit;
+}
+if ( defined $opt_w ) {
+    $wishbin = $opt_w;
+    if ( -e $wishbin && -x $wishbin ) {
+	print "Got wish at $wishbin\n";
+    }
+    else {
+	die "Could not find your wish shell at $wishbin.\n";
+    }
+}
+if ( defined $opt_h  ) {
+    print <<EOHELP1;
+    
+$programName V.$version 
+
+USAGE:
+      ascascreen -[adefhmqvw] datadir instru datamode session bitrates
+
+EXPLANATION:
+
+Ascascreen performs the basic cleaning for the unscreened (ad*.unf) 
+ASCA science files. It can also operate on the raw (ft*.fits) files 
+if the "-e fits" argument is given.
+
+Ascascreen will also give a listing of the instruments and datamodes 
+that are present in the data directory. 
+
+FLAGS:
+
+   -a  -  Use all the minor modes found
+   -d  -  All values will be set at their defaults.
+   -e  -  Set the file name extension to use
+   -f  -  Use the supplied boolean expression for file selection
+   -h  -  Gives this help.
+   -m  -  Uses the minor mode with the Most events automatically.
+   -q  -  Only writes the .xco file, and quits.  Does not run Xselect.
+   -v  -  Gives the version history
+   -w  -  The location of the wish shell (defaults to $FTOOLS/bin/itkwish)
+          Only used for tkascascreen.
+
+ARGUMENTS: 
+
+All commands can be entered in response to prompts, but you can also specify
+the following on the command line:
+
+    datadir  - the data directory, can be an absolute or relative path
+    instru   - the instrument
+    datamode - the datamode you wish to analyze
+    session  - the prefix for all product files from this session (if
+               it starts with "!", overwrite existing files)
+    bitrates - the bit rates in use (H, M, L: if more than one 
+               separate by commas or spaces and place entire string
+               in double quotes)
+
+The rest of the arguments must be given in response to the prompts.
+
+Responses need only be the shortest unambiguous string.  When there are
+several choices offered, the default will be in upper case.  When only one
+choice is available, hitting a return will enter the default.
+
+
+EXAMPLES:
+
+  ascascreen -d -f "S0CCDMOD==4" ../mydata SIS0 BRIGHT s0_bright "H,M"
+
+will run ascascreen with all parameters assigned default values, using
+the data directory ../mydata, the instrument SIS0, the datamode
+BRIGHT, only HIGH and MEDIUM bit rates, and observations in
+which all 4 CCDs are on (the -f filter), and the session products will
+be prefixed with s0_bright.
+
+  ascascreen -e fits ../mydata GIS2 PH \!g2 "H,M,L"
+
+will start up ascascreen, with the data directory ../mydata, the instrument
+GIS2, the datamode PH (the standard), will use all bit rates, will look for
+event files ending in .fits, and the session products will be prefixed with 
+g2, overwritting any pre-existing files with that prefix.
+
+EOHELP1
+        &exit_wish;
+
+}
+
+
+
+    if( $useTK ) {
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# THIS IS THE stuff to start up the wish fork... Copped from wish_perl
+# courtesy of Dov Grobgeld dov@menora.weizmann.ac.il
+	
+	if (! defined $wishbin ) {
+	    $wishbin = "$ENV{FTOOLS}/bin/itkwish";
+	    if ( ! -x $wishbin ) { # Hmmm, the FTOOLS GUIs weren't built or
+                                   #weren't installed, but let's try to cope anyway
+		$wishbin = `which wish`;
+                chop $wishbin;
+		if ( ! -x $wishbin ) { # Okay, maybe they don't have it on their path
+		    $wishbin = "/usr/local/bin/wish";
+		    if ( ! -x $wishbin ) { # Maybe they only have wishx...
+			$wishbin = `which wishx`;
+			chop $wishbin;
+			if ( ! -x wishbin ) { # Maybe ITS not on their path...
+			    $wishbin = '/usr/local/bin/wishx';
+			    if ( ! -x $wishbin ) { # Oh, well...
+				die "Sorry, I cannot find your wish shell...\n";
+			    }
+			}
+		    }
+		}
+	    }
+	}
+
+    @socArgs = &socArgs;
+    die "socketpair unsuccessful: $!!\n" 
+        unless socketpair(W0,WISH,$socArgs[0],$socArgs[1],$socArgs[2]);
+    $pid = fork;
+    $fakepid = $pid;
+    $WISH = "WISH";
+
+}
+else {
+
+$fakepid = 10;
+$WISH = "STDOUT";
+
+}
+
+if ($fakepid) {
+    if($useTK) {
+        select(WISH); $| = 1;
+        select(STDOUT);
+
+# This has the Main Canvas setup stuff,...
+#        print WISH "exit\n";
+#        close WISH;
+#        unlink 'temp.tcl';
+#        open(WISH,'>temp.tcl');
+        &primeWish($execdir);
+
+    }
+
+#
+# Now print out the header:
+#
+
+$textWindow = "textWindow0";
+$createLine = &createText;
+($insertLine,$endQuote) = &insertInCanvas;
+
+print WISH<<EOHEADER;
+$createLine
+$insertLine
+                  ****** $programName V.$version ******
+
+Applies standard clean criteria to all modes of ASCA data.
+
+Output:
+   -- A single cleaned events file (.evt) except in MPC mode 
+   -- An image for the entire detector (.img) except in FAST and MPC modes
+   -- The timing filters (.gti) in MPC mode
+   -- A lightcurve (.lc) and spectrum (.pha) in MPC mode.
+   -- The Dark Frame Error history file (.dfe) for FAINT mode.
+   -- A reduced obscat (.cat)
+
+Try ascascreen -h for help.
+
+Report problems to ascahelp\@athena.gsfc.nasa.gov
+
+EOHEADER
+
+if ( $useTK ) {
+
+    print WISH<<TKEOHEADER;
+Enter the Data directory, and choose an instrument, mode and session
+name in the Ascascreen Files Window, and click Okay to continue.
+
+$storedMsg
+
+Click anywhere to continue.
+
+\"
+
+packMainCanvas $textWindow
+
+set OK 0
+bind .c <1> {+
+   global OK 
+   set OK [expr \$OK + 1]
+}
+tkwait variable OK
+bind .c <1> {}
+
+TKEOHEADER
+#    exit;
+}
+else {
+    print WISH<<EOCLHEADER;
+A return will accept the default.
+For character replies, the default is in upper case.
+
+$storedMsg
+EOCLHEADER
+}
+
+
+if ( $useTK ) {
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# This is the TK version of the command line parsing.
+#
+# If we get the datadir, then we will put up the dirAndMode box starting at
+# the given directory.  If we are given the instrument, and not the datamode, 
+# there has really been no advance...  If we get instrument and datamode,
+# then we bypass the mode box.
+#
+# By the end of this branch, we will have the datadirectory, the instrument,
+# the datamode and the bit rates to use, as well as the list of files 
+# satisfying these conditions ( in @myfiles ). 
+#
+# First get the data directory:
+
+    require "pwd.pl";
+    &initpwd;
+
+    
+    if ( $ARGV[0] ) {
+	$datadir = $ARGV[0];
+	if ( -d $datadir ) {
+	    $curdir = $ENV{CWD};
+	    &chdir($datadir);
+	    $datadir = $ENV{CWD};
+	    &chdir($curdir);
+	    print "$curdir\n$datadir\n";
+	    $datadir =~ s/\n//;
+	}
+	else {
+	    undef $datadir;
+	}
+    }
+
+#
+# Now get the instrument and datamode:
+#
+    if ( $ARGV[1] ) {
+         @got_instru = grep(/$ARGV[1]/i,@instruments);
+         if( $#got_instru == 0 ) {
+	     $instru = $got_instru[0];
+	     if ( $ARGV[2] ) {
+		 @got_modes = grep(s/$instru - //,@filekeys);
+		 @got_mode = grep(/$ARGV[2]/,@got_modes);
+		 if ( $#got_mode == 0  ) {
+		     $datamode = $got_mode[0];
+		 }
+	     }
+	 }	
+     }
+
+
+#
+# Get the session name:
+# If we have gotten the instrument and the datamode on the command line,
+# then we will bypass the dirAndMode box...
+#
+    if( $ARGV[3] ) {
+	$session = $ARGV[3];
+    }
+    elsif ($defaults) {
+	$session = 'xsel';
+    }
+    elsif(defined $datamode && defined $instru ) {
+	$session = &getScalar('Enter session name','xsel' );
+    }
+
+#
+# Use BIT_RATE = HIGH, MEDIUM, LOW?
+#
+    if( $ARGV[4] ) {
+	@result = split(/[ ,]/,$ARGV[4]);
+	foreach $result (@result) {
+	    foreach (keys(%BitRate)) {
+		$BitRate{$_} = 1, last if ($_ =~ /$result/i);
+		}
+	}
+
+        if ( grep(/[1-9]/,values(%BitRate)) == 0) {
+	    foreach $result (&getManyFromList('u',
+                                 "Which Bit Rates do you want to use?",
+				 3,('HIGH','MEDIUM','LOW'),
+					 2,('HIGH','MEDIUM'))) {
+		foreach (keys(%BitRate)) {
+		    $BitRate{$_} = 1, last if ($_ =~ /$result/);
+		}
+	    }
+	}
+    }
+    elsif (defined $datamode && defined $instru ) {
+	if ( $defaults ) {
+	    $BitRate{'LOW'} = 0;
+	    $BitRate{'MEDIUM'} = 1;
+	    $BitRate{'HIGH'} = 1;
+	}
+	else {
+	    foreach $result (&getManyFromList('u',
+                                 "Which Bit Rates do you want to use?",
+				 3,('HIGH','MEDIUM','LOW'),
+					 2,('HIGH','MEDIUM'))) {
+		foreach (keys(%BitRate)) {
+		    $BitRate{$_} = 1, last if ($_ =~ /$result/);
+		}
+	    }
+
+	}
+    }
+#
+# So, if we didn't get the instru and datamode off the command line,
+# then put up the DirAndMode box:
+#
+    if ( !defined $instru && !defined $datamode ) { 
+        $returnFlag = "DirAndMode>";
+	&putDirAndModeBox($datadir);
+	if ( defined $opt_x ) {
+	    print WISH "\# This is the end of DirAndModeBox\n";
+	    print "Got past putDirAndModeBox\n";
+	}
+
+READ_DIRANDMODE:
+	while ( <WISH> ) {
+	    $line = $_;
+#	    print "$line \n";
+	    if ( $line  =~ /^$returnFlag *(\S+) +(\S+)\n/ ) {
+		if ( $1 eq "DataDir" ) { $datadir = $2; }
+		elsif ( $1 eq "ModeStr" ) {
+		    ( $line = $2 ) =~ /^([^-]+)-([^-]+)$/;
+		    $instru = $1;
+		    $datamode = $2;
+		}
+		elsif ( $1 eq "Session" ) { $session = $2; }
+		elsif ( $1 eq "Exten" ) { $exten = $2; }
+                elsif ( defined $BitRate{$1} ) { $BitRate{$1} = $2; }
+		elsif ( $1 eq "Status" ) {
+		    if( $2 eq "cancel" ) {
+			print STDOUT "bye!\n\n";
+			&exit_wish();
+		    }
+		    else {
+			last READ_DIRANDMODE;
+		    }
+		}
+	    }
+	    elsif ( $line !~ / */ ) {
+		print "Error reading from ModeBox\n";
+		&exit_wish;
+	    }
+	}
+    }	
+    &print_text("Got data directory: $datadir \n\n");
+    &print_text("Got instrument $instru \n\n");
+    ($instno = $instru) =~ s/[GS]IS//;
+    &print_text("Got datamode $datamode \n\n");
+    &print_text("Got extension $exten\n\n");
+
+
+    if ( $datamode eq 'MPC' ) {
+        ($insertLine,$endQuote) = &insertInCanvas;
+        print WISH <<EOMPCMOD;
+$insertLine
+Note: The EXTRACT command for MPC mode data does not support EXTRACT EVENTS,
+so I will produce a lightcurve, and spectrum, and save the MKF timing 
+selections so you can read them back in for future analysis.
+$endQuote
+EOMPCMOD
+
+    }
+
+    foreach (keys(%BitRate)) {
+	if ( $BitRate{$_} ) {
+	    &print_text("\nUsing $_ bit rate data.\n\n");
+	}				
+    }
+
+#
+# Now read in the data directory:
+#
+    if( !opendir(DATADIRECTORY,$datadir) ) { 
+	&print_warn("Could not open $datadir\n");
+	&exit_wish();
+    }
+    @datafiles = readdir(DATADIRECTORY);
+    closedir(DATADIRECTORY);
+    $chosen_type = $instru." - ".$datamode;
+#
+# @myfiles contains the files of our chosen mode:
+#
+    @myfiles = grep(/$filexpr{$chosen_type}$exten$/,@datafiles);
+    @mkfFiles = grep(/\.mkf$/,@datafiles);
+	
+    if ( $#myfiles == -1 ) {
+	&print_warn("No files of type $chosen_type found in $datadir");
+	&exit_wish;
+    }
+
+} 
+# This is the end of the TK specific initial setup and command line parsing..
+#
+# The else block is the Command line version of the same, returning the
+# datadirectory, instrument, datamode prefix bit rates to use, and the
+# list of files in the instrument-datamode combination.
+#
+else {
+
+# We need to get some basic information:
+# Parse the ARGV list, and ask for what was not given on the command line.
+# First get the data directory:
+
+	if ( $ARGV[0] ) {
+	    $datadir = $ARGV[0];
+	    &ststdir(*datadir );
+	}
+	else {
+	    $datadir = &getScalar("Enter data directory");
+	    &ststdir(*datadir);
+	}
+	if ( $datadir eq 'EXIT' ) {
+	    &print_text("Be seeing you\n");
+	    &exit_wish();
+	} 
+	else {
+	    $datadir =~ s/\n//;
+	    &print_text("Got data directory: $datadir \n\n");
+	}
+#
+# Now read in the data directory:
+#
+	if( !opendir(DATADIRECTORY,$datadir) ) { 
+	    &print_warn("Could not open $datadir\n");
+	    &exit_wish();
+	}
+	@datafiles = readdir(DATADIRECTORY);
+	closedir(DATADIRECTORY);
+	$#got_types = -1;
+	foreach $mode_type ( @filekeys ) {
+	    if (grep(/$filexpr{$mode_type}$exten$/,@datafiles) != 0 ) {
+		$got_types[++$#got_types] = $mode_type; 
+	    }
+	}
+	$#got_instru = -1;
+	foreach $instru ( @instruments ) {
+	    if ( grep(/$instru/,@got_types) > 0 ) { 
+		$got_instru[++$#got_instru] = $instru;
+	    }
+	}
+	if ( $#got_instru == -1 ) {
+	    &print_warn("No files with the default names found, sorry.\n");
+	    &exit_wish();
+	}
+#
+# Now get the instrument:
+#
+	if ( $ARGV[1] ) {
+	    ($instru) = &checkList('u',1,($ARGV[1]),@got_instru);
+	}
+	else {
+	    $instru = &getOneFromList('u',
+		    "Which instrument do you want to process? ",
+				      $#got_instru + 1,@got_instru);
+	}
+	if (!defined $instru ) {
+	    &print_text("Have a nice day\n");
+	    &exit_wish();
+	}
+
+	&print_text("Got instrument $instru \n\n");
+	($instno = $instru) =~ s/[GS]IS//;
+ 
+#
+# Now prompt for the datamode:
+#
+@got_modes = grep(/$instru/,@got_types);
+foreach ( @got_modes ) { s/^.{7}//; }
+
+if ( $ARGV[2] ) {
+    ($datamode) = &checkList('u',1,($ARGV[2]),@got_modes);
+}
+else {
+    $datamode = &getOneFromList('u',
+                   "Which datamode do you want to process? ",
+				$#got_modes + 1,@got_modes);
+}
+if ( !defined $datamode ) {
+    print "Bye, now!\n";
+    exit;
+}
+
+&print_text("Got datamode $datamode \n\n");
+
+if ( $datamode eq 'MPC' ) {
+    ($insertLine,$endQuote) = &insertInCanvas;
+            print WISH <<EOMPCMOD;
+$insertLine
+Note: The EXTRACT command for MPC mode data does not support EXTRACT EVENTS,
+so I will produce a lightcurve, and spectrum, and save the MKF timing 
+selections so you can read them back in for future analysis.
+$endQuote
+EOMPCMOD
+
+}
+
+#
+# This is now our chosen type:
+#
+$chosen_type = $instru." - ".$datamode;
+#
+# @myfiles contains the files of our chosen mode:
+#
+@myfiles = grep(/$filexpr{$chosen_type}$exten$/,@datafiles);
+    @mkfFiles = grep(/\.mkf$/,@datafiles);
+
+#
+# Get the session name:
+#
+if( $ARGV[3] ) {
+    $session = $ARGV[3];
+}
+else {
+    $session = &getScalar('Enter product filename root ',"xsel" );
+}
+
+
+#
+# Use BIT_RATE = HIGH, MEDIUM, LOW?
+#
+    if( $ARGV[4] ) {
+	foreach $result (split(/[ ,]/,$ARGV[4])) {
+	    foreach (keys(%BitRate)) {
+		$BitRate{$_} = 1, last if ($_ =~ /$result/i);
+		}
+	}
+
+        if ( grep(/1/,values(%BitRate)) == 0) {
+	    foreach $result (&getManyFromList('u',
+                                 "Which Bit Rates do you want to use?",
+				 3,('HIGH','MEDIUM','LOW'))) {
+		foreach (keys(%BitRate)) {
+		    $BitRate{$_} = 1, last if ($_ =~ /$result/);
+		}
+	    }
+	}
+    }
+    elsif (defined $datamode && defined $instru ) {
+	if ( $defaults ) {
+	    $BitRate{'LOW'} = 0;
+	    $BitRate{'MEDIUM'} = 1;
+	    $BitRate{'HIGH'} = 1;
+	}
+	else {
+	    foreach $result (&getManyFromList('u',
+                                 "Which Bit Rates do you want to use?",
+				 3,('HIGH','MEDIUM','LOW'))) {
+		foreach (keys(%BitRate)) {
+		    $BitRate{$_} = 1, last if ($_ =~ /$result/);
+		}
+	    }
+
+	}
+    }
+    foreach (keys(%BitRate)) {
+	if ( $BitRate{$_} ) {
+	    &print_text("\nUsing $_ bit rate data.\n\n");
+	}				
+    }
+
+}
+#
+# Look for MKF files, complain if none, and determine type:
+#
+if ($#mkfFiles == -1 ) {
+    $mkfdir = $datadir.'/../aux';
+    if( -d $mkfdir ) {
+	opendir(MKFDIR,$mkfdir) ;
+	@mkfFiles = readdir(MKFDIR);
+	closedir(MKFDIR);
+	@mkfFiles = grep(/\.mkf$/,@mkfFiles);
+	if ($#mkfFiles == -1 ) {
+	    $mkfdir = 'NONE';
+	}
+    }
+}
+else {
+    $mkfdir = $datadir;
+}
+#
+# Error out if there is no MKF file:
+#
+if ( $mkfdir eq 'NONE' ) {
+    &print_warn("No MKF files found, I cannot do any screening.\n",
+		"Please find the MKF files for this observation\n");
+    &exit_wish;
+}
+
+foreach $mkfFile (@mkfFiles) {
+    undef $MKFAuthor;
+    @result = &runcom("fkeyprint ${mkfdir}/${mkfFile}+1 AUTHOR");
+    ($MKFAuthor) = grep(/^AUTHOR  = /,@result);
+    if(defined $MKFAuthor) { 
+	$MKFAuthor =~ /^AUTHOR  = 'MKFILTER v([\w\.]+)' */; 
+	push(@MKFAuthor,$1);
+    }
+#
+# If it is not AUTHOR, try CREATOR...
+#
+    else {
+	@result = &runcom("fkeyprint ${mkfdir}/${mkfFile}+1 CREATOR");
+	($MKFAuthor) = grep(/^CREATOR = /,@result);
+	if ( defined $MKFAuthor) { 
+	    $MKFAuthor =~ /^CREATOR = 'MKFILTER v([\w\.]+)' */; 
+	    push(@MKFAuthor,$1);
+	}
+	else {
+	    &print_text("Could not get Author Keyword from MKF file $mkfFile\n",
+		    "Assuming v1.23\n");
+	    push(@MKFAuthor,"1.23");
+	}
+    }
+}
+
+$MKFVer{1} = grep(/^1\./,@MKFAuthor);
+$MKFVer{2} = grep(/^2\./,@MKFAuthor);
+
+$numVer = 0;
+foreach (keys(%MKFVer)) {
+    $numVer +=1, $MKFVer = $_ if ( $MKFVer{$_} > 0 );
+}
+
+if ( $numVer > 1) {
+    &print_warn("More than one MKF version in MKF files in $mkfdir");
+    &exit_wish;
+}
+elsif( $numVer == 0 ) {
+    &print_warn("No MKF version recognized, got:\n",join("\n",@MKFAuthor));
+    &exit_wish;
+}
+
+
+# Now check the current directory for any files that we might stomp:
+
+if ( ! opendir(CURDIR,"./")) {
+    &print_warn( "Cannot read working directory\n");
+    &exit_wish();
+}
+@wrkfiles = readdir(CURDIR);
+closedir(CURDIR);
+
+# Overwrite session files if session name starts with "!"
+
+if ( $session =~ /^!/ ) {
+    $session = substr($session,1);
+} else {
+    $overlap = 1;
+    while ( $overlap ) {
+	$tmpStr = "${session}_";
+	if ( grep(/^$session\.|^$tmpStr/,@wrkfiles) != 0 ) {
+	    $overwrite = &MessageYesOrNo('y',
+			 "Files with this root name already exist.\n" ,
+			 " Shall I overwrite them? ");
+	    if ( !$overwrite ) {
+#               print "Choose a new session name ( or type \'q\' to quit): ";
+#               $session = <STDIN>;
+#               chop $session;
+		print "Bye, now...\n";
+		&exit_wish;
+	    }
+	    else {
+		$overlap = 0;
+	    }
+	}
+	else {
+	    $overlap = 0;
+	}
+    }
+}
+
+@sessions = grep(/session.xsl$/,@wrkfiles);
+$xselses = "ascascreen_\L$instru";
+$tmpStr = "${xselses}_session.xsl";
+if ( $#sessions > -1 && grep(/$tmpStr/,@sessions) != 0 ) {
+    print ;
+    print ;
+    $overwrite = &MessageYesOrNo('y',
+       "A saved session exists with my default session name: $xselses\n",
+       "Shall I remove it (Y/n)?  Otherwise I will choose a new name. ");
+    if ( $overwrite ) {
+        unlink("${xselses}_session.xsl");
+        $xselses = "ascascreen_\L$instru";
+    }
+    else {
+        $overlap = 1;
+        $index = 'a';
+        while ( $overlap ) {
+            $xselses = "ascascreen_\L${instru}_$index";
+            $tmpStr = "${xselses}_session.xsl";
+            if ( grep(/$tmpStr/,@sessions ) == 0 ) {
+                $overlap = 0;
+                &print_text("Using session name: $xselses \n");
+            }
+            else {
+                $index++;
+            }
+        }
+    }
+}
+
+&print_text("\nAnalysing files for your chosen mode, please wait.\n\n");
+#
+# Now we make an obscat from the standard criteria:
+#
+$CATLIST = "${session}.lst";
+$TEMPFILE = "${session}.tmp";
+$tmpcatfile = "${session}_tmp.cat";
+$catfile = "${session}.cat";
+
+unlink($CATLIST);
+unlink($catfile);
+unlink($tmpcatfile);
+unlink($TEMPFILE);
+
+open(TEMPFILE,">$TEMPFILE");
+print TEMPFILE join("+0\n",@myfiles),"+0\n";
+close(TEMPFILE);
+#
+# This is the list of parameters to include in the obscat:
+#
+open(CATLIST,">$CATLIST");
+print CATLIST join("\n",split(/ +/,$catlist{$chosen_type}),
+		   split(/ +/,$stdcatlist{$instru})),"\n";
+close(CATLIST);
+#
+# Get the current working directory:
+#
+$cwd = `/bin/pwd`;
+chop $cwd;
+#
+# This is the temporary, unfiltered obscat
+#
+$comlin = "cd $datadir; ffilecat \"\@$cwd/$TEMPFILE\" $cwd/$tmpcatfile \"\@".
+    $cwd."/".$CATLIST. "\" aform = A8 iform = I8 omit=no quiet=no";
+
+@result = &runcom($comlin);
+
+unlink($CATLIST);
+unlink($TEMPFILE);
+if ( $result[0] eq "ERROR FOR $$" ) {
+    &print_warn( "Could not make obscat\n" );
+    &exit_wish();
+}
+#
+# This makes the filtered obscat
+#
+$comlin = "fselect $tmpcatfile+1 $catfile index=\" \" expr = \"$catsel{$instru}  ";
+foreach (keys(%BitRate)) {
+   if ( $BitRate{$_} == 0 ) { $comlin .= '&&BIT_RATE!=\''.$_.'\'';}
+}
+if ( defined $opt_f ) { $comlin .= "&&($opt_f)"; }
+$comlin .= "\" histkw=yes copyall = yes";
+@result = &runcom($comlin);
+
+unlink($tmpcatfile);
+if ( $result[0] eq "ERROR FOR $$" ) {
+    &print_warn( "Could not make obscat\n");
+    &exit_wish();
+}
+
+#
+# Now read it in:
+#
+$CATLIST = "${session}_obscat.lis";
+unlink $CATLIST;
+open(CATLIST,">$CATLIST") || print "Could not open $CATLIST",&exit_wish;
+print CATLIST join("\n",split(" ",
+         "FILENAME NEVENTS ONTIME ".$catlist{$chosen_type})),"\n";
+close(CATLIST);
+
+$comlin = "fdump ${catfile}+1 STDOUT \@$CATLIST"    
+    ." - prhead = no showcol = no tdisp = yes showrow = no ".
+    "page = no pagewidth = 256";
+#
+# Store the catalogue, and also reduce 
+# the fdump input to a unique set:
+#
+$#catlines = -1;
+#
+# This is the list of keywords from the obscat that we will use:
+#
+#
+# This is a pain in the neck, but CCDLST appears as 4 seperate arguments, 
+# since it is space delimited...  So we will read them in and reassemble...
+#
+$keyline = $catlist{$chosen_type}; 
+@keylist = split(" ",$keyline);
+    
+#print "Keylist is:\n",join("\n",@keylist),"\n";
+
+@catdump = &runcom($comlin);
+if ( $catdump[0] eq "ERROR FOR $$" ) {
+    &print_warn("Error in FDUMP");
+    &exit_wish();
+}
+$nfiles = 0; $nminormodes = 0; $#catlines = -1;
+foreach $catline ( @catdump ) {
+    if ( $catline =~ / *\w/ ) {
+	chop $catline;
+	$catline =~ s/^ *//;
+	@keyvals = split(/ +/,$catline);
+	$file = shift(@keyvals);
+#
+# PDW 6/17/98: Strip off trailing +0 from ffilecat's filename entry
+#
+	$file =~ s/(.*?)(\+\d)?$/$1/;
+	$catarray{'filename',$nfiles} = $file;
+	$nevents = shift(@keyvals);
+	$ontime = shift(@keyvals);
+	$catarray{'use',$nfiles} = "y";
+#
+# Now load a 2-d array with the results:
+#
+	$i = 0;
+	for ( $j = 0; $j <= $#keylist; $j++) {
+	    if ($keylist[$j] =~ /CCDLST/) {
+		$LSTval = join('',@keyvals[$i..$i+3]);
+		$catarray{$keylist[$j],$nfiles} = $LSTval;
+		$i+=4;
+	    } else {		
+		$catarray{$keylist[$j],$nfiles} = $keyvals[$i];
+		$i++;
+	    }
+	}
+	$nfiles++;
+# Now remove the filename and nevents and ontime:
+	$catline =~ /^\S+ +\S+ +\S+ +(\S.*)$/;
+	$catline = $1;
+        push(@catlines,$catline);
+        for ($i = 0; $i <= $#catlines; $i++ ) {
+            if ( $catline eq $catlines[$i] ) {
+                $keyarray{'nevents',$i} += $nevents;
+		$keyarray{'ontime',$i} += $ontime;
+		last;
+	    }
+	}
+	if ( $i == $#catlines ) {
+	    for ( $j = 0; $j <= $#keylist; $j++) {
+		$i = $nfiles - 1;
+		$keyarray{$keylist[$j],$nminormodes} = 
+		    $catarray{$keylist[$j],$i};
+	    }
+	    $nminormodes++;
+	}
+        else {
+            pop(@catlines);
+	}
+    }
+}
+#
+# Now make the SnCCDLSTm -> SnCCDLST in @keylist, Yecch!
+#
+@keylist = split(" ",$catlist{$chosen_type});
+
+
+#
+# This prints out the unique modal configurations:
+#
+
+&printMinorModes;    
+
+#
+# Query for the items in the list that the user wants:
+#
+if ($nminormodes > 1 ) {
+    if ( $most_events ) {
+	$nminus1 = $nminormodes-1;
+	@nevents = &twodcol('nevents',$nminus1,(0 .. $nminus1),%keyarray);
+        @temp = sort numerically @nevents;
+        for ( $i = 0; $i <= $#nevents ; $i++ ) {
+            if ( $temp[$#temp] == $nevents[$i] ) { 
+	        $moderange[0] = $i;
+	        &print_text("Using ${i}\'th minor mode.\n");
+		last;
+	    }
+       }
+    }
+    elsif ( $all_events ) {
+	$nminus1 = $nminormodes-1;
+	@moderange = (0 .. $nminus1);
+	&print_text("Using all minor modes.\n");
+    }
+    else {
+        &getMinorModes;
+    }
+    if ( $moderange[0] eq 'q' || !@moderange ) {
+	&print_text("See you later!\n");
+        &exit_wish();
+    }
+}
+elsif ($nminormodes == 1 ) {
+    @moderange = ('0');
+}
+else {
+    &print_warn( "\nThere are no files of type $chosen_type which satisfy",
+		" the standard selection criterion: $catsel{$instru}.");
+    &print_text( "Be seeing you!\n");
+    &exit_wish();
+}
+
+
+#
+# Now make the chosen minor modes into the catalogue selection expression:
+#
+if ( $instru eq 'SIS0' ) {
+    @keytype = @sis0_obstype;
+}			      
+elsif ( $instru eq 'SIS1' ) {
+    @keytype = @sis1_obstype;
+}			      
+elsif ( $instru eq 'GIS2' ) {
+    @keytype = @gis2_obstype;
+}			      
+elsif ( $instru eq 'GIS3' ) {
+    @keytype = @gis3_obstype;
+}			      
+
+$OBSCATSEL = "${session}_obscat.sel";
+unlink($OBSCATSEL);
+if ( ! open(OBSCATSEL,">$OBSCATSEL") ) {
+    &print_warn( "Cannot open file $OBSCATSEL\n");
+    &exit_wish();
+}
+$#catsel = -1;
+for ($i = 0; $i <= $#keylist; $i++ ) {
+    @choose = &twodcol($keylist[$i],$#moderange,@moderange,%keyarray);
+    undef %mark;
+    foreach ( @choose ) { $mark{$_}++; }
+    @choose = keys( %mark );
+    foreach $value ( @choose ) {
+#
+# If this is the ccdlst, we must put the spaces back in...
+#
+	if ( $keylist[$i] =~ /CCDLST/ ) { 
+	    $value =~ s/^(.)(.)(.)(.)$/\1 \2 \3 \4/; 
+	}
+        $catsel[$i] .= "||$keylist[$i] == $keytype[$i]$value$keytype[$i] ";
+    }
+#
+# Now reduce the catarray:
+#
+    @choose = keys( %mark );
+#   print "keyname: $keylist[$i] keyvals: ",join(" ",@choose),"\n";
+    for ($j = 0; $j < $nfiles ; $j++ ) {
+	if ( grep(/^$catarray{$keylist[$i],$j}$/,@choose) == 0 ) {
+	    $catarray{'use',$j} = 'n';
+        }
+    }
+    $catsel[$i] =~ s/^\|\|//;
+    if ( $i == $#keylist ) {
+        $catsel[$i] = "( $catsel[$i] )\n";
+    }
+    else {
+        $catsel[$i] = " ( $catsel[$i] ) && \n";
+    }
+}
+$catsel[0] =~ s/^&&//;
+print OBSCATSEL @catsel;
+#
+# Test for the Bit Rates that we are going to use:
+#
+foreach (keys(%BitRate)) {
+    print OBSCATSEL '&& BIT_RATE !=\'',$_,"\'\n" if (!$BitRate{$_});
+}
+print OBSCATSEL "&&ONTIME>100&&NEVENTS>0\n";
+if ( $instru =~ /GIS/ ) {
+    print OBSCATSEL "&&HV_RED=='OFF'&&HVH_LVL==3&&HVL_LVL==4\n";
+}
+print OBSCATSEL "&&datamode=='$datamode'\n";
+$catsel = 1;
+close(OBSCATSEL);
+
+
+#
+# Do some analysis of the user's choices:
+
+if ( $instru =~ /GIS/ ) {
+    if ($datamode eq 'PH' ) {
+#
+# First the RAWXBINS:
+#
+    
+	@check = &twodcol('RAWXBINS',$#moderange,@moderange,%keyarray);
+	%mark = ();
+	foreach ( @check ) { $mark{$_}++; }
+	@check = keys(%mark);
+	if ( $#check > 0 ) {
+	    &print_text( "You have chosen to combine data with diverse RAWXBINS.\n");
+	    &print_text( "I will turn off the region selection and the image creation.\n");
+	    $pause = 1;
+	    $rawxbins = -10;
+	    $image = 0;
+	    $region = 0;
+	}
+	elsif ( ($rawxbins = $check[0]) < 64 ) {
+	    $image = 1;
+	    $region = 0;
+	}
+	elsif ( ($rawxbins = $check[0]) >= 64 ) {
+	    $image = 1;
+	    $region = 1;
+	}
+
+# Now the RISEBINS
+
+	@check = &twodcol('RISEBINS',$#moderange,@moderange,%keyarray);
+	$gisclean = 1;
+	foreach ( @check ) {
+	    if ($_ == 1 ) {
+		&print_text( "You have chosen some data with RISEBINS = 1, i.e. with\n");
+		&print_text( "no RISE TIME information.\n");
+		&print_text( "So I cannot run GISCLEAN\n");
+		$pause = 1;
+		$gisclean = 0;
+		last;
+	    }
+	}
+# Now the POS_DET:
+	@check = &twodcol('POS_DET',$#moderange,@moderange,%keyarray);
+	$rtical = 1;
+	foreach ( @check ) {
+	    if ( $_ eq 'POW2' ) {
+		&print_text( "The calibration files for POW2 mode are not in the",
+		" FTOOLS refdata area.\n");
+		&print_text( "So I cannot run GISRTI to fill your RTI columns\n");
+		$pause = 1;
+		$rtical = 0;
+		last;
+	    }
+	}
+    }
+    elsif ( $datamode eq 'MPC' ) { 
+	$image = 0;
+	$region = 0;
+	$gisclean = 0;
+    }
+}
+elsif ( $instru =~ /SIS/ ) {
+    if ( $datamode =~ /^FAI|^B/ ) {
+#
+# Enable sisclean and image for faint and bright mode:
+#
+	$image = 1;
+	$sisclean = 1;
+    }
+    else {
+#
+# Disable it for FAST mode
+#
+	$image = 0;
+	$sisclean = 0;
+# Also get the source position:
+        &print_text( "\nTo do the fast mode timing correction, I need to know the source\n");
+        &print_text( "DETX position.  You can use any of the instruments, and I will\n");
+        &print_text("convert it for you.\n\n");
+	$pause = 1;
+	&GetNumber("Enter the source X-axis position in unbinned pixels (from any instrument)",'none',"sourcepos");
+	if ( $sourcepos == -999 ) {
+	    &exit_wish();
+	}
+	&GetOneFromList('u',
+              "Which instrument was this taken from? ",frominst,
+			  $#instruments+1,@instruments);
+        if ( $frominst eq 'EXIT' ) {
+	    &exit_wish();
+        }
+    }
+
+#
+# This checks SnCCDLST
+#
+    @check2 = &twodcol("S${instno}CCDLST",$#moderange,@moderange,%keyarray);
+
+    %mark = ();
+    foreach (@check2 ) { $mark{$_}++; }
+    @check2 = keys(%mark);
+    if ( $#check2 > 0 ) {
+	&print_text( "Warning: \n",
+           "You have chosen data coming from different CCDLST assignments.\n",
+            "This may result in difficulties with calibration later on.\n");
+	$pause = 1;
+    }
+#
+# Set the PIXL rejection threshold based on the chip assignment.  This chooses
+# the most conservative always.
+#
+    $how_many_chips = -1;
+    if ( $#check2 == 0 ) {
+	@results = &ccdThresh($instno,$MKFVer,$check2[0]);	
+#	print "RESULTS from ccdThresh:\n",join(" ",@results),"\n";
+	($chipno,$thresh_templ) = splice(@results,0,2);
+	%ThreshDefaults = @results;
+    }
+    else {
+#
+# For more than one threshold value, don't know what the default should be?
+# Guess by setting to the value appropriate to the most chips seen.
+#
+	$chips = join('',@check2);
+	for ( $i = 0; $i < 4; $i++ ) { $chips{$i}++ if ( $chips =~ /$i/ ); }
+	@chips = keys(%chips);
+	$how_many_chips = $#chips + 1;
+        $chipno = -1;
+	$chipstring = join('',@chips);
+	foreach $i ( @chips ) {
+	    $thresh_templ .=  
+	    "\&\& s${instno}_pixl$i >0&&s${instno}_pixl$i <THRESH$chipstring \n";
+        }
+	if ( $MKFVer == 2 ) {
+	    $ThreshDefaults = ( 100 , 75, '' , 50 )[$#chips]; 
+	}
+	elsif ( $MKFVer == 1 ) {  
+	    $ThreshDefaults = ( 400 , 600, '' , 800 )[$#chips]; 
+	}
+        %ThreshDefaults = ( $chipstring , $ThreshDefaults );
+    }
+#
+# This checks the Sn_ARENA
+#
+    @check = &twodcol("S${instno}_ARENA",$#moderange,@moderange,%keyarray);
+
+    %mark = ();
+foreach (@check ) { $mark{$_}++ ; }
+    @check = keys(%mark);
+    if ( $datamode ne 'FAST' ) {
+        if ( $#check > 0 ) {
+	    ($insertLine,$endQuote) = &insertInCanvas;
+            print WISH <<EOARENA;
+$insertLine
+Warning: 
+Some of your data have the area mask enabled, and some do not.
+This may result in difficulties with calibration later on.
+$endQuote
+EOARENA
+	    $pause = 1;
+         }
+    }
+    else {
+        if ( $chipno == -1 ) {
+            &print_text("Warning: it looks like your FAST mode data ",
+                        "is not in ",
+                        "1ccd mode, this should not be!\n");
+	    $pause = 1;
+        }
+        else {
+            $#arena = -1;
+            push(@arena,@check);
+#
+# Now we need to know whether the ARIO is set, if 0 then the masked region is
+# not in the telemetry...
+#
+            $#check = -1;
+            @check = &twodcol("S${instno}_ARIO$chipno",
+                              $#moderange,@moderange,%keyarray);
+            
+            %mark = ();
+            foreach (@check ) { $mark{$_}++ ; }
+            @check = keys(%mark);
+            
+#
+# If ARENA has two values, find out whether the inside or outside is 
+# being telemetered, so the user knows how to do the selection:
+#
+            if ( $#arena > 0 ) {
+                if ( $#check > 0 ) {
+	            ($insertLine,$endQuote) = &insertInCanvas;
+                    print WISH <<EOFAST1;
+$insertLine
+Some of the data has area discrimination enabled, some of it does not.
+Also, some has only the area outside the mask telemetered: 
+       ( S${instno}_ARIO$chipno = 0 )
+some only the area inside.
+       ( S${instno}_ARIO$chipno = 1 )
+
+This combination makes it impossible to use SELECT FAST.
+$endQuote
+EOFAST1
+                   $fastsel = 'NONE';
+	           $pause = 1;
+                }
+                elsif ( $check[0] == 0 ) {
+	            ($insertLine,$endQuote) = &insertInCanvas;
+                    print WISH <<EOFAST2;
+$insertLine
+Some of the data has area discrimination enabled, some of it does not.
+For the a.d. enabled data, only the photons outside the mask are in the
+telemetry.  So you can make all the data the same by selecting the data
+OUTSIDE the mask.
+$endQuote
+EOFAST2
+                
+                    &GetOneFromList('u'
+                            ,"What area selection do you want? ","fastsel",
+                            3,('INSIDE','OUTSIDE','NONE') );
+        	    $pause = 1;
+                }
+                elsif ( $check[0] == 1 ) {
+	            ($insertLine,$endQuote) = &insertInCanvas;
+                    print WISH <<EOFAST3;
+$insertLine
+Some of the data has area discrimination enabled, some of it does not.
+For the a.d. enabled data, only the photons inside the mask are in the
+telemetry.  So you can make all the data the same by selecting the data
+INSIDE the mask.
+$endQuote
+EOFAST3
+                
+                    &GetOneFromList('u'
+                            ,"What area selection do you want? ","fastsel",
+                            3,('INSIDE','OUTSIDE','NONE') );
+           	    $pause = 1;
+                }
+            }
+#
+# For fast mode, prompt for select fast, if ARENA == 0:
+#
+            elsif ( ! $arena[0] ) {
+                if ( $#check > 0 ) {
+	            ($insertLine,$endQuote) = &insertInCanvas;
+                    print WISH <<EOFAST4;
+$insertLine
+Your data have area discrimination disabled.
+
+However, some has S${instno}_ARIO$chipno = 0, and some S${instno}_ARIO$chipno = 1.
+The current version of ascascreen/XSELECT have not been tested for this
+situation --- turning off SELECT FAST.
+$endQuote
+EOFAST4
+                   $fastsel = 'NONE';
+        	   $pause = 1;
+               }
+               else {
+	            ($insertLine,$endQuote) = &insertInCanvas;
+		   print WISH<<EOFAST5;
+$insertLine
+Your data have area discrimination disabled.  You can select the data INSIDE
+the mask, OUTSIDE the mask, or apply NO selection.
+$endQuote
+EOFAST5
+                   &GetOneFromList('u'
+                            ,"What area selection do you want? ","fastsel",
+                            3,('INSIDE','OUTSIDE','NONE') );
+         	   $pause = 1;
+               }
+           }
+           else {
+               &print_text( "\nArea discrimination is enabled, SELECT FAST is",
+                          " unnecessary for this data.\n\n");
+               $fastsel = 'NONE';
+               $pause = 1;
+            }
+        }        
+    }          
+}
+
+#for ( $i = 0; $i < $nfiles; $i++ ) {
+#    printf "%3d  %1s  %20s  $catformat{$chosen_type}",$i,
+#        &twodrow($i,$#keylist+2,('use','filename',@keylist),%catarray);
+#}
+
+# Now set the default values for the various parameters that will
+# be used for MKF filtering:
+
+%br_earth_def = ('SIS0', '20-40',
+		 'SIS1', '20',
+		 'GIS2', 'NONE',
+		 'GIS3', 'NONE' 
+		 );
+%elv_min_def = ('SIS0', '10',
+		'SIS1', '10',
+		'GIS2', '5',
+		'GIS3', '5' 
+		);
+%cor_min_def = ('SIS0', '6',
+		'SIS1', '6',
+		'GIS2', '6',
+		'GIS3', '6' 
+		);
+%rbm_cont_def = ('SIS0', '50-500',
+		'SIS1', '50-500',
+		'GIS2', '50-500',
+		'GIS3', '50-500' 
+		);
+
+$strsel = "SAA==0&&ACS==0";
+
+# Angular distance   
+if ( $MKFVer{2} > 0 ) {
+    if ( $defaults ) {		 
+	$angDist = '0.01';	 
+	&print_text("Using $angDist for Maximum allowed angular deviation\n");
+    }				 
+    else {			 
+	&GetNumber("Enter Maximum allowed angular deviation",0.01,
+		   "angDist");	 
+    }				 
+}				 
+# BR_EARTH 
+if ( $br_earth_def{$instru} ne 'NONE' ) {
+    if ( $defaults ) {		 
+	$br_earth = &mean_if_range($br_earth_def{$instru});
+        &print_text( "Using $br_earth for Bright Earth Angle\n");
+    }
+    else {				
+	 &GetNumber("Enter angle from Bright Earth ",$br_earth_def{$instru}, "br_earth");
+    }
+    if ( $br_earth == -999 ) {
+	&print_text( "Okay, bye!\n");
+	&exit_wish();
+    }
+}
+# ELV_MIN 
+if ( $elv_min_def{$instru} ne 'NONE' ) {
+    if ( $defaults ) {
+	$elv_min = &mean_if_range($elv_min_def{$instru});
+        &print_text( "Using $elv_min for minimum elevation\n");
+    }
+    else {
+	$elv_min = &GetNumber("Enter minimum elevation angle ",
+			      $elv_min_def{$instru},"elv_min");
+    } 
+   if ( $elv_min == -999 ) {
+     &print_text( "Okay, bye!\n");
+     &exit_wish();
+    }
+}
+
+# For GIS, if one of the ready-made particle rejection creiteria is used,
+# or manual criterion is used.
+if ( $instru =~ /GIS/) {
+   if ( $defaults ) {
+     $gis_selection="standard";
+   }
+   else {
+     $gis_selection = getOneFromList('l',"Choose GIS particle BGD rejection criteria.\n".
+				     "(\"standard\" is the same as REV2 processing)",4,
+				     ('none','standard','strict','manual'));
+   }
+}
+
+
+if ( $instru =~ /GIS/ && $gis_selection !~ /manual/) {
+
+# GIS one of the ready-made rejection criterian is used
+    &print_text("Using $gis_selection GIS particle BGD rejection criterion\n");
+    if ($gis_selection =~ /none/) {
+	# Do nothing...
+    } elsif ( $gis_selection =~ /standard/) {
+	$strsel .=
+	'  && COR > 4 && (G2_H0+G2_H2+G3_H0+G3_H2)<45 &&'." \n".
+	'(G2_H0+G2_H2+G3_H0+G3_H2)<0.45*COR**2-13*COR+125 && RBM_CONT <100' ;
+    } elsif ( $gis_selection =~ /strict/) {
+	$strsel .=
+	' &&  COR > 4 && (G2_H0+G2_H2+G3_H0+G3_H2)<45 && '." \n".
+	'(G2_H0+G2_H2+G3_H0+G3_H2)<0.45*COR**2-13*COR+125 && '." \n".
+	'(RBM_CONT < 6.25 || (RBM_CONT <18.75 && !((SAT_LON > 200 && SAT_LAT < -16)'."\n".
+	'|| (SAT_LON > 255 && SAT_LAT < 10 && (SAT_LAT<0.36*SAT_LON-97))|| '."\n". 
+	'(SAT_LON<250&&SAT_LON>160 && SAT_LAT>16)||(SAT_LAT>8&&SAT_LON<250 '."\n".
+	'&&SAT_LAT>-0.53*SAT_LON+123))))'; 
+    }  else  {
+	&print_warn("Invalid GIS MKF selection, you shouldn't see this \n");
+	exit_wish();
+    }
+}
+
+else {
+# instrument is SIS,  or GIS manual selection is used
+
+#Cut-off rigidity
+    if ( $cor_min_def{$instru} ne 'NONE' ) {
+	if ( $defaults ) {
+	    $cor_min = &mean_if_range($cor_min_def{$instru});
+	    &print_text("Using $cor_min for minimum cutoff rigidity\n");  
+        }
+        else {
+	     $cor_min = &GetNumber("Enter minimum cutoff rigidity ",
+	     $cor_min_def{$instru},"cor_min");  
+	}
+	if ( $cor_min == -999 ) {
+	     &print_text( "Okay, bye!\n");
+	&exit_wish();			 
+	}
+    }
+
+#RBM monitor
+    if ( $rbm_cont_def{$instru} ne 'NONE' ) {
+	if ( $defaults ) {
+	    $rbm_cont = &mean_if_range($rbm_cont_def{$instru});
+            &print_text( "Using $rbm_cont for Radiation Belt Monitor upper-threshold\n");
+        }
+        else {
+	     $rbm_cont = &GetNumber("Enter Radiation Belt Monitor upper-threshold ",
+			       $rbm_cont_def{$instru},"rbm_cont","strict-lax");
+        }
+        if ( $rbm_cont == -999 ) {
+	    &print_text( "Okay, bye!\n");
+            &exit_wish();
+        }
+     }
+    if($instru=~/GIS/){
+# Optional GIS hard and soft rejection
+	 print "Please specify if you would like to apply the monitor-count based 'hard-flare'\n";
+	 print "rejection and the orbital position dependent 'soft-flare' rejection.\n";
+	 print "See http://heasarc.gsfc.nasa.gov/docs/asca/gisbgd.html for explanations.\n";
+# hard-flare rejection
+	 &YesOrNo("Apply the hard-flare rejection?",
+		  "hard_flare_cut",'y');
+# soft-flare rejection
+	 &YesOrNo("Apply the soft-flare rejection?",
+		  "soft_flare_cut",'n');
+      }
+     if ( $instru =~ /SIS/ ) {
+#
+# Query for the SIS PIXL rejection threshold:
+#
+	 if ( $defaults) {
+	     foreach (keys(%ThreshDefaults)) {
+               $ThreshDefaults{$_} = &mean_if_range($ThreshDefaults{$_});
+               eval "\$threshold$_ = $ThreshDefaults{$_}";
+               &print_text( 
+               "Using $ThreshDefaults{$_} for SIS Pixel rejection upper-threshold ",
+               "for chips $_ .\n");
+             }
+         }
+         else {
+	   $calcthresh = &MessageYesOrNo('y',
+                         "Calculate PIXL rejection thresholds from files?");
+           if (!$calcthresh) {
+	     if ( keys(%ThreshDefaults) == 1 ) {
+                 $key = (keys(%ThreshDefaults))[0];
+                 eval "\$threshold$ThreshDefaults{$key} =
+                 &GetNumber(\"Enter PIXL rejection threshold\",
+                 $ThreshDefaults{$key},\"threshold$key\");";
+             } else {
+                foreach $key (keys(%ThreshDefaults)) {
+                  @ccdstring = split('',$key);
+                  if ($#ccdstring == 0 ) {
+                    $ccdstring = 'for chip '.$ccdstring[0];
+	  	  }
+                  else {
+                    $ccdstring = 'for chips '.join(',',@ccdstring);
+	  	  }
+		  eval "\$threshold$ThreshDefaults{$key} =
+                  &GetNumber(\"Enter PIXL rejection threshold $ccdstring\",
+                           $ThreshDefaults{$key},\"threshold$key\");";
+                  }
+              }
+            }
+          }
+       } #End of $instru=~/SIS/
+}#End of else of ($instru =~ /GIS/ && $gis_selection !~ /manual/) 
+
+if ( $image ) {
+    if ( $defaults ) {
+        &print_text( "I will start up SAOImage, and leave you in Xselect at the end\n");
+        $saoimage = 1;
+        $remain = 1;
+    }
+    else {
+        &YesOrNo("Start up SAOIMAGE, and remain in Xselect at the end?",
+		   "remain",'y');
+    }
+}
+else {
+    if ( $defaults ) {
+        &print_text( "I will leave you in Xselect at the end\n");
+        $remain = 1;
+    }
+    else {
+        print ;
+        &YesOrNo("Remain in Xselect at the end? ","remain",'y');
+    }
+    $saoimage = 0;
+}
+
+# 
+# Now get the mission specific instructions from the user:
+#
+
+if ( $instru =~ /GIS/ ) {   
+    if ( $region ) {
+        if ( $defaults ) {
+            &print_text( "Removing ring and calibration sources\n");
+            $region = 1;
+        }
+        else {
+            &YesOrNo("Remove ring and calibration source? ",
+				 "region",'y');
+        }
+    }
+    if ( $gisclean ) {
+        if ( $defaults ) {
+            print "Using Rise Time window bkgd. rejection\n";
+            $gisclean = 1;
+        }
+        else{
+            &YesOrNo("Use Rise Time window background rejection? ",
+		       "gisclean",'y');
+        }
+	if ( $gisclean ) {
+            if ( $defaults ) {
+#                print "Checking the RTI column:\n";
+# Data without RTI column filled are obsolete, and the RTI check is not needed.
+                $fillrti =0;
+            }
+            else{
+#		&print_text ("Data run through ASCALIN_V0.9f or earlier have",
+#		" empty RTI columns.\n",
+#	       "This column must be filled for GISCLEAN to run successfully.\n",
+#		"I can run the Ftool GISRTI to fill this column.\n");
+#                $pause = 1;
+#                &YesOrNo("Do I need to run GISRTI on your data?",
+#                         "fillrti",'c',1,'check','.c.selFrame','gisclean',1);
+# Data without RTI column filled are obsolete, and the RTI check is not needed.
+                $fillrti = 0;
+            }
+	}
+    }
+}
+elsif ( $instru =~ /SIS/ ) {
+#
+# For now, all we have to do is query for sisclean:
+#
+    if ( $sisclean ) {
+        if ( $defaults ) {
+            print "Removing Hot and Flickering Pixels.\n";
+            $sisclean = 1;
+        }
+        else {
+            &YesOrNo("Remove Hot and Flickering Pixels",'sisclean','y');
+        }
+    }
+    if ( $datamode eq 'FAST' ) {
+        if ( $defaults ) {
+            print "Performing no Grade selection.\n";
+            $grade = 0;
+        }
+        else {
+            &YesOrNo("Select based on grade ( this will keep only grade 0)?",'grade','y');
+        }
+    }
+    else {
+        if ( $defaults ) {
+            print "Performing Grade selection ( keeping 0,2,3, and 4 ).\n";
+            $grade = 1;
+        }
+        else {
+            &YesOrNo("Select based on grade ( this will keep only grades 0,2,3 and 4)?",'grade','y');
+        }
+    }
+}
+
+#
+# Now we gather up the responses:
+#
+
+&GatherResponses($pause);
+
+#
+# This is the section where we apply the responses we have elicited:
+if ( $br_earth_def{$instru} ne 'NONE' ) {
+    $strsel .= "\&\&BR_EARTH>$br_earth\n";
+}
+
+if ( $elv_min_def{$instru} ne 'NONE' ) {
+    if ( $MKFVer{1} > 0 ) {
+	$strsel .= "\&\&ELV_MIN>$elv_min\n";
+    } else {		# 
+	$strsel .= "\&\&ELV>$elv_min\n";
+    }			# 
+}
+
+if ( $MKFVer{2} > 0 ) {
+    $strsel .= "\&\&ANG_DIST>0.0\&\&ANG_DIST<$angDist\n";
+}
+
+
+if ( $instru =~ /GIS/) {
+#
+# Tack on the mandatory GIS selection expression:
+#
+    $strsel .= "\&\&G2_L1>0.0\&\&G3_L1>0.0\n";
+
+# hard-flare and soft-flare cut for the manual selection
+    if ( $gis_selection =~ /manual/) {
+	if($hard_flare_cut)
+	{	
+	    $strsel .= 
+	    '&& (G2_H0+G2_H2+G3_H0+G3_H2)<45 &&'." \n".
+	    '(G2_H0+G2_H2+G3_H0+G3_H2)<0.45*COR**2-13*COR+125'."\n" ;
+	}	
+
+	if($soft_flare_cut)
+	{	
+	    $strsel .= 
+	    '&&(RBM_CONT < 6.25 || (RBM_CONT <18.75 && !((SAT_LON > 200 && SAT_LAT < -16)'."\n".
+	    '|| (SAT_LON > 255 && SAT_LAT < 10 && (SAT_LAT<0.36*SAT_LON-97))|| '."\n".
+	    '(SAT_LON<250&&SAT_LON>160 && SAT_LAT>16)||(SAT_LAT>8&&SAT_LON<250 '."\n".
+	    '&&SAT_LAT>-0.53*SAT_LON+123))))'."\n";
+	}
+    }
+} #end of $instru eq 'GIS2' || $instru eq 'GIS3'
+
+if ( $instru !~ /GIS/ || $gis_selection =~ /manual/) {
+    if ( $cor_min_def{$instru} ne 'NONE' ) {
+	if ( $MKFVer{1} > 0 ) {
+	    $strsel .= "\&\&COR_MIN>$cor_min\n";
+	}
+        else {
+	    $strsel .= "\&\&COR>$cor_min\n";
+        }
+    }
+    if ( $rbm_cont_def{$instru} ne 'NONE' ) {
+       $strsel .= "\&\&RBM_CONT<$rbm_cont\n";
+    }
+}
+
+if ( $instru =~ /SIS/ ) {
+  if($calcthresh) {
+      $strsel .= &calc_thresh();
+  } else {
+      foreach $keyval (keys(%ThreshDefaults)) {
+	  eval "\$thresh_templ =~ s/THRESH$keyval/\$threshold$keyval/g;";
+      }
+      $strsel .= $thresh_templ;
+  }
+  if ($how_many_chips == 1 ) {
+     $threshnum = 16;
+  } elsif ($how_many_chips == 2) {
+     $threshnum = 32;
+  } elsif ($how_many_chips == 4) {
+     $threshnum = 64;
+  } else {
+     &print_warn("$how_many_chips CCDs seen.\n This should not happen.\n");
+     &exit_wish();
+  }
+  $strsel .= "&&(T_DY_NT<0||T_DY_NT>$threshnum)&&(T_SAA<0||T_SAA>$threshnum)";
+}
+
+
+# Now write the mkf sel file:
+#
+$MKFSEL = "${session}_mkf.sel";
+unlink($MKFSEL);
+if ( !open(MKFSEL,">$MKFSEL")) { 
+    &print_warn("Could not open file $MKFSEL.\n");
+    &exit_wish();
+}
+print MKFSEL $strsel,"\n";
+close(MKFSEL);
+
+#print "Using MKF selection expression: \n$strsel\n\n";
+
+if ( $image ) {
+   $saoimage = $remain ;
+}
+else {
+    $saoimage = 0;
+}
+
+if ( $instru =~ /GIS/ ) {
+
+    if ( $fillrti == 2 ) {
+	$fillrti = 0;
+	for ( $i = 0; $i < $nfiles; $i++ ) {
+	    if ( $catarray{'use',$i} eq 'y' && 
+                     $catarray{'POS_DET',$i} eq 'FLF' ) {
+		&print_text( "Examining file: $catarray{'filename',$i} \n");
+		$comlin = "fstatistic $datadir/$catarray{'filename',$i}+1 RTI -";
+		@mean = &runcom($comlin);
+                if ( $mean[0] eq "ERROR FOR $$") {
+                     &print_warn("Error in FSTATISTIC:\n");
+                     &exit_wish();
+                }
+                ($result) = grep(/The mean of/,@mean);
+                chop $result;
+                @mean = split(/ +/,$result);
+                if ( $mean[$#mean] =~ /^[.0E+]+$/ ) {
+                     if ( $defaults ) { 
+			 &print_text( "Files have been found with empty ",
+			 "RTI columns, I will fix them.\n");
+			 $fillrti = 1;
+		     }
+                 else {                       
+		     $fillrti = &MessageYesOrNo('y',
+		   "Files have been found with empty RTI columns, fix them ");
+		 }
+                 if ( !$fillrti ) {
+		     &print_warn("I will not do GISCLEAN, then.\n");
+		     $gisclean = 0;
+		 }
+                 last;
+               }
+           }
+       }
+       if ( $gisclean && !$fillrti ) {
+	   &print_text( "No files found with zero'ed RTI columns, continuing...\n");
+       }
+   }
+   if ( $fillrti ) {
+       if ( ! $rtical ) {
+	   &print_text( "Warning: The Ftools refdata directory does not ",
+	   "contain the calibration files for POW2 mode.\n");
+	   &print_text( "So the POW2 files in your data will not get",
+	   " converted.\n");
+	   &print_text("This in turn means that the GISCLEAN task ",
+	   "will remove all the POW2 mode events.\n");
+	   &print_text("There is usually very little data in these files",
+	   " however if you need the events\n");
+	   if ( $instru eq 'GIS2' ) {
+	       &print_text("Get the file g2_teldef_pow2_ascalin_rt.fits",
+	       " from the caldb,\n");
+	   }
+	   else {
+	       &print_text("Get the file g3_teldef_pow2_ascalin_rt.fits",
+	       " from the HEASARC caldb,\n");
+	   }
+	   &print_text("and put it in the FTOOLS refdata directory.\n");
+       }
+       $LISTFILE = "${session}_list.tmp";
+       unlink($LISTFILE);
+       if ( ! open(LISTFILE,">$LISTFILE") ) { 
+	   &print_warn("Cannot open file $LISTFILE.\n");
+	   &exit_wish();
+       }
+       if ( $instru eq 'GIS2' && 
+	   -e "\$LHEA_DATA/g2_teldef_pow2_ascalin_rt.fits") {
+	   for ( $i = 0; $i < $nfiles; $i++ ) {
+	       if ( $catarray{'use',$i} eq 'y') {
+                  print LISTFILE "$catarray{'filename',$i}\n";
+               }
+            }
+        }
+        elsif ( $instru eq 'GIS3' && 
+	       -e "\$LHEA_DATA/g3_teldef_pow2_ascalin_rt.fits") {
+	    for ( $i = 0; $i < $nfiles; $i++ ) {
+		if ( $catarray{'use',$i} eq 'y') {
+                    print LISTFILE "$catarray{'filename',$i}\n";
+                }
+            }
+        }
+        else {
+	    for ( $i = 0; $i < $nfiles; $i++ ) {
+		if ( $catarray{'use',$i} eq 'y' 
+                      && $catarray{'POS_DET',$i} eq 'FLF' ) {
+                    print LISTFILE "$catarray{'filename',$i}\n";
+                }
+            }
+         }
+         close(LISTFILE);
+         &print_text( "Filling the RTI columns: this may take awhile.\n");
+         $comlin = "cd $datadir;gisrti datafile = \@$cwd/$LISTFILE".
+                     " calfile = FTOOLS verbose = no history = yes";
+         @result = &runcom($comlin);
+         if ( $result[0] eq "ERROR FOR $$" ) {
+	     &print_warn("Error in GISRTI\n");
+	     &exit_wish();
+	 }
+     }
+    if ( $region ) {
+	$REGION = "${session}_randc.reg";
+	unlink ($REGION);
+	if ( ! open(REGION,">$REGION")) {
+	    &print_warn("Cannot open region file $REGION\n");
+	    &exit_wish();
+	}
+	print REGION '# Cal source and ring removal region',"\n";
+	print REGION '# Written by ascascreen V.',"$version.\n";
+#Check for spread discriminator
+        $spread_discriminator = 1;
+        foreach $datafile (@myfiles) {
+	    @result = &runcom("fkeyprint ${datadir}/${datafile}+0 S_DSCR");
+            ($sp_disc) = grep(/^S_DSCR  = /,@result);
+            if (substr($sp_disc,11,2) ne 'ON') {$spread_discriminator = 0;}
+        }
+        
+        if (! $spread_discriminator) {
+            &print_text( "Some or all of your input data have spread".
+            "discriminator off,\n".
+            "so the corresponding speical region filter will be used.\n");
+        }
+
+            
+	if ( $instru =~ /2/ ) {
+	    &print_text( "    Using the region:\n");
+	    if ( $rawxbins == 256 ) {
+		if ($spread_discriminator) {
+		    print REGION " CIRCLE(128.50,128.50,88.00)\n" ;
+		    &print_text(  "     CIRCLE(128.50,128.50,88.00)\n");
+		    print REGION "-ELLIPSE(167.50,220.00,24.66,28.95,245.298)\n";
+		    &print_text( "    -ELLIPSE(167.50,220.00,24.66,28.95,245.298)\n");
+
+		} else {
+		    print REGION " CIRCLE(128.50,128.50,81.00)\n";
+		    &print_text( "      CIRCLE(128.50,128.50,81.00)\n");
+		    print REGION " -ELLIPSE(167.50,220.00,24.66,28.95,245.298)\n";
+		    &print_text( "    -ELLIPSE(167.50,220.00,24.66,28.95,245.298)\n");		
+		}
+	    }
+	    elsif ( $rawxbins == 64 ) {
+		print REGION " CIRCLE(32.13,32.13,22.00)\n";
+		&print_text( "     CIRCLE(32.13,32.13,22.00)\n" );
+		print REGION "-ELLIPSE(41.88,55.00,6.17,7.24,61.32)\n";
+		&print_text( "    -ELLIPSE(41.88,55.00,6.17,7.24,61.32)\n");
+	    }
+	}
+	else {
+	    print "    Using the region:\n";
+	    if ( $rawxbins == 256 ) {
+		if ($spread_discriminator) {
+		    print REGION " CIRCLE(128.50,128.50,88.00)\n"; 
+		    &print_text( "     CIRCLE(128.50,128.50,88.00)\n"); 
+		    print REGION "-ELLIPSE(217,95,21.56,25.92,169.216)\n"; 
+		    &print_text( "    -ELLIPSE(217,95,21.56,25.92,169.216)\n");
+		} else {
+		    print REGION " CIRCLE(128.50,128.50,73.00)\n"; 
+		    &print_text( "     CIRCLE(128.50,128.50,73.00)\n"); 
+		    print REGION "-ELLIPSE(217,95,21.56,25.92,169.216)\n"; 
+		    &print_text( "    -ELLIPSE(217,95,21.56,25.92,169.216)\n");
+                }		    
+	    }
+	    elsif ( $rawxbins == 64 ) {
+		print REGION " CIRCLE(32.13,32.13,22.00)\n";
+		&print_text( "     CIRCLE(32.13,32.13,22.00)\n"); 
+		print REGION "-ELLIPSE(54.25,23.75,5.39,6.48,42.30)\n"; 
+		&print_text( "    -ELLIPSE(54.25,23.75,5.39,6.48,42.30)\n");
+	    }
+	}
+	&print_text(  "\n");
+	close(REGION);   
+    }
+
+}
+				# 
+
+#
+# Now write the .xco file:
+#
+$COMFILE = "${session}.xco";
+unlink($COMFILE);
+if ( ! open(COMFILE,">$COMFILE")) {
+    &print_warn("Could not open file $COMFILE\n");
+    &exit_wish();
+}
+&print_text( "Writing command file $COMFILE\n");
+select(COMFILE);
+
+print "$xselses\n";
+print "set mission ASCA\n";
+print "set instru $instru\n";
+print "set datadir $datadir\n";
+print "set dumpcat\n";
+print "set datamode $datamode\n";
+if ( $exten ne "fits" ) {
+    if ( $instru eq 'SIS0' ) {
+	$liststr = 'lststr = \'[af][dt]*[Ss]0*[HhMmLl].'.$exten.'\'';
+    } elsif ( $instru eq 'SIS1' ) {
+	$liststr = 'lststr = \'[af][dt]*[Ss]1*[HhMmLl].'.$exten.'\'';
+    } elsif ( $instru eq 'GIS2' ) {
+	$liststr = 'lststr = \'[af][dt]*[Gg]2*[HhMmLl].'.$exten.'\'';
+    } elsif ( $instru eq 'GIS3' ) {
+	$liststr = 'lststr = \'[af][dt]*[Gg]3*[HhMmLl].'.$exten.'\'';
+    }
+} else {
+    $liststr = "";
+}
+
+if ( $catsel ) { 
+    print "make obscat cat_filt=\@$OBSCATSEL $liststr\n"; 
+}
+else {
+    print "make obscat cat_filt=DEF $liststr\n";
+}
+
+print 'choose 1-** switch=yes',"\n";
+
+print "set image detector\n";
+
+if ( $datamode eq 'FAINT' ) {
+    print "faint bright=b2 echo=-99 maxgrade=4 split=40 dfefile=MAKE sispi=yes\n";
+}
+elsif ( $datamode eq 'FAST' ) {
+    if ( $fastsel ne 'NONE' ) {
+        print "select fast in_or_out=$fastsel save_file=no\n";
+    }
+    print "fast x_image_center=$sourcepos from_inst=$frominst save_file=no\n";
+}
+
+
+print "select mkf \@$MKFSEL \n";
+if ( $region ) { print "filter region $REGION\n"; }
+if ( $gisclean ) { 
+    print "extract events\n" ;
+    print "gisclean\n";
+}
+if ( $sisclean ) { 
+    print "extract events\n" ;
+    print "sisclean clean=2 cellsize=5 log_prob=-5.24 bkg_thr=3 ",
+    "clean_phalow=0 clean_phahi =4095 sis_plot2=no saoimage2=no\n" ; 
+}
+if ( $grade ) {
+    if($datamode eq 'FAST' ) {
+	print "select events \"grade==0\" save_file=no\n";
+    }
+    else {
+	print "select events \"grade==0||(grade>=2&&grade<=4)\" save_file=no\n";
+    }
+}
+if ( $datamode eq 'MPC' ) {
+    print "extract \"curve spec\"\n";
+}
+else {
+    if ( $image ) { 
+	print "extract \"event image\"\n";
+    }
+    else {
+	print "extract event\n";
+    }
+}
+if ( $datamode eq 'MPC' ) {
+    print "save mkf_sel ${session} clobberit=yes\n";
+}
+elsif ( $datamode eq 'FAINT' ) {
+    print "save dfe $session clobberit = yes\n";
+}
+print "save obscat $session clobberit = yes\n";
+print "\$rm -f ${xselses}\*.cat ${session}_list.tmp ${session}_obscat.lis\n";
+print "save all ${session} clobberit=yes use_events=yes\n";
+if ( $remain ) {
+    print "clear mkf\n" if ( $datamode ne 'MPC' );
+    if ( $region ) { print "clear region all\n"; }
+    if ( $saoimage ) { print "plot image\n"; }
+    print "set dumpcat\n";
+}
+else {
+    print "exit save_session=no\n";
+}
+	
+close(COMFILE);
+select(STDOUT);
+$| = 1;
+if ( $writeonly || defined $opt_x ) {
+    print "Command file written, goodbye\n";
+    if ($useTK) {
+	&clickToDismiss;
+    }
+    else {
+	exit;
+    }
+}
+else {
+    print "Running Xselect:\n";
+    if ($useTK) {
+	&clickToDismiss;
+    }
+    exec("xselect \@$COMFILE");
+}
+
+} elsif (defined $pid) {
+    open(STDOUT, ">&W0");
+    open(STDIN, ">&W0");
+    close(W0);
+    select(STDOUT); $| = 1;
+    if ( defined $opt_x ) {
+	if( ! $opt_x ) { 
+	    $opt_x = 'ascascreen_dmp.tcl';
+	}
+	unlink($opt_x);
+
+	open(DUMPIT,">$opt_x");
+	select DUMPIT; $| = 1;select STDOUT;
+	if ( defined $opt_c ) {
+#
+#  This is debugging stuff, put in a file a list of responses from the 
+#  wish scripts, and this will send them into the pipe from wish before
+#  the actual TKASCASCREEN commands.  This will make the perl part send
+#  the correct responses to the wish script.  Since this section of code 
+#  dumps the script to a file instead, then you can get the WHOLE wish
+#  session... 
+#
+	    open(COMMANDS,$opt_i) || die "Cannot open commands file $opt_i\n";
+	    @commands = <COMMANDS>;
+	    close COMMANDS;
+	    print @commands,"\n";
+	} else {
+	    print "DirAndMode> DataDir /home/timaeus/ingham/data/ASCA/f3.012/20019000\n";
+	    print "DirAndMode> ModeStr SIS0-BRIGHT\n";
+	    print "DirAndMode> Session xsel\n";
+	    print "DirAndMode> HIGH 1\n";
+	    print "DirAndMode> MEDIUM 1\n";
+	    print "DirAndMode> Status ok\n";
+	    print "MESSAGE> 1\n";
+	    print "MODESEL> 1 0 0 0\n";
+	    print "SELFRAME> remain 1\n";
+	    print "SELFRAME> sisclean 1\n";
+	    print "SELFRAME> elv_min 10\n";
+	    print "SELFRAME> grade 1\n";
+	    print "SELFRAME> threshold0123 800\n";
+	    print "SELFRAME> cor_min 6\n";
+	    print "SELFRAME> br_earth 20\n";
+	    print "SELFRAME> EXIT 1\n";
+	    print "0\n";
+	}
+	while($line = <STDIN>) {
+	    print DUMPIT $line;
+	}
+	close(DUMPIT);
+    } else {
+	exec "$wishbin --";
+    }
+} else {
+    die "fork error: $!\n";
+}
+
+sub ccdThresh
+{
+######################################################################
+# SUBROUTINE:   ccdThresh2($instno,$ccdlst,$nevents,$ontime)
+# ARGUMENTS:
+#               $instno   - Instrument number (0 or 1)
+#               $ccdlst   - value of S${instno}_CCDLST keyword
+#               $nevents  - (optional) number of events
+#               $ontime   - (optional) ontime for the data
+#   The latter two are not used yet, but when we know how to set the
+#   defaults for bright sources, they will be...
+# RETURNS:
+#               $chipno (for 1ccd mode this is the number of the active
+#                        chip, otherwise it is -1 )
+#               $threshExpr - String with the default MKF selection expression
+#                            THRESH$i in place of actual values, where
+#                             $i is the index into %defValues
+#               %defValues - keys   - chip list for this default 
+#                                      ( i.e. 01 )
+#                            values - their Threshold default
+#               $how_many_chips - number of CCD's in use (should be 1,2, or 4)
+#
+# DESCRIPTION:
+# This gets the default values and thresh expression for MKFILTER selection
+# 
+############################################################################ 
+    local($instno,$mkfver,$ccdlst,$nevents,$ontime) = splice(@_,0,5);
+    local($useIntensity,@ccdlst,@ccdpow,%usedChips,%hits,@chipList);
+    local($chipno,%result,$key,%hitsToThresh,$threshTempl);
+
+    $useIntensity = 1 if(defined $nevents && defined $ontime); 
+#
+# Get the default right for either MKF version:
+# Note, if a chip appears 3 times, we will give 0 for the default.
+# In fact we do not know what the default should be, so this is OK
+#
+    if ( $mkfver == 1 ) { 
+	if ( $useIntensity ) {
+	    %hitsToThresh = ( 1 , 800,
+			     2 , 600,
+			     3, 500,
+			     4, 400 );
+	}
+	else {		       
+	    %hitsToThresh = ( 1 , 800,
+			     2 , 600,
+			     3, 500,
+			     4, 400 );
+	} 
+    }
+    else {
+	if ( $useIntensity ) {
+	    %hitsToThresh = ( 1 , 50,
+			     2 , 75,
+			     3, 90,
+			     4, 100 );
+	}
+	else {		       
+	    %hitsToThresh = ( 1 , 50,
+			     2 , 75,
+			     3, 90,
+			     4, 100 );
+	} 
+    }
+#
+# %usedChips will contain the chips used
+# Key will be the chip number, Value will be the number of times it appears
+#    
+    grep($usedChips{$_}++,split('',$ccdlst));
+
+#
+# How many distinct # of hits are there?
+# Key will be # of hits, 
+# Value the chip list (comma delimited) with those hits...
+#
+    foreach (keys(%usedChips)) {
+	$hits{$usedChips{$_}} .= "$_";
+	push(@chipList,$_);
+    }
+
+    $how_many_chips = $#chipList + 1;
+    
+#
+# Set the chipno:
+#
+    if ( $#chipList == 0 ) {
+	$chipno = $chipList[0];
+    }
+    else {
+	$chipno = -1;
+    }
+#
+# Run over the distinct hits:
+#
+    foreach $key (keys(%hits)) {
+	$THRESH = 'THRESH'.$hits{$key};
+	$result{$hits{$key}} = $hitsToThresh{$key};
+#
+# Now add each chip to the template:
+#
+	foreach (split('',$hits{$key})) {
+	    $threshTempl .= 
+		"\&\& s${instno}_pixl$_ > 0 && s${instno}_pixl$_ < $THRESH\n";
+	}
+    }			    
+    ($chipno,$threshTempl,%result);
+}
+
+ 
+
+sub socArgs
+{
+    local(@uname,$bsd);
+    @uname = split(" ",(`uname -a`)[0]);
+    if ( $uname[0] =~ /ultrix|OSF/i ) {
+	$bsd = 1;
+    }
+    elsif ( $uname[0] =~ /sunos/i ) {
+	if ( $uname[2] =~ /^4/ ) {
+	    $bsd = 1;
+	}
+	else {
+	    $bsd = 0;
+	}
+    }
+    elsif ( $uname[0] =~ /irix/i ) {
+       if ( $uname[2] =~ /^5/ ) {
+	   $bsd = 0;
+       }
+       else {
+	   $bsd = 1;
+       }
+    } 
+    else {
+	print "I don't recognize your system from uname -a: assuming BSD socket protocol\n";
+	$bsd = 1;
+    }
+
+    if ( $bsd ) {
+        (1,1,0);
+    }
+    else {
+        (1,2,0);
+    }
+}
+
+sub calc_thresh {
+    my($file,$Nsigma,$Min_Rows);
+    my($telem,$mkf,$i,$j,$start,$stop,$key,$chip,$colname);
+    my(@ccdlist,@totalrows,@totalsum1,@totalsum2);
+    my($naxis2,$mean,$sigma,$lo,$hi);
+
+    my($inst) = $instru;
+    $inst =~ s/^SIS/S/;
+
+    $Nsigma=3;    # number of sigma from the mean
+    $Min_Rows=3;  # minimum number of filter file records to calculate stats
+
+    for ( $j=0; $j<$nfiles; $j++ ) {
+	next unless ( $catarray{'use',$j} eq 'y' );
+
+	$file = $catarray{'filename',$j};
+	&print_text("Calculating PIXL thresholds for $file...\n");
+	$file = "$datadir/$file";
+
+	$key="${inst}CCDLST";
+	@ccdlist = sort( split(//,$catarray{$key,$j}) );
+
+##############################################################
+# determine the name of the filter file from the telemetry
+# file name listed in the event file header.
+###############################################################
+	($_) = &runcom("fkeyprint $file+0 TLM_FILE | grep 'TLM_FILE='");
+	($telem) = /'\s*(\S+)\s*'/;   # remove quotes and spaces
+	$telem =~ s/\./_/g;           # change .'s to _'s
+	$mkf = "$mkfdir/${telem}.mkf" ;
+
+	if ( ! -r $mkf ) {
+	    &print_warn("Can't read $mkf\n");
+	    &exit_wish();
+	}
+
+###################################################################
+# select rows from filter file based on standard and GTI criteria
+###################################################################
+	unlink("${session}_thrsh_sel.tmp");
+
+	if( ! open(CRI, "> ${session}_thrsh_sel.tmp") ) {
+	    &print_warn("Could not create ${session}_thrsh_sel.tmp\n");
+	    &exit_wish();
+	}
+
+	print CRI "gtifilter(\"$file+2\", TIME) &&\n";
+	print CRI "SAA==0 && COR>6 && FOV==0 && BR_EARTH>20 && ELV>10 &&\n";
+	print CRI "ACS==0 && ANG_DIST<.01 && T_DY_NT>64 && T_SAA>64\n";
+
+	close(CRI);
+
+	unlink("${session}_thrsh_flt.tmp");
+	$Cmd = "fselect infile=$mkf " .
+                   "outfile=${session}_thrsh_flt.tmp " .
+                   "expr=\@${session}_thrsh_sel.tmp " .
+                   "histkw=no " .
+                   "copyall=no " .
+                   "keycopy=no " .
+                   "clobber=yes";
+	if ( (&runcom("$Cmd"))[0] eq "ERROR FOR $$" ) {
+	    &print_warn("Error filtering mkf file with fselect.\n");
+	    &exit_wish();
+	}
+
+##############################
+# loop over active CCDs
+##############################
+
+	my($lastchip) = -99;
+	foreach $chip (@ccdlist) {
+	    next if ($chip == $lastchip);
+	    $lastchip = $chip;
+
+	    $colname="${inst}_PIXL${chip}";
+
+    ########################################################
+    # apply additional selection criteria for this chip
+    #########################################################
+	    unlink("${session}_thrsh_chp.tmp");
+	    $Cmd = "fselect infile=${session}_thrsh_flt.tmp " .
+                       "outfile=${session}_thrsh_chp.tmp " .
+                       "expr=\"$colname>0 && ${inst}_SATF${chip}==0\" " .
+                       "histkw=no " .
+                       "copyall=no " .
+                       "keycopy=no " .
+                       "clobber=yes";
+	    &runcom("$Cmd");
+
+    ################################################
+    # check if there is a sufficient number of rows
+    #################################################
+	    ($_) = &runcom("fkeyprint ${session}_thrsh_chp.tmp+1 NAXIS2 | " .
+			   "grep '^NAXIS2  =' ");
+	    ($naxis2) = /=\D*(\d+)\D*/;
+
+	    if ( $naxis2 == 0 ) {
+		next;
+	    }
+     
+    ##############################################################
+    # calculate mean and standard deviation
+    ##############################################################
+	    unlink("${session}_thrsh_stt.tmp");
+	    ($_) = &runcom("fstatistic infile=${session}_thrsh_chp.tmp " .
+			   "colname=$colname rows=- " .
+			   "outfile=${session}_thrsh_stt.tmp");
+
+	    ($_) = &runcom("grep mean ${session}_thrsh_stt.tmp");
+	    ($mean) = /\s(\S+)\s*$/;
+	    ($_) = &runcom("grep deviation ${session}_thrsh_stt.tmp");
+	    ($sigma) = /\s(\S+)\s*$/;
+	
+	    if ( !defined( $totalrows[$chip] ) ) {
+		$totalrows[$chip] = 0;
+		$totalsum1[$chip] = 0;
+		$totalsum2[$chip] = 0;
+	    }
+	    $totalrows[$chip] += $naxis2;
+	    $totalsum1[$chip] += $naxis2 * $mean;
+	    $totalsum2[$chip] += $naxis2 * ($mean*$mean + $sigma*$sigma);
+	}
+    }
+
+    $result = "";
+    for ( $i=0; $i<4; $i++ ) {
+
+	$colname="${inst}_PIXL${i}";
+
+	if ( !defined($totalrows[$i]) || $totalrows[$i] == 0 ) {
+	    next;
+	} elsif ( $totalrows[$i] < $Min_Rows ) {
+	    $result .= "($colname>0)&&\n";
+	    &print_warn("Warning only $totalrows[$i] rows for chip $i\n");
+	    next;
+	}
+    
+	$mean = $totalsum1[$i]/$totalrows[$i];
+	$sigma = sqrt( $totalsum2[$i]/$totalrows[$i] - $mean*$mean );
+	if ( ($lo = ($mean - $sigma * $Nsigma)) < 0.0 ) {
+	    $lo = 0.0;
+	}
+	$hi = ($mean + $sigma * $Nsigma);
+  
+	$result .= sprintf("&&( $colname>%.5f && $colname<%.5f )\n",$lo,$hi);
+    }
+    unlink("${session}_thrsh_sel.tmp");
+    unlink("${session}_thrsh_flt.tmp");
+    unlink("${session}_thrsh_chp.tmp");
+    unlink("${session}_thrsh_stt.tmp");
+    return $result;
+}

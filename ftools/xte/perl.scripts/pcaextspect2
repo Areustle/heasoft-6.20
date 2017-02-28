@@ -1,0 +1,837 @@
+#!/usr/bin/perl
+#
+# File: pcaextspect2
+#
+# Description:  Extract PCA Standard2 spectrum and background, and optional deadtime correction
+#
+# Author: C. B. Markwardt
+#
+#
+
+use Getopt::Std;
+
+getopts(':h');
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    pcaextspect2 - Extract PCA Standard2 spectrum and background, and 
+          optional deadtime correction
+
+USAGE
+    pcaextspect2 src_infile bkg_infile src_phafile bkg_phafile 
+       gtiandfile pculist layerlist respfile
+
+DESCRIPTION
+
+    pcaextspect2 extracts a spectrum from PCA data stored in the
+    Standard2 format.  This task performs spectrum extraction for both
+    source and background, dead-time correction, and optionally
+    calculates a PCA response matrix which corresponds to the
+    observation.
+
+    pcaextspect2 is a "convenience" script which makes it easier and
+    less error-prone to extract a spectrum for most users.
+
+    A key benefit is that users do not need special knowledge of when
+    detectors become "dead" for various reasons.  Instead, the user
+    can request *all* of the detectors they are interested in, and
+    'pcaextspect2' will produce a spectrum which contains the subset
+    of those detectors which have good live time.  For example, users
+    can request all of the detectors all of the time
+    (pculist="0,1,2,3,4"), and pcaextspect2 will automatically
+    de-select the detectors which are disabled, or having a breakdown,
+    etc.  This functionality relies on the "zero_bad" capabilities of
+    the "pcadeadcalc2" task.
+
+    Advanced users can still use the more basic tools for fine-grained
+    control instead of this task.  Because extraction and dead-time
+    correction require the user to perform several careful operations,
+    the use of this tool is recommended to make sure that the
+    operations are done consistently.  Generally, the PCA team and the
+    RXTE GOF recomend to not change the default for the advance
+    parameters of this tool without specific need.
+
+    The input to this tool is a set of PCA Standard2 files.  To gain
+    full benefit of this tool, the user *MUST* provide dead-time
+    calculated version of the Standard2 file.  For beginning users,
+    the output files of the 'pcaprepfile2' or 'pcaprepobsid' tasks are
+    sufficient.  For advanced users, the equivalent output of
+    'pcadeadcalc2' is acceptable.
+
+    The user must provide *both* the source *and* background Standard2
+    files.  Beginning users can use the output of 'pcaprepfile2' /
+    'pcaprepobsid'; advanced users may use the output of 'pcabackest'
+    if desired.
+
+    The output of the task is a source spectrum file (.pha file) and a
+    background spectrum file for the same time interval.  These files
+    are dead-time corrected, and contain only counts and exposure from
+    live detectors, as described in the help file for the task
+    'pcadeadcalc2'.
+
+    The output will be the total counts spectrum of all live
+    detectors, with an exposure that is the sum of the exposures for
+    the individual PCU detectors.  Thus, the rate spectrum appearing
+    in software like XSPEC will have units of "counts per detector"
+    ("counts per PCU").
+
+    The task can also optionally calculate a response matrix.  This
+    matrix is tailored for the specific observation and weighted
+    appropriately.  In this case, users must specify the filter file
+    using the 'filtfile' parameter.
+
+
+CALCULATING A RESPONSE MATRIX
+
+    If users wish to calculate their own response matrix at a later
+    time, they can use 'pcarsp' task.  Because of the complexity of
+    selecting the proper detectors and layers, the RXTE GOF and PCA
+    teams recommend to allow this task to compute the response matrix,
+    but it can be done "by hand."
+
+    The important parameters for calling pcarsp are,
+        -l (choose same layer list as used to extract spectrum)
+        -p (choose same detector list as used to extract spectrum)
+        -w INFILE (applies appropriate PCU weights for observation)
+
+    The output spectrum produced by this task contains PCU weighting
+    keywords than can be used automatically by selecting the "-w"
+    parameter.
+
+COMBINING SPECTRA
+
+    If the user wishes to combine spectra produced by pcaextspect2 in
+    some form of downstream processing, then these instructions may be
+    of help.
+
+    Users should combine the spectra with the following general settings:
+       * sum the counts
+       * sum the exposure
+       * sum the responses weighted by relative exposure
+
+    For the task 'mathpha' the settings should be
+       * expr="spectrum1.pha + spectrum2.pha + spectrum3.pha + ..."
+       * units='C' (output in counts)
+       * exposure='CALC'
+
+    Of course, this operation needs to be performed separately for
+    both the source and background files.
+
+    To combine the responses, the user should use the 'addrmf' task
+    and an input file with weights.  The weights should be calculated
+    according to the relative exposure.  For example, if spectrum1.pha
+    has 1000 seconds of exposure and spectrum2.pha has 500 seconds of
+    exposure then the weighting file should look like this:
+
+       spectrum1.rsp   0.6667
+       spectrum2.rsp   0.3333
+
+    Note how 0.6667 equals (1000/1500) and 0.3333 equals (500/1500),
+    where 1500 seconds is the total exposure of both.  By definition,
+    the weights in the file must sum to 1.0.
+
+PARAMETERS
+
+    src_infile [string - file name or \@filename]
+        Name of an input "source" PCA Standard2 file or \@filename.txt
+        file name list.  These files should have been processed by
+        'pcadeadcalc2', 'pcaprepfile2' or 'pcaprepobs2'.
+
+    bkg_infile [string - file name or \@filename]
+        Name of an input "background" PCA Standard2 file or
+        \@filename.txt file name list.  Note that this file list
+        should match one-for-one with the input files specified by the
+        'src_infile' parameter.  These files should have been
+        processed by 'pcadeadcalc2', 'pcaprepfile2' or 'pcaprepobs2'.
+
+    src_phafile [string - file name]
+        Name of output "source" spectrum, which will be corrected for
+        dead-time.  The BACKFILE and RESPFILE keywords will be updated
+        to point to the correct background and response files, if
+        appropriate.
+
+    bkg_phafile [string - file name]
+        Name of output "background" spectrum, which will be corrected
+        for dead-time.
+
+    gtiandfile = "-" [string]
+        Name of GTI "AND" time filtering, which is identical to the
+        gtiandfile passed to 'saextrct' to produce the input spectrum.
+        See 'saextrct' for more information.
+
+    pculist = "ALL" [string]
+        A comma-separated list of PCU detector numbers, or "ALL".  The
+        list of detectors should be in the range 0-4.  The value of
+        "ALL" means use all detectors, i.e. ("0,1,2,3,4").
+
+    layerlist = "ALL" [string]
+        A comma-separated list of PCU anode layer numbers, or "ALL".
+        The list of layers should be in the range 1-3.  The value of
+        "ALL" means use all layers, i.e. ("1,2,3").  It is also
+        possible to specify an explicit list of anode symbols, for
+        example "X1L,X2L,X3L" for all left anodes or "X1R,X2R,X3R" for
+        all right anodes.
+
+    respfile = "NONE" [string]
+        Name of output response matrix file, or "NONE".  The response
+        matrix will be tailored for the specific observation.  The
+        'filtfile' parameter must also be supplied when a response
+        matrix is desired.  A value of "NONE" means to not calculate a
+        response matrix.
+
+    filtfile = "NONE" [string - file name]
+        Name of RXTE filter file which covers the complete requested
+        observation duration, and is used for calcalating a response
+        matrix.  This parameter is not required if respfile=NONE.  You
+        may give an @filtfile.lis type file, but the filtfile.lis file
+        must list only a single filter file (not multiple files).
+
+    (deadcorrtype = "LIVE") [string]
+        Name of live-time correction type to use.  Use "LIVE" for the true
+        live-time correction, which results in a true dead-time corrected
+        spectrum.  Use "ON" for the on-time column, which results in a
+        standard non-dead-time corrected spectrum (the basic detector
+        on-time exposure is calculated).
+
+    (ra = "INDEF") [string]
+        Right ascension of target in J2000 degrees.  The value
+        overrides the RA_OBJ keyword value set in the PHA header.  If
+        a value of "INDEF" is provided, then the source position in
+        the PHA file is left unmodified.
+
+    (dec = "INDEF") [string]
+        Declination of target in J2000 degrees.  The value
+        overrides the DEC_OBJ keyword value set in the PHA header.  If
+        a value of "INDEF" is provided, then the source position in
+        the PHA file is left unmodified.
+
+    (gtiorfile = "APPLY") [string]
+        Name of GTI "OR" time filtering, which is identical to the
+        gtiorfile passed to 'saextrct' to produce the input spectrum.
+
+    (gticols = "START STOP") [string]
+        Name of GTI start/stop column names, which is identical to the
+        gticols passed to 'saextrct' to produce the input spectrum.
+
+    (timecol = "TIME") [string]
+        Name of TIME column used for extraction, which is identical to
+        the timecol passed to 'saextrct' to produce the input spectrum.
+
+    (timemin = INDEF) [double precision real]
+        Minimum start time (MET) used for accumulation, which is
+        identical to the timemin passed to 'saextrct' to produce the
+        input spectrum.
+
+    (timemax = INDEF) [double precision real]
+        Maximum start time (MET) used for accumulation, which is
+        identical to the timemax passed to 'saextrct' to produce the
+        input spectrum.
+
+    (timeint = INDEF) [double precision real]
+        Comma-separated list of time intervals (MET), which is
+        identical to the timeint passed to 'saextrct' to produce the
+        input spectrum.
+
+    (accumulate = "ONE") [string]
+        Setting passed to 'saextrct'.  Use "ONE" to extract one summed
+        spectrum (RECOMMENDED), or "MANY" to extract a "Type II"
+        spectrum for each Standard2 column (NOT RECOMMENDED).
+        WARNING: setting accumulate=MANY is not compatible with
+        requesting a response matrix.
+
+    (phazeroexp = YES) [boolean]
+        If set to YES, then a spectrum is produced even if zero
+        exposure is detected.  This occurs if the combination of GTIs
+        and PCU on-time produces a valid spectrum but it has no live
+        time.  If phazeroexp=NO, then no spectrum is produced if zero
+        exposure is detected.
+
+    (respzeroexp = NO) [boolean]
+        If set to YES, then a dummy response matrix is calculated even
+        if zero exposure is detected (all PCUs assigned equal weight).
+        If respzeroexp=NO, then no response is calculated if zero
+        exposure is detected.  You must use special care when setting
+        respzeroexp=YES.  In particular, when combining spectra, the
+        responses must be weighted according to exposure, otherwise
+        the PCUs will be weighted incorrectly.
+
+    (lcbinarray = INDEF) [string]
+        Setting passed to 'saextrct'.  The default value is 400000.  Set
+        to a larger value for better performance on larger data sets.
+
+    (gtiarray = INDEF) [string]
+        Setting passed to 'saextrct'.  The default value is 30000.  Set to
+        a larger value if you exceed the limit.
+
+    (maxmiss = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (phasefile = INDEF) [string]
+        Setting passed to 'saextrct'.
+
+    (timezero = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chmin = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chmax = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chint = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chbin = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (ephem = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (period = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (phaseint = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (obsdate = "MJDREF") [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (obstime = "TSTART TSTOP") [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (sensecase = NO) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (negative = IGNORE) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (mfracexp = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (tnull = 0.0) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 2) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+
+    1. Calling interactively:
+       
+      pcaextspect2 
+        [ interactive prompts follow ]
+        Input Standard2 file name or \@file-of-filenames: FS4a_1ee05555-1ee062c0_DT
+        Input background file name or \@file-of-filenames: FS4a_1ee05555-1ee062c0_DT_bkg
+        Output dead-time corrected source spectrum: spectrum_srcDT.pha
+        Output dead-time corrected background spectrum: spectrum_bkgDT.pha
+        Input GTI file to be AND'd with INFILE:[-] 
+        Comma-separated list of PCU detectors to accmulate (0-4): ALL
+        Comma-separated list of PCU layers to accmulate (1-3): ALL
+        Name of output response matrix file (or NONE): spectrum.rsp
+        Name of XTE filter file (or NONE): filtfile=x95422010409.xfl.gz
+
+    2. Calling from command line:
+
+      pcaextspect2 src_infile=FS4a_1ee05555-1ee062c0_DT \\
+                   bkg_infile=FS4a_1ee05555-1ee062c0_DT_bkg \\
+                   src_phafile=spectrum_srcDT.pha bkg_phafile=spectrum_bkgDT.pha \\
+                   gtiandfile="-" pculist=ALL layerlist=ALL \\
+                   respfile=spectrum.rsp filtfile=x95422010409.xfl.gz
+
+    3. Using "\@-files" instead of simple file names:
+
+      # Use wild-card to find source files (EXAMPLE ONLY)
+      ls obsid/pca/FS4a*_DT > source.lis
+
+      # Use wild-card to find background files (EXAMPLE ONLY)
+      ls obsid/pca/FS4a*_DT_bkg > background.lis
+ 
+      pcaextspect2 src_infile=\@source.lis bkg_infile=\@background.lis \\
+                   src_phafile=spectrum_srcDT.pha bkg_phafile=spectrum_bkgDT.pha \\
+                   gtiandfile="-" pculist=ALL layerlist=ALL \\
+                   respfile=spectrum.rsp filtfile=x95422010409.xfl.gz
+
+CAVEATS
+
+    Although it is possible to run this task against the "original"
+    raw Standard2 files, the PCA team cannot attest to its
+    correctness.  Also, the running of this task assumes that
+    "zero_bad=YES" has been used when running
+    pcaprepfile2/pcaprepobs2/pcadeadcalc2.  If zerobad=NO, then it is
+    possible for the calculated exposures to be incorrect.
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    saextrct, pcaprepfile2, pcaprepobs2, pcadeadcalc2, pcadeadspect2
+
+EOHELP
+exit;
+    }
+
+use HEACORE::HEAINIT;
+
+
+
+# ==================================================================
+# Call the main task subroutine with an exception handler
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+@scratchfiles_badonly = ();
+eval {
+    $status = headas_main(\&pcaextspect2);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub pcaextspect2 {
+
+    $taskname = "pcaextspect2";
+    $taskvers = "2.2";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &pcaextspect2_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+
+	# Delete some product files only if we exited with an error
+	if ($@) { 
+	  foreach $scratchfile (@scratchfiles_badonly) {
+	    unlink "$scratchfile";
+	  }
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Working subroutine
+sub pcaextspect2_work {
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants :longnames);
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter);
+    my ($fits1, $fits2, $handle1, $handle2);
+    my ($mode, $tddes5);
+
+    ($status = PILGetString('src_infile',$src_infile)) == 0 || die "error getting src_infile parameter";
+    ($status = PILGetString('bkg_infile',$bkg_infile)) == 0 || die "error getting bkg_infile parameter";
+    ($status = PILGetString('src_phafile',$src_phafile)) == 0 || die "error getting src_phafile parameter";
+    ($status = PILGetString('bkg_phafile',$bkg_phafile)) == 0 || die "error getting bkg_phafile parameter";
+    ($status = PILGetString('gtiandfile',$gtiandfile)) == 0 || die "error getting gtiandfile parameter";
+    ($status = PILGetString('pculist',$pculist)) == 0 || die "error getting pculist parameter";
+    ($status = PILGetString('layerlist',$layerlist)) == 0 || die "error getting layerlist parameter";
+    ($status = PILGetString('respfile',$respfile)) == 0 || die "error getting respfile parameter";
+    ($status = PILGetString('ra',$ra)) == 0 || die "error getting ra parameter";
+    ($status = PILGetString('dec',$dec)) == 0 || die "error getting dec parameter";
+    ($status = PILGetString('deadcorrtype', $deadcorrtype)) == 0 || die "error getting deadcorrtype parameter";
+    ($status = PILGetString('gtiorfile',$gtiorfile)) == 0 || die "error getting gtiorfile parameter";
+    ($status = PILGetString('gticols',$gticols)) == 0 || die "error getting gticols parameter";
+    ($status = PILGetString('timecol',$timecol)) == 0 || die "error getting timecol parameter";
+    ($status = PILGetString('timemin',$timemin)) == 0 || die "error getting timemin parameter";
+    ($status = PILGetString('timemax',$timemax)) == 0 || die "error getting timemax parameter";
+    ($status = PILGetString('timeint',$timeint)) == 0 || die "error getting timeint parameter";
+    ($status = PILGetString('lcbinarray',$lcbinarray)) == 0 || die "error getting lcbinarray parameter";
+    ($status = PILGetString('gtiarray',$gtiarray)) == 0 || die "error getting gtiarray parameter";
+    ($status = PILGetString('maxmiss',$maxmiss)) == 0 || die "error getting maxmiss parameter";
+    ($status = PILGetString('phasefile',$phasefile)) == 0 || die "error getting phasefile parameter";
+    ($status = PILGetString('accumulate',$accumulate)) == 0 || die "error getting accumulate parameter";
+    ($status = PILGetBool('phazeroexp',$phazeroexp)) == 0 || die "error getting phazeroexp parameter";
+    ($status = PILGetBool('respzeroexp',$respzeroexp)) == 0 || die "error getting respzeroexp parameter";
+    ($status = PILGetString('timezero',$timezero)) == 0 || die "error getting timezero parameter";
+    ($status = PILGetString('chmin',$chmin)) == 0 || die "error getting chmin parameter";
+    ($status = PILGetString('chmax',$chmax)) == 0 || die "error getting chmax parameter";
+    ($status = PILGetString('chint',$chint)) == 0 || die "error getting chint parameter";
+    ($status = PILGetString('chbin',$chbin)) == 0 || die "error getting chbin parameter";
+    ($status = PILGetString('ephem',$ephem)) == 0 || die "error getting ephem parameter";
+    ($status = PILGetString('period',$period)) == 0 || die "error getting period parameter";
+    ($status = PILGetString('phaseint',$phaseint)) == 0 || die "error getting phaseint parameter";
+    ($status = PILGetString('obsdate',$obsdate)) == 0 || die "error getting obsdate parameter";
+    ($status = PILGetString('obstime',$obstime)) == 0 || die "error getting obstime parameter";
+    ($status = PILGetBool('sensecase',$sensecase)) == 0 || die "error getting sensecase parameter";
+    ($status = PILGetString('negative',$negative)) == 0 || die "error getting negative parameter";
+    ($status = PILGetString('mfracexp',$mfracexp)) == 0 || die "error getting mfracexp parameter";
+    ($status = PILGetReal('tnull',$tnull)) == 0 || die "error getting tnull parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting cleanup parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    
+    print "Running $taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------\n" if ($chatter >= 2);
+
+    
+
+    # Parameter validation
+    $clobstr = $clobber ? "YES" : "NO";
+    $cleanstr = $cleanup ? "YES" : "NO";
+    undef $respfile if ($respfile =~ m/^none$/i);
+    if (defined($respfile)) {
+      ($status = PILGetString('filtfile',$filtfile)) == 0 || die "error getting filtfile parameter";
+    }
+    undef $filtfile if ($filtfile =~ m/^none$/i);
+
+    &headas_clobberfile($src_phafile);
+    &headas_clobberfile($bkg_phafile);
+    &headas_clobberfile($respfile) if ($respfile);
+
+    if ($respfile && ! $filtfile) {
+      die "ERROR: you must specify 'filtfile' and 'respfile' parameters together";
+    }
+    undef $ra if ($ra =~ m/^indef$/i);
+    undef $dec if ($dec =~ m/^indef$/i);
+
+    if ($deadcorrtype =~ m/^LIVE$/i) { 
+      $deadcorrtype = "LIVE";
+      print "  Using LIVE-time correction\n" if ($chatter >= 5);
+    } elsif ($deadcorrtype =~ m/^ON$/i) {
+      $deadcorrtype = "ON";
+      print "  Using ON-time correction\n" if ($chatter >= 5);
+    } else {
+      die "ERROR: $deadcorrtype must be either 'LIVE' or 'ON'"
+    }
+
+    # Check for input files because saextrct gives very misleading
+    # error messages.
+    if ($src_infile =~ m/^@(.*)$/) {
+      die "ERROR: Input file $1 does not exist" if ( ! -r "$1" );
+    }
+    if ($bkg_infile =~ m/^@(.*)$/) {
+      die "ERROR: Input file $1 does not exist" if ( ! -r "$1" );
+    }
+
+    # Expand @filtfile.lis files
+    if (defined($filtfile)) {
+      if ($filtfile =~ m/^@(.*)$/) {
+	my $atfiltfile = "$1";
+	die "ERROR: filter file $atfiltfile does not exist" if ( ! -f $atfiltfile );
+	open(IN,"<$atfiltfile") or die "ERROR: could not open $atfiltfile";
+	@filtfiles = <IN>;
+	close(IN);
+	
+	die "ERROR: $atfiltfile must point to a single filter file" if ($#filtfiles+1 > 1);
+	print "  (found embedded filter file $filtfiles[0])\n" if ($chatter >= 5);
+	$filtfile = $filtfiles[0];
+	chomp($filtfile);
+      }
+      die "ERROR: $filtfile does not exist" if (! -f $filtfile );
+    }
+
+    print "   PCUs:   $pculist\n" if ($chatter >= 2);
+    print "   Layers: $layerlist\n" if ($chatter >= 2);
+    @columns = &parse_pcus_columns("$pculist","$layerlist");
+    print "     (normalized PCU list: $pculist)\n" if ($chatter >= 5);
+    print "     (normalized layer list: $layerlist)\n" if ($chatter >= 5);
+    $ncols = $#columns + 1;
+    print "   Standard2 Columns Requested: $ncols\n" if ($chatter >= 2);
+    print "      (".join(", ",@columns).")\n" if ($chatter >= 5);
+    if (! defined($columns[0]) ) {
+      die "ERROR: invalid PCU list '$pculist' or layer list '$layerlist' (PCUs must be in range 0-4 and layer list in range 1-3)";
+    }
+
+    # Create column list file
+    $colfile = "$src_phafile"."_cols.lis";
+    $atcolfile = "@"."$colfile";
+
+    open(COLUMNFILE,">$colfile") || die "ERROR: could not open '$colfile' for writing";
+    push @scratchfiles, $colfile;
+    foreach $col (@columns) { print COLUMNFILE "$col\n"; }
+    close(COLUMNFILE);
+    
+
+    # ===================================================
+    # Loop through twice, once for source and once for background
+    foreach $type ("Source","Background") {
+
+      if ($type eq "Source") {
+
+	# Source
+	$infile   = "$src_infile";    # Input Standard2 files
+	$outroot  = "$src_phafile";   # Output .pha file
+	$extenpha = "_nodt.pha";      # Dummy .pha extension
+	$outdt    = "$src_phafile";   # Output dead-time corrected .pha file
+      } else {
+
+	# Background
+	$infile   = "$bkg_infile";    # Input Standard2 files		    
+	$outroot  = "$bkg_phafile";   # Output .pha file		    
+	$extenpha = "_nodt.pha";      # Dummy .pha extension		    
+	$outdt    = "$bkg_phafile";   # Output dead-time corrected .pha file
+      }	
+      
+      # Full name of dummy output file created by saextrct (will be renamed)
+      $outfile_nodt = "$outroot"."$extenpha";
+
+      # Run SAEXTRCT and obtain spectrum without deadtime correction
+      $cmd = "saextrct ".
+	"infile='$infile' ".
+	"outroot='$outroot' extenpha='$extenpha' clobber='YES' ".
+	"accumulate='$accumulate' printmode='SPECTRUM' spmode='SUM' ".
+	"columns='$atcolfile'  ".
+	"gtiorfile='$gtiorfile' gtiandfile='$gtiandfile' ".
+	"timemin='$timemin' timemax='$timemax' timeint='$timeint' ".
+	"chmin='$chmin' chmax='$chmax' chbin='$chbin' chint='$chint' ".
+	"lcbinarray='$lcbinarray' gtiarray='$gtiarray' maxmiss='$maxmiss' ".
+	"gticols='$gticols' timecol='$timecol' obsdate='$obsdate' obstime='$obstime' ".
+	"phasefile='$phasefile' ephem='$ephem' period='$period' phaseint='$phaseint'  ".
+	"mfracexp='$mfracexp' mspinten='INDEF' writesum='-' writemean='-' ".
+	"tnull='$tnull' timezero='$timezero'  ".
+	"extenlc='.lc' multiple='NO' binsz='INDEF' lcmode='SUM' mlcinten=INDEF ".
+	"sensecase='NO' chkit='NO' negative='IGNORE' dryrun='NO' bailout='NO' ";
+
+      print "   Extracting non-dead-time corrected $type spectrum\n" if ($chatter >= 2);
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      &headas_clobberfile($outfile_nodt);
+      @results = `$cmd`;
+      if ($? || ! -f "$outfile_nodt") {
+	warn "Error reported by 'saextrct'";
+	print "\nError Log\n========================================\n";
+	print @results;
+	print "\n========================================\n";
+	die "ERROR: could not create '$outfile_nodt'";
+      }
+      # Rename to final output name
+      push @scratchfiles, "$outfile_nodt";
+
+
+      # ---- Deadtime correction if requested
+      print "   Applying $deadcorrtype-time correction to $type spectrum\n" if ($chatter >= 2);
+      
+      $cmd = "pcadeadspect2 ".
+	"infile='$infile' ".
+	"phafile='$outfile_nodt' outfile='$outdt' deadcorrtype='$deadcorrtype' ".
+	"gtiorfile='$gtiorfile' gtiandfile='$gtiandfile' ".
+	"timemin='$timemin' timemax='$timemax' timeint='$timeint'  ".
+	"gticols='$gticols' timecol='$timecol' ".
+	"lcbinarray='$lcbinarray' gtiarray='$gtiarray' maxmiss='$maxmiss' ".
+	"mfracexp='$mfracexp' ".
+	"cleanup='$cleanstr' chatter='$chatter' clobber='$clobstr' ";
+
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      &headas_clobberfile($outdt);
+      @results = `$cmd`;
+      if ($? || ! -f "$outdt") {
+	warn "Error reported by 'pcadeadspect2'";
+	print "\nError Log\n========================================\n";
+	print @results;
+	print "\n========================================\n";
+	die "ERROR: could not create '$outdt'";
+      }
+
+    }
+
+    # write BACKFILE keyword to source spectrum
+    print "   Applying BACKFILE keyword\n" if ($chatter >= 2);
+    $exposure = 0;
+    @pcu_weights = (0.0,0.0,0.0,0.0,0.0);
+    &write_phakeys($accumulate,$src_phafile,$bkg_phafile,$ra,$dec,\$exposure,\@pcu_weights);
+    print "   Found EXPOSURE=$exposure   ( = PCU*seconds of $deadcorrtype-time )\n";
+    printf "   Found PCU Weights (%.3f,%.3f,%.3f,%.3f,%.3f)\n",
+      $pcu_weights[0], $pcu_weights[1], $pcu_weights[2], $pcu_weights[3], $pcu_weights[4];
+
+    # 
+    if ($exposure <= 0 && ! $phazeroexp) {
+      print "   Zero exposure found; not producing PHA file (phazeroexp=YES)\n" 
+	if ($chatter >=2);
+      push @scratchfiles, $src_phafile, $bkg_phafile;
+      return $status;
+    }
+      
+
+    # ==============================
+    # Create response matrix if requested
+    if ($respfile) {
+      if ($accumulate =~ m/^many$/i) { 
+	warn "WARNING: you should not request a response matrix when accumulate=MANY.  ".
+	  "Results will be unpredictable. ";
+      }
+      if (! $cleanup) {
+	$dirtstr = "-z";
+      }
+      $calc_resp = 1;
+
+      # For the time-being only process the dead-time corrected version
+      $phafile = "$src_phafile";
+      if ($exposure > 0) {
+	$wtstr = "-w INFILE";
+      } elsif ($respzeroexp) {
+	$wtstr = "-w 1,1,1,1,1";
+	print "WARNING: creating dummy response for PCU2 because EXPOSURE=0\n";
+	print "         When combining spectra you must weight by EXPOSURE!\n";
+      } else {
+	warn "WARNING: EXPOSURE is zero; no response is calculated\n";
+	$calc_resp = 0;
+      }
+	  
+      print "   Creating response matrix (weighting $wtstr)\n" if ($chatter >= 2);
+
+      # Compose correct layer list for pcarsp
+      # Note that "all" is handled by pcarsp
+      $layerlist_detail = "$layerlist";
+      # Layers "1,2" -> "LR1,LR2"
+      $layerlist_detail =~ s/\b(\d)\b/LR\1/g;
+      # Layers "X1L,X1R" -> L1,R1
+      $layerlist_detail =~ s/\bX(\d)([LR])\b/\2\1/g;
+      
+      $cmd = "pcarsp ".
+	  "-f '$phafile' "      .          # -f input file name
+	  "-a '$filtfile' ".               # -a attitude file name (filter file)
+	  "-l '$layerlist_detail' -j y ".  # -l layer list (added)
+	  "-p '$pculist' -m y ".           # -p PCU detector list (added)
+	  "-n '$respfile' ".               # -n output response matrix name
+	  "$dirtstr ".                     # -z clean up intermediat files? NO
+	  "$wtstr ";                       # -w PCU weights from input file
+
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      &headas_clobberfile($respfile);
+      if ($calc_resp) {
+	@results = `$cmd`;
+	if ($? || ! -f "$respfile") {
+	  warn "Error reported by 'pcarsp'";
+	  print "Error Log\n========================================\n";
+	  print @results;
+	  print "========================================\n";
+	  die "ERROR: could not create response file '$respfile'";
+	}
+	push @scratchfiles_badonly, "$respfile";
+      }
+    }
+
+    print "   Done\n" if ($chatter >= 2);
+    # XXX write systematic errors to background file?
+    return 0;
+}
+
+#
+# parse_pcus_columns
+#   $pculist - input list of PCUs or "ALL"
+#   $layerlist - input list of layers or "ALL"
+#
+sub parse_pcus_columns {
+  my ($pculist,$layerlist) = (@_);
+  my (@pcus, @layers);
+  my ($pcu, $layer);
+  my (@columnlist);
+
+  if ($pculist =~ m/^all$/i) { $pculist = "0,1,2,3,4"; }
+  if ($pculist =~ m/^(\d+)-(\d+)$/) { 
+    $pculist = join(",",($1 .. $2));
+  }
+  if ($layerlist =~ m/^all$/i) { $layerlist = "1,2,3"; }
+  if ($layerlist =~ m/^(\d+)-(\d+)$/) { 
+    $layerlist = join(",",($1 .. $2));
+  }
+  @pcus   = split(/,/,"$pculist");
+  @layers = split(/,/,"$layerlist");
+
+  foreach $pcu (@pcus) {
+    die "ERROR: PCU list must be in range 0-4" if ($pcu < 0 || $pcu > 4);
+    return undef if ($pcu !~ m/^[0-4]$/);
+    foreach $layer (@layers) {
+      if ($layer =~ m/^[1-3]$/) {
+	die "ERROR: layer list must be in range 1-3" 
+	  if ($layer < 1 || $layer > 3);
+	push @columnlist, "X".$layer."LSpecPcu".$pcu;
+	push @columnlist, "X".$layer."RSpecPcu".$pcu;
+      } elsif ($layer =~ m/^X[1-3][LR]$/) {
+	push @columnlist, $layer."SpecPcu".$pcu;
+      } else {
+	die "ERROR: unrecognized layer $layer";
+      }
+    }
+  }
+
+  # Return normalized pculist and layerlist
+  $_[0] = $pculist;
+  $_[1] = $layerlist;
+  return @columnlist;
+}
+
+# Write keywords to PHA file
+#   Write BACKFILE keyword or column
+#   For accumulate=ONE, write BACKFILE keyword
+#   For accumulate=MANY, write BACKFILE column with $bkgf[$n]
+# Background file has path name components removed.
+sub write_phakeys {
+  my ($accumulate,$srcfile,$bkgfile,$ra,$dec,$exporef,$pcu_weights) = (@_);
+  my ($bkgf,$fits);
+  $bkgf = "$bkgfile";
+  $bkgf =~ s|^.*/([^/]*)$|\1|;  # Remove any path components
+  $nchar = length($bkgf) + 2 + 2;
+  
+  $fits = SimpleFITS->open("$srcfile", access=>"readwrite", ext => 'SPECTRUM');
+  die "ERROR: could not open '$srcfile' for writing" if (! $fits );
+
+  $$exporef = $fits->readkey("EXPOSURE");
+  die "ERROR: could not read EXPOSURE keyword of $srcfile" if ($fits->status());
+  @$pcu_weights = (0.0, 0.0, 0.0, 0.0, 0.0);
+  foreach $pcu (0 .. 4) {
+    $pcu_weights->[$pcu] = $fits->readkey("PCU_WT$pcu");
+  }
+  die "ERROR: could not read PCU_WTn keywords of $srcfile" if ($fits->status());
+
+  # Write source coordinates if requested
+  $fits->writekey("RA_OBJ",  $ra,  "[deg] Target Right Ascension") if defined($ra);
+  $fits->writekey("DEC_OBJ", $dec, "[deg] Target Declination") if defined($dec);
+  die "ERROR: could not write RA_OBJ/DEC_OBJ values to '$srcfile'" if ($fits->status());
+
+  # Write BACKFILE information (either column or keyword)
+  if ($accumulate =~ m/^one$/i) {
+    $fits->writekey("BACKFILE","$bkgfile","Background file name");
+  } else {
+    $fits->insertcol({TTYPE => ["BACKFILE","Background file name"],
+		      TFORM => "$nchar"."A"});
+    foreach $row (1 .. $fits->nrows()) {
+      $fits->writecol("BACKFILE",{rows=>$row},["$bkgf"."[$row]"]);
+    }
+  }
+  die "ERROR: could not write BACKFILE values to '$srcfile'" if ($fits->status());
+
+  $fits->close();
+}

@@ -1,0 +1,134 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotrmfgen/ut-uvotrmfgen,v $
+# $Revision: 1.4 $
+# $Date: 2005/11/02 15:19:33 $
+#
+#	ut-uvotrmfgen
+#
+#
+# $Log: ut-uvotrmfgen,v $
+# Revision 1.4  2005/11/02 15:19:33  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.3  2004/10/17 11:29:13  rwiegand
+# Added CALDB test mode.
+#
+# Revision 1.2  2004/05/05 21:51:04  rwiegand
+# Ignore differences in DATE keyword.
+#
+# Revision 1.1  2003/09/08 21:29:37  rwiegand
+# Added infrastructure (unit test, help file, Makefile).
+#
+
+use strict;
+
+package Test::RMFGen;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = Test::RMFGen->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runUvotrmfgen
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+		options => [
+			qw(input=string output=string caldb=boolean chatter=int)
+		],
+		get => 1,
+		);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotrmfgen
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	my @args = (
+		spectrum   => "$input/spectrum.fits",
+		areafile   => $caldb ? 'CALDB' : "$input/swueffarea.fits",
+		lsffile    => $caldb ? 'CALDB' : "$input/swugrism.fits",
+
+		outfile    => "$output/rmf.fits",
+
+		clobber	   => 'yes',
+		chatter	   => 3,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(spectrum areafile lsffile template)) {
+		if ($args{$key} eq 'CALDB') {
+		}
+		elsif (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	my $command = $self->buildCommand('uvotrmfgen', @args);
+	$self->shell($command);
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{outfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{outfile},
+			tolerance => 0.1,
+			exclude => 'DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+}
+

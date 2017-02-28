@@ -1,0 +1,221 @@
+#!/usr/bin/perl
+#
+# File: batdetmask
+#
+# Description:  Retrieve global detector quality map
+#
+# Author: Craig Markwardt
+# Date:   2006-09-20
+#
+#
+#  Algorithm:
+#
+#  The BAT global detector quality map is taken from CALDB.
+#
+use HEACORE::HEAINIT;
+
+my $taskname = "batdetmask";
+my $taskvers = "1.7";
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+$status = 0;
+eval {
+    $status = headas_main(\&batdetmask);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub batdetmask {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batdetmask_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batdetmask_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter, $clobber, $clobstr);
+
+    ($status = PILGetString('date', $date)) == 0 || die "error getting datafile parameter";
+    ($status = PILGetString('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+    ($status = PILGetString('keyword', $keyword)) == 0 || die "error getting keyword parameter";
+    ($status = PILGetString('detmask', $detmask)) == 0 || die "error getting detmask parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    $clobstr = ($clobber) ? "YES" : "NO";
+
+    print "$taskname $taskvers\n" if ($chatter >= 1);
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+
+    use Time::Local;
+
+    #                 ss mm hh DD MM YYYY
+    $t_epoch = timegm( 0, 0, 0, 1, 0,2001-1900); # Swift epoch (UTC)
+
+  RESTART_TIME:
+    if ("$date" =~ m/^(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)/ ) {
+      $utc_date = $1;
+      $utc_time = $2;
+      print "  UTC: $date\n" if ($chatter >= 5);
+    } elsif ( -f "$date" ) {
+      print "  Opening $date...\n" if ($chatter >= 5);
+      $fits = SimpleFITS->open("$date", type=>"data", access=>"readonly");
+      die "ERROR: could not open $date" if (! $fits);
+      $keyvalue = $fits->readkey("$keyword");
+      die "ERROR: could not read $keyword keyword" if ($fits->status());
+      $fits->close();
+      print "    $keyword=$keyvalue\n" if ($chatter >= 5);
+      $date = "$keyvalue";
+      goto RESTART_TIME;
+    } elsif ("$date" =~ m/^ *([-+0-9eE.]+) *$/ ) {
+      $met = ($1)+0;
+      @tlist = gmtime($met + $t_epoch);
+      $utc_date = sprintf("%04d-%02d-%02d",$tlist[5]+1900,$tlist[4]+1,$tlist[3]);
+      $utc_time = sprintf("%02d:%02d:%02d",$tlist[2],$tlist[1],$tlist[0]);
+      print "  MET: $met\n" if ($chatter >= 5);
+    } else {
+      die "ERROR: 'date' must be a valid file name or a time in either MET or YYYY-MM-DDThh:mm:ss format";
+    }
+
+    print "  Observation date: $utc_date"."T"."$utc_time UTC\n" 
+      if ($chatter >= 2);
+    die "ERROR: could not determine properly formatted data time" 
+      if (($utc_date !~ m/^\d\d\d\d-\d\d-\d\d/) ||
+	  ($utc_time !~ m/^\d\d:\d\d:\d\d/));
+
+
+    # Query CALDB using the UTC time
+    $cmd = "quzcif mission=Swift instrument=BAT detector=- filter=- codename=BADPIX ".
+      "date='$utc_date' time='$utc_time' expr='-' retrieve='NO' ";
+    print "$cmd\n" if ($chatter >= 5);
+    @result = `$cmd`;
+    die "ERROR: CALDB query failed with error: @result\n" if ($?);
+    $inspec = "$result[0]";
+    chomp($inspec);
+
+    # Format is "filename   extension"
+    @inlist = split(/ +/,$inspec);
+    $infile = "$inlist[0]";
+
+    # Defend against possible remote-CALDB
+    if ("$infile" !~ m/^(http|ftp):/i and not -f "$infile") {
+      die "ERROR: CALDB query failed to find the BAT BADPIX file";
+    }
+  
+    $extno  = "$inlist[1]";
+
+    $file_expr  = "$infile";
+    $file_expr .= "[$extno]" if ($extno);
+    # Save the result for the user to query if they want
+    PILPutString('outcaldbmask',"$file_expr");
+
+    # Convert date to Swift MET time
+    if ($utc_date =~ m/^(\d\d\d\d)-(\d\d)-(\d\d)/) {
+      $year = $1; $month = $2; $day = $3;
+    }
+    if ($utc_time =~ m/^(\d\d):(\d\d):(\d\d)/) {
+      $hour = $1; $min = $2; $sec = $3;
+    }
+    $t = timegm($sec, $min, $hour, $day, $month-1, $year-1900) - $t_epoch;
+    print "  MET = $t\n" if ($chatter >= 5);
+
+    PILPutString('outdetmask',"NONE");
+    if ("$detmask" =~ m/NONE/i) {
+      $cmd = "ftcopy infile='$file_expr' outfile='$outfile' copyall=NO clobber=$clobstr";
+    } else {
+      $fits = SimpleFITS->open("$detmask", type=>"data", access=>"readonly");
+      die "ERROR: could not open $detmask" if (! $fits);
+      $extname = $fits->readkey("EXTNAME");
+      $xtension = $fits->readkey("XTENSION");
+      @times = $fits->readcol("TIME") if ($xtension =~ m/^BINTABLE/ && $fits->status() == 0);
+      $fits->setstatus(0)->close();
+      print "  detmask XTENSION=$xtension EXTNAME=$extname\n" if ($chatter >= 5);
+
+      # If this is a table extension, then we need extra shenanigans
+      # to pull out an image which will work with ftimgcalc
+      $drow = 1;
+      if ($xtension =~ m/^BINTABLE/) { 
+
+	# Search through the times in the file and keep the largest
+	# time which is less than the requested time.  Default to
+	# the first map in the file.
+	foreach $i (0 .. $#times) {
+	  $drow = $i+1 if ($times[$i] < $t);
+	}
+	$dmexpr = "[$extname; FLAG($drow)]";
+      } else {
+	$dmexpr = "";
+      }
+      
+      $cmd = "ftimgcalc outfile='$outfile' expr='MAX(A,B)' a='$detmask$dmexpr' b='$file_expr' ".
+	"clobber=$clobstr ";
+      $detmask1 = "$detmask$dmexpr";
+    }
+
+    print "$cmd\n" if ($chatter >= 5);
+    system($cmd);
+    die "ERROR: could not create '$outfile'" if (! -f "$outfile");
+    if ( -f "$outfile" && defined($detmask1)) {
+      # Save which map was used
+      PILPutString('outdetmask',"$detmask1");
+    }
+    
+    system("ftlist infile='$outfile' option='H' | grep HDU");
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+    print "DONE\n" if ($chatter >= 1);
+
+    return 0;
+}
+
+
+

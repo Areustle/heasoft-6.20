@@ -1,0 +1,585 @@
+#!/usr1/local/bin/perl5
+#
+# PCA_BS    [ to create PCA background-subtracted light curves ]
+#
+# XTE Data Analysis script, to run SAEXTRCT many times in sequence
+# in line with Arnold Rots' prescription for how to perform PCA
+# background subtraction in six energy bands.
+#
+# Alan P. Smale, April 1996
+# XTE GOF, NASA/GSFC
+#
+# Version history:
+#     0.1  (04/12/96):  basic script.
+#          (05/30/96):  modified by A. Rots - new p,q(1), better CXB
+#     0.2  (06/25/96):  MJT modifications: prompts for cxb file name
+#                                          checks date for correct p/q/x
+#     0.3  (02/18/97):  MJT modifications per A.Rots memo of 13Feb
+#                        (new p2,q2,x2; addsubr=no for lcmath)
+
+$Version_number = "0.30";
+
+require "utils.pl";
+use Getopt::Std;
+
+#
+#==============================================================#
+# Startup banner.
+#
+
+print "Starting up PCA_BS v.".$Version_number."\n\n";
+
+# Set up arrays of correction factors, p(i) and q(i) 
+# from Arnold's note(s):
+#   1 --> before day 811 (22 March 1996)
+#   2 --> on or after day 811 (22 March 1996)
+
+@p1 = (1.02, 1.08, 1.10, 1.14, 2.13, 11.4);
+@p2 = (1.065, 1.041, 1.187, 2.159, 6.021, 32.28);
+
+@q1 = (0.57, 0.81, 0.90, 1.19, 2.22, 8.6);
+@q2 = (0.790, 0.988, 1.371, 2.133, 4.617, 23.28);
+
+@x0 = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+@x1 = (-1.6, -1.9, -2.1, -3.0, -2.3, -4.6);
+@x2 = (-4.6, -2.4, -2.7, -3.2, -1.9, -5.1);
+
+#
+#==============================================================#
+# Flag check; read in the options, and provide feedback to user
+#   about each. 'Help' comes first, then the others grouped by
+#   function.
+#
+
+getopts('b:i:p:t:x:cdhl');
+
+if (defined $opt_h) { 
+   print <<EOHELP1;
+
+NAME 
+    pca_bs v.$Version_number
+
+USAGE
+    pca_bs -[bcdhilptx]
+
+DESCRIPTION 
+
+    The user provides 
+          a list of input files in the fits_files.txt format
+          a root for the output filenames
+          the binsize in seconds for the light curves
+          an (optional) filename for an ASCII file containing
+               time information (e.g. a TIMETRANS output file)
+
+    and the PCA_BS will construct light curves in each of 6 energy
+    bands for Layer 1 and for Layer 2+3. It will then subtract
+    the Layer 2+3 'background' from the Layer 1 'source' with the
+    appropriate scalings, as defined by the Arnold Rots/Keith Jahoda
+    recipe for PCA lightcurve background subtraction for faint sources.
+    (This memo is required reading before running this task.) 
+
+    The channels are hardwired in, but can be changed by editing the 
+    perl script itself.
+
+    The p(i) and q(i) constants from the memo are set up on the first 
+    page of the code, just under the startup banner, and can be changed   
+    there if updated numbers are given. The script currently chooses
+    the proper p and q coefficients based on the observation date.
+    
+    The X(i) constants from the memo can be subtracted out too.
+    The script will, by default, choose the cosmic x-ray background
+    rates based on observation date, but the user can specify either
+    "NONE" to do no CXB subtraction or else the name of a file containing
+    an alternate set of CXB rates.
+
+PARAMETERS  (actually SWITCHES/FLAGS) (grouped by function):
+
+     -i {file} - provide name of ASCII file containing list of XTE/SA
+            files (assumed default: 'fits_files.txt').
+
+     -p {file} - provide root for product files - i.e., 'pca_bs -p one' 
+            will create files oneA_B.lc, where A = channel band, and 
+            B = 1 or 23, depending on level, and background-subtracted 
+            files oneA.lc   (assumed default: 'band').
+
+     -t {file} - provide ASCII filename containing time filter info
+            in the usual format, or INDEF or '-' for none.
+
+     -x {file} - provide ASCII filename containing cosmic x-ray background info
+            in the usual format; INDEF or '-' for default values; NONE for no
+            cosmic x-ray background correction.
+
+     -b {number} - provide requested binning for light curve file - i.e.
+            'pca_bs -b 1.0' will create 1-second bins.
+            (assumed default: 32 seconds).
+
+     -c   - prompt for names of layer1 and layer2+3 column files
+
+     -d   - Take default values for all parameters not set on the command
+            line.
+
+     -l   - Logfile switch. Currently, logging is the default (in a
+            file pca_bs.log), and  -l will disable this logging.
+
+     -h   - Print this help information.
+
+EXAMPLES
+
+     pca_bs 
+     pca_bs -i infiles -p out -t times.tfl -b 256.0
+     pca_bs -b 32.0 -p torres -d
+
+NOTES
+
+    PCA_BS is intended as a 'fast' tool to minimize the amount of
+    FTOOLing around for the user with straightforward data analysis
+    requirements. It is not intended to replace or reproduce the full
+    functionality available from the individual FTOOLS.
+
+BUGS
+
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+
+    SAEXTRCT, LCMATH for more information about these tools.
+
+EOHELP1
+exit;
+}
+
+# If parameter is entered on command line, use it. If not, and the
+# -d option is set, use a sensible default. Otherwise, prompt the user
+# for the parameter value. If the user enters a carriage return, 
+# take the default anyway.
+
+# Logical flags have initial capitals.
+
+$Defaults= 0;
+$Logging= 1;
+
+$inname= "fits_files.txt";
+$outroot= "band";
+$columns= "GOOD";
+$accumulate= "ONE";
+$binsize= 32.0;
+$channels= "INDEF";
+$times= "INDEF";
+$cxb= "INDEF";
+$lay1="tmp1.$$.txt";
+$lay23="tmp23.$$.txt";
+
+@tmp1=(X1LSpecPcu0,X1RSpecPcu0,X1LSpecPcu1,X1RSpecPcu1,X1LSpecPcu2,X1RSpecPcu2);
+@tmp1=(@tmp1,X1LSpecPcu3,X1RSpecPcu3,X1LSpecPcu4,X1RSpecPcu4);
+open(L1,">tmp1.$$.txt");
+print L1 join("\n",@tmp1);
+print L1 "\n";
+close L1;
+
+@tmp23=(X2LSpecPcu0,X2RSpecPcu0,X3LSpecPcu0,X3RSpecPcu0,X2LSpecPcu1,X2RSpecPcu1);
+@tmp23=(@tmp23,X3LSpecPcu1,X3RSpecPcu1,X2LSpecPcu2,X2RSpecPcu2,X3LSpecPcu2);
+@tmp23=(@tmp23,X3RSpecPcu2,X2LSpecPcu3,X2RSpecPcu3,X3LSpecPcu3);
+@tmp23=(@tmp23,X3RSpecPcu3,X2LSpecPcu4,X2RSpecPcu4,X3LSpecPcu4,X3RSpecPcu4);
+open(L23,">tmp23.$$.txt");
+print L23 join("\n",@tmp23);
+print L23 "\n";
+close L23;
+
+if( defined $opt_l ) {
+    $Logging = 0;
+    print "\n** Logging disabled **\n";
+}	
+
+$Logging && ( open(LOGFILE,">pca_bs.log") || die "Can't create logfile");
+$Logging && print LOGFILE "STARTING up PCA_BS v.".$Version_number."\n\n";
+
+if( defined $opt_d ) {
+    $Defaults = 1;
+    $string= " ** Going with preset defaults where applicable.\n";
+    print "$string";
+    $Logging && print LOGFILE $string;
+
+}			# Go with all defaults except where
+                        # overriden by command line. no Q/A
+
+#unless( $Defaults && !defined $opt_c ) {
+if( defined $opt_c ) {
+   print " > Give name of file containing layer1 column names [".$lay1."] > ";
+   chop($dummy=<STDIN>);
+   until ($dummy eq '' || -e $dummy) {
+      print " > File not found. Please try again. > ";
+      chop($dummy=<STDIN>);
+   }
+   unless ($dummy eq '') {$lay1 = $dummy;}
+   print " > Give name of file containing layer2+3 column names [".$lay23."] > ";
+   chop($dummy=<STDIN>);
+   until ($dummy eq '' || -e $dummy) {
+      print " > File not found. Please try again. > ";
+      chop($dummy=<STDIN>);
+   }
+   unless ($dummy eq '') {$lay23 = $dummy;}
+#  if (substr($lay1,0,1) eq '@') {$lay1=substr($lay1,1);}
+#  if (substr($lay23,0,1) eq '@') {$lay23=substr($lay23,1);}
+#  (-e $lay1)  || die "required file not found: $lay1\n";
+#  (-e $lay23) || die "required file not found: $lay23\n";
+}
+substr($lay1,0,0) = "\@";
+substr($lay23,0,0) = "\@";
+
+if( defined $opt_i ){
+   print " ** Input filename provided for FITS filelist: $opt_i \n";
+   -e $opt_i || die " !! Exiting: file $opt_i does not exist.\n";
+   $inname = $opt_i;
+} else {
+   unless ( $Defaults ) {
+      print " > Give name of file containing FITS filelist [".$inname."] > ";
+      chop($dummy=<STDIN>);
+      until ($dummy eq '' || -e $dummy) {
+         print " > File not found. Please try again. > ";
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$inname = $dummy;}
+   }
+}
+$inname = "@".$inname;
+
+# let's get the DATE-OBS right away so we can decide which p/q/x to use
+
+@tmp=&runcom("fkeyprint infile='$inname' outfile=STDOUT keynam=DATE-OBS");
+@foo=grep(/=/,@tmp);
+@bar=split('\'',$foo[0]);
+@spud=split('/',$bar[1]);
+$day=$spud[0];
+$mon=$spud[1];
+$yr=$spud[2];
+if ($yr <= 96 && $mon <= 3){
+   unless($yr == 96 && $mon == 3 && $day > 22){
+      @p=@p1;
+      @q=@q1;
+      @x=@x1;
+   } else {
+   @p=@p2;
+   @q=@q2;
+   @x=@x2;
+   }
+} else {
+   @p=@p2;
+   @q=@q2;
+   @x=@x2;
+}
+       
+if( defined $opt_p ){
+   print " ** Product (output) filename root supplied: ".$opt_p."\n";
+   $outroot = $opt_p;
+} else {
+   unless ( $Defaults ) {
+      print " > Give root for product (output) filenames [$outroot] > ";
+      chop($dummy=<STDIN>);
+      unless ($dummy eq '') {$outroot = $dummy;}
+   }
+}
+	
+if( defined $opt_b ){
+   $binsize = $opt_b;
+   print " ** Binsize = $binsize \n";
+} else {
+   unless ( $Defaults ) {
+      print " > Give binsize (in sec) for output light curve [$binsize] > ";
+      chop($dummy=<STDIN>);
+      unless ($dummy eq '') {$binsize = $dummy;}
+   }
+}				
+
+if( defined $opt_t ){
+   print " ** Input filename provided for time info: $opt_t \n";
+   -e $opt_t || die " !! Exiting: file $opt_t does not exist.\n";
+   $times = $opt_t;
+} else {
+   unless ( $Defaults ) {
+      print " > Give name of file containing time info [".$times."] > ";
+      chop($dummy=<STDIN>);
+      until ($dummy eq '' || -e $dummy) {
+         print " > File not found. Please try again. > ";
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$times = $dummy;}
+   }
+}
+if ($times eq "-") {$times="INDEF"};
+unless ($times eq "INDEF") {$times = "@".$times};
+
+if( defined $opt_x ){
+   print " ** Input filename provided for cosmic x-ray background info: $opt_x \n";
+   -e $opt_x || $opt_x == "none" || $opt_x == "NONE" 
+             || die " !! Exiting: file $opt_x does not exist.\n";
+   $cxb = $opt_x;
+} else {
+   unless ( $Defaults ) {
+      print " > Give name of file containing cosmic x-ray background 
+      info (or \"NONE\" for no cxb subtraction) [".$cxb."] > ";
+      chop($dummy=<STDIN>);
+      if ($dummy eq 'none') {$dummy="NONE"};
+      until ($dummy eq '' || $dummy == "NONE" || -e $dummy) {
+         print " > File not found. Please try again. > ";
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$cxb = $dummy;}
+   }
+}
+if ($cxb eq "-" || $cxb eq "indef") {$cxb="INDEF"};
+if ($cxb eq "none") {$cxb="NONE"};
+unless ($cxb eq "INDEF" || $cxb eq "NONE") {
+   open(C,$cxb);
+   $n=0;
+   while (<C>){
+      $x[$n++]= $_ > 0 ? -$_ : $_;
+   }
+   close(C);
+}
+if ($cxb eq "NONE") {@x=@x0};
+
+
+#==============================================================#
+# Sanity check section.
+# Creates a string containing the relevant status variables and
+# prints it to STDOUT,  and also to LOGFILE if $Logging is True.
+
+# (no ;;;; - extended string)
+
+$string = 
+"-----------------------------------------------------
+     Input file name: $inname
+     Output file root: $outroot
+     Binsize: $binsize 
+     Accumulate: $accumulate
+     Time filter: $times
+     Cosmic x-ray background: $cxb
+-----------------------------------------------------\n";
+
+print $string;
+$Logging && print LOGFILE $string;
+
+# print "Exiting before calling FTOOLS (parameter entry checking only)\n";
+# exit;
+
+#==============================================================#
+# We can now start setting up and executing SAEXTRCT runs.
+# Yes, don't get on my case, I know there are more elegant ways
+# of looping this, but I chose to go for clarity.
+
+# ----------------------------
+# CHANNELS 1-13 
+# ----------------------------
+
+$channels="1-13";
+$columns=$lay1;
+$outname=$outroot."1_1";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$columns=$lay23;
+$outname=$outroot."1_23";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$bkg_in=$outroot."1_1.lc";
+$bkg_bg=$outroot."1_23.lc";
+$bkg_out=$outroot."1.lc";
+$multi = $p[0];
+$multb = $q[0];
+$addi  = $x[0] * $binsize;
+
+&CALL_BKG( $bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi );
+
+# ----------------------------
+# CHANNELS 14-17
+# ----------------------------
+
+$channels="14-17";
+$columns=$lay1;
+$outname=$outroot."2_1";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$columns=$lay23;
+$outname=$outroot."2_23";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$bkg_in=$outroot."2_1.lc";
+$bkg_bg=$outroot."2_23.lc";
+$bkg_out=$outroot."2.lc";
+$multi = $p[1];
+$multb = $q[1];
+$addi  = $x[1] * $binsize;
+
+&CALL_BKG( $bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi );
+
+# ----------------------------
+# CHANNELS 18-23
+# ----------------------------
+
+$channels="18-23";
+$columns=$lay1;
+$outname=$outroot."3_1";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$columns=$lay23;
+$outname=$outroot."3_23";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$bkg_in=$outroot."3_1.lc";
+$bkg_bg=$outroot."3_23.lc";
+$bkg_out=$outroot."3.lc";
+$multi = $p[2];
+$multb = $q[2];
+$addi  = $x[2] * $binsize;
+
+&CALL_BKG( $bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi );
+
+# ----------------------------
+# CHANNELS 24-35
+# ----------------------------
+
+$channels="24-35";
+$columns=$lay1;
+$outname=$outroot."4_1";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$columns=$lay23;
+$outname=$outroot."4_23";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$bkg_in=$outroot."4_1.lc";
+$bkg_bg=$outroot."4_23.lc";
+$bkg_out=$outroot."4.lc";
+$multi = $p[3];
+$multb = $q[3];
+$addi  = $x[3] * $binsize;
+
+&CALL_BKG( $bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi );
+
+# ----------------------------
+# CHANNELS 36-49
+# ----------------------------
+
+$channels="36-49";
+$columns=$lay1;
+$outname=$outroot."5_1";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$columns=$lay23;
+$outname=$outroot."5_23";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$bkg_in=$outroot."5_1.lc";
+$bkg_bg=$outroot."5_23.lc";
+$bkg_out=$outroot."5.lc";
+$multi = $p[4];
+$multb = $q[4];
+$addi  = $x[4] * $binsize;
+
+&CALL_BKG( $bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi );
+
+# ----------------------------
+# CHANNELS 50-249
+# ----------------------------
+
+$channels="50-249";
+$columns=$lay1;
+$outname=$outroot."6_1";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$columns=$lay23;
+$outname=$outroot."6_23";
+
+&CALL_SAEXTRCT( $inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times );
+
+$bkg_in=$outroot."6_1.lc";
+$bkg_bg=$outroot."6_23.lc";
+$bkg_out=$outroot."6.lc";
+$multi = $p[5];
+$multb = $q[5];
+$addi  = $x[5] * $binsize;
+
+&CALL_BKG( $bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi );
+
+#
+#==============================================================#
+# We can now start setting up and executing BKG runs.
+#
+
+unlink "tmp1.$$.txt";
+unlink "tmp23.$$.txt";
+exit;
+
+#==============================================================#
+# sub CALL_SAEXTRCT
+#==============================================================#
+sub CALL_SAEXTRCT{
+
+   local($inname, $outname, $accumulate, $columns, $binsize,
+	$channels, $times) = @_;
+
+print "\n Firing up SAEXTRCT now. Please wait; you won't see anything
+further until it has completed its accumulation  ... \n\n";
+
+$command_string='saextrct infile="'.$inname.'" outroot="'.$outname.'" accumulate="'.$accumulate.'" columns="'.$columns.'" binsz="'.$binsize.'" printmode=BOTH lcmode=RATE spmode=SUM chint="'.$channels.'" timeint="'.$times.'" mode=h';
+
+print "$command_string\n";
+$Logging && print LOGFILE "$command_string\n";
+
+@result=&yakker($command_string, "1");
+
+}
+
+# ends
+#==============================================================#
+# sub CALL_BKG
+#==============================================================#
+sub CALL_BKG{
+
+   local($bkg_in, $bkg_bg, $bkg_out, $multi, $multb, $addi) = @_;
+
+#if ( -e $ENV{'SYSPFILES'}.'/bkg' ) { $pgm = 'bkg'; } 
+#elsif ( -e $ENV{'SYSPFILES'}.'/lcmath') { $pgm = 'lcmath'; } 
+#else { die "\n Aborting -- no appropriate BKG program found!\n"; }
+#
+# replacing SYSPFILES with $FTOOLS/bin
+#
+#if ( -e $ENV{'SYSPFILES'}.'/lcmath' ) { $pgm = 'lcmath'; } 
+if ( -e $ENV{'FTOOLS'}.'/bin/lcmath' ) { $pgm = 'lcmath'; } 
+else { die "\n Aborting -- lcmath not found!\n"; }
+
+print "\n Calling $pgm ... \n";
+
+$command_string=$pgm.' infile="'.$bkg_in.'" bgfile="'.$bkg_bg.'" outfile="'.$bkg_out.'" multi="'.$multi.'" multb="'.$multb.'" addi="'.$addi.'" addsubr=no mode=h';
+
+print "$command_string\n";
+$Logging && print LOGFILE "$command_string\n";
+
+@result=&yakker($command_string, "1");
+
+}
+
+# ends
+#==============================================================#

@@ -1,0 +1,123 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotoptsum/ut-uvotoptsum,v $
+# $Revision: 1.2 $
+# $Date: 2009/07/26 03:08:24 $
+#
+#
+# $Log: ut-uvotoptsum,v $
+# Revision 1.2  2009/07/26 03:08:24  rwiegand
+# Fixed template/sumfile variables and updated tolerances.
+#
+# Revision 1.1  2009/07/26 03:00:09  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::OptSum;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotoptsum
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotoptsum
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		imagefile    => "$input/input.fits",
+		maghistfile  => "$input/maghist.fits",
+		sumfile      => "$output/optsum.fits",
+		weightfile   => "$output/weights.txt",
+
+		clobber   => 'yes',
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(imagefile template)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	{
+		my $command = $self->buildCommand('uvotoptsum', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{sumfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{sumfile},
+			tolerance => 0.001,
+			reltol => 0.001,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+}
+

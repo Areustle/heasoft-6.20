@@ -1,0 +1,13 @@
+HD_COMPONENT_NAME	= heacore
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_REFDATA	= leapsec.fits tai-utc.dat JPLEPH.200 JPLEPH.405
+
+HD_INSTALL_ONLY_EXTRA	= install-jpleph
+
+include ${HD_STD_MAKEFILE}
+
+install-jpleph:
+	@${HD_INSTALL} ${HD_TOP_REFDATA}/JPLEPH.200 \
+		${HD_TOP_REFDATA}/JPLEPH ${HD_LN_S}

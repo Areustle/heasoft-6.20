@@ -1,0 +1,222 @@
+/**
+\defgroup mod_ahfits FITS file Library (ahfits)
+@ingroup mod_gen_lib
+
+The mission-independent ahfits library is a wrapper to cfitsio providing a 
+more convenient way to perform common operations on FITS files.  These include:
+ - file operations: open, close, and clone (copy)
+ - navigating extensions
+ - reading/writing header values
+ - reading/writing tables and images
+
+The ahfits library supports the FITS extended syntax when opening or cloning
+a file.  The ahfits open function, however, allows for an extension to be
+specified separately from the file name; if provided, it takes priority over
+the extension given in the extended syntax.  The ahfits cloning function will
+copy all extensions of the source file regardless of the extended syntax.  
+However, after cloning, ahfits will move to the HDU given by the extended
+syntax, or the primary HDU.
+
+For reading and writing table rows, ahfits implements a router scheme which
+directly connects local variables to FITS columns.  A call to the readRow()
+routine will automatically fill all connected local variables with the values
+from the appropriate FITS columns.  The router implements buffering for 
+reading and writing row data.  The buffering is automatically used unless the
+global "buffer" state is changed.  By default, the router lets cfitsio decide
+on the optimal buffer size, but this size can be customized by the user or
+the buffering can be turned off completely.  See the performance section for
+buffering details and recommendations.
+
+For organization purposes, the ahfits library has been split into several
+files:
+ - ahfits_base.h: define struct to contain information about a single FITS file
+ - ahfits_buffer.h: handle buffering of FITS files
+ - ahfits_colinfo.h: routines to retrieve information about table columns (name,
+       type, units, etc)
+ - ahfits_connect.h: store data connecting FITS columns and local variables
+ - ahfits_file.h: open/close FITS file and navigate HDUs
+ - ahfits_file_list.h: open/close FITS file list (using \@file syntax)
+ - ahfits_header.h: routines to read and write header information based on value
+       type (int, double, etc)
+ - ahfits_image: routines for reading/writing 2D images 
+ - ahfits_router.h: class to contain a set of connections and automatically 
+       close those connections when leaving scope of local variables
+ - ahfits_row.h: routines to navigate rows and read/write from them
+
+Usage: Including the "ahfits.h" header will give access to the entire ahfits
+library.
+
+Currently, ahfits supports:
+ - primary HDU: header access
+ - binary table extensions: header and table access
+ - image extensions (currently, only 2D images are supported)
+ASCII table extensions are not yet supported.  The library will be expanded to
+include these when necessary.
+
+The following example shows how to use the common features of ahfits for reading
+from a binary table.  In the example, an input FITS file is copied and a couple
+of keywords are read or written in the primary HDU.  Then, we iterate over all 
+binary tables, loop over all rows in each extension, and operate on each of 
+these rows by copying information from one column to another.  Finally, the 
+FITS file is closed.
+
+\code
+
+// not relevant to ahfits, but the following two lines are needed by the 
+// logging library, ahlog.
+#define AHLABEL test_testdox
+#define AHCVSID "$Id: ahfits.dox,v 1.14 2014/08/21 13:33:20 mwitthoe Exp $"
+
+#include "ahfits/ahfits.h"
+#include <string>
+
+int main(void) {
+
+  std::string infile="in.fits";
+  std::string outfile="out.fits";
+  std::string inkey="KEYWORDA";
+  std::string outkey="KEYWORDB";
+  std::string incol="COLUMNA";
+  std::string outcol="COLUMNB";
+
+  // We will copy the input file to the output file and then operate
+  // on the latter.  The clone() function will automatically open the 
+  // output file to the primary HDU and return an ahfits file pointer (ahffp).
+  ahfits::FilePtr ahffp;
+  ahfits::clone(infile,outfile,&ahffp);
+
+  // We now read one keyword and write the value to another.  Here, we take the
+  // keyword values to be strings, but you can also read the values as integers,
+  // doubles, etc.  The last argument of writeKeyValStr() is for a comment; here
+  // we leave the comment blank.
+  std::string keyval=ahfits::getKeyValStr(ahffp,inkey);
+  ahfits::writeKeyValStr(ahffp,outkey,keyval,"");
+
+  // Next we loop over all binary table extensions.  This is done by moving to
+  // the first binary table and using a do-while loop operating on nextHDU()
+  // which returns false if there are no more HDUs of the given type after the
+  // current HDU.  An ahfits enumerated value is used to restrict the operations
+  // of these functions on binary tables; similar enumerations exist for the
+  // other HDU types (e.g. images).
+  ahfits::firstHDU(ahffp,ahfits::e_BINARY_TBL);
+  do {
+
+    // Set up a router and connect local variables to the FITS columns.  Here
+    // we read column values as integers, but any type can be used including
+    // fixed- and variable-length arrays.  Note the read/write status as the
+    // first argument of the connection() call; this ensures that opened FITS
+    // files are only modified as intended.
+    int inval=0;
+    int outval=0;
+    ahfits::Router rout(ahffp);
+    rout.connectScalar(ahfits::e_READONLY,incol,inval);
+    rout.connectScalar(ahfits::e_WRITEONLY,outcol,outval);
+
+    // Now we are ready to loop over all rows in the file and copy the contents
+    // of COLUMNA to COLUMNB.
+    for(ahfits::firstRow(ahffp); ahfits::readOK(ahffp); ahfits::nextRow(ahffp)) {
+
+      // the readRow() call will fill READONLY and READWRITE variables with 
+      // the contents of the current row based on the connection
+      ahfits::readRow(ahffp);   // now inval has the row data
+
+      // similarly with writeRow();
+      outval=inval;
+      ahfits::writeRow(ahffp);  // now outval has been written to the FITS file
+
+    }
+
+  } while(ahfits::nextHDU(ahffp,ahfits::e_BINARY_TBL));
+
+  ahfits::close(ahffp);
+}
+
+\endcode
+
+When using ahfits to open a file, care must be taken with how the tool deals
+with extended syntax.  Below we identify three common cases where the 
+isPrimary() call after opening the file tells us if extended syntax moved us
+into an extension.
+
+1) Move to extension BLAH regardless of extended syntax
+
+\code
+std::string filename="in.fits";
+ahfits::FilePtr ahffp;
+ahfits::open(filename,"BLAH",&ahffp);
+\endcode
+
+2) Move to extension BLAH unless extended syntax is given:
+
+\code
+std::string filename="in.fits";
+ahfits::FilePtr ahffp;
+ahfits::open(filename,"",&ahffp);
+if (ahfits::isPrimary(ahffp)) ahfits::move(ahffp,"BLAH");
+\endcode
+
+3) Move to first binary table unless extended syntax is given:
+
+\code
+std::string filename="in.fits";
+ahfits::FilePtr ahffp;
+ahfits::open(filename,"",&ahffp);
+if (ahfits::isPrimary(ahffp)) ahfits::firstHDU(ahffp,ahfits::e_BINARY_TBL);
+\endcode
+
+
+
+Performance:
+
+There are several performance issues related to how ahfits implements buffering.
+Most of the time, ahfits chooses the most efficient method of reading or writing
+a table.  However, there are cases, where performance can be improved by the 
+developer knowing how buffering works.  These cases will be described below 
+after a brief discussion on the buffering process.
+
+The cfitsio library automatically buffers table data by reading a fixed number 
+of bytes.  In addition to this, ahfits provides a second layer of buffering by
+storing mulitple rows for those columns connected to a router.  For maximum
+efficiency the ahfits buffer size (number of rows) should be consistent with the
+cfitsio buffer size (number of bytes).  By default, ahfits will query cfitsio
+for the optimal number of rows to buffer.  However, the number of buffered rows
+can be adjusted by the standard parameter, buffer, available with each tool.  By
+setting this parameter to zero, the ahfits buffering can be turned off. However, 
+this will not affect the buffering that cfitsio internally does into 2880-byte 
+blocks.
+
+A FITS table can store 3 basic types of data: scalar, fixed-length arrays, and
+variable-length arrays.  In order to have a fixed size for each row, pointers
+are used to represent variable-length data.  The pointers point to data in the 
+"heap" which is an area on disk stored after the end of the FITS table.  When
+cfitsio buffers a table, only the pointers are buffered for variable-length
+columns, not the actual data.  In addition, ahfits will buffer the lengths of
+the  variable-length columns for each row.  When retrieving the variable-length
+data, however, the FITS file must be read for each row which limits the 
+effectiveness of buffering when a lot of variable-length data must be 
+read/written.
+
+There are two primary use-cases for writing to a FITS table: 1) editing existing
+rows, and 2) writing a new table from scratch.  In the second case, when writing
+variable-length columns, it is very advantageous to append many rows at once
+which are then filled in, instead of adding one row at a time.  In order to 
+add a row to the table, the heap has to be moved to clear up space (the table
+is always contiguous in memory).  By adding many blank rows at once, we limit
+the number of times that the heap has to be moved.  However, we do not want to
+add blank rows to the end of the table when editing a file (case 1).  So, ahfits
+will decide whether or not to bulk-add blank rows based on how the FITS file
+is accessed.  Opening or cloning a file will work in edit-mode, but creating a
+new table will enable append-mode. In append-mode, the number of rows added at a
+time is equal to the buffer size for convenience.  Therefore, when creating a
+new file with a large number of variable-length columns, it may be more 
+efficient to manually set the buffer size to a large number.
+
+There are cases where the default choice of ahfits for edit-mode vs. append-mode
+is not ideal.  For example, if you want to add many rows to an existing 
+(non-empty) FITS table.  After opening or cloning the file, you will be in
+edit-mode, but a better choice is append-mode which can be enabled with a call
+to enableBufferPadding().  Another function, disableBufferPadding(), will switch
+to edit-mode.
+
+
+*/

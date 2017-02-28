@@ -1,0 +1,268 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/gen/ut/build1/ut-pre101,v $
+# $Revision: 1.3 $
+# $Date: 2002/05/03 13:39:24 $
+#
+#	ut-pre101
+#		validate prefilter operation
+#
+#	options
+#		input=<directory>
+#			set the input directory
+#		output=<directory>
+#			set the output directory
+#		verbose
+#			more logging
+#		quiet
+#			less logging
+#
+#
+# $Log: ut-pre101,v $
+# Revision 1.3  2002/05/03 13:39:24  miket
+# fixed typo in fparkey command
+#
+# Revision 1.2  2002/05/02 20:03:54  rwiegand
+# Added arguments for input and output directories.  Perform additional
+# validation on environment and inputs.  Assign TDISPn keywords to output
+# file to avoid floating point precision differences between platforms.
+#
+# Revision 1.1  2002/05/01 19:37:25  miket
+# script changes; moved test data out of tree and into dedicated area
+#
+# Revision 1.1  2002/04/29 14:07:02  rwiegand
+# Test set for prefilter 1.0.1
+#
+
+use strict;
+
+use FileHandle;
+
+
+use constant PREFIX => 'ut-pre101: ';
+
+
+sub report
+{
+	print(PREFIX, @_);
+}
+
+
+sub fatal
+{
+	&report;
+	die(PREFIX . "aborted\n");
+}
+
+
+sub doCommand
+{
+	my ($command, %args) = @_;
+
+	my ($first) = split(/\s+/, $command);
+
+	if ($args{verbose}) {
+		report("doCommand $command\n");
+	}
+	elsif (not $args{quiet}) {
+		report("running $first\n");
+	}
+
+	my $result = { };
+
+	if ($args{pipeFrom}) {
+		$result->{handle} = FileHandle->new("$command|");
+	}
+	else {
+		$result->{output} = qx($command);
+		$result->{lines} = [ split(/\n/, $result->{output}) ];
+	}
+
+	if ($?) {
+		my $s = $args{verbose} ? $first : $command;
+		fatal("error running $s [$?]: $!\n");
+	}
+
+	return $result;
+}
+
+
+{
+	my $code = 0;
+
+	my %options = (
+		input => '.',
+		output => '.',
+	);
+
+	foreach my $arg (@ARGV) {
+		if ($arg eq 'quiet') {
+			$options{quiet} = 1;
+		}
+		elsif ($arg eq 'verbose') {
+			$options{verbose} = 1;
+		}
+		elsif ($arg =~ /^input=(.+)/) {
+			$options{input} = $1;
+		}
+		elsif ($arg =~ /^output=(.+)/) {
+			$options{output} = $1;
+		}
+		else {
+			fatal("invalid option: $arg\n");
+		}
+	}
+
+	report("validating set up\n") if not $options{quiet};
+
+	# validate environment
+	foreach my $var (qw(HEADAS FTOOLS)) {
+		if (not defined($ENV{$var})) {
+			fatal("environment variable $var not set\n");
+		}
+		elsif (not -d $ENV{$var}) {
+			fatal("invalid $var directory $ENV{$var}\n");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $options{$key}) {
+			fatal("invalid $key directory: $options{$key}\n");
+		}
+	}
+
+        my $headas = $ENV{HEADAS};
+	my $input = $options{input};
+	my $output = $options{output};
+
+	my %task = (
+		outname       => "!$output/PREFILTER.fits",
+		parname       => "$headas/refdata/prefilter.derive",
+		leapname      => "$headas/refdata/leapsec.fits",
+		rigname       => "$headas/refdata/rigidity.data",
+		tlename       => "$input/TLE_1994_098.fits",
+		attname       => "$input/ATTITUDE.fits",
+		frfname       => "$input/frf.orbit.250",
+		xtename       => "$input/XTE.fits",
+		start         => 1994098.664,
+		duration      => 5600.0,
+		interval      => 30.0,
+		verbose       => 'no',
+		attextrap     => 32.0,
+		origin        => 'NASA/GSFC',
+		ranom         => 278.459,
+		decnom        => -8.16,
+		frfmode       => 'yes',
+		xtecompare    => 'no',
+		chatter       => 5,
+		clobber       => 'no',
+	);
+
+	# validate input files
+	foreach my $key (qw(parname tlename attname leapname rigname frfname)) {
+		my $input = $task{$key};
+		if (not defined($input)) {
+			fatal("missing input key: $key\n");
+		}
+		elsif (not -f $input) {
+			fatal("invalid $key file: $input\n");
+		}
+	}
+
+	# build command line
+	my $command = 'prefilter';
+
+	foreach my $p (qw(outname parname leapname rigname
+			tlename attname frfname xtename
+			start duration interval
+			verbose attextrap origin ranom decnom
+			frfmode xtecompare chatter clobber)) {
+		if (not defined($task{$p})) {
+			fatal("missing parameter $p\n");
+		}
+		else {
+			$command .= " $p=$task{$p}";
+		}
+	}
+
+	doCommand($command, %options);
+
+	$command = qq(fverify infile=$output/PREFILTER.fits outfile=STDOUT);
+	doCommand($command, %options);
+
+	# get keywords
+	$command = qq(fkeyprint $output/PREFILTER.fits)
+		. " TTYPE exact=no outfile=STDOUT";
+	my $result = doCommand($command, %options);
+
+use constant FORMAT_DERIVED => 'E13.5';
+
+	# set display formats by parameter
+	my %format = (
+		TIME        => 'E14.8',
+		Z_RA        => FORMAT_DERIVED,
+		Z_DEC       => FORMAT_DERIVED,
+		Z_ROLL      => FORMAT_DERIVED,
+		SAT_LAT     => FORMAT_DERIVED,
+		SAT_LON     => FORMAT_DERIVED,
+		SAT_ALT     => FORMAT_DERIVED,
+		ELV         => FORMAT_DERIVED,
+		BR_EARTH    => 'E8.2',
+		SUN_ANGLE   => FORMAT_DERIVED,
+		MOON_ANGLE  => FORMAT_DERIVED,
+		RAM_ANGLE   => FORMAT_DERIVED,
+		ANG_DIST    => 'E12.4',
+		COR_ASCA    => FORMAT_DERIVED,
+		COR_SAX     => FORMAT_DERIVED,
+		MCILWAIN_L  => FORMAT_DERIVED,
+	);
+
+	foreach my $line (@{ $result->{lines} }) {
+		if ($line =~ /^TTYPE(\d+)\s+=\s+'(\w+)/) {
+			my $column  = $1;
+			my $derived = $2;
+
+			if ($format{$derived}) {
+				$command = "fparkey $format{$derived} "
+						. "$output/PREFILTER.fits[1] TDISP$column add=yes";
+				doCommand($command, %options);
+			}
+		}
+	}
+ 
+	$command = "fdump infile=$output/PREFILTER.fits tdisp=yes"
+		. " outfile=!$output/PREFILTER.dump columns='*' rows=-";
+	doCommand($command, %options);
+
+	$command = "diff $input/PREFILTER.template $output/PREFILTER.dump";
+	$result = doCommand($command, %options, pipeFrom => 1);
+	my $fh = $result->{handle};
+
+	while (<$fh>) {
+		if (/^(\d+(?:,\d+)?)c(\d+(?:,\d+)?)/) {
+			report("change: $_");
+			$code = 1;
+		}
+		elsif (/^(\d+)a/) {
+			report("addition: $_") if $options{verbose};
+		}
+		elsif (/^(\d+)d/) {
+			report("deletion: $_") if $options{verbose};
+		}
+		elsif (/^[<>]/) {
+			# diff contents
+			report($_) if $options{verbose}
+		}
+		elsif (/^---/) {
+			# mark
+		}
+		else {
+			report("diff?!: $_");
+		}
+	}
+	close($fh);
+
+	exit($code);
+}
+

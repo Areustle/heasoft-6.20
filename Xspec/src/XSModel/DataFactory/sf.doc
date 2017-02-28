@@ -1,0 +1,496 @@
+**BFTOCH
+BFTOCH
+SF subroutine to convert a byte buffer array to a character
+string
+----------------------------------------------------
+      SUBROUTINE BFTOCH(Buffer,Lenb,String)
+      BYTE Buffer(*)
+      INTEGER Lenb
+      CHARACTER*(*) String
+
+
+buffer  I    Input byte array
+lenb    I    Length of array to be transfered
+string    O  Character string destination
+**CPPKSF
+CPPKSF
+Subroutine to copy sf packages
+----------------------------------------------------
+      SUBROUTINE CPPKSF(Iunit,Pkgtyp,Index,Outunit,Newtype,Newindex,
+     &                  Buffer,Lenbuf,Ierrsf)
+Arguments:
+      INTEGER*4 Iunit
+ I: Input unit number
+      CHARACTER*(*) Pkgtyp
+ I: Input pkgtyp (if blank next package is
+	copied)
+      INTEGER*4 Index
+ I: Input index (if 0 any index is used)
+      INTEGER*4 Outunit
+ I: Output unit number
+      CHARACTER*(*) Newtype
+ I: Packagetype written (if ' ' same as the
+      
+	input package type).
+      
+ R: The actual package type copied.
+      INTEGER*4 Newindex
+ I: Index of written package (if -1 then same
+      
+	as the input package index).
+      
+ R: The actual index used.
+      BYTE Buffer(*)
+ W: workspace
+      INTEGER*4 Lenbuf
+ I: available workspace (note that the
+      
+	space used is NOT returned).
+      INTEGER*4 Ierrsf
+ I/R: SF error flag (determined by NXPKSF,
+
+**CPSBSF
+CPSBSF
+SF subroutine to copy one or more subsidiary records
+--------------------------------------------
+      SUBROUTINE CPSBSF(Inunit,Outunit,Nsub,Buffer,Buflen,Qterm,Ierrsf)
+      INTEGER*4 Inunit
+ i: unit opened to the source SF file
+      INTEGER*4 Outunit
+ i: unit opened to the output SF File, the
+      
+	header must already be written
+      INTEGER*4 Nsub
+ i: no. of subsidary records to be written.
+      
+	If < 0 then all the records written
+      
+	until the end of the package.
+      BYTE Buffer(*)
+ w: workspace for transfer
+      INTEGER*4 Buflen
+ i: The maximum size of the buffer. N.B.
+      
+	The number used is NOT returned
+      LOGICAL*4 Qterm
+ i:  If true, then a terminal record is
+      
+	automatically written after this set
+      
+	(see TERMSF and the NSUB argument above)
+      INTEGER*4 Ierrsf
+ i/r: Error flag (see RSUBSF for error codes).
+      
+	22 - premature end of package/eof
+**NXPKSF
+NXPKSF
+SF subroutine to go to a given package, and decode the package header.
+----------------------------------------------------------
+      SUBROUTINE NXPKSF(Iunit,Pkgtyp,Index,Nsubs,Infoar,Buffer,Lenbuf,
+     &                  Qskip,Ierrsf)
+iunit   I    Io unit
+pkgtyp  I/O  Pkg type to be searched for.  If blank, then
+             -the routine will return at the next package header,
+             -with pkgtyp = to the its type
+index   I/O  Pkg index searched for.   This is ignored if
+             -pkgtyp is blank.  If it is zero on input, then any
+             -package is allowed, and its value on return is the
+             -value particular to the given package.
+nsubs     O  No. of subsequent records
+infoar    O  An array of information taken from the package
+             -ID. (some of these values may not be modified)
+buffer    O  Work array to hold the header buffer.
+len     I/O  On input the maximum size of the buffer, on
+             -output the actual size returned in the buffer.
+qskip   I    If true, then entire packages are skipped over until
+             -one with the given properties is found, or an eof
+             -occurs.
+ierrsf  I/O  SF error flag (see OPNRSF)
+  6 - read error
+  7 - EOF before next package (n.b. this is a 'silent'
+        error... it will create no message no matter what the
+        initial value of ierrsf
+  8 - wrong type package (qskip = false)
+  9 - wrong index package (qskip = false)
+ 10 - wrong type package, backspace error
+ 11 - wrong index package, backspace error
+C
+ N.B. Errors 8 and 9 will generate an automatibackspace in
+  the file (if possible) so that the next read will re-read the
+  package header that caused the question.  It must be explicitly
+  skipped over if not desired to read it again in the next call
+  to NXPKSF.
+
+**OPNRSF
+OPNRSF
+Subroutine to open for reading an SF format file, stripping
+out information from the ID record.
+On return, the file is positioned at the first history record
+or at the first package (if there is no history package).
+-----------------------------------------------------------
+      SUBROUTINE OPNRSF(Filenm,Iunit,Type,Header,Tmplte,Nhist,Ierrsf)
+
+filenm  I    File name to be opened
+iunit   I    Fortran unit to use
+type    I/O  If non-blank, it is checked against the current file
+             -type.  If blank, it is set to the current file type.
+header    O  The actual contents of the ID record.
+tmplte    O  Template file (Could be empty).
+nhist     O  No. of history records in initial history package.
+             -If zero, there is no history package (or records).
+ierrsf  I/O  sf error (if zero on input, then messages will
+             -be written to the * unit)
+    1 - io error in open
+    2 - io error/premature eof in read.
+    3 - File is not an SF file (possible io error in
+           reading the first record or bad match to first
+           four characters.
+    4 - File does not match the input type.
+
+**OPNWSF
+OPNWSF
+Subroutine to open for writing an SF format file, creating
+a new file and updating the information on the ID record.
+An optional additional history record will be created, if
+the information of a previous version of the file is passed.
+On return, the file is positioned after the
+optional history record, or after any header of a history
+package or template package.
+-------------------------------------------------
+      SUBROUTINE OPNWSF(Filenm,Iunit,Type,Header,Tmplte,Nhist,Ierrsf,
+     &                  Spare,Oldfil,Oldid,Pgname)
+
+FILENM    I    File name to be opened
+IUNIT     I    Fortran unit to use
+TYPE      I    The type of the file
+HEADER    I    An optional string to append to the ID record
+TMPLTE    I    The template file, if non blank, will produce
+		a template package.
+NHIST     I    No. of history records in ADDITION to any records
+		created by OPNWSF.  IF < 0, then the history package
+		is marked as an indeterminate no. of subsequent record
+		package.  It is up to the user to cleanly terminate
+		the package with a zero length record, to avoid
+		backspaces.  If zero, a history package is still
+		created if OPNWSF is to create a history record.
+IERRSF    I/O  SF error flag
+SPARE     I    Spare slot for expansion
+OLDFIL    I    The name of a previous version of the file.  If
+		non-blank then a new history record is generated after
+		the ID record.
+OLDID     I    The ID record of the previous version.
+PGNAME    I    The name of the program calling OPNWSF
+
+**PTXTSF
+PTXTSF
+SF subroutine to print the remaining auxiliary records of a
+package as text on the standard output device.
+------------------------------------------------------
+      SUBROUTINE PTXTSF(Iunit,Nrec,Buffer,Lenbuf)
+      INTEGER Iunit , Nre, Lenbuf
+      BYTE Buffer(Lenbuf)
+
+IUNIT    I    Input unit
+NRE    I    The no. of remaining records
+BUFFER   I/R  A buffer used for IO
+LENBUF   I    Size of the buffer
+IERRSF   I/R  SF error flag
+IERRIO     R  IO error
+**RST2SF
+RST2SF
+SF subroutine to write an array of character strings as
+auxilary records to the current SF package.  N.B.  If
+the package header shows an indeterminate no. of records
+then good practice is for the user to add a terminating record.
+(one with length 0).
+-----------------------------------------
+SUBROUTINE RST2SF(Iunit,Str,Ierrsf)
+c	iunit	i4		i: read unit
+c	str	c*		r: String read from subsidary record.
+c	ierrsf	i4		i/r: SF error flag
+c			17 -	io read error
+c			18 -	EOF condition before required records read.
+c			19 -	No record in subsidiary field.
+c			20 - 	Unable to reposition after a badly terminated
+c				indefinite no. of auxilary records.
+c			21 -    Iinsufficient length to contain info
+**RSTRSF
+RSTRSF
+c		SF subroutine to write an array of character strings as
+c		auxilary records to the current SF package.  N.B.  If
+c		the package header shows an indeterminate no. of records
+c		then good practice is for the user to add a terminating record.
+c		(one with length 0).
+----------------------------------------------------------------------
+      SUBROUTINE RSTRSF(Iunit,Strar,Nstr,Nstrot,Ierrsf)
+c	iunit	i4		i: read unit
+c	strar	c*(nstr)	i/r: Array of character strings to be read.
+c	nstr	i4		i: dimension of array.
+c	nstrot	i4		i/r: No. of string. to be read in array.
+c				A negative value
+c				indicates that the 'indeterminate' size
+c				auxilary region condition holds.
+c				Returns the actual no of strings read.
+c				If an error condition arises such that too few
+c				records can be found, then nstr is returned
+c				with the actual no. of records read.
+c	ierrsf	i4		i/r: SF error flag
+c			17 -	io read error
+c			18 -	EOF condition before required records read.
+c			19 -	Too few input records.
+c			20 - 	Unable to reposition after a badly terminated
+c				indefinite no. of auxilary records.
+c			21 -    At least one has insufficient info
+**RSUBSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+      SUBROUTINE RSUBSF(Unit,Buffer,Length,Ierrsf)
+c		rashafer 16 april 1986
+c	SF routine to read a single subsidiary record to the current
+c	package
+c	unit	i4	i: unit no.
+c	buffer	b(length)	i: the buffer
+c	length	i4	i: the length of the buffer, on return the
+c			actual number of bytes read.  N.B, that when
+c			a package has been explicitly terminated, the
+c			terminating record returns a length of zero. (And
+c			the silent error #27 is raised).
+c	ierrsf	i4	i/r: the error flag
+c			7  - eof (silent)
+c			17 - I/O read error
+c			20 - Unable to reposition after a badly terminated
+c			package.
+c			21 - Buffer too small
+c			27 - At end of the package (silent)
+      INTEGER*4 Unit , Length , Ierrsf
+      BYTE Buffer(*)
+      INTEGER*4 tmplen , i , ios
+      READ (Unit,IOSTAT=ios) tmplen , (Buffer(i),i=1,MIN(tmplen,Length))
+      IF ( ios.LT.0 ) THEN
+         Ierrsf = 7
+         Length = 0
+      ELSEIF ( ios.GT.0 ) THEN
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 'RSUBSF: Read I/O error:' , ios
+         Ierrsf = 17
+         Length = 0
+      ELSEIF ( tmplen.GT.Length ) THEN
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 
+     &                        'RSUBSF: Buffer too small, actual length:'
+     &                        , tmplen , ' buffer length:' , Length
+         Ierrsf = 21
+      ELSEIF ( tmplen.LT.0 ) THEN
+         BACKSPACE (Unit,IOSTAT=ios)
+         Length = 0
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 
+     &                                'RSUBSF: Badly terminated package'
+         IF ( ios.NE.0 ) THEN
+            IF ( Ierrsf.EQ.0 ) WRITE (*,*) 
+     &            'RSUBSF: Unable to backspace to start of next package'
+            Ierrsf = 20
+         ENDIF
+      ENDIF
+      Length = tmplen
+      IF ( Length.EQ.0 ) THEN
+         Ierrsf = 27
+      ENDIF
+      RETURN
+      END
+**SKPKSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+c	skpksf		rashafer 8 March 85
+c		SF subroutine to go to a given package, and decode the
+c		package header.  Intermediate packages are skiped over, with
+c		a message printed.   As the NXPKSF subroutine is used,
+c		the errors are generally passed from that routine.
+      SUBROUTINE SKPKSF(Iunit,Pkgtyp,Index,Nsubs,Infoar,Buffer,Len,
+     &                  Ierrsf)
+c	iunit	i4	i: io unit
+c	pkgtyp	c*	i/r: pkg type to be searched for.  If blank, then
+c			the routine will return at the next package header,
+c			with pkgtyp = to the its type
+c	index	i4	i/r: pkg index searched for.   This is ignored if
+c			pkgtyp is blank.  If it is zero on input, then any
+c			package is allowed, and its value on return is the
+c			value particular to the given package.
+c	nsubs	i4	r: no. of subsequent records
+c	infoar	i4(4)	r: an array of information taken from the package
+c			ID. (some of these values may not be modified)
+c	buffer	b*	r: work array to hold the header buffer.
+c	len	i4	i/r: on input the maximum size of the buffer, on
+c			output the actual size returned in the buffer.
+c	ierrsf	i4	i/r: SF error flag (see OPNRSF)
+      CHARACTER*(*) Pkgtyp
+      CHARACTER*12 pkgtmp
+      INTEGER*4 Infoar(4)
+      BYTE Buffer(*)
+      INTEGER*4 Iunit , Index , Nsubs , Len , Ierrsf , indtmp , lentmp
+      DO WHILE ( .TRUE. )
+         pkgtmp = ' '
+         indtmp = 0
+         lentmp = Len
+         CALL NXPKSF(Iunit,pkgtmp,indtmp,Nsubs,Infoar,Buffer,lentmp,
+     &               .FALSE.,Ierrsf)
+         IF ( Ierrsf.NE.0 ) RETURN
+         IF ( ((Pkgtyp.EQ.' ') .OR. (Pkgtyp.EQ.pkgtmp)) .AND. 
+     &        ((Index.EQ.0) .OR. (Index.EQ.indtmp)) ) THEN
+            Pkgtyp = pkgtmp
+            Index = indtmp
+            Len = lentmp
+            RETURN
+         ELSE
+            WRITE (*,*) ' SKPKSF: Skipping over SF package ' , pkgtmp , 
+     &                  indtmp
+         ENDIF
+      ENDDO
+      END
+**SKSBSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+      SUBROUTINE SKSBSF(Unit,Ierrsf)
+c		rashafer 16 april 1986
+c	SF routine to skip a single subsidiary record to the current
+c	package
+ 
+c	unit	i4	i: unit no.
+c	ierrsf	i4	i/r: the error flag
+c			7  - eof (silent)
+c			17 - I/O read error
+c			20 - Unable to reposition after a badly terminated
+c			package.
+c			27 - At end of the package (silent)
+      INTEGER*4 Unit , Ierrsf
+      INTEGER*4 tmplen , ios
+      READ (Unit,IOSTAT=ios) tmplen
+      IF ( ios.LT.0 ) THEN
+         Ierrsf = 7
+      ELSEIF ( ios.GT.0 ) THEN
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 'SKSBSF: Read I/O error:' , ios
+         Ierrsf = 17
+      ELSEIF ( tmplen.LT.0 ) THEN
+         BACKSPACE (Unit,IOSTAT=ios)
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 
+     &                                'SKSBSF: Badly terminated package'
+         IF ( ios.NE.0 ) THEN
+            IF ( Ierrsf.EQ.0 ) WRITE (*,*) 
+     &            'SKSBSF: Unable to backspace to start of next package'
+            Ierrsf = 20
+         ENDIF
+      ELSEIF ( tmplen.EQ.0 ) THEN
+         Ierrsf = 27
+      ENDIF
+      RETURN
+      END
+**TERMSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+ 
+ 
+      SUBROUTINE TERMSF(Unit,Ierrsf)
+c		rashafer 14 April 1986
+c	SF subroutine to terminate a set of subsidary records for a package
+c	with a record with a 0 value length indicator.
+c	unit	i4	i: unit
+c	ierrsf	i4	i/r: error flag
+c			Errors: 1: i/o error during write
+      INTEGER*4 Unit , Ierrsf
+      INTEGER*4 ZERO , ierr
+      PARAMETER (ZERO=0)
+      WRITE (Unit,IOSTAT=ierr) ZERO
+      IF ( ierr.NE.0 ) THEN
+         IF ( Ierrsf.EQ.0 ) THEN
+            WRITE (*,*) 'TERMSF: I/O error during package termination.'
+         ENDIF
+         Ierrsf = 1
+      ENDIF
+      RETURN
+      END
+**WPKHSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+c	wpkhsf	rashafer	8 March 1985
+c		SF subroutine to write a package header record
+      SUBROUTINE WPKHSF(Iunit,Pkgtyp,Index,Nsubs,Infoar,Buffer,Len,
+     &                  Ierrsf)
+c	iunit	i4	i: output unit
+c	pkgtyp	c*	i: package type
+c	index	i4	i: index
+c	nsubs	i4	i: no. of subsidiary records
+c	infoar	i4(4)	i: spare
+c	buffer	b*	i: buffer
+c	len	i4	i: len of buffer
+c	ierrsf	i4	i/r: SF error flag
+c			15 - Write error
+      BYTE Buffer(*)
+      CHARACTER*(*) Pkgtyp
+      INTEGER*4 idrec(7) , Infoar(4)
+      BYTE idrecb(28)
+      CHARACTER*12 pkgout
+      EQUIVALENCE (idrec(1),idrecb(1),pkgout)
+      INTEGER*4 Iunit , Index , Nsubs , Len , Ierrsf , ios , lent , i
+      pkgout = Pkgtyp
+      idrec(4) = Index
+      idrec(5) = Nsubs
+      idrec(6) = Infoar(1)
+      idrec(7) = Infoar(2)
+      lent = 28 + Len
+      WRITE (Iunit,IOSTAT=ios) -lent , idre, (Buffer(i),i=1,Len)
+      IF ( ios.NE.0 ) THEN
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 'WPKHSF:Write error:' , ios
+         Ierrsf = 15
+      ELSE
+         Ierrsf = 0
+      ENDIF
+      RETURN
+      END
+**WSTRSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+c	wstrsf		rashafer 16 March 85
+c		SF subroutine to write an array of character strings as
+c		auxilary records to the current SF package.  N.B.  If
+c		the package header shows an indeterminate no. of records
+c		then good practice is for the user to add a terminating record.
+c		(one with length 0).
+      SUBROUTINE WSTRSF(Iunit,Strar,Nstr,Ierrsf)
+c
+c	iunit	i4		i: Write unit
+c	strar	c*(nstr)	i: Array of character strings to be written.
+c	nstr	i4		i: No. of strings
+c	ierrsf	i4		i/r: SF error flag
+c			16 -	io write error
+      CHARACTER*(*) Strar(*)
+      INTEGER*4 istr , Nstr , Iunit , Ierrsf , l, LENACT , ios
+      DO 100 istr = 1 , Nstr
+         l= MAX(LENACT(Strar(istr)),1)
+         WRITE (Iunit,IOSTAT=ios) l, Strar(istr)(:lc)
+         IF ( ios.NE.0 ) THEN
+            IF ( Ierrsf.EQ.0 ) WRITE (*,*) 'WSTRSF: Write i/o error ' , 
+     &                                ios , 
+     &                                ' while porcessing string ' , istr
+            Ierrsf = 16
+            RETURN
+         ENDIF
+ 100  CONTINUE
+      RETURN
+      END
+**WSUBSF.spg  processed by SPAG 3.09I  at 11:16 on 30 May 1992
+      SUBROUTINE WSUBSF(Unit,Buffer,Length,Ierrsf)
+c		rashafer 16 april 1986
+c	SF routine to write a single subsidiary record to the current
+c	package
+c	unit	i4	i: unit no.
+c	buffer	b(length)	i: the buffer
+c	length	i4	i: the length of the buffer to be written
+c	ierrsf	i4	i/r: the error flag
+c			16 - i/o write error
+c			1 - 0 length record for subsidiary (a 1 byte record
+c			is actually written.  Use TERMSF to terminate the
+c			package if part of an indeterminate no. of records
+c			package.
+      INTEGER*4 Unit , Length , Ierrsf
+      BYTE Buffer(*)
+      INTEGER*4 tmplen , i , ios
+      IF ( Length.LE.0 ) THEN
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 
+     &                        'WSUBSF: Attempt to write 0 length record'
+         tmplen = 1
+         Ierrsf = 1
+      ELSE
+         tmplen = Length
+      ENDIF
+      WRITE (Unit,IOSTAT=ios) tmplen , (Buffer(i),i=1,tmplen)
+      IF ( ios.NE.0 ) THEN
+         IF ( Ierrsf.EQ.0 ) WRITE (*,*) 'WSUBSF: Write I/O error:' , ios
+         Ierrsf = 16
+      ENDIF
+      RETURN
+      END

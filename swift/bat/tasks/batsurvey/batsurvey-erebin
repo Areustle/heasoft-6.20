@@ -1,0 +1,264 @@
+#!/usr/bin/perl
+#
+# bat-survey-erebin
+#
+# USAGE: bat-survey-erebin infile outfile calfile
+#
+# Type "fhelp bat-survey-erebin" for more help.
+#
+# $Log: batsurvey-erebin,v $
+# Revision 1.2  2009/07/02 02:29:08  craigm
+# Update to version 6.7; mostly a change to the unit test to use the older CALDB file, but in the meantime I need to add parameters for the baterebin parameters; unit test still passes with older CALDB file --CM
+#
+# Revision 1.1  2008/05/20 10:37:55  craigm
+# Commit of 'batsurvey' task 6.0; this is a modification of version '5G'; primarily the modifications were to make the task more FTOOL-like, and no real changes to the core algorithms were done; the names of the tasks were changed to 'batsurvey{-xxx}' from the original 'bat-survey{-xxx}'; batsurvey-aspect now has an alignfile=CALDB option; the formats of the inventory.dat and outventory.dat have been changed; some version coding has been done to allow expansion in the future, as well as printing the number of energy bins; unit test pases on Linux-32bit against actual survey processing version 5G --CM
+#
+# Revision 1.1  2006/10/24 03:57:21  craigm
+#
+#
+# Initial commit of BAT survey processing, broken into more modular bits...
+#
+# bat-survey is still the main driver and not an FTOOL; the rest are FTOOLs;
+#
+# bat-survey-erebin is a copy from its own directory, with some
+# modifications to write out quality maps;
+#
+# bat-survey-gti scans an observation for good time intervals based on
+# loads of quality-screening criteria;
+#
+# bat-survey-detmask does quality filtering at a detector level for a
+# snapshot observation: hot pixels (in multiple energy bands), global
+# quality map, user quality map (possibly multiple), pattern mask
+# quality-selected from survey; detector enable/disable)
+#
+# bat-survey-aspect does attitude drift checking for a snapshot
+# observation.  It looks for attitude drifts of more than a certain
+# magnitude, and reports them back to the calling task in order to make
+# a policy decision.
+#
+# Revision 1.2  2005/06/28 16:09:16  craigm
+# Add CVS 'Log' to script --CM
+#
+#
+
+$taskname = "batsurvey-erebin";
+$taskver  = "1.1";
+$id = "$taskname v$taskver";
+
+use HEACORE::HEAINIT;
+
+eval {
+  $mainstatus = headas_main(\&bat_survey_erebin_main);
+};
+
+sub bat_survey_erebin_main {
+    use Astro::FITS::CFITSIO qw(:longnames :constants);
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    use SimpleFITS;
+
+    set_toolname($taskname);
+    set_toolversion($taskver);
+
+    if (PILGetString('infile', $infile) ||
+	PILGetString('outfile', $outfile) ||
+	PILGetString('calfile', $gofile) ||
+	PILGetString('residfile', $residfile) ||
+	PILGetString('pulserfile', $pulserfile) ||
+	PILGetString('fltpulserfile', $fltpulserfile) ||
+	PILGetString('outmap', $outmap) ||
+	PILGetString('baterebin_opts', $baterebin_opts) ||
+	PILGetBool('clobber',$clobber) || 
+	PILGetInt('chatter',$chatter) ||
+	PILGetBool('history',$history)) {
+	die "ERROR: could not read task parameters";
+    }
+    
+    if ($clobber) { $clobber = "YES"; } else { $clobber = "NO"; }
+    if ($history) { $history = "YES"; } else { $history = "NO"; }
+    
+    # Batch file
+    if ($infile =~ m/^@(.*)$/) {
+	$infile = $1;
+	die "Error $infile not found " if (! -f $infile );
+	@infile = `cat $infile`;
+	foreach $i (0 .. $#infile) {
+	    chomp($infile[$i]);
+	}
+    } else {
+	die "Error $infile not found " if (! -f $infile );
+	@infile = ($infile);
+    }
+
+
+    # Scan the input list of gain/offset files
+    if ($gofile eq "query") {
+	# Use 'repoquery' to find the right one
+	$goindex = 1;
+
+    } elsif (-d $gofile) {
+
+	# It's a directory: scan the directory for files
+	$godir = "$gofile/";
+	@gofiles = `ls $gofile`;
+	foreach $i (0 .. $#gofiles) {
+	    chomp($gofiles[$i]);
+	}
+
+    } else {
+
+	# It's one gain/offset file specified by hand
+	@gofiles = ($gofile);
+    }
+
+    # ================================================================
+    # If there are explicit files (i.e. not 'reqoquery'), then we need
+    # to index them.
+    if (! $goindex ) {
+
+	# Scan each file
+	foreach $i (0 .. $#gofiles) {
+	    $gofile = $gofiles[$i];
+
+	    if ($gofile =~ m/_(\d{9,})\.fits$/) {
+		# The time is stored in the name
+		$gotimes[$i] = $1;
+
+	    } else {
+
+		# The time is read from the TSTART keyword (expensive)
+		$fits = SimpleFITS->open("$gofile");
+		next if (! $fits);
+		$gotimes[$i] = $fits->move("Gain_Offset_Map")->readkey('TSTART');
+		$fits->close();
+	    }
+	    
+	    # Enter the time in the database
+	    if ($gotimes[$i]) {
+		$gohash{$gotimes[$i]} = "$godir"."$gofile";
+	    }	    
+	}
+
+	# List of gain/offset times
+	@gott = sort(keys %gohash);
+	$ngo = $#gott + 1;
+    }
+
+
+    # ================================================================
+    # Scan each input (survey) file and process it
+    foreach $file (@infile) {
+
+	# Remove trailing suffixes
+	$root = $file;
+	$root =~ s/\.gz$//;      # "root" - remove .gz and .dph suffixes
+	$root =~ s/\.[^.]*$//;   # but keep the path component
+	$rootfile = $root;
+
+	# "rootfile" - remove path components (file name only)
+	if ($rootfile =~ m|^.*/([^/]+)$|) { $rootfile = $1; }
+
+	# User may have specified an output file "template"
+	# so use that.
+	$ofile = $outfile;
+	$ofile =~ s/%rootfile/$rootfile/;
+	$ofile =~ s/%root/$root/;
+
+	# Outmap
+	$omap = $outmap;
+	# Apply '%root' transformations
+	$omap =~ s/%rootfile/$rootfile/;
+	$omap =~ s/%root/$root/;
+
+	$opts = $baterebin_opts;
+	$opts =~ s/^ *//;  # Strip leading spaces
+	$opts =~ s/ *$//;  # Strip trailing spaces
+	# Apply '%root' transformations
+	$opts =~ s/%rootfile/$rootfile/;
+	$opts =~ s/%root/$root/;
+
+	# Retrieve the proper gain/offset file
+	undef $gofile;
+	if ($goindex) {
+
+	    # ... by querying the on-line database
+
+	    # Read DPH start time
+	    $fits = SimpleFITS->open("<$file");
+	    next if (!$fits || $fits->status());
+
+	    undef $t;
+	    $t = $fits->move("BAT_DPH")->readkey('TSTART');
+	    $fits->close();
+
+	    # query the DPH time using repoquery
+	    $cmd = "repoquery bgaoff $t";
+	    $gofile = `$cmd`;
+	    chomp($gofile);
+	    
+	} elsif ($ngo == 1) {
+	    # ... by using the explicit file name
+	    $gofile = $gofiles[0];
+	} else {
+
+	    # ... by searching the directory requested
+
+	    $fits = SimpleFITS->open("<$file");
+	    next if (!$fits || $fits->status());
+
+	    undef $t;
+	    $t = $fits->move("BAT_DPH")->readkey('TSTART');
+	    $fits->close();
+
+	    # Binary search for the DPH time
+	    $i = $ngo / 2;
+	    $ihi = $ngo;
+	    $ilo = 0;
+	    $n = 0;
+#	    print "$ngo $ilo $ihi $i\n";
+#	    print "Searching for time $t...\n";
+	    while (($i != 0) && ($i != ($ngo - 1)) && ($n < 30) &&
+		   (($gott[$i] > $t) || ($gott[$i+1] < $t))) {
+#		print "$n $i $ilo $ihi $gott[$i] $gott[$i+1]\n";
+		if ($gott[$i] > $t) {
+		    $ihi = $i;
+		    $i = int(($ilo + $ihi) / 2);
+		} elsif ($gott[$i+1] < $t) {
+		    $ilo = $i;
+		    $i = int(($ilo + $ihi) / 2);
+		} else {
+		    last;
+		}
+		$n ++;
+	    }
+
+	    $gofile = $gohash{$gott[$i]};
+#	    print "Found $gofile (GO times = $gott[$i] < $t < $gott[$i+1])\n";
+	}
+
+
+	# Gain / offset file was found!  Run baterebin.
+	if ($gofile) {
+	    $cmd = "baterebin infile='$file' outfile='$ofile' ".
+	        "calfile='$gofile' ".
+		"residfile='$residfile' ".
+		"pulserfile='$pulserfile' fltpulserfile='$fltpulserfile' ".
+		"clobber=$clobber history=$history chatter=$chatter ".
+		"outmap='$omap' $opts";
+	    print "$cmd\n";
+	    system($cmd);
+	} else {
+	    warn "WARNING: could not find gain/offset file for $file ";
+	}
+	
+    }
+	
+}
+
+# ====================================================================
+# ====================================================================
+# ====================================================================
+# ================ End of MAIN =======================================
+
+warn "$@" if ($@);
+

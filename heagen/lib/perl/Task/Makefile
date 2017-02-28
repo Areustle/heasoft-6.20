@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_LIBS	= FITS.pm Getopt.pm HEAdas.pm Subtask.pm
+
+HD_PERL_SUBDIR		= Task
+
+include ${HD_STD_MAKEFILE}

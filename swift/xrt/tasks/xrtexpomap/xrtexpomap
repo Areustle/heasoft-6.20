@@ -1,0 +1,1494 @@
+#! /usr/bin/perl
+# File name: xrtexpomap
+# 
+# Task name: xrtexpomap
+# 
+# Description:	
+#              This  script creates an exposure map
+#
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 : BS 26/09/2005 - First version
+#      0.1.1 :    11/10/2005 - Query CALDB if 'teldef' input par
+#                              set to 'CALDB'
+#                            - Added 'xrtexpocorr' task, to correct
+#                              sky instrument map for vignetting 
+#      0.1.2 :    18/10/2005 - Replaced 'outfile' with 'stemout' input 
+#                              parameter
+#                            - Added XRTVIGCO keyword in the output exposure
+#                              map
+#      0.1.3 :    21/10/2005 - Added needed keywords in exposure map file 
+#      0.1.4 :    26/10/2005 - Modified corrected for vignetting sky image temporary file name
+#                            - Added needed keywords in output file
+#                            - Added input parameters list if history=yes 
+#      0.1.5 :    10/11/2005 - Added window dimension and obsmode in 
+#                              the standard exposure map filename
+#                            - Modified MJDREFI keyword datatype 
+#      0.1.6 :    06/02/2006 - GZipped temporary outfiles
+#                            - Added obsmode, datamode and windowed in 
+#                              output filename root
+#                            - Used TCRVALn instead of RA_PNT and DEC_PNT
+#      0.1.7 :    21/02/2006 - Modified exposure map file name when stemout 
+#                              parameter is set
+#      0.1.8 :    01/03/2006 - Read CCDEXPOS instead of TIMEDEL if 
+#                              datamode is WINDOWED
+#      0.1.9 :    07/03/2006 - Cut skyinstrmap file from the clean up 
+#                              file list
+#      0.2.0 :    10/03/2006 - set standard sky instrument map using 
+#                              SetExpoMapFileName
+#      0.2.1 :    15/03/2006 - bug fixed on DEC_PNT
+#      0.2.2 : NS 24/10/2006 - Query to CALDB for teldef file with 'DATE-OBS' and 'TIME-OBS'
+#                              of input event file
+#      0.2.3 :    12/02/2007 - Run xrtexpocorr with the raw intrument map and after execute 
+#                              swiftxform to create sky intrument map
+#      0.2.4 :    22/05/2007 - Added 'checkattitude' input parameter for xrtinstrmap task call
+#      0.2.5 :    18/10/2007 - Bug fixed in xrtexpocorr task call
+#      0.2.6 :    27/03/2008 - Cut raw instrument map and add sky instrument map to clean up file list
+#                            - set standard raw instrument map using 'SetExpoMapFileName'
+#      0.2.7 :    15/10/2008 - Modified to optimize the execution time
+#      0.2.8 :    19/12/2013 - Added check of the 'ATTFLAG' keyword of the input attitude file
+#                            - Added consistency check of the attitude and event input files
+#                            - Added ATTFLAG keyword in the output exposure map image
+#      0.2.9 :    17/02/2014 - Modified check of the 'ATTFLAG' keyword of the input attitude file
+#      0.3.0 :    13/06/2014 - Update DATE-OBS keyword of the output summed sky instrument map
+#                            - Replaced 'nframe' input parameter with 'pcnframe' and 'wtnframe'
+#      0.3.1 :    11/06/2015 - Update DATE-END and MJD-OBS keywords of the output summed sky instrument map
+#                            
+#
+#                               
+#
+#
+# Notes:	
+# 
+#       type "fhelp xrtexpomap" for parameters description
+#
+# Usage:     
+#       xrtexpomap 
+# 
+# Input files:  
+#
+#
+#
+# Output files: 
+#               
+# HEADAS tasks needed:
+#
+# LHEASOFT tasks needed:
+#
+#============================================================#
+
+require "libswxrtperl.pl";
+#require "//data/src/build18/headas/swift/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use strict;
+
+use vars qw( %Task %Default @Par @CleanupList);
+
+$Task{status} = 0;
+#
+# Specific of the task
+#
+%Task = (
+	 start => `date`,
+	 name  => "xrtexpomap",
+	 version => "0.3.1",
+	 releasedate => "2015-06-11",
+	 stem => "xrtexpomap_0.3.1",
+	 emptystem => "               ",
+	 vigflag => 0, # it means vigflag=no  
+	 cleanup => 0, # it means 'cleanup=no'
+	 clobber => 0,  # it means 'clobber=no'
+	 chatter => 0,
+	 status => 0,
+	 errmess => "",
+	 history => "",
+	 );
+
+#
+#  Defaults
+#
+
+#
+#  Defaults
+#
+%Default = (
+	    DEFAULT        => "DEFAULT",
+	    CALDB          => "CALDB",
+	    NONE           => "NONE",
+	    MISSIONEPOCH   => "2001-01-01T00:00:00.000",
+	    KVL_EXTNAME    => "EVENTS",
+	    KNM_TIMEDEL    => "TIMEDEL",
+	    KVL_TIMEDEL    => 0.0,
+	    KNM_XRTNFRAM   => "XRTNFRAM",
+	    KVL_XRTNFRAM   => 0.0,
+	    KNM_CTYPE1     => "CTYPE1",
+	    KNM_CTYPE2     => "CTYPE2",
+	    KVL_CTYPE1     => "RA---TAN",
+	    KVL_CTYPE2     => "DEC--TAN",
+	    KNM_CUNIT1     => "CUNIT1",
+	    KNM_CUNIT2     => "CUNIT2",
+	    KVL_CUNIT      => "deg",
+	    KNM_RA_PNT     => "RA_PNT",
+	    KVL_RA_PNT     => 0.0,
+	    KNM_RA_OBJ     => "RA_OBJ",
+	    KVL_RA_OBJ     => 0.0,
+	    KNM_DEC_OBJ     => "DEC_OBJ",
+	    KVL_DEC_OBJ     => 0.0,
+	    KNM_PA_PNT     => "PA_PNT",
+	    KVL_PA_PNT     => 0.0,
+	    KNM_DEC_PNT    => "DEC_PNT",
+	    KVL_DEC_PNT    => 0.0,
+	    KNM_EQUINOX    => "EQUINOX",
+	    KVL_EQUINOX    => 2000.0,
+	    KNM_RADECSYS   => "RADECSYS",
+	    KVL_RADECSYS   => "FK5",
+	    KVL_VIGNAPP_T => TRUE,
+	    KVL_VIGNAPP_F => FALSE,
+	    KNM_MJDREFI    => "MJDREFI",
+	    KVL_MJDREFI    => 0,
+	    KNM_MJDREFF    => "MJDREFF",
+	    KVL_MJDREFF    => 0.0,
+	    KNM_OBS_ID     => "OBS_ID",
+	    KVL_OBS_ID     => "",
+	    KNM_TARG_ID    => "TARG_ID",
+	    KVL_TARG_ID    => 0,
+	    KNM_SEG_NUM    => "SEG_NUM",
+	    KVL_SEG_NUM    => 0,
+	    KNM_TSTART     => "TSTART",
+	    KVL_TSTART     => 0.0,
+	    KNM_TSTOP      => "TSTOP",
+	    KVL_TSTOP      => 0.0,
+	    KNM_DATEOBS    => "DATE-OBS",
+	    KVL_DATEOBS    => "2001-01-01T00:00:00.000",
+	    KNM_DATEEND    => "DATE-END",
+	    KVL_DATEEND    => "2001-01-01T00:00:00.000",
+	    KNM_MJDOBS     => "MJD-OBS",
+	    KVL_MJDOBS     => 0,
+	    KNM_ONTIME     => "ONTIME",
+	    KNM_DATAMODE   => "DATAMODE",
+	    KVL_DATAMODE   => "",
+	    KNM_CCDEXPOS   => "CCDEXPOS",
+
+
+	    );
+
+#
+# Get Input Parameters 
+#
+
+if ( &GetInputParameters ) {
+    $Task{errmess} = "Error: parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+
+$Task{history} = &GetValPar("history");
+
+#my $p;
+#
+# foreach $p (@Par) {
+#     print "param: $p->{name} -  $p->{val}\n";
+# }
+
+
+
+my $od = &GetValPar("outdir");
+
+$od =~ s/\/$// ;
+
+&SetValPar("outdir",$od); 
+
+if ( &GetValPar("clobber") =~ /[yY]/ ) {
+    $Task{clobber} = 1;
+}
+
+if ( &GetValPar("vigflag") =~ /[yY]/ ) {
+    $Task{vigflag} = 1;
+}
+
+if ( &GetValPar("cleanup") =~ /[yY]/ ) {
+    $Task{cleanup} = 1;
+}
+
+&RunningTask;
+if ( ! -f &GetValPar("infile") ) {
+    $Task{errmess} = "Input File: '" . &GetValPar("infile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+
+if ( ! -f &GetValPar("attfile") ) {
+    $Task{errmess} = "File Attitude: '" . &GetValPar("attfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("hdfile") ) {
+    $Task{errmess} = "Observation Header File: '" . &GetValPar("hdfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( ! -d &GetValPar("outdir") ) {
+    if ( ! mkdir &GetValPar("outdir"), 0777) {
+        $Task{errmess} = "$Task{stem}: Error: Unable to create the output directory '" . &GetValPar('outdir') . ": $!'";
+	goto EXITWITHERROR;
+    }
+}
+
+my $teldef_tmp = &GetValPar("teldef");
+my $DefStemIn;
+my ($OutImage , $RawInstrMap);
+if (!CompUL(&GetValPar("stemout"),$Default{DEFAULT})) {
+    $DefStemIn = &GetValPar("stemout");
+    $OutImage = &GetValPar("outdir"). "/$DefStemIn" . "_ex.img";
+    $RawInstrMap = &GetValPar("outdir") . "/$DefStemIn"."_rawinstr.img";
+}
+else
+{
+    $DefStemIn = &GetFileStem(&GetValPar("infile"));
+    if($Task{status})
+    {
+	&PrntChty(2,"$Task{stem}: Error: Use 'stemout' input parameter'\n");
+		
+	goto EXITWITHERROR;
+    }
+
+    ($OutImage, $RawInstrMap) = &SetExpoMapFileName(&GetValPar("infile"), &GetValPar("outdir"));
+}
+
+if ( -f $OutImage) {
+    if ( !$Task{clobber} ) {
+	&PrntChty(2,"$Task{stem}: Error: the '$OutImage' file exists\n");
+	&PrntChty(2,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	&PrntChty(2,"$Task{stem}: Error: please delete '$OutImage' or\n");
+	&PrntChty(2,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	$Task{errmess} = "Parameter 'clobber' set to 'no'";
+	goto EXITWITHERROR;
+    }
+    else {
+	unlink (  $OutImage );
+    }
+}
+
+
+if ( -f $RawInstrMap) {
+    if ( !$Task{clobber} ) {
+	&PrntChty(2,"$Task{stem}: Error: the '$RawInstrMap' file exists\n");
+	&PrntChty(2,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	&PrntChty(2,"$Task{stem}: Error: please delete '$RawInstrMap' or\n");
+	&PrntChty(2,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	$Task{errmess} = "Parameter 'clobber' set to 'no'";
+	goto EXITWITHERROR;
+    }
+    else {
+	unlink ( $RawInstrMap );
+    }
+}
+
+
+
+my $SkyInstrMap = &GetValPar("outdir") . "/$DefStemIn"."_skyinstr.img";
+my $RawInstrMap_corr = &GetValPar("outdir") . "/$DefStemIn" . "_rawinstr_corr.img";
+my $SkyInstrMap_corr = &GetValPar("outdir") . "/$DefStemIn"."_skyinstr_corr.img";
+my $SumSkyInstrMap = &GetValPar("outdir") . "/$DefStemIn"."_sumskyinstr.img";
+
+my ($fptr, $comm);
+my $status=0;
+
+# Read needed keywords from input file
+fits_open_file($fptr,&GetValPar("infile"),READONLY,$status);
+
+if ($status) {
+    $Task{status} = 1;
+    $Task{errmess} = "Unable to open fits file : ".&GetValPar("infile") ;
+    goto EXITWITHERROR; 
+}
+
+fits_movnam_hdu($fptr,ANY_HDU,$Default{KVL_EXTNAME},0,$status);
+
+if ($status) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot move into ". &GetValPar("infile") ." file, extension '$Default{KVL_EXTNAME}'";
+    goto EXITWITHERROR;
+    }
+
+fits_read_key($fptr, TSTRING, $Default{KNM_DATAMODE}, $Default{KVL_DATAMODE}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_DATAMODE} keyword";
+    goto EXITWITHERROR;
+}   
+
+if (CompUL($Default{KVL_DATAMODE},"PHOTON")) {
+    
+    fits_read_key($fptr, TDOUBLE, $Default{KNM_TIMEDEL}, $Default{KVL_TIMEDEL}, $comm, $status );
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot read $Default{KNM_TIMEDEL} keyword";
+	goto EXITWITHERROR;
+    }   
+}
+else
+{
+    fits_read_key($fptr, TDOUBLE, $Default{KNM_CCDEXPOS}, $Default{KVL_TIMEDEL}, $comm, $status );
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot read $Default{KNM_CCDEXPOS} keyword";
+	goto EXITWITHERROR;
+    }   
+}
+my $colnum;
+fits_get_colnum($fptr,1, "X", $colnum, $status);
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "X column does not exist";
+    goto EXITWITHERROR;
+}   
+fits_read_key($fptr, TDOUBLE, "TCRVL$colnum", $Default{KVL_RA_PNT}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read TCRVAL$colnum  keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_get_colnum($fptr,1, "Y", $colnum, $status);
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Y column does not exist";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TDOUBLE, "TCRVL$colnum", $Default{KVL_DEC_PNT}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read TCRVAL$colnum keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_PA_PNT}, $Default{KVL_PA_PNT}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_PA_PNT} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_RA_OBJ}, $Default{KVL_RA_OBJ}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_RA_OBJ} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_DEC_OBJ}, $Default{KVL_DEC_OBJ}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_DEC_OBJ} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TINT, $Default{KNM_MJDREFI}, $Default{KVL_MJDREFI}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_MJDREFI} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_MJDREFF}, $Default{KVL_MJDREFF}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_MJDREFF} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_TSTART}, $Default{KVL_TSTART}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_TSTART} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_TSTOP}, $Default{KVL_TSTOP}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_TSTOP} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TSTRING, $Default{KNM_OBS_ID}, $Default{KVL_OBS_ID}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_OBS_ID} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TLONG, $Default{KNM_TARG_ID}, $Default{KVL_TARG_ID}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_TARG_ID} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_read_key($fptr, TLONG, $Default{KNM_SEG_NUM}, $Default{KVL_SEG_NUM}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_SEG_NUM} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_read_key($fptr, TSTRING, $Default{KNM_DATEOBS}, $Default{KVL_DATEOBS}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_DATEOBS} keyword";
+    goto EXITWITHERROR;
+}
+
+fits_read_key($fptr, TSTRING, $Default{KNM_DATEEND}, $Default{KVL_DATEEND}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_DATEEND} keyword";
+    goto EXITWITHERROR;
+}
+
+fits_read_key($fptr, TDOUBLE, $Default{KNM_MJDOBS}, $Default{KVL_MJDOBS}, $comm, $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read $Default{KNM_MJDOBS} keyword";
+    goto EXITWITHERROR;
+}
+
+
+if ( $fptr ) {
+    $status = 0;
+    fits_close_file($fptr,$status);
+    if ( $status ) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot close ".&GetValPar("infile")." event file";
+	goto EXITWITHERROR;
+    }
+   
+}
+
+
+# Get Observation Start Date from the input Event File
+my ( $StartDate, $StartTime );
+&GetEventStartDate(&GetValPar("infile"),\$StartDate,\$StartTime);
+if ( $Task{status} ) { goto EXITWITHERROR; }
+
+$Task{StartDate} = $StartDate;
+$Task{StartTime} = $StartTime;
+
+
+# Get ATTFLAG keyword from the input Event File
+my ( $evtattflag );
+&GetKeyword(&GetValPar("infile"), "EVENTS" , undef ,"ATTFLAG" ,\$evtattflag, 1);
+if ( $Task{status} ) {
+    &PrntChty(3,"$Task{stem}: WARNING cannot read ATTFLAG keyword in file '".&GetValPar("infile")."'\n");
+    $Task{status}=0;
+    $evtattflag = "100";
+}
+
+
+# Get ATTFLAG keyword from the input Attitude File
+my ( $attflag );
+&GetAttitudeATTFLAG(&GetValPar("attfile"), \$attflag);
+if ($Task{status}){ 
+    goto EXITWITHERROR;
+}
+$Task{attflag} = $attflag;
+
+if( $Task{attflag} eq "111" || $Task{attflag} eq "101" ){
+    &PrntChty(2,"$Task{stem}: Error: input attitude file sw*uat.fits not suitable for XRT data processing,\n");
+    &PrntChty(2,"$Task{stem}: Error:  use the sw*sat.fits or sw*pat.fits one.\n");
+    goto EXITWITHERROR;
+}
+
+
+# Check ATTFLAG consistency
+if( $Task{attflag} ne $evtattflag ){
+    &PrntChty(2,"$Task{stem}: Error: Input attitude file not consistent with the one used in the calibration of the input event file.\n");
+    goto EXITWITHERROR;
+}
+
+
+my $teldef=&SetTeldefFileName($teldef_tmp);
+
+if($Task{status})
+{goto EXITWITHERROR;}
+
+if ( &RunXRTInstrMap($RawInstrMap) ) { goto EXITWITHERROR; }
+
+if ( &RunSwiftXForm($RawInstrMap , $SkyInstrMap, $teldef) ) { goto EXITWITHERROR; }
+
+UpdateCheckSum ($SkyInstrMap);
+
+if($Task{status})
+{
+    $Task{errmess} = "Unable to update checksum in $SkyInstrMap fits file" ;
+    goto EXITWITHERROR; 
+}
+
+
+if($Task{vigflag})
+{
+    if ( &RunXRTExpoCorr($RawInstrMap, $RawInstrMap_corr) ) { goto EXITWITHERROR; }
+
+    if ( &RunSwiftXForm($RawInstrMap_corr, $SkyInstrMap_corr, $teldef) ) { goto EXITWITHERROR; }
+    
+    UpdateCheckSum ($SkyInstrMap_corr);
+    
+    if($Task{status})
+    {
+	$Task{errmess} = "Unable to update checksum in $SkyInstrMap_corr fits file" ;
+	goto EXITWITHERROR; 
+    } 
+}
+
+my $SkyInstrMap_forSum;
+
+if($Task{vigflag})
+{
+    $SkyInstrMap_forSum= $SkyInstrMap_corr;
+}
+else
+{
+    $SkyInstrMap_forSum= $SkyInstrMap;
+}
+
+if ( &RunXImage($SkyInstrMap_forSum,$SumSkyInstrMap, $DefStemIn )) { goto EXITWITHERROR; }
+
+fits_open_file($fptr,$SumSkyInstrMap,READWRITE,$status);
+
+if ($status) {
+    $Task{status} = 1;
+    $Task{errmess} = "Unable to open fits file : $SumSkyInstrMap" ;
+    goto EXITWITHERROR; 
+}
+
+fits_update_key($fptr, TINT, $Default{KNM_MJDREFI}, $Default{KVL_MJDREFI}, "Reference MJD Integer part", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_MJDREFI} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_MJDREFF}, $Default{KVL_MJDREFF}, "Reference MJD Fractional", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_MJDREFF} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, $Default{KNM_OBS_ID}, $Default{KVL_OBS_ID}, "Observation ID", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_OBS_ID} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_update_key($fptr, TSTRING, $Default{KNM_DATAMODE}, $Default{KVL_DATAMODE}, "Readout mode", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_DATAMODE} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TLONG, $Default{KNM_TARG_ID}, $Default{KVL_TARG_ID}, "Target ID", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_TARG_ID} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TLONG, $Default{KNM_SEG_NUM}, $Default{KVL_SEG_NUM}, "Segment Number", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_SEG_NUM} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_RA_OBJ}, $Default{KVL_RA_OBJ}, "[deg] RA Object", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_RA_OBJ} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_DEC_OBJ}, $Default{KVL_DEC_OBJ}, "[deg] Dec Object", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_DEC_OBJ} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_RA_PNT}, $Default{KVL_RA_PNT}, "[deg] RA pointing", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_RA_PNT} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_DEC_PNT}, $Default{KVL_DEC_PNT}, "[deg] RA pointing", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_DEC_PNT} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, "HDUCLASS", "OGIP", "Format conforms to OGIP standards", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read HDUCLASS keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, "HDUCLAS1", "IMAGE", "File containing an Image", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read HDUCLAS1 keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, "HDUCLAS2", "EXPOSURE", "File containing an Exposure Map", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot read HDUCLAS2 keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_TSTART}, $Default{KVL_TSTART}, "data start time in mission time", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_TSTART} keyword";
+    goto EXITWITHERROR;
+}   
+
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_TSTOP}, $Default{KVL_TSTOP}, "data stop time in mission time", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_TSTOP} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, $Default{KNM_DATEOBS}, $Default{KVL_DATEOBS}, "Date and time of observation start", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_DATEOBS} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, $Default{KNM_DATEEND}, $Default{KVL_DATEEND}, "Date and time of observation stop", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_DATEEND} keyword";
+    goto EXITWITHERROR;
+}
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_MJDOBS}, $Default{KVL_MJDOBS}, "Modified Julian date of the data start time", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_MJDOBS} keyword";
+    goto EXITWITHERROR;
+}
+
+if($Task{vigflag})
+{
+    fits_write_key($fptr,TLOGICAL,"VIGNAPP",$Default{KVL_VIGNAPP_T},"Is vignetting correction applied(T/F)?", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update VIGNAPP keyword";
+	goto EXITWITHERROR;
+    }
+
+    fits_update_key($fptr, TDOUBLE, "XRTVIGEN",&GetValPar("energy") , "Energy value used for vignetting correction", $status );
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update BUNIT keyword";
+	goto EXITWITHERROR;
+    } 
+
+}
+else
+{
+    fits_write_key($fptr,TLOGICAL,"VIGNAPP",$Default{KVL_VIGNAPP_F},"Is vignetting correction applied(T/F)?", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update VIGNAPP keyword";
+	goto EXITWITHERROR;
+    }
+
+}
+
+fits_update_key($fptr, TDOUBLE, "XRTFRTIM", $Default{KVL_TIMEDEL}, "Time resolution of each frame (in seconds)", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update XRTFRTIM keyword";
+    goto EXITWITHERROR;
+}   
+
+#fits_update_key($fptr, TDOUBLE, $Default{KNM_XRTNFRAM}, $Default{KVL_XRTNFRAM}, "Total frames considered", $status );
+#if ( $status ) {
+#    $Task{status} = 1;
+#    $Task{errmess} = "Cannot update $Default{KNM_XRTNFRAM} keyword";
+#    goto EXITWITHERROR;
+#}   
+
+fits_update_key($fptr, TDOUBLE, $Default{KNM_EQUINOX}, $Default{KVL_EQUINOX}, "default", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_EQUINOX} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, $Default{KNM_RADECSYS}, $Default{KVL_RADECSYS}, "default", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_RADECSYS} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, $Default{KNM_CUNIT1}, $Default{KVL_CUNIT}, "X coordinate units", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_CUNIT1} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, $Default{KNM_CUNIT2}, $Default{KVL_CUNIT}, "Y coordinate units", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update $Default{KNM_CUNIT2} keyword";
+    goto EXITWITHERROR;
+}   
+
+fits_update_key($fptr, TSTRING, "BUNIT", "s", "Units of image array", $status );
+if ( $status ) {
+    $Task{status} = 1;
+    $Task{errmess} = "Cannot update BUNIT keyword";
+    goto EXITWITHERROR;
+}   
+
+
+#fits_update_key($fptr, TDOUBLE, $Default{KNM_ONTIME}, ($Default{KVL_TSTOP} - $Default{KVL_TSTART}), "Exposure time in seconds", $status );
+#if ( $status ) {
+#    $Task{status} = 1;
+#    $Task{errmess} = "Cannot update $Default{KNM_ONTIME} keyword";
+#    goto EXITWITHERROR;
+#}   
+
+fits_delete_key($fptr, "RADESYS", $status );
+if ( $status ) {
+    $status=0;
+    &PrntChty(3,"$Task{stem}: Warning: Unable to delete RADESYS keyword\n");
+}   
+
+fits_delete_key($fptr, "WCSAXESP", $status );
+if ( $status ) {
+    $status=0;
+    &PrntChty(3,"$Task{stem}: Warning: Unable to delete WCSAXESP keyword\n");
+}   
+
+fits_delete_key($fptr, "DEADC", $status );
+if ( $status ) {
+    $status=0;
+    &PrntChty(3,"$Task{stem}: Warning: Unable to delete DEADC keyword\n");
+}   
+
+fits_delete_key($fptr, "DATAMIN", $status );
+if ( $status ) {
+    $status=0;
+    &PrntChty(3,"$Task{stem}: Warning: Unable to delete DATAMIN keyword\n");
+}   
+
+fits_delete_key($fptr, "DATAMAX", $status );
+if ( $status ) {
+    $status=0;
+    &PrntChty(3,"$Task{stem}: Warning: Unable to delete DATAMAX keyword\n");
+}   
+
+if ( $fptr ) {
+    $status = 0;
+    fits_close_file($fptr,$status);
+    if ( $status ) { 
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot close $SumSkyInstrMap event file";
+	goto EXITWITHERROR;
+    }
+   
+}
+ 
+UpdateCheckSum ($SumSkyInstrMap);
+if($Task{status})
+{
+    $Task{errmess} = "Unable to update checksum in $SumSkyInstrMap fits file" ;
+    goto EXITWITHERROR; 
+}
+
+if(system ("gzip -f $RawInstrMap"))
+{
+    $Task{errmess} = "Unable to zip $RawInstrMap fits file" ;
+    goto EXITWITHERROR;
+} 
+
+$RawInstrMap=$RawInstrMap.".gz";
+
+if(system ("gzip -f $SkyInstrMap"))
+{
+    $Task{errmess} = "Unable to zip $SkyInstrMap fits file" ;
+    goto EXITWITHERROR;
+} 
+
+$SkyInstrMap=$SkyInstrMap.".gz";
+
+push @CleanupList,$SkyInstrMap ;
+
+if ( defined $RawInstrMap_corr && -f $RawInstrMap_corr ) {
+    if(system ("gzip -f $RawInstrMap_corr"))
+    {
+	$Task{errmess} = "Unable to zip $RawInstrMap_corr fits file" ;
+	goto EXITWITHERROR;
+    } 
+    
+    $RawInstrMap_corr=$RawInstrMap_corr.".gz";
+}
+
+if ( defined $SkyInstrMap_corr && -f $SkyInstrMap_corr ) {
+    if(system ("gzip -f $SkyInstrMap_corr"))
+    {
+	$Task{errmess} = "Unable to zip $SkyInstrMap_corr fits file" ;
+	goto EXITWITHERROR;
+    } 
+    
+    $SkyInstrMap_corr=$SkyInstrMap_corr.".gz";
+}
+
+if(system ("gzip -f $SumSkyInstrMap"))
+{
+    $Task{errmess} = "Unable to zip $SumSkyInstrMap fits file" ;
+    goto EXITWITHERROR;
+} 
+$SumSkyInstrMap=$SumSkyInstrMap.".gz";   
+
+push @CleanupList, $SumSkyInstrMap;
+
+if ( &RunXRTExpoCalc($SumSkyInstrMap, $OutImage )) { goto EXITWITHERROR; }
+
+#
+# Update ATTFLAG keyword 
+#
+if ( &UpdateATTFLAGkey($OutImage) ) {goto EXITWITHERROR;}
+
+
+#
+# end of xrtexpomap 
+#
+if (&WriteParameterList($OutImage ,-1,@Par)) {goto EXITWITHERROR;}
+
+
+if($Task{vigflag})
+{
+    if ( &DelAndRename($RawInstrMap_corr, $RawInstrMap) ) { goto EXITWITHERROR; }
+    if ( &DelAndRename($SkyInstrMap_corr, $SkyInstrMap) ) { goto EXITWITHERROR; }
+}
+
+if ( $Task{cleanup} ) {
+    
+    &Cleanup(@CleanupList);
+}
+
+&Success;
+
+
+
+exit (0);
+
+EXITWITHERROR:
+    &Error;
+    exit(1);
+
+#-------------------------------------------------------------
+#  subroutines section
+#-------------------------------------------------------------
+
+sub GetInputParameters {
+
+    use vars qw( %Task $datamode @Par %Ind);
+  
+    my ( $name, $indref, $p);
+
+    # temporary set of chatter to normal
+    $Task{chatter} = 3;
+
+    # get parameter list from parameter file
+    ($indref,@Par) = &GetParameterList();
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    %Ind = %$indref;
+
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+
+    if (! &LoadParameter()) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+        
+    $Task{chatter} = &GetValPar("chatter");
+        
+    return 0;
+} #GetInputParameters
+
+
+#
+# XRTINSTRMAP
+#
+
+sub RunXRTInstrMap {
+
+    use vars qw( %Task );
+
+    my ( $OutFile ) = @_;
+    my ( $command, $ret, $par, %xrtinstrmap );
+
+
+
+#    if ( $Task{status} ) {
+#	&PrntChty(3,"$Task{stem}: Error: Please specify the output Attitude Orbit File Name by 'outfile' input parameter\n");
+#	return 1;
+#    }
+
+    if ( -f $OutFile) {
+	if ( !$Task{clobber} ) {
+	    &PrntChty(3,"$Task{stem}: Error: the '$OutFile' file exists\n");
+	    &PrntChty(3,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	    &PrntChty(3,"$Task{stem}: Error: please delete '$OutFile' or\n");
+	    &PrntChty(3,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Parameter 'clobber' set to 'no'";
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    unlink (  $OutFile );
+	}
+    }
+################;;;;;;;;;;;##################
+    &RunningSub($Task{stem},"xrtinstrmap");
+
+
+#
+# Build the command line to run 'xrtinstrmap'
+#
+
+
+       %xrtinstrmap = (
+		        outfile      => $OutFile, 
+		        infile       => &GetValPar("infile"),
+		        hdfile       => &GetValPar("hdfile"),
+		        fovfile      => &GetValPar("fovfile"),
+		        #nframe       => &GetValPar("nframe"),
+		        checkattitude=> &GetValPar("checkattitude"),
+		        history      => &GetValPar("history"),
+		        chatter      => &GetValPar("chatter"),
+		        clobber      => &GetValPar("clobber"),
+		  );
+    
+    if (CompUL($Default{KVL_DATAMODE},"PHOTON")) {
+	$xrtinstrmap{nframe} = &GetValPar("pcnframe");
+    }
+    else{
+	$xrtinstrmap{nframe} = &GetValPar("wtnframe");
+    }
+
+
+    $command = "xrtinstrmap";
+    for $par ( keys %xrtinstrmap ) { $command .= " $par=$xrtinstrmap{$par}"; } 
+
+    &RunningComm("RunXRTInstrMap",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXRTInstrMap","xrtinstrmap",$command);
+        $Task{errmess} = "Error running 'xrtinstrmap'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub($Task{stem},"xrtinstrmap","'$xrtinstrmap{outfile}' created");
+    return 0;
+
+} # RunXRTInstrMap
+
+
+
+
+
+sub RunSwiftXForm {
+
+    my ( $InFile, $OutFile, $Teldef ) = @_;
+
+    use vars qw( %Task   %Default );
+    my ( $command, $ret, $par, %swiftxform );
+
+    &RunningSub("$Task{stem}","swiftxform", " transforming coordinates into sky");
+    
+    
+
+#
+# Build the command line to run 'swiftxform'
+#
+
+    %swiftxform = (
+		   infile       => $InFile,
+		   outfile      => $OutFile,
+		   attfile      => &GetValPar("attfile"),
+		   alignfile    => "none",
+		   method       => "AREA",
+		   to           => "SKY",               
+		   ra           => $Default{KVL_RA_PNT},
+		   dec          => $Default{KVL_DEC_PNT},
+		   roll         => $Default{KVL_PA_PNT},
+		   teldeffile   => $Teldef,
+		   bitpix       => -32,
+		   zeronulls    => "no",
+		   aberration   => "no",
+		   seed         => -1956,
+		   copyall      => "yes",
+		   extempty     => "yes",
+                   allempty     => "no",
+		   history      => &GetValPar("history"),
+		   clobber      => &GetValPar("clobber"),
+		   cleanup      => "yes",
+		   chatter      => &GetValPar("chatter"),
+		);
+
+    $command = "swiftxform";
+    for $par ( keys %swiftxform ) { $command .= " $par=\"$swiftxform{$par}\""; } 
+
+    &RunningComm("$Task{stem}",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("$Task{stem}","swiftxform",$command);
+        $Task{errmess} = "ERROR running 'swiftxform'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("$Task{stem}","swiftxform","'$OutFile' created");
+#    &AddReport(3,"im: .... Stage  I/II: Created '$OutFile' sky images\n");
+    return 0;
+
+} # RunSwiftXForm
+
+
+
+
+sub RunXRTExpoCorr {
+
+    use vars qw( %Task );
+
+    my ( $InFile, $OutFile ) = @_;
+    my ( $command, $ret, $par, %xrtexpocorr );
+
+    if ( -f $OutFile) {
+	if ( !$Task{clobber} ) {
+	    &PrntChty(3,"$Task{stem}: Error: the '$OutFile' file exists\n");
+	    &PrntChty(3,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	    &PrntChty(3,"$Task{stem}: Error: please delete '$OutFile' or\n");
+	    &PrntChty(3,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Parameter 'clobber' set to 'no'";
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    unlink (  $OutFile );
+	}
+    }
+################;;;;;;;;;;;##################
+    &RunningSub($Task{stem},"xrtexpocorr");
+
+
+#
+# Build the command line to run 'xrtexpocorr'
+#
+
+
+       %xrtexpocorr = (
+		        outfile      => $OutFile, 
+		        infile       => $InFile,
+		        vigfile      => &GetValPar("vigfile"),
+		        energy       => &GetValPar("energy"),
+		        history      => &GetValPar("history"),
+		        chatter      => &GetValPar("chatter"),
+		        clobber      => &GetValPar("clobber"),
+		  );
+    
+    $command = "xrtexpocorr";
+    for $par ( keys %xrtexpocorr ) { $command .= " $par=$xrtexpocorr{$par}"; } 
+
+    &RunningComm("RunXRTExpoCorr",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXRTExpoCorr","xrtexpocorr",$command);
+        $Task{errmess} = "Error running 'xrtexpocorr'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub($Task{stem},"xrtexpocorr","'$xrtexpocorr{outfile}' created");
+    return 0;
+
+} # RunXRTExpoCorr
+
+
+
+sub RunXImage {
+
+    my ( $InFile, $OutFile, $Stem ) = @_;	
+
+    use vars qw( %Task  %Default );
+    my ( $command, $ret, $par, %ximage ,@img_list);
+    
+    if ( -f $OutFile) {
+	if (!$Task{clobber} ) {
+	    &PrntChty(2, "$Task{stem}: Error: the '$OutFile' exists\n");
+	    &PrntChty(2, "$Task{stem}: Error: please delete '$OutFile' or\n");
+		&PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+		$Task{errmess} = "Unable to overwrite '$OutFile' file";
+		$Task{status} = 1;
+		goto EXITWITHERROR;
+	    } else { 
+		unlink($OutFile);
+	    }
+    }
+	
+    
+    &RunningSub("$Task{stem}","ximage", " on '$InFile'");
+    @img_list = CountHduIMG($InFile);    
+##### Controllare lo status di questa routine
+    
+    # Open a temporary file with ximage commands;
+    my ( $XimageFile ) =  &GetValPar("outdir") . "/" . $Stem . ".xco";
+    unlink ( $XimageFile );
+    
+    if ( ! open ( XIMFILE, ">$XimageFile" )) {
+	$Task{errmess} = "Unable to create '$XimageFile' file";
+	$Task{status} = 1;
+	goto EXITWITHERROR; 
+    }
+    
+    if (  &GetValPar("chatter") <= 4 ) {
+	print XIMFILE "chat 0\n";
+    }
+
+    if ($#img_list >= 0)
+    {
+     
+	for (my $i=0; $i <= $#img_list; $i++)
+	{
+#	   print " $i <= $#img_list\n";
+	    if ( $i == 0 ) { 
+		print XIMFILE "   read \"$InFile+$img_list[$i]\";save_ima\n"; 
+	    }
+	    else { print XIMFILE " read \"$InFile+$img_list[$i]\";sum_ima;save_ima\n"; }
+	}
+	print XIMFILE  "   write_ima/file=\"$OutFile\"\n";
+	print XIMFILE "quit";
+    }
+    close ( XIMFILE );
+    my ( $command ) = "ximage \@$XimageFile";
+    &RunningComm("$Task{stem}",$command);
+    if (  system( "ximage \@$XimageFile" ) ) {
+	&ErrorComm("RunXimage","ximage",$command);
+	&PrntChty(2,"$Task{stem}: Error: running command: 'ximage \@$XimageFile'\n");
+	$Task{errmess} = "Error Running 'ximage'";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+    
+    if ( &CompUL( &GetValPar("cleanup"), "yes" ) ) {
+	unlink($XimageFile);
+    }
+
+    &SuccessSub("$Task{stem}","ximage","Created  '$OutFile' image");
+    return ;
+    
+}
+
+sub CountHduIMG
+{
+   my ($InFile) = @_;
+
+   my ($ffp);
+   my $status=0;
+
+   fits_open_file($ffp, $InFile, READONLY, $status);
+
+   if ($status)
+   {
+      $Task{errmess} = "Error: Unable to open '$InFile' file";
+      goto EXITWITHERROR;
+   }
+
+   my ($type1, $type2, $rem, $hdutype);
+   my $count = 0;
+   my @hdu_list ;
+   my $hdun = 2;
+   my ($err_1, $err_2);
+ 
+   while (!fits_movabs_hdu($ffp, $hdun, $hdutype, $status))
+   {
+       $err_1 = fits_read_key($ffp, TSTRING, $Default{KNM_CTYPE1}, $type1, $rem, $status); 
+       $err_2 = fits_read_key($ffp, TSTRING, $Default{KNM_CTYPE2}, $type2, $rem, $status); 
+       
+       if ($type1 eq $Default{KVL_CTYPE1} && $type2 eq $Default{KVL_CTYPE2} && $err_1 == 0 && $err_2 == 0)
+       {
+	   $hdu_list[$count] = $hdun-1;
+	   $count ++;
+       }
+       $hdun ++;
+   }
+   if($hdun != 1)
+   {
+       &PrntChty(5,"$Task{stem}: Info: $InFile contains $count image(s)\n");
+   }
+   else
+   {
+       &PrntChty(3,"$Task{stem}: Error: $InFile is empty\n");
+   }
+
+   fits_close_file($ffp,$status);
+
+
+   return @hdu_list;
+}
+
+sub RequestParameter(){
+    return 1;
+}
+
+sub RunXRTExpoCalc {
+
+    use vars qw( %Task );
+
+    my ( $InputImage, $OutFile ) = @_;
+    my ( $command, $ret, $par, %xrtexpocalc );
+
+
+
+#    if ( $Task{status} ) {
+#	&PrntChty(3,"$Task{stem}: Error: Please specify the output Attitude Orbit File Name by 'outfile' input parameter\n");
+#	return 1;
+#    }
+
+    if ( -f $OutFile) {
+	if ( !$Task{clobber} ) {
+	    &PrntChty(3,"$Task{stem}: Error: the '$OutFile' file exists\n");
+	    &PrntChty(3,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	    &PrntChty(3,"$Task{stem}: Error: please delete '$OutFile' or\n");
+	    &PrntChty(3,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Parameter 'clobber' set to 'no'";
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    unlink (  $OutFile );
+	}
+    }
+################;;;;;;;;;;;##################
+    &RunningSub($Task{stem},"xrtexpocalc");
+
+
+#
+# Build the command line to run 'xrtexpocalc'
+#
+
+
+       %xrtexpocalc = (
+		        outfile      => $OutFile, 
+		        infile       => $InputImage,
+		        history      => &GetValPar("history"),
+		        chatter      => &GetValPar("chatter"),
+		        clobber      => &GetValPar("clobber"),
+		  );
+    
+    $command = "xrtexpocalc";
+    for $par ( keys %xrtexpocalc ) { $command .= " $par=$xrtexpocalc{$par}"; } 
+
+    &RunningComm("RunXRTExpoCalc",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXRTExpoCalc","xrtexpocalc",$command);
+        $Task{errmess} = "Error running 'xrtexpocalc'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub($Task{stem},"xrtexpocalc","'$xrtexpocalc{outfile}' created");
+    return 0;
+
+} # RunXRTExpoCalc
+sub SetTeldefFileName {
+
+    my ( $teldeffile ) = @_;
+
+    use vars qw ( %Task);
+
+
+    if ( &CompUL($teldeffile ,$Default{CALDB}))  {
+
+
+	my ($refa,$refb) = &CallQuzcif("TELDEF",$Task{StartDate},$Task{StartTime},"-",1);
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: ERROR: cannot retrieve TELDEF file name from CALDB\n");
+	    $Task{errmess}="cannot retrieve TELDEF file name from CALDB";
+	    return;
+	}
+	if ( @$refb[0] != 0 ) {
+	    &PrntChty(2,"$Task{stem}: ERROR: on 'teldef' file format\n");
+	    $Task{status} = 1;
+	    return;
+	}
+	$teldeffile = @$refa[0];
+    }
+ 
+
+    if ( !-f $teldeffile ) {
+	&PrntChty(2,"$Task{stem}: ERROR teldef file '$teldeffile' not found\n");
+	$Task{errmess} = "Telescope Definition File '$teldeffile' not found";
+	$Task{status} = 1;
+	return;
+    }
+
+    return $teldeffile;
+
+} # SetTeldefFileName
+sub GetFileStem {
+
+    my ( $infile ) = @_;
+    use vars qw ( %Task );
+
+    my ( $STDXPos ) =  20;
+
+    my ( $infilenopath ) = substr($infile,rindex( $infile, '/' )+1);
+    # take  stem
+    if ( substr( $infilenopath,0,2 ) !~ "sw" || rindex( $infilenopath , 'x' ) != ($STDXPos - 7) )
+    {
+	&PrntChty(2,"$Task{stem}: Error: GetFileStem: Input file name '$infile',\n");
+	&PrntChty(2,"$Task{stem}: Error: GetFileStem: does not match SWIFT/XRT standard naming conventions\n");
+	$Task{errmess} = "Cannot define standard stem of files";
+	$Task{status} = 1;
+	return ;
+    }
+
+    my $OutStr = substr($infilenopath,0,$STDXPos);
+    return ($OutStr);
+
+} # GetFileStem
+
+sub DelAndRename {
+
+    my ( $file1, $file2 ) = @_;
+
+    if ( -f $file1 ) {
+	if ( !unlink ($file2) ) {
+	    &PrntChty(2,"$Task{stem}: Error: Cannot delete '$file2' file: $!\n");
+	    $Task{errmess} = "Cannot overwrite '$file2' file";
+	    $Task{status} = 1;
+	    return 1;
+	}
+    
+	if ( &RenameFile($file1, $file2) ) {
+	    $Task{status} = 1;
+	    return 1;
+	}
+    }
+    else {
+	&PrntChty(4,"$Task{stem}: WARNING: No Output File Generated by the Task\n");
+    }
+
+    return 0;
+
+} # DelAndRename
+
+
+sub UpdateATTFLAGkey {
+
+    my ( $filename ) = @_;
+
+    my ($fptr,$status) = (0,0);
+
+
+    fits_open_file($fptr,$filename,READWRITE,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $filename\n";
+	return 1;
+    }
+
+    fits_update_key($fptr,TSTRING,"ATTFLAG",$Task{attflag},"Attitude type flag", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'ATTFLAG' of '$filename' file";
+	goto UpdateATTFLAGkey_end;
+    }
+
+    # end of work: update current HDU checksum
+    fits_write_chksum($fptr,$status);
+    if ( $status ) {
+	 $Task{status} = 1;
+	 $Task{errmess} = "Cannot update HDU 'EVENTS' checksum: $status";
+	 goto UpdateATTFLAGkey_end;
+    }
+
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+	if ( $status ) { 
+	    &PrntChty(3, "$Task{stem}: Error: cannot close '$filename' file");
+	    return 1;
+	}
+    }
+
+    return 0;
+
+
+  UpdateATTFLAGkey_end:
+
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+    }
+
+    return 1;
+
+} # UpdateATTFLAGkey
+

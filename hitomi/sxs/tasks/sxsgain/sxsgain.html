@@ -1,0 +1,619 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+sxsgain -- Calculate the time-dependent energy correction for SXS
+events from comparison with known calibration lines
+
+
+<h2>USAGE</h2>
+
+<tt>sxsgain infile outfile</tt> 
+
+<h2>DESCRIPTION</h2>
+
+<p>
+  'sxsgain' calculates time-dependent SXS energy gain corrections by
+comparing the theoretical and observed energies of a calibration line
+or line complex. For each run of the task, only one line may be
+specified to calculate the gain correction (see parameter
+'linetocorrect'). The source of calibration X-rays may be specified as
+either the SXS calibration pixel ('calmethod=Cal-pix'), the Modulated
+X-ray Source ('calmethod=MXS'), or the Filter Wheel Fe55 source
+('calmethod=Fe55'). In the first case only the calibration pixel
+(pixel 12) correction is computed, otherwise distinct corrections are
+computed for each pixel. The output may subsequently be utilized by
+the 'sxspha2pi' task to assign photon energy and PI values. This task
+requires that the TIME, PHA, and STATUS columns in the input file are
+populated.
+</p>
+
+<p>
+   'sxsgain' accumulates spectra from events that are consecutive in
+time, with energy centered on the calibration feature and compares
+each spectrum from the events with a theoretical model of the
+calibration feature profile. The calibration feature used by 'sxsgain'
+is specified by the parameter 'linetocorrect' as a string, and the
+names and energies of the features are specified in a calibration file
+(parameter 'linefitfile'). The calibration feature may be composed of
+many atomic or nuclear line components that are listed in the
+calibration file. Each calibration line is assumed to be Lorentzian.
+  </p>
+
+<p>
+The energy range for the spectra constructed from the event file as
+well as from the theoretical profile, may be specified in two
+different ways. (1) The default energy range for the spectra is the
+smallest and largest energies of the line components, and expanded
+with the 'extraspread' parameter, i.e.  [E_min - extraspread : E_max +
+extraspread].  It is recommended to set 'extraspread' larger than the
+sum of the natural width of the calibration feature, the value of the
+'broadening' parameter, and the magnitude of the expected energy
+shift.  (2) Alternatively, the energy range may be specified by
+setting the 'startenergy' and 'stopenergy' parameters. If these
+parameters are non-negative 'sxsgain' uses their values to
+accumulate the spectra, instead of the range derived using the
+'extraspread' setting. The profile may be convolved with a
+Gaussian having the FWHM given by the 'broadening' parameter.
+</p>
+
+<p>
+  'sxsgain' proceeds in two steps for each spectrum. In the first
+  step, the PHA shift of the spectrum with respect to the theoretical
+  profile is derived, using both fitting and averaging methods. In the
+  second step, these shifts are used to compute pixel temperatures
+  that may subsequently be used by 'sxspha2pi' to assign PI.
+</p>
+
+<p>
+  Step 1: In order to fit PHA spectra, the spectrum energy grid is
+  converted to a PHA mesh by applying a reverse lookup using the
+  appropriate set of gain coefficients. Gain coefficients are
+  contained in the gain CALDB file (see parameter 'gainfile') for each
+  pixel, resolution grade -- (H)igh, (M)id, and L(ow), and pixel
+  temperature. For a given spectrum in a pixel, the gain corresponding
+  to that pixel, grade given by the 'gaincoeff' parameter, and
+  temperature given by the 'tempidx' parameter are used to define this
+  mesh and to evaluate the theoretical profile on the PHA mesh.
+<p>
+The task proceeds by first constructing spectra within the prescribed
+PHA range for groups of events consecutive in time and in the same
+pixel. Only high-resolution primary events, or alternatively high- and
+mid-resolution primaries (if 'usemp=yes'), are considered. Events may
+be excluded from the fitting by independently checking the STATUS
+column for antico, electrical crosstalk, and recoil crosstalk flags
+if, respectively, 'ckant', 'ckctel', or 'ckctrec' parameters are set
+to yes. If 'ckrisetime=yes', events with risetime>127 are likewise
+excluded.  If a GTI file (see below GTI format)  is specified by the 'gtifile' parameter,
+events outside of the GTI intervals are excluded as well. If
+'calmethod' is set to MXS this GTI should only include times when the
+MXS mode corresponding to 'linetocorrect' (direct mode for
+'linetocorrect=CuKa, CuKb, CrKa, or CrKb'; indirect mode for
+'linetocorrect=AlKa, AlKb, MgKa, or MgKb') are producing MXS
+events. Spectra are not accumulated across GTI intervals unless
+'spangti=yes'.
+</p>
+
+<p>
+  The number of events in each spectrum is defined by the 'numevent' and
+'minevent' parameters. The task accumulates spectra with a number of
+events between 'minevent' and 'numevent'. However, if a spectrum has
+fewer than 'minevent' points, then it is combined with the previous
+spectrum if possible. Therefore all spectra have a size between
+'minevent' and ('numevent+minevent-1'). To avoid having spectra
+accumulated over large gaps in time, the group of points in the
+spectrum is truncated when the time interval between consecutive
+events is greater than the 'gapdt' parameter. Adjacent spectra in time
+may share a percentage of their points based on the 'grpoverlap'
+parameter that may vary between 0 and 100. If 'grpoverlap' is set to
+0, the consecutive spectra share no points in common; if set to 100
+they share all points in common but one.
+</p>
+
+<p>
+For each accumulated spectrum, 'sxsgain' fits the theoretical profile
+to the data and also derives binned and unbinned averages. A
+least-squares method is used in the fitting. The fitted parameters are
+energy shift, scaling factor, background (unless the 'background'
+parameter is set to NONE), and convolution width if
+'fitwidth=yes'. The background is fit with a constant value if
+'background' is set to CONSTANT, and a power-law if set to SLOPE.  The
+unbinned average PHA is the sum of the PHA in the spectrum divided by
+the number of events in the spectrum.  The binned average PHA is the
+weighted average derived by summing, over bins in the spectrum, the
+product of the PHA and number of events per bin, and then dividing by
+the total number of events in the spectrum.  The fitted gain
+correction is computed from the fitted shift with respect to the
+theoretical line profile.  The binned average gain correction is
+computed from the difference between the profile and spectrum
+averages.
+<p>
+Step 2: Once the fitting is completed for a spectrum in a pixel, the
+fitted and average pixel temperatures are determined, and written to
+the output gain file. The gain coefficients contained in the gain
+CALDB file (parameter 'gainfile') for this pixel and the grade given
+by the 'gaincoeff' parameter, are used to build a temperature
+vs. energy table for the average PHA derived from the binned average
+or from the fitting. The corresponding pixel temperatures at the
+average energy of the input calibration feature are then obtained
+using an n-point interpolation method, where n is the number of
+temperatures in the gainfile to be used (see 'ntemp' parameter).
+</p>
+
+<p>
+The default values for the parameters used in the fitting method
+('minwidth0', 'maxitcycle', 'r2tol', 'searchstepshift', 'maxdshift',
+'bisectolshift', 'searchstepwidth', 'maxdwidth', 'bisectolwidth', and
+'minwidth') should not need to change since already optimized.
+</p>
+
+<p>
+The output file has two extensions. One extension, GRID_PROFILE,
+contains the energies and amplitudes of the theoretical profile used
+in the fitting procedure, including any convolution from the
+'broadening' parameter.  The other extension, DRIFT_ENERGY, reports
+the fitting results for each spectra in the following columns: TIME
+(midpoint of the time interval over which the spectrum is collected),
+PIXEL, COR_FIT (energy correction factor from spectrum fit), COR_AVE
+(energy correction factor from spectrum average), CHISQ (reduced
+chi-squared of the fit), AVGUNBIN (average energy of events in
+spectrum prior to binning), AVGBIN (weighted spectrum average energy),
+AVGFIT (average energy from fit), SHIFT (fitted energy shift), SCALE
+(fitted vertical scaling factor), BGRND (fitted background), WIDTH (if
+'fitwidth=no', same as broadening parameter; if 'fitwidth=yes', fitted
+width), TELAPSE (difference between times of first and last event in
+spectrum), EXPOSURE (calculated using the GTI), NEVENT (total number
+of events collected for this spectrum), BINMESH (array containing the
+count spectrum energy bins), SPECTRUM (array containing the observed
+binned count spectrum), FITPROF (array containing theoretical profile
+with fitted parameters applied), TEMP_FIT (temperature derived from
+fitted PHA; AVGFIT column), TEMP_AVE (temperature derived from average
+PHA; AVGBIN column). If the 'calcerr' parameter is set to 'yes',
+one-sigma errors for the SHIFT and WIDTH are calculated. The errors
+are calculated with chi-squared and maximum-likelihood methods and
+output in the columns SIGSHCHI2, SIGWDCHI2, SIGWDLIKE and SIGWDLIKE
+respectively. If 'writeerrfunc' parameter is set, the chi-squared and
+likelihood calculated valued are output in the arrays SHCHI2, SHLIKE,
+WDCHI2 and WDLIKE. The numbers of values output in these arrays are
+specified in the 'nerrshift' and 'nerrwidth' parameters, respectively.
+</p>
+
+<p>
+Two formats are supported for the GTI file.  The first format contains
+up to 37 extensions: 1 general GTI and 36 pixel-dependent GTI.  The DETNAM
+keyword for the general GTI must be PIXEL and the DETNAM keyword values for
+the pixel-dependent GTIs are PIXnn where nn is the pixel number, e.g. PIX04
+for pixel 4.  In this format, all extensions must contain columns START and
+STOP which define the GTI.  The second format may have up to two
+extensions: 1 general GTI with START and STOP columns and 1 pixel-dependent
+extension with columns START, STOP, and PIXEL.  In the second format the
+DETNAM keyword is set to PIXEL for both extensions.  if the input GTI has 
+a single GTI extension with no DETNAM keyword defined, it is treated as a
+general GTI.  If the events need to be filtered using multiple general or
+pixel-dependent GTI files, they must first be merged into a single GTI file
+using the 'sxspixgti'.
+</p>
+
+
+<h2>PARAMETERS</h2>
+<dl>
+
+ <p>
+<dt>infile [filename]</dt>
+<dd> Input event file name. The file must have the TIME column filled.</dd>
+ </p>
+ 
+<p>
+<dt>outfile [filename]</dt>
+<dd> Output gain correction file name.</dd>
+</p/p>
+
+
+<p>
+<dt>(gainfile = CALDB) [filename]</dt>
+<dd>Input file containing SXS energy scale (gain) coefficients as a
+function of pixel and resolution grade, and pixel temperature. If the
+parameter is set to CALDB, the file is read from the calibration
+database.</dd>
+</p>
+
+<p>
+<dt>(tempidx = 2) [integer]</dt>
+<dd>Input temperature index for selecting gain to convert energy to
+PHA profiles during fitting.</dd>
+</p>
+
+<p>
+<dt>(gaincoeff = H) [string]</dt>
+<dd>Type of gain coefficients to use, H for high-resolution, M for
+mid-resolution, L for low-resolution.</dd>
+</p>
+
+<p>
+<dt>(linefitfile = CALDB) [filename]</dt>
+<dd>Input CALDB file containing parameters of the Lorentzian
+components used to construct the theoretical line profile. If the
+parameter is set to CALDB, the file is read from the calibration
+database.</dd>
+</p>
+
+<p>
+<dt>(linetocorrect = Mnka) [string]</dt>
+<dd>Calibration line to use for the energy correction. Features in the
+CALDB file relevant to the SXS are the following: Mnka and Mnkb
+(cal-pixel and Fe55 filter wheel source); Cuka, Cukb, Crka, and Crkb
+(MXS direct mode), Alka, Alkb, Mgka, and Mgkb (MXS indirect
+mode).</dd>
+</p>
+
+<p>
+<dt>(itypecol = ITYPE) [string]</dt>
+<dd>Column name that contains the type event (or grade).</dd>
+</p>
+
+<p>
+<dt>(ntemp = 3) [integer]</dt>
+<dd>Number of temperatures from gain file to use in
+interpolation. This must not exceed the number of temperatures in
+gainfile.</dd>
+</p>
+
+<p>
+<dt>(calmethod = Cal-pix) [string]</dt>
+<dd>
+If calmethod is set to Cal-pix, the energy correction is calculated
+for the calibration pixel (pixel 12) only. If calmethod is set to MXS
+the energy correction is calculated for all pixels, but only events
+obtained during MXS operation, as should be specified by the 'gtifile'
+parameter, are used.  If calmethod is set to Fe55, all pixels and all
+good times are used.</dd>
+</p>
+
+<p>
+<dt>(numevent = 250) [integer]</dt>
+<dd>Number of events collected for each spectrum used to calculate a
+single gain correction.</dd>
+</p>
+
+<p>
+<dt>(minevent = 150) [integer]</dt>
+<dd>Minimum number of events required for a spectrum. If the length of
+a group is less than minevent, those points are included with the
+previous group for processing, if possible.</dd>
+</p>
+
+<p>
+<dt>(gtiile = NONE) [filename]</dt>
+<dd>Input GTI file with time intervals to consider. Set to NONE to use
+entire input file.</dd>
+</p>
+
+<p>
+<dt>(gapdt = -1) [real]</dt>
+<dd>The upper limit to the time interval between two consecutive
+events in the same spectrum used in fitting.  Two consecutive events
+separated in time by more than this amount are assigned to different
+groups. If gapdt=-1, no limit is imposed.</dd>
+</p>
+
+<p>
+<dt>(grpoverlap  = 0) [real]</dt>
+<dd> The percentage overlap between adjacent groups. For
+grpoverlap=100 adjacent groups are shifted by one event, for
+grpoverlap=0 adjacent groups are independent and share no events.</dd>
+</p>
+
+<p>
+<dt>(startenergy = -1.) [real]</dt>
+<dd>Beginning of energy range in eV over which the spectra are
+collected. If startenergy is negative, the first energy is
+automatically determined by the smallest energy in linefitfile for the
+selected calibration feature adjusted by the extraspread
+parameter.</dd>
+</p>
+
+<p>
+<dt>(stopenergy = -1.) [real]</dt>
+<dd>End of energy range in eV over which the spectra are collected. If
+stopenergy is negative, the final energy is automatically determined
+by the largest energy in linefitfile for the selected calibration
+feature adjusted by the extraspread parameter.</dd>
+</p>
+
+<p>
+<dt>(extraspread = 10.) [real]</dt>
+<dd>Energy in eV by which the energy range is extended on either side
+beyond the smallest and largest energy in the linefitfile for the
+selected calibration feature. This parameter may be overridden by the
+startenergy and stopenergy parameters.</dd>
+</p>
+
+<p>
+<dt>(pxphaoffset = 0.0) [float]</dt>
+<dd>The PHA bins used to construct the fitting spectra are shifted by this
+amount.  If the PHA value in the gain file represents the left boundary
+of the PHA bin, then pxphaoffset should be 0; if instead it represents
+the center of the bin, pxphaoffset should be 0.5. </dd>
+</p>
+
+<p>
+<dt>(broadening = 1.0) [real]</dt>
+<dd>FWHM of the Gaussian in eV used to initially broaden the
+theoretical line profile. If fitwidth is set to no, the profile width
+is fixed at this value.</dd>
+</p>
+
+<p>
+<dt>(gridprofile = no) [boolean]</dt>
+<dd>If gridprofile is set to yes, only output the theoretical profile
+including any convolution due to the broadening parameter; no fitting
+is conducted (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(fitwidth = yes) [boolean]</dt>
+<dd>If fitwidth is set to yes, then fit the width of each spectra in
+addition to the energy shift ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(background = CONST) [string]</dt>
+<dd>Fitted background type (NONE, CONST, SLOPE).</dd>
+</p>
+
+<p>
+<dt>(spangti = no) [boolean]</dt>
+<dd>If spangti is set to yes, events in different intervals in gtifile
+may be collected in the same spectrum to be fit. If spangti is set to
+no, then groups of events used to construct the spectra must be from
+the same GTI.  This parameter is ignored if gtifile is set to NONE
+(yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(usemp = no) [boolean]</dt>
+<dd> If usemp is set to no, only high-resolution primaries are included in the
+fitted spectra. If usemp = yes, mid-resolution primaries are also
+included (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(ckrisetime = yes) [boolean]</dt>
+<dd> If ckrisetime is set to yes, events with risetime>127 are not used in
+fitting ([yes]/no).</dd>
+</p>
+<p>
+<dt>(calcerr = no) [boolean]</dt>
+<dd>Compute uncertainties on shift and width (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(writeerrfunc = no) [boolean]</dt>
+<dd>Output the array of chi-squared and likelihood calculated for the
+SHIFT and WIDTH (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(ckant = no) [boolean]</dt>
+<dd> If ckant is set to yes, events identified as coincident with antico events
+according to the STATUS column are not used in
+fitting (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(ckctrec = no) [boolean]</dt>
+<dd> If ckctrec is set to yes, events identified as recoil crosstalk
+according to the STATUS column are not used in
+fitting (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(ckctel = no) [boolean]</dt>
+<dd> If ckctel is set to yes, events identified as electrical crosstalk
+according to the STATUS column are not used in
+fitting (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(extrap = no) [boolean]</dt>
+<dd>Allow extrapolation when calculating temperature (yes/[no]).</dd>
+</p>
+
+<p>
+  <dt>(avgwinrad = 30) [real]</dt>
+  <dd> Radius of interval (in units of binwidth) used only to update
+the initial shift estimate prior to fitting. This is not used in
+calculating the average results.
+</dd>
+</p>
+
+<p>
+<dt>(minwidth0 = 1.0) [real]</dt>
+<dd>Smallest width, in units of binwidth, allowed as the initial value
+in width fitting.  This parameter provides a lower limit to the initial
+estimate of the width as computed by the fitting algorithm.  The value
+must be greater than zero.</dd>
+</p>
+
+<p>
+<dt>(maxitcylce = 5) [integer]</dt>
+<dd>Maximum number of fitting iterations.</dd>
+</p>
+
+<p>
+<dt>(r2tol = 0.001) [real]</dt>
+<dd>Convergence criterion on R-squared for least-squared fitting. Once
+R-squared changes by less than this amount between fitting iterations,
+the procedure is finished. This parameter should not normally need to
+be changed from the default value.</dd>
+</p>
+
+<p>
+<dt>(searchstepshift = 2.) [real]</dt>
+<dd> Step size, in units of binwidth, used when searching for best-fit
+energy shift in either direction from the initial shift estimate based
+on the spectrum average.  The final shift is obtained using the
+bisection method (see bisectolshift).</dd>
+</p>
+
+<p>
+<dt>(maxdshift = 5.) [real]</dt>
+<dd> Largest allowed deviation, in units of binwidth, from initial
+estimate of energy shift.  If no solutions are found within this
+deviation at smaller or larger shifts from the initial estimate, then
+the fitting procedure fails for the spectrum.</dd>
+</p>
+
+<p>
+<dt>(bisectolshift  = .001) [real]</dt>
+<dd> When the bisection method determines the energy shift to within
+this amount in units of binwidth, the fitting procedure is
+completed. </dd>
+</p>
+
+<p>
+<dt>(searchstepwidth = 5.) [real]</dt>
+<dd> Step size, in units of binwidth, used when searching for best-fit
+convolution width in either direction from the initial width estimate
+based on the difference between the profile and spectrum statistical
+variances.  The final width is obtained using the bisection method 
+(see bisectolwidth).</dd>
+</p>
+
+<p>
+<dt>(maxdwidth = 10.) [real]</dt>
+<dd> Largest allowed deviation, in units of binwidth, from initial
+estimate of convolution width.  If no solutions are found within this
+deviation at smaller or larger widths from the initial estimate, then
+the fitting procedure fails for the spectrum.</dd>
+</p>
+
+<p>
+<dt>(bisectolwidth  = .001) [real]</dt>
+<dd> When the bisection method determines the convolution width to within
+this amount in units of binwidth, the fitting is procedure is completed.
+</dd>
+</p>
+
+<p>
+<dt>(minwidth = .5) [real]</dt>
+<dd>Since the least-squares fitting functional is undefined when the
+width is zero, one must define a minimum allowed fitted width.  If the
+fitting routine attempts to fit a width smaller than this value (in
+units of binwidth), the fitting procedure fails for the spectrum.
+</dd>
+</p>
+
+<p>
+<dt>(nerrshift = 100) [int]</dt>
+<dd>Number of shift values in uncertainty calculations.</dd>
+</p>
+
+<p>
+<dt>(nerrwidth = 100) [int]</dt>
+<dd>Number of width values in uncertainty calculations.</dd>
+</p>
+
+<p>
+<dt>(shifterrfac = 3.0) [real]</dt>
+<dd>Factor for determining domain of shift uncertainty arrays.</dd>
+</p>
+
+<p>
+<dt>(widtherrfac = 4.0) [real]</dt>
+<dd>Factor for determining domain of width uncertainty arrays.</dd>
+</p>
+
+<p>
+<dt>(buffer = -1) [integer] </dt>
+<dd> Rows to buffer (-1=auto, 0=none, >0=numrows). </dd>
+</p>
+
+<p>
+<dt>(clobber = no) [boolean]</dt>
+<dd>Overwrites the existing output file if set to yes (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(chatter = 1) [integer] </dt>
+<dd>Chatter level for output. Set to 0 to suppress output, 
+or to 1, 2, or 3 for increasing the chatter of the output. </dd>
+</p>
+
+<p>
+<dt>(logfile = !DEFAULT) [string]</dt>
+<dd>Log filename. If set to DEFAULT uses the name of the task and, if
+preceded by '!', overwrite the file if it exists. If set to NONE no
+log file is created. </dd>
+</p>
+
+<p>
+<dt>(debug = no) [boolean]</dt>
+<dd>Diagnostic output is printed out on the screen if set to yes
+(yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(history = yes) [boolean]</dt>
+<dd>Records tool parameters in HISTORY  ([yes]/no).</dd>
+
+<p>
+<dt>(mode = ql) [string ql|hl|q]</dt>
+<dd>Mode to query the parameter file. 
+Acceptable values include: "ql (query and learn/remember), "hl" (hidden and learn/remember), "q" (query but don't remember), "h" (hidden).(Optional) </dd>
+</p>
+
+<h2>EXAMPLES</h2>
+
+<p>
+
+1.  Calculate the gain based on fitting cal-pixel events with a
+line profile based on the theoretical Mn K-alpha profile convolved with a
+Gaussian  with width determined by fitting.
+<p>
+<pre>
+      sxsgain infile=event_in.fits outfile=gain_out.fits 
+</pre>
+<p>
+
+2.  Calculate the gain based on fitting cal-pixel events with a
+line profile based on the theoretical Mn K-alpha profile convolved with a
+Gaussian of fixed 5 eV FWHM.
+<p>
+<pre>
+      sxsgain infile=event_in.fits outfile=gain_out.fits broadening=5.0 fitwidth=no
+</pre>
+<p>
+
+3.  Calculate the gain based on fitting MXS events with a line profile
+based on the theoretical Cu K-alpha profile using a GTI file
+indicating when the direct MXS were on, mxson13.gti.
+<p>
+<pre>
+      sxsgain infile=event_in.fits outfile=gain_out.fits linetocorrect=Cuka calmethod=MXS gtifile=mxson13.gti 
+</pre>
+<p>
+
+
+<h2>SEE ALSO</h2>
+
+sxspha2pi, sxssecid, sxsflagpix, mxstime, ahgainfit
+
+<h2>LAST MODIFIED</h2>
+
+December 2016
+
+</body>
+</html>

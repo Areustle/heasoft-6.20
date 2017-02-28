@@ -1,0 +1,7 @@
+# AEaspectATTFILE.make
+
+AEaspectATTFILE_DIR = ${ASTE_MODULE_DIR}/AEaspectATTFILE/1.1
+AEaspectATTFILE = AEaspectATTFILE.o
+
+AEaspectATTFILE.o: ${AEaspectATTFILE_DIR}/AEaspectATTFILE.c
+	$(CC) -I${AEaspectATTFILE_DIR} $(CFLAGS) $(ANLCFLAGS) -c ${AEaspectATTFILE_DIR}/AEaspectATTFILE.c

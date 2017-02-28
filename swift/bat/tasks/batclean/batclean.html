@@ -1,0 +1,503 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>batclean HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+batclean - read in a DPI and clean out a fit to the diffuse background
+
+<h2>USAGE</h2>
+
+<tt>batclean infile outfile incatalog [detmask] <i>[options]</i> </tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+This tool fits a simple background or source plus background model to
+a detector plane image.  The code contains a default background model
+which is described below.  The user can also specify one or more
+background models to be fit using the bkgmodel parameter.  The output
+file can be either the cleaned focal plane (default), the fit to the
+detector plane or the original input file.  The fitting is performed
+as a linear combination of background components, via singular value
+decomposition.
+<p>
+The tool can also, optionally, balance the detector plane either
+before or after or instead of cleaning.  See below under the "balance"
+parameter for more details.
+<p>
+This code reads in a Detector Plane Image (DPI) file as well as an
+optional detector quality mask file.  If no detector mask file is
+provided, then all detectors with non-zero data are included in the
+fit.
+
+<h3>Source Cleaning</h3>
+
+<p>
+Since BAT is a coded mask instrument, bright sources can contribute
+counts to a large portion of the detector.  These source introduce
+their own 'coding noise' which is approximately 1% of the source
+intensity.  By modeling and subtracting the contributions of bright
+sources, the coding noise can be reduced significantly (Although the
+effects cannot be completely removed.)
+
+<p>
+If one or more sources are to be cleaned from the DPI (default), then
+set srcclean='YES' and enter an input catalog ('incatalog').  All
+sources with significance greater than 'snrclean' will be modeled and
+cleaned.  batclean which uses a forward projection to create a model
+template for each source; the fit coefficient is the normalization
+(intensity) of the source.
+<p>
+
+The input catalog must contain columns "IMX," "IMY," "CATNUM," (or
+"SOURCE_ID"), "NAME," and "SNR."  The tool reads the source position
+in BAT image coordinates from this file and uses the source position
+to forward project a model of the source flux onto the focal
+plane.
+
+
+<h3>Background Cleaning</h3>
+<p>
+The purpose of background cleaning is to model and remove smoothly
+varying gradients in the detector plane image.  These gradients are
+typically dominated by the cosmic X-ray background, which peaks at the
+center of the detector plane image.  If these trends are not removed,
+the coded mask image will contain increased 'pattern noise' which will
+reduce the sensitivity to real sources.
+
+<p>
+By default, a simple background model is used, which contains linear
+and quadratic spatial gradients.  It has the following
+parameters:
+<ul>
+<li> 1 = constant,   2 = proportional to X,  3 = proportional to Y    
+<li> 4 = proportional to X<sup>2</sup>,  5 = proportional to Y<sup>2</sup>
+<li> 6 = proportional to X Y, 
+<li> 7 = Detector on left (-X) side of sandwiches: constant,
+<li> 8 = Left side detectors: proportional to X,    
+<li> 9 = Detector on right (+X) side of sandwiches: constant,
+<li> 10 = Right side detectors: proportional to X,    
+<li> 11 = Detectors on front (-Y) side of sandwiches: constant,
+<li> 12 = Front side detectors: proportional to Y,    
+<li> 13 = Detectors on back (+Y) side of sandwiches: constant,
+<li> 14 = Back side detectors: proportional to Y,    
+</ul>
+<p>
+The code creates a background template maps based on the model above
+(which can be optionally output using the <i>backexp</i> parameter).
+In addition to the simple model, the user can supply custom model
+template files, and these will be fitted with a linear normalization
+component.  The custom model templates must be in the same format as a
+DPI (i.e. 286 x 173 image extensions), one image extension per
+template.
+
+
+<p>
+The tool then uses a singular value decomposition method to fit a
+linear combination of all source and background templates to the
+counts data of the DPI.  The fit coefficients are then used to create
+a model background map.
+
+<h3>Balancing</h3>
+
+<p>
+batclean is also capable of "balancing" the detector plane counts.
+Balancing involves subtracting DC biases from certain combinations of
+detectors which are thought to have systematic offsets.  The BAT
+flight software itself also does balancing on-board Swift.  The most
+obvious case of this is to subtract the global-average counts from all
+detectors, but there are other possible combinations.  The purpose of
+balancing is to further reduce pattern noise due to systematic
+features in the detector counts (for example, each detector module is
+biased slightly differently).  Since these structures do not
+correspond to the shadowgrams of real sources, they only contribute
+noise, and can be subtracted without reducing sensitivity to real
+sources.  If a detector quality mask is given (via 'detmask'), then
+only non-masked detectors are included in the balancing.
+
+
+<p>
+If any balancing operation is enabled via the 'balance' keyword
+parameter, the task will also balance the entire array, or subsets of
+the array, as specified in the table below.  The balancing that is
+requested is given by supplied a comma-separated list of any or all of
+the following values.  The balance is performed in the order in which
+the values are listed.  Balancing is not commutative, so order is
+significant. 
+
+<p>
+Allowed balance values:
+<ul>
+<li> 'none' - no balancing;
+<li> 'All' - the entire array is balanced (1 balancing of 32768 detectors);
+<li> 'Module' - each of the 256 detector modules is separately balanced;
+<li> 'InOut' - each module has its inner detectors balanced and in separate 
+operations, its outer detectors balanced (for a total of 512 balancings);
+<li> 'Edges' - each module has only its outer (or edge) detectors balanced;
+<li> 'LongEdges' - each row that contains module edge detectors is balanced separately (for a total of 32);
+<li> 'ShortEdges' - each column that contains module edge detectors is balanced separately (for a total of 32);
+<li> 'flight' - reproduce the flight code balancing, which is equivalent to 'ShortEdges,LongEdges,InOut' in that order.
+</ul>
+
+
+<h3>Output File</h3>
+
+<p>
+The output file will contain detector plane maps with the result of
+the cleaning operation, i.e. a series of DPIs, one for each input DPI.
+The actual <i>meaning</i> of the data values depends on the
+'outversion' parameter:
+<ul>
+<li> outversion='cleaned' - cleaned DPI, that is, original counts minus fitted model;
+<li> outversion='original' - original DPI filtered by the detector mask;
+<li> outversion='fit' - fitted source+background model;
+<li> outversion='bkgfit' - fitted background-only model;
+<li> outversion='bkgcleaned' - background-cleaned DPI, that is, original counts minus fitted background-only model;
+<li> outversion='srcfit' - fitted source-only model;
+<li> outversion='srccleaned' - background-cleaned DPI, that is, original counts minus fitted source-only model;
+</ul>
+Depending on the 'maskfit' parameter, the output data values may or
+may not be masked by the quality map.  batclean writes the fit
+coefficients to the output file as keywords, as follows:
+<ul>
+<li> BGPARnn - fit coefficients for background model;
+<li> SRPARnn - normalization coefficients for each source, if source cleaning is requested; the corresponding source name is printed in the comment field.
+</ul>
+
+<p>  
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>infile [filename]
+
+<dd>Input file name.  The name of the input DPI file.  This is expected to
+be an image array with dimensions equal to the number of detector columns 
+by the number of detector rows (set to 286 X 173).  If there are multiple 
+BAT_DPI image extensions then all are cleaned and multiple cleaned images
+are written to the output file.
+<p>
+
+<dt>outfile [filename]
+
+<dd>Output file name.  See above for description of output file
+contents, which depends on the 'outversion' parameter.
+<p>
+
+<dt>incatalog = "NONE" [filename]
+
+<dd>Input source catalog.  The format of the catalog file is that
+output by the BAT tool <i>batcelldetect</i>.  See above for the format
+description.  By default the first table extension is opened, unless
+an explicit extension is provided.  If no source cleaning is
+requested, then set incatalog='NONE'.  See also the 'srcclean'
+parameter.
+<p>
+
+<dt>(aperture = "CALDB:FLUX") [filename]
+
+<dd>Aperture file.  The default is the aperture file in the CALDB
+area.  This parameter may be omitted or set to "NONE" if only
+background cleaning is required (i.e., the <i>srcclean</i> parameter
+set to "NO").  If several aperture types are available in the CALDB,
+the user can specify CALDB:<i>apertype</i>.  Valid values of apertype are
+currently: FLUX or DETECTION, for apertures optimized for flux
+reproducibility or detection sensitivity, respectively.
+<p>
+
+<dt>(detmask = "NONE") [filename]
+
+<dd>Name of a detector quality mask file.  This should be an image
+file with the same dimensions as the focal plane map.  A pixel value
+of 0 indicates the detector is enabled for imaging, and any other
+value indicates the detector should be ignored.  A default value of
+'NONE' implies all detectors are on, except for the BAT detector gap
+regions. It is strongly recommended to use a detector mask file if one
+is available.  The quality of the fit, especially to calibration data
+is greatly improved if only working detectors are included in the
+fits.
+<p>
+
+<dt>(wtmapin = "NONE") [filename]
+
+<dd>Name of an input error map.  This is used to provide weights for
+the fitting in case one is cleaning a DPI which does not have Poisson
+statistics (such as an already cleaned DPI).  The typical sequence would
+be to create an error map using the <i>wtmapout</i> parameter on the first
+cleaning and then read this error map in on the second cleaning.  If an
+already cleaned image is cleaned without an input error map than uniform
+weighting is used.
+<p>
+
+<dt>(wtmapout = "NONE") [filename]
+
+<dd>Name of an output error map. If a filename is specified then the tool
+writes out a DPI containing the calculated weights for each detector.  This
+can be used on subsequent cleanings as the input <i>wtmapin</i> error map.
+<p>
+
+<dt>(backexp = "NONE") [filename]
+
+<dd> If the name of a file is given here, then the background model will
+be output to this file.  The format is a binary table with one column for 
+each model parameter.  The data is written in DPH format, or as a 286 X 173
+element array, one number per detector.  This table gives the model <i>
+which was fit</i> to the data, not the actual fit to the data.  The final
+column in the table is the covariance matrix from the fit.
+<p>
+
+<dt>(bat_z = 0) [real]
+
+<dd> This is the z-component of the distance to the source in BAT_Z
+coordinates (the vertical distance of the source from the origin of the
+BAT coordinate system).  This parameter is ignored if <i>srcclean</i> =
+"NO."  If the <i>incatalog</i> contains a BAT_Z keyword, then the value
+of the keyword is used and the value of the <i>bat_z</i> parameter is not
+used.  Note that the default value of 0 corresponds to a source at infinity.
+<p>
+
+<dt>(bkgmodel = "simple") [string]
+
+<dd> This optional parameter indicates the background model to be
+fitted to the input counts.  The possible values are: "simple" (simple
+background model as described above); "none" (no background fit); or
+user-specified custom templates.  For user-specified custom templates,
+bkgmodel should be a list of background templates, which can be: a
+comma-separated list of one or more template filenames, or a filename
+such as "@filename.txt" where the specified file contains a list of
+model files separated by carriage returns.  By default the 'simple'
+model is combined with user-specified templates, unless the special
+string "useronly" is specified as one of the filenames.
+<p>
+
+<dt>(srcclean = "YES") [boolean]
+
+<dd>Determines whether sources are cleaned from the input DPI or only
+background.  If this parameter is "YES," then an <i>incatalog</i> and
+<i>aperture</i> file must be supplied.
+<p>
+
+<dt>(cleansnr = 6.0) [real]
+
+<dd>Only sources with a signal-to-noise ratio as read from the 
+<i>incatalog</i> higher than this value are cleaned from the DPI.
+If no sources have a signal-to-noise ratio above the <i>cleansnr</i>
+value, then only the background will be cleaned.
+<p>
+
+<dt>(snrcol = "SNR") [string]
+
+<dd>Name of catalog column to be used with 'cleansnr' for signal to
+noise thresholding.  By default it is "SNR", but any column can be
+used to trigger cleaning.
+<p>
+
+
+<dt>(ignore = "UNKNOWN") [string]
+
+<dd> Unless this parameter is set to "NONE" or "none," the cleaning code
+will not clean any source in <i>incatalog</i> whose NAME matches the
+<i>ignore</i> string.  The user can either specify a particular source
+name, the strings "IGNORE" or "NONE", or the name of a file (preceded by
+"@").  If a file name is supplied, then the file must contain a list of
+sources to be ignored, once source per line.  Note that source names to
+be ignored must match <i>exactly</i> (including spaces, capitalization,
+etc.) the names in the catalog.  
+
+<p>
+
+<dt>(balance = "none") [string]
+
+<dd> Comma-separated list of balancing operations to perform, in
+order, or 'none' to indicate no balancing.  See the 'balancing'
+section above for more information.
+
+<p>
+
+<dt>(balfirst = "NO") [boolean]
+
+<dd> If 'no' then balancing is done after cleaning.  However, by
+setting this parameter to 'yes' then balancing can be done before
+cleaning.
+
+<p>
+
+<dt>(maskfit = "NO") [boolean]
+
+<dd> If this parameter is set to "YES" and <i>outversion</i>="fit"
+then the output file contains the fit parameters for all detectors
+even those masked using a <i>detmask</i>.  The quality map is always
+applied during the fitting and balancing operations regardless of the
+setting of 'maskfit'.  'maskfit' only alters how the data values in the
+output file are written.
+<p>
+
+<dt>(leadedge = "NO") [boolean]
+
+<dd> If this parameter is set to "YES," then the leading edge detectors 
+(those on the two edges of detector module sides facing toward the source)
+are fit separately from the rest of the detectors.  Since the current
+forward projection code does not correctly handle these edge detectors, 
+setting this parameter does not significantly affect the overall clean.
+<p>
+
+<dt>(eff_edge = 0.2) [float]
+
+<dd> The depth of edge (cm) to consider effective.  Range from 0.03 to 0.2.
+Normally this 
+<p>
+
+<dt>(corrections = "none") [string]
+
+<dd>Comma-separated list of corrections to apply to the mask
+weighting, or "none" if no corrections are to be applied.  Note that
+corrections are only applied to the forward projection for sources.
+This parameter has no effect if only the background is to be cleaned.
+<p>
+Possible correction types are: "flatfield" (basic flat fielding
+correction accounting for both cosine-type and r-squared-type
+effects); "nearfield" (for ground testing results where the source
+is at a finite distance -- requires bat_z != 0); 
+"cosine" (cosine effects of off-axis illumination
+only); "rsquare" (r-squared effects only); "opaque" (activates a 
+new algorithm for calculating the mask transmission function);
+"sides" (effects of sides of detectors XXX not implemented). 
+<p>
+
+<dt>(outversion = "cleaned") [string]
+
+<dd> This optional parameter indicates the meaning of the data values
+in the output file.  See the "Output File" section above for more
+information.  Choice of <i>outversion</i> parameter dictates what
+value is written to the HDUCLAS2 keyword.  Possible values are:
+<ul>
+<li> original:  HDUCLAS2 is unchanged
+<li> cleaned or bkgcleaned or srcleaned:  HDUCLAS2 = RESIDUAL
+<li> fit or bkgfit or srcfit: HDUCLAS2 = PREDICTED
+</ul>
+
+
+<dt>(clobber = NO) [boolean]
+
+<dd>If the output file already exists, then setting "clobber = yes" will cause it to be overwritten.
+<p>
+
+<dt>(chatter = 1) [integer, 0 - 5]
+
+<dd>Controls the amount of informative text written to standard output.
+Setting chatter = 4 or higher will produce detailed diagnostic output; 
+chatter = 2 prints out a basic diagnostic message.  The default is to 
+produce no printed output.
+
+<p>
+
+<dt>(history = NO) [boolean]
+
+<dd>If history = YES, then a set of HISTORY keywords will be written to
+the header of the specified HDU in the output file to record the value
+of all the ftcopy task parameters that were used to produce the output
+file.
+
+</dl>
+<h2>EXAMPLES</h2>
+
+Note that when commands are issued on the Unix command line, strings
+containing special characters such as '[' or ']' must be enclosed in
+single or double quotes.
+
+<p>
+<i>
+The following examples illustrate ways in which batclean can be used.
+</i>
+
+<p>
+1. Fit the simple background model to a DPI with a detector mask file.  
+Output the cleaned DPI and a background exposure map. 
+
+<p>
+<pre>
+    batclean input.dpi cleaned.dpi detmask=bat.mask backexp=backexp2.dph 
+srcclean=NO
+</pre>
+
+2. Fit a set of source models along with a simple background model to a DPI, 
+using the default aperture file.  Output the fit to the focal plane instead of
+the cleaned focal plane.  A flat-fielding correction is applied in the
+forward projection.
+
+<p>
+
+<pre>
+    batclean input.dpi fit.dpi catalog.tbl detmask=bat.mask outversion="fit"
+corrections="flatfield"
+</pre>
+
+3. Fit two user-supplied background models in addition to the hard-coded
+model.
+<p>
+<pre> 
+   batclean input.dpi cleaned.dpi detmask=bat.mask bkgmodel=model1.dpi,model2.dpi
+</pre>
+
+4. Same example, except the user gives the two model files as lines in the
+text file "models.lst."
+<p>
+<pre>
+   batclean input.dpi cleaned.dpi detmask=bat.mask bkgmodel=@models.lst
+</pre>
+
+5. Balancing is performed after cleaning, applying the Module and InOut
+balancings.
+<p>
+<pre>
+    batclean input.dpi cleaned.dpi detmask=bat.mask balance=Module,InOut
+</pre>
+
+
+<h2>BUGS</h2>
+
+
+
+<p>
+
+<h2>SEE ALSO</h2>
+
+<a href="batcelldetect.html">batcelldetect</a>, 
+<a href="batmaskwtimg.html">batmaskwtimg</a>
+<p>
+
+<h2>REFERENCES</h2>
+
+<p> 
+Based on Netlib code <a href="http://www.netlib.org/c/numcomp-free-c">http://www.netlib.org/c/numcomp-free-c</a>
+<pre>
+Name        : svd.c.Z (8704 bytes)
+Where       : in pub/C-numanal on ftp.usc.edu
+Description : SVD based on pascal from J. C. Nash book
+Author      : Bryant Marks (bryant@sioux.stanford.edu)
+              Brian Collett (bcollett@hamilton.edu)
+Version     : 14 April 1993
+</pre>
+
+<p> 
+Statistics for low count rates from
+K. Mighell (ApJ 518, p. 380, 1999)
+
+</p>
+
+<h2>LAST MODIFIED</h2>
+
+Dec 2008
+</body>
+</html>

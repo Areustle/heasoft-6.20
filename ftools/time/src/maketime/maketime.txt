@@ -1,0 +1,366 @@
+MAKETIME (Jul98)               ftools.time              MAKETIME (Jul98)
+
+
+
+NAME
+    maketime -- Create Good Time  Interval  (GTI)  FITS  file  based  on
+    parameters in a Housekeeping data FITS file.
+    
+    
+USAGE
+    maketime infile outfile expr name value time compact
+    
+    
+DESCRIPTION
+    This  task  creates  a  GTI  table  from a subset  of  times  in  an
+    input HK table.   The  rows are selected on the basis of  a  boolean
+    expression  whose variables are either parameters in the NAME column
+    (for compact format HK files) or column names (for  expanded  format
+    HK  files).   If, after substituting the values  associated  with  a
+    particular parameter into the variables,  the  expression  evaluates
+    to true, then the time is included in the GTI table.
+    
+                         General Expression Syntax
+    
+    The  expression  can  be an arbitrarily complex series of operations
+    performed on constants, keyword values, and column data  taken  from
+    the specified FITS TABLE extension.
+    
+    Keyword  and  column  data  are  referenced  by name.  Any string of
+    characters not surrounded by  quotes  (ie,  a  constant  string)  or
+    followed  by  an  open  parentheses  (ie,  a  function name) will be
+    initially interpretted as a column name and  its  contents  for  the
+    current  row  inserted  into  the  expression.   If  no  such column
+    exists, a keyword of that name will be searched for  and  its  value
+    used,  if  found.  To force the name to be interpretted as a keyword
+    (in case there is both a column and keyword  with  the  same  name),
+    precede  the  keyword  name  with  a  single  pound sign, '#', as in
+    '#NAXIS2'.  Due to the  generalities  of  FITS  column  and  keyword
+    names,  if  the  column  or  keyword  name  contains  a  space  or a
+    character which might appear as an arithmetic term then inclose  the
+    name  in  '$'  characters  as in $MAX PHA$ or #$MAX-PHA$.  Names are
+    case insensitive.
+    
+    To access a table entry in a row other  than the current one, follow
+    the  column's name  with  a row  offset  within  curly  braces.  For
+    example, 'PHA{-3}' will evaluate to the value  of column PHA, 3 rows
+    above  the  row currently  being processed.   One  cannot specify an
+    absolute row number, only a relative offset.  Rows that fall outside
+    the table will be treated as undefined, or NULLs.
+    
+    Boolean  operators  can  be  used  in the expression in either their
+    Fortran or C forms.  The following boolean operators are available:
+    
+    "equal"         .eq. .EQ. ==  "not equal"          .ne.  .NE.  !=
+    "less than"     .lt. .LT. <   "less than/equal"    .le.  .LE.  <= =<
+    "greater than"  .gt. .GT. >   "greater than/equal" .ge.  .GE.  >= =>
+    "or"            .or. .OR. ||  "and"                .and. .AND. &&
+    "negation"     .not. .NOT. !  "approx. equal(1e-7)"  ~
+    
+    Note  that the exclamation point,  '!', is a special UNIX character,
+    so  if it is used  on the command line rather than entered at a task
+    prompt, it must be  preceded by a backslash to force the UNIX  shell
+    to ignore it.
+    
+    The  expression may also include arithmetic operators and functions.
+    Trigonometric functions use radians,  not  degrees.   The  following
+    arithmetic  operators  and  functions  can be used in the expression
+    (function names  are  case  insensitive).   A  null  value  will  be
+    returned  in  case  of  illegal  operations  such as divide by zero,
+    sqrt(negative)  log(negative),  log10(negative),   arccos(.gt.   1), 
+    arcsin(.gt. 1).
+    
+    "addition"           +          "subtraction"          -
+    "multiplication"     *          "division"             /
+    "negation"           -          "exponentiation"       **   ^
+    "absolute value"     abs(x)     "cosine"               cos(x)
+    "sine"               sin(x)     "tangent"              tan(x)
+    "arc cosine"         arccos(x)  "arc sine"             arcsin(x)
+    "arc tangent"        arctan(x)  "arc tangent"          arctan2(x,y)
+    "hyperbolic cos"     cosh(x)    "hyperbolic sin"       sinh(x)
+    "hyperbolic tan"     tanh(x)    "round to nearest int" round(x)
+    "round down to int"  floor(x)   "round up to int"      ceil(x)
+    "exponential"        exp(x)     "square root"          sqrt(x)
+    "natural log"        log(x)     "common log"           log10(x)
+    "modulus"            i % j      "random # [0.0,1.0)"   random()
+    "minimum"            min(x,y)   "maximum"              max(x,y)
+    "if-then-else"       b?x:y
+    
+    An alternate syntax for the min and max functions  has only a single
+    argument which  should be  a  vector value (see  below).  The result
+    will be the minimum/maximum element contained within the vector.
+    
+    In  the  if-then-else  expression, "b?x:y", b is an explicit boolean
+    value or expression.  There is not automatic  type  conversion  from
+    numeric  to boolean values, so one needs to use "iVal!=0" instead of
+    merely "iVal" as the boolean argument. x and y  can  be  any  scalar
+    data type (including string).
+    
+    The  following  type  casting  operators  are  available,  where the
+    inclosing parentheses are required and taken  from  the  C  language
+    usage. Also, the integer to real casts values to double precision:
+    
+                "real to integer"    (int) x     (INT) x
+                "integer to real"    (float) i   (FLOAT) i
+    
+    In  addition,  several  constants  are built in for use in numerical
+    expressions:
+    
+       #pi           3.1415...         #e            2.7182...
+       #deg          #pi/180           #row          current row number
+       #null         undefined value   #snull        undefined string
+    
+    A string constant must be enclosed in  quotes  as  in  'Crab'.   The
+    "null"  constants  are useful for conditionally setting table values
+    to a NULL, or undefined, value (eg., "col1==-99 ? #NULL : col1").
+    
+    There is also a function for testing if two values are close to each
+    other,  i.e.,  if  they  are  "near"  each  other  to  within a user
+    specified tolerance. The  arguments,  value_1  and  value_2  can  be
+    integer  or  real  and  represent  the two values who's proximity is
+    being tested to be within the specified tolerance, also  an  integer
+    or real:
+    
+                    near(value_1, value_2, tolerance)
+    
+    When  a NULL, or undefined (INDEF), value is encountered in the FITS
+    table, the expression will evaluate to  NULL  unless  the  undefined
+    value  is  not  actually  required  for  evaluation, eg.  "TRUE .or.
+    NULL" evaluates to TRUE. The  following  two  functions  allow  some
+    NULL detection and handling:
+    
+             "a null value?"              ISNULL(x)
+             "define a value for null"    DEFNULL(x,y)
+    
+    The  former  returns  a  boolean  value of TRUE if the argument x is
+    NULL.  The later "defines"  a  value  to  be  substituted  for  NULL
+    values;  it  returns  the  value of x if x is not NULL, otherwise it
+    returns the value of y.
+    
+                                 Bit Masks
+    
+    Bit masks can be used to select out rows from bit columns (TFORMn  =
+    #X)  in  FITS  files.  To represent the mask, binary, octal, and hex
+    formats are allowed:
+    
+                 binary:   b0110xx1010000101xxxx0001
+                 octal:    o720x1 -> (b111010000xxx001)
+                 hex:      h0FxD  -> (b00001111xxxx1101)
+    
+    In all the representations, an x or X is allowed in the  mask  as  a
+    wild  card.  Note  that  the x represents a different number of wild
+    card bits in each  representation.   All  representations  are  case
+    insensitive.
+    
+    To  construct  the  boolean expression using the mask as the boolean
+    equal operator discribed above on a bit table column.  For  example,
+    if  you  had  a  7 bit column named flags in a FITS table and wanted
+    all rows having the bit pattern 0010011,  the  selection  expression
+    would be:
+    
+                            flags == b0010011
+    or
+                            flags .eq. b10011
+    
+    It  is  also  possible to test if a range of bits is less than, less
+    than equal, greater than and greater  than  equal  to  a  particular
+    boolean value:
+    
+                            flags <= bxxx010xx
+                            flags .gt. bxxx100xx
+                            flags .le. b1xxxxxxx
+    
+    Notice  the  use of the x bit value to limit the range of bits being
+    compared.
+    
+    It is not necessary to specify the leading (most  significant)  zero
+    (0) bits in the mask, as shown in the second expression above.
+    
+    Bit wise AND, OR and NOT operations are also possible on two or more
+    bit fields using the '&'(AND), '|'(OR), and the '!'(NOT)  operators.
+    All  of these operators result in a bit field which can then be used
+    with the equal operator. For example:
+    
+                          (!flags) == b1101100
+                          (flags & b1000001) == bx000001
+    
+    Bit fields can be appended as well using the '+' operator.   Strings
+    can be concatenated this way, too.
+    
+    
+                               Vector Columns
+    
+    Vector  columns  can  also  be  used in building the expression.  No
+    special syntax is required if one wants to operate on  all  elements
+    of  the  vector.  Simply use the column name as for a scalar column.
+    Vector columns can be  freely  intermixed  with  scalar  columns  or
+    constants  in  virtually all expressions.  The result will be of the
+    same dimension as the vector.  Two vectors in an expression, though,
+    need  to  have  the  same  number  of  elements  and  have  the same
+    dimensions.  The only places a vector column  cannot  be  used  (for
+    now,  anyway)  are  the  SAO  region  functions and the NEAR boolean
+    function.
+    
+    Arithmetic and logical operations are all performed on an element by
+    element  basis.   Comparing  two  vector columns, eg "COL1 == COL2",
+    thus results in another vector of boolean  values  indicating  which
+    elements of the two vectors are equal.
+    
+    Eight  functions are available that operate on a vector and return a
+    scalar result:
+        "minimum"      MIN(V)          "maximum"               MAX(V)
+        "average"      AVERAGE(V)      "median"                MEDIAN(V)
+        "sumation"     SUM(V)          "standard deviation"    STDDEV(V)
+        "# of values"  NELEM(V)        "# of non-null values"  NVALID(V)
+    where V represents the  name  of  a  vector  column  or  a  manually
+    constructed  vector  using  curly  brackets as described below.  The
+    first 6 of these functions ignore any null values in the vector when
+    computing the result.
+    
+    The  SUM  function literally sums all  the elements in x,  returning
+    a scalar value.   If V  is  a   boolean   vector,  SUM  returns  the
+    number  of  TRUE elements. The NELEM function  returns the number of
+    elements in vector V whereas NVALID return the  number  of  non-null
+    elements  in  the   vector.    (NELEM   also  operates  on  bit  and
+    string  columns, returning their column  widths.)   As  an  example,
+    to   test  whether  all  elements  of  two  vectors satisfy a  given
+    logical comparison, one can use the expression
+              SUM( COL1 > COL2 ) == NELEM( COL1 )
+    
+    which will return TRUE if all elements  of  COL1  are  greater  than
+    their corresponding elements in COL2.
+    
+    To  specify  a  single  element  of  a  vector, give the column name
+    followed by  a  comma-separated  list  of  coordinates  enclosed  in
+    square  brackets.  For example, if a vector column named PHAS exists
+    in the table as a one dimensional, 256  component  list  of  numbers
+    from  which  you  wanted to select the 57th component for use in the
+    expression, then PHAS[57] would do the  trick.   Higher  dimensional
+    arrays  of  data  may appear in a column.  But in order to interpret
+    them, the TDIMn keyword must appear in the header.  Assuming that  a
+    (4,4,4,4)  array  is packed into each row of a column named ARRAY4D,
+    the  (1,2,3,4)  component  element  of  each  row  is  accessed   by 
+    ARRAY4D[1,2,3,4].    Arrays   up   to   dimension  5  are  currently 
+    supported.  Each vector index can itself be an expression,  although
+    it  must  evaluate  to  an  integer  value  within the bounds of the
+    vector.  Vector columns which contain spaces or arithmetic operators
+    must   have   their   names  enclosed  in  "$"  characters  as  with 
+    $ARRAY-4D$[1,2,3,4].
+    
+    A  more  C-like  syntax  for  specifying  vector  indices  is   also 
+    available.   The element used in the preceding example alternatively
+    could be specified with the syntax  ARRAY4D[4][3][2][1].   Note  the
+    reverse  order  of  indices  (as in C), as well as the fact that the
+    values are still ones-based (as  in  Fortran  --  adopted  to  avoid
+    ambiguity  for  1D vectors).  With this syntax, one does not need to
+    specify all of the indices.  To  extract  a  3D  slice  of  this  4D
+    array, use ARRAY4D[4].
+    
+    Variable-length vector columns are not supported.
+    
+    Vectors can  be manually constructed  within the expression  using a
+    comma-separated list of  elements surrounded by curly braces ('{}').
+    For example, '{1,3,6,1}' is a 4-element vector containing the values
+    1, 3, 6, and 1.  The  vector can contain  only boolean, integer, and
+    real values (or expressions).  The elements will  be promoted to the
+    highest  datatype   present.  Any   elements   which  are themselves
+    vectors, will be expanded out with  each of its elements becoming an
+    element in the constructed vector.
+    
+    See the 'calc_express' help file for more details on the  expression
+    syntax.
+    
+    
+    
+PARAMETERS
+    
+    infile [filename]
+        A  file  name  and  extension  number  in square brackets of the
+        input HK file.
+    
+    outfile [filename]
+        The name of the created GTI FITS file
+    
+    expr [string]
+        The boolean expression used to  calculate  time  intervals  from
+        the  HK  file.  You may use the "@filename" construction to load
+        a  complex  expression  from  a  file.   The  file  may  contain 
+        multiple lines (which are concatenated together).
+    
+    name = "NAME" [string]
+        The  column  name  containing  the housekeeping parameter names.
+        This parameter is ignored for expanded (compact=no) files.
+    
+    value = "VALUE" [string]
+        The column name containing the  housekeeping  parameter  values.
+        This parameter is ignored for expanded (compact=no) files.
+    
+    time = "TIME" [string]
+        The  column  name  containing  the  housekeeping  parameter time
+        stamp.
+    
+    (start = "START") [string]
+        The output GTI column name containing the start times.
+    
+    (stop = "STOP") [string]
+        The output GTI column name containing the stop times.
+    
+    compact = yes [boolean]
+        The flag for compact  ASCA  Housekeeping  FITS  files.   Compact
+        files  have  three  columns:  time, housekeeping parameter name,
+        and parameter value.  Each row in the file  indicates  that  the
+        specified  parameter  changed  value  at  that  time.   Expanded 
+        housekeeping files have a column for  time,  and  a  column  for
+        each  housekeeping  parameter,  containing  the  value  of  that 
+        parameter at each time.
+    
+    (histkw=yes) [boolean]
+        If true, history records  will  be  added  to  the  output  file
+        primary  header  indicating  that  FMERGE  created the file, and
+        history records  of  each  input  file  will  be  added  to  the
+        extension header.
+    
+    (prefr=0.5) [double]
+        This  is the amount of the previous time interval to be included
+        in the  GTI.   A  value  of  1.0  means  to  include  the  whole
+        interval.   If  the  input  file has the PREFR keyword set, that
+        value will be used.  Otherwise, the default is to take  half  of
+        the  time  interval  as  if  the  state  change occurred between
+        measurements.  The user may override either of these choices  by
+        entering  a  value for prefr on the command line.  Note that the
+        default value in the parameter file is -1 (to allow the code  to
+        know  whether  or  not it needs to reset the value) but that the
+        only allowed values are between 0 and 1.
+    
+    (postfr=0.5) [double]
+        This is  the  amount  of  the  following  time  interval  to  be
+        included  in the GTI.  A value of 1.0 means to include the whole
+        interval.  If the input file has the POSTFR  keyword  set,  that
+        value  will  be used.  Otherwise, the default is to take half of
+        the time interval  as  if  the  state  change  occurred  between
+        measurements.   The user may override either of these choices by
+        entering a value for postfr on the command line.  Note that  the
+        default  value in the parameter file is -1 (to allow the code to
+        know whether or not it needs to reset the value)  but  that  the
+        only allowed values are between 0 and 1.
+    
+    
+EXAMPLES
+    1.    Generate  the  GTI FITS file gti.fit using the ASCA compact HK
+    FITS file      hk.fit which has  the  parameter  HVL3_MON  equal  to
+    either      26 or 27:
+    
+         ft> maketime hk.fit gti.fit "(HVL3_MON == 26).or.(HVL3_MON == 26)" NAME VALUE TIME yes
+    
+    2.    Generate  the GTI FITS file gti.fit using the expanded HK FITS
+    file      hk.fit which has the parameter HVL3_MON  greater  than  10
+    and      the parameter HVH3_MON less than 100:
+    
+         ft> maketime hk.fit gti.fit "(HVL3_MON .gt. 10).and.(HVH3_MON < 100)" anything anything TIME no
+    
+    
+BUGS
+    
+    
+SEE ALSO
+    mgtime, fltime, hkexpand, hkunexpand, fselect, fcalc, calc_express

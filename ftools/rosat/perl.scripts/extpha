@@ -1,0 +1,432 @@
+#!/usr1/local/bin/perl
+#EXTPHA 
+#version 1.0.1 Lawrence E. Brown 11/94 Hughes STX for NASA/GSFC ROSAT GOF
+#Extracts some or all of the extensions from a _src file  and makes 
+#little individual PHA files out of them.
+#version 1.0.0 first official release 11/7/94.
+#version 1.0.1 bug fixes and preliminary VMS bugfixing.
+#version 1.0.2 Ning Gan 7/2/1998 y2k compliance. 
+#version 1.0.3 toliver 05/25/1999 invoke fstruct with parameter set to
+#                                 suppress new output format.
+#version 1.0.4 pwilson 08/11/1999 Modify parsing of quzcif output to handle
+#                                 plain filenames (no '/') and fix rmflist bug
+$task="extpha 1.0.4";
+$bailroutine = "bailout";
+
+
+
+require "utils.pl";
+
+if (@ARGV == 0) 
+     {print $task.":  Type 'extpha -h' for instructions.\n";}
+@args = grep(!/=/,@ARGV); #lose a=b arguments
+while ($ARGV[0] =~ /^(\w+)=(.*)/ && shift){ # get a=b arguments --> $a=b
+    $var_name = $1;
+    $var_name =~ tr/A-Z/a-z/;		# Note A-->a
+    eval "\$$var_name=\$2;"
+}
+@flags = grep (/-/,@args);      # get flags
+@arguments = grep (!/-/,@args); # lose flags, ar
+if (grep(/v/,@flags)) {$verbose = 1;}
+if (grep(/arf/,@flags)) {$arf = 1;}
+if (grep(/noarf/,@flags)) {undef($arf); $noarf=1;}
+if (grep(/h/,@flags)) {
+$~ = "TEXT1";
+$paragraph_string = "This script will extract the source spectrum
+files out of a PSPC *_src (or *_qsrc) file.  You may specify the
+filename and a list of source id numbers (column name SOLST_ID in the
+SRCTBL extension) on the command line, but all you have to do is type
+'extpha'.  (Typing ALL instead of a list of numbers will extract all
+of the spectra in the src file). This script uses fextract to get the PHA
+extension, fdump and fcreate to reprocess the OAH extension to
+acceptable form (but a new FTOOL is planned to do this), and fappend
+to put them together. Various utility routines clean up the keywords.
+ARFs are made by PCARF.";
+write;
+print "more? ";
+$qq = 0;
+$qq = <STDIN>;
+$qq =~ /^(q|n)/i && die "\n";
+$~ = "FLAGS";
+$flag_name = "-(no)arf";
+$flag_means = "Do (not) create an ARF (Ancillary Response File), using PCARF,
+to go with each spectrum.  The name of the RMF file used and the ARF file will
+be written to keywords in the PHA file so that XSPEC can find them
+automatically.";
+write;
+$flag_name = "filename";
+$flag_means = "The input source file name.";
+write;
+$flag_name = "ID_list";
+$flag_means = "A comma or space separated list of source IDs (column
+SOLST_ID in the SRCTBL extension).  'ALL' will request all sources in
+the file.  This list must be preceeded by a filename argument (see
+above). ";
+write;
+$flag_name = "-h";
+$flag_means = "Print help information. Do not execute.";
+write;
+$flag_name =  "rmf=/path/rmffile" ;
+$flag_means = 'Use the RMF (Response Matrix File) at /path/rmffile.';
+write;
+$flag_name = "-v";
+$flag_means = "Verbose mode. Lets you see extra information and
+some messages produced by the ftools called by this script.";   
+write;
+exit;
+}
+
+$infile = shift(@arguments);
+$idlist = join(' ',@arguments);
+$idlist =~ s/"//g;
+
+#get legal SRC file
+until (length($infile) != 0 && -r $infile ){
+    print "***\n";
+    if(length($infile) != 0) 
+	{print "I can't read input 'src' file: \"$infile\"\n";}
+    &print_likely_files('*_*src*.fits','^rh\d');
+    print "Source (src) Filename: "; 
+    chop($infile = <STDIN>); 
+    if(($infile =~ /^\s*(\d+)\s*$/)&&($infile <= @likely_files)){
+	$infile=$likely_files[$1-1];} 
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}
+
+
+
+#scan SRC file
+@tmp_array = (&runcom("fstruct colinfo=no $infile",$bailroutine,"Couldn't find file structure of $infile."));
+chop(@tmp_array);
+while ($extrec = shift @tmp_array){
+    next if $extrec !~ /BINTABLE/;
+    $extrec =~ s/^\s+//;		# remove leading blanks
+    ($extno,$exttype,$extname,$extbitpix,$extcolno,$extrowno) 
+                 = split(/\s+/,$extrec);
+    if($extname=="SRCTBL") {
+      $extcolno =~ /.*\((.*)\).*/;
+      $srctbl_ncols = $1;
+    }
+    if ($extrowno != 0) {
+#Only record non-empty tables
+      $extensions{$extname}=$extno;
+    }
+}
+
+if (!(exists $extensions{"SRCTBL"})) {
+  die "There are no non-empty source tables in $infile";
+}
+
+# %extensions now is a list of extension numbers keyed by extension names
+
+$ext = $extensions{"SRCTBL"} ;
+$columnlist = 'MPLSX_ID SOLST_ID RA DEC OFFAX NET_RT NET_RT_ERR EPT';
+#wish I could send the next fdump to STDOUT, but the VAX has fits, so I'll send
+#it to a file
+$SRCTABLE_FILE = "extpha_srcfile$$.ascii";
+&yakker("fdump $infile+$ext $SRCTABLE_FILE \"$columnlist\" - page=no wrap=yes pagewidth=255", $verbose, $bailroutine,"Couldn't capture source table info.");
+open(SRCTABLE_FILE,$SRCTABLE_FILE);
+@srctable = <SRCTABLE_FILE>;
+close(SRCTABLE_FILE);
+chop(@srctable);
+
+
+@srctable = &strip_top_to_digits(@srctable); #split into header / data
+$telescop = &findkey("TELESCOP",@stripped_header);
+$instrume = &findkey("INSTRUME",@stripped_header);
+$date_obs = &findkey("DATE-OBS",@stripped_header);
+$time_obs = &findkey("TIME-OBS",@stripped_header);
+#$when = join('',reverse split(/\//,$date_obs));
+#if($when < 911014) {$gain1 = 1};
+#Ning Gan: Modification for  the new date format. 1998-7-2
+$temp = -1;
+$temp = index($date_obs,"-");
+if($temp > 0) {		# new format yyyy-mm-dd 
+    @date_tmp = split(/T/,$date_obs);
+    ($year,$month,$day) = split(/\-/,$date_tmp[0]);
+}
+else {			#old format dd/mm/yy
+    ($day,$month,$year) = split(/\//,$date_obs);
+    $year = "19".$year;
+}
+if(length($day) == 1) { $day = "0".$day }
+if(length($month) == 1) { $month = "0".$month}
+$when = $year.$month.$day;
+if($when < 19911014) {$gain1 = 1};
+
+$filter = &findkey("FILTER",@stripped_header);
+if($filter =~ /UNKNOWN|NONE/i) {$filter = '-';}
+
+#Ask user for extension number(s) (unless zhe put them on the command line)
+
+@savetable=@srctable;
+until (@midlist){
+    unless($idlist) {
+	@srctable=@savetable;
+	$~ = SRCTBL_HEAD;
+	write;
+	$~ = SRCLINE;
+    }				
+    while($srcrec = shift(@srctable)){
+	$srcrec =~ s/^\s+//;		# remove leading blanks
+	@src_list = split(/\s+/,$srcrec);
+	shift(@src_list);
+	($b,$a,$c,$d,$e,$f,$g,$h,$inam) = @src_list;
+	$src_id{$a}=$b;	# list of merged IDs keyed with final source IDs
+	unless($idlist){
+	    write;		
+	}       
+    }
+    unless($idlist){
+	print "Pick a series of ID numbers, ALL, or type ? for more info: ";
+	chop($idlist = <STDIN>); 
+    }
+    if ($idlist =~ /\?/) {
+	$~ = COLUMN_HELP;
+	write;			
+        print "continue? ";
+        $qq = 0;
+        $qq = <STDIN>;
+        $qq =~ /^(q|n)/i && die "\n";
+    }
+    elsif($idlist =~ /ALL/i) {
+	@midlist = values(%src_id);
+    }
+    else{
+        $idlist =~ s/^\s+//;		# remove leading blanks
+	@sidlist = split(/\D+/,$idlist);
+	while($id = shift(@sidlist)){
+	    push(@midlist,$src_id{$id});
+        }
+    }				
+    undef($idlist);
+}
+unless($arf || $noarf) {
+    if(@midlist > 1) {
+       print "Do you want ARFs (Ancillary Response Files) with your spectra? ";
+    } else {
+       print "Do you want an ARF (Ancillary Response File) with your spectrum? ";
+    }
+    $arfq=<STDIN>;
+    $arf = ($arfq =~ /^\s*y/i);
+}
+
+#find ARF making info (if requested)
+if($arf){
+
+    if( length($rmf) != 0 && -r $rmf) {
+        $rmffile=$rmf;
+    }
+    elsif($ENV{"CALDB"} || ($VMS && grep(/CALDB/,`show logical`))) {
+	$CALDB = "CALDB"; 
+	$quzcif_string_pref = "quzcif $telescop $instrume - $filter \"MATRIX\" \"$date_obs\" \"$time_obs\"";
+	if($gain1) {$gain_suf = 'HV.eq.3060';}
+	else {$gain_suf = 'HV.eq.3000' ;}
+        $quzcif_string = '-'.$quzcif_string_pref.' "'.$gain_suf.'"';
+	@tmp_1 = &runcom($quzcif_string);	
+	unless(grep(/ERROR FOR/,@tmp_1)){
+	    @rmflist1 = grep(/^\s*\S+ *\d+\s*$/,@tmp_1); # get files
+	    if(@rmflist1 > 1) {	# get rid of 256 channel files
+				# this is a hideous hack, but until we 
+				# get a DETCHAN keyword in the CIF we're stuck
+		$quzcif_string = $quzcif_string_pref.' "PICH.eq.35.and.'.
+                    $gain_suf.'"';  #  gets files with channels > 34
+		@tmp_1 = &runcom($quzcif_string,$bailroutine,
+				 "Trouble with quzcif.");	
+		@rmflist2 = grep(/^\s*\S+ *\d+\s*$/,@tmp_1);
+                grep($rmflist2{$_}++,@rmflist2); # throw away files with 
+		@rmflist = grep(!$rmflist2{$_},@rmflist1); # channels > 34
+                if(@rmflist==0) { @rmflist=@rmflist1;}
+		if(@rmflist > 1 ) { # If we STILL have multiple files
+		    print "***\n"; 
+		    $i=0;
+		    foreach (@rmflist){
+			$i++;	
+			/^\s*(\S+)/;
+			print "$i  $1\n";
+		    }
+		    print "Choose an RMF file number: ";
+		    $rmfid = <STDIN>;
+		    @rmflist = $rmflist[$rmfid-1];
+		}
+	   } else { @rmflist = @rmflist1; }
+           @rmflist[0] =~ /^\s*(\S+)/; 
+           $rmffile = $1;
+	}
+    }
+    until(length($rmffile) != 0 && -r $rmffile){# If we STILL haven't got 
+                                                # a working file
+        undef($CALDB);
+	print "What RMF file do you want to use?";
+	chop($rmffile=<STDIN>);	
+	if($irmf++>5) {&$bailroutine("Can't seem to get an RMF file.");}
+    }
+}
+
+
+ 
+#Extract those suckers
+@three_digits= ('000'..'999');
+
+$x = index($infile,'.');
+$x = length($infile) if $x == -1;
+$outpref = substr($infile,0,$x);
+while ($id = shift (@midlist)){
+    if($arf){
+        $arffile= $outpref.$id.'.arf';
+        unlink($arffile);
+    }else {$arffile="NONE"; $rmffile="NONE"}
+    $specext = $extensions{'SP'.$three_digits[$id]};
+    $oahext = $extensions{'OAH'.$three_digits[$id]};
+    $outfile = $outpref.$id.'.pha';
+    unlink $outfile;
+
+&yakker("src2pha infile=$infile outfile=$outfile specext=$specext oahext=$oahext chatter=0 clobber=yes",
+    $verbose,$bailroutine,
+    "Error extracting extensions $specext and $oahext");
+
+
+    &yakker("fparkey $rmffile $outfile+1 RESPFILE comm=\"RMF file\"",
+                $verbose,$bailroutine,
+		"Error setting RESPFILE keyword in spectrum extension");
+    &yakker("fparkey $arffile $outfile+1 ANCRFILE comm=\"ARF file\"",
+                $verbose,$bailroutine,
+		"Error setting ANCRFILE keyword in spectrum extension");
+    &yakker("fparkey $rmffile $outfile+2 RESPFILE comm=\"RMF file\"",
+                $verbose,$bailroutine,
+		"Error setting RESPFILE keyword in spectrum extension");
+    &yakker("fparkey $arffile $outfile+2 ANCRFILE comm=\"ARF file\"",
+                $verbose,$bailroutine,
+		"Error setting ANCRFILE keyword in spectrum extension");
+
+								 
+
+#Make ARFs if requested:
+    if($arf) {
+        $pcarf_string = "pcarf phafil=$outfile rmffil=$rmffile outfil=$arffile ";
+	if($CALDB){		
+	    $pcarf_string .= "crffil=CALDB gefil=CALDB wtfil=CALDB fltfil=CALDB chatter=0";
+	}
+        system($pcarf_string);
+    }
+    #clean up for next round
+    unlink($CSFILE,$KWFILE,$DFILE,$MODFILE,$SRCTABLE_FILE,$oahfile);
+}
+
+
+sub strip_top_to_digits{
+#Throws away lines until it gets one that starts with a digit (optionally
+#preceeded by whitespace) leaves stripped lines in @stripped_header
+    local($currentline);
+    undef(@stripped_header);	
+    until ($currentline =~ /^\s*\d/) {$currentline = shift (@_); 
+	push(@stripped_header,$currentline);}
+    unshift(@_,$currentline);
+    @_;
+}
+
+
+
+sub bailout{
+    unlink($CSFILE,$KWFILE,$DFILE,$MODFILE,$SRCTABLE_FILE,$oahfile);
+  die("\n$task: $_[0]\n$task: Fatal Error\n");
+}
+
+format FLAGS = 
+
+    @<<<<<<<<<<<< ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~
+    $flag_name,   $flag_means
+                  ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+                  $flag_means
+.
+
+format TEXT1 =
+@|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+$task
+
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph_string
+COMMAND LINE PARAMETERS (if any are omitted or confused, you will be prompted):
+.
+
+format TEXT2 =
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph
+@|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+$example
+.
+format SRCTBL_HEAD = 
+               Available Sources Are
+  ID  FID    RA     DEC      OAA    RATE    ERROR  EXP_TIME 
+           (deg)   (deg)  (arcmin) (ct/s)   (ct/s)   (s)
+.
+format SRCLINE =
+@##   @## @###.## @###.## @##.### @##.#### @#.####  @###.#  
+$a,$b,$c,$d,$e,$f,$g,$h
+.
+format COLUMN_HELP = 
+
+----------------------------------------------------------------------------
+Name  SRCTBL Column                Description
+
+ID   = MPLSX_ID    Source number from merged source list (choose this number)
+FID  = SOLST_ID    Source number from final source list (name of output file)
+RA   = RA          Source right ascension
+DEC  = DEC         Source declination
+OAA  = OFFAX       Source off-axis angle
+RATE = NET_RT      Source cts/sec from ML or Mdetec, vignetting corrected
+ERROR= NET_RT_ERR  Error of RATE, vignetting corrected
+EXP_TIME = EPT     Exposure livetime in seconds
+
+Choose numbers from the 'ID' column.  Output files names will be constructed
+using the 'FID' value in order to match the extension names in the original
+SRC file.
+----------------------------------------------------------------------------
+
+.
+
+
+
+
+sub fetchkey{
+#this returns a keyword value from a fits file
+$infile = $_[0];
+$extension = $_[1];
+$keyword = $_[2];
+system("fkeypar $infile+$extension $keyword");
+chop($return = `pget fkeypar value`);
+$return;}
+
+sub findkey{
+#returns the keyval for a  keyword out of an array of FITS 
+#doesn't do HISTORY or COMMENT keywords
+#if you've got more than one copy of a keyword, you get the first value
+#returns comment string in global variable $findkey_comment_string
+    local($keyword,$keyval,$keyrec);
+    $keyword = shift(@_);
+    @keyrec = grep(/$keyword/,@_);
+    $equal_clip = index($keyrec[0],'=') + 1;	
+    $keyrec = substr($keyrec[0],$equal_clip);
+    if($keyrec =~ s/^\s*'//){
+#      we've got a string value
+       $clip = index($keyrec,"'");
+       $keyval= substr($keyrec,0,$clip);
+       substr($keyrec,$clip) =~ /\/(.*)$/;
+       $findkey_comment_string = $1;
+   }else{
+#      we've got a number
+       $keyrec =~ /^\s*(\S+)\s*\/(.*)$/;
+       $keyval = $1;
+       $findkey_comment_string = $2;
+   }
+    $keyval =~ s/^\s+//;# remove leading blanks
+    $keyval =~ s/\s+$//;	# remove trailing blanks
+    $keyval;
+}
+
+
+
+
+
+

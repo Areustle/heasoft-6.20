@@ -1,0 +1,164 @@
+#!/usr/bin/perl
+
+use Getopt::Std;
+use Math::Trig;
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+binFactorSelect 
+
+EOHELP
+exit 0;
+}
+
+$infile =0;
+$bin =0;
+$tmpimgfile =0;
+$xcol=0;
+$ycol=0;
+$timeout=0;
+
+exit headas_main(\&binFactorSelect);
+
+sub binFactorSelect {
+
+    my $tname ="binFactorSelect";
+    my $tvers ="1.0";
+
+    &binFactorSelect_getpar();
+    $status = &binFactorSelect_work($infile,$bin,$tmpimgfile,$xcol,$ycol,$timeout);
+
+}
+
+sub binFactorSelect_binInputFile {
+    my @val =@_;
+
+    $infile     = $val[0];
+    $bin        = $val[1];
+    $tmpimgfile = $val[2];
+    $xcol       = $val[3];
+    $ycol       = $val[4];
+    $timeout    = $val[5];
+
+    $binfile = sprintf "%s[bin $xcol=%d, $ycol=%d]",$infile,$bin,$bin;
+
+    $return_value =`fcopy '$binfile' '$tmpimgfile'`;
+  
+    if ( $return_value ) {
+        exit $return_value;
+    }
+  
+    if ( $tmpimgfile =~/^!/ ) {
+        $tmpimgfile1 =substr($tmpimgfile,1);
+    } else {
+        $tmpimgfile1 =$tmpimgfile;
+    }
+
+    if ( !(-e $tmpimgfile1) ) {
+         exit 1;
+    }
+  
+    $return_value= `displayOnPow '$tmpimgfile1' timeout=$timeout`;
+}
+
+sub binFactorSelect_work {
+    my @val =@_;
+
+    $| = 1;
+
+    $infile     = $val[0];
+    $bin        = $val[1];
+    $tmpimgfile = $val[2];
+    $xcol       = $val[3];
+    $ycol       = $val[4];
+    $timeout    = $val[5];
+
+    $xpa_user =$ENV{XPA_USER};
+    $helpdir =$ENV{LHEA_HELP};
+
+    if ( !(defined $xpa_user) || $xpa_user eq "") {
+        $pow = "pow";
+        $heraXPA = "heraXPA";
+    } else {
+        $pow ="pow_$xpa_user";
+        $heraXPA = "heraXPA_$xpa_user";
+    }
+
+    $result = `xpaget xpans 2>/dev/null`;
+
+    if ($result !~ /heraXPA/) {
+        $heraXPA = $pow;
+    }
+
+    $helpfile = "$helpdir/binFactor.html";
+    system("cat $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+
+    $startValue="NOT_YET 0";
+    @return_value = split(/ /, $startValue);
+    $status = &binFactorSelect_binInputFile($infile,$bin,$tmpimgfile,$xcol,$ycol,$timeout);
+
+    system("xpaset -p $pow binFactorTool -open");
+    system("xpaset -p $pow binFactorTool -value $bin");
+
+    $previousBin = $return_value[1];
+    while (($return_value[0] eq "NOT_YET") || ($return_value[0] eq "Apply")) {
+
+          @return_value = split(/ /, `xpaget $pow binFactorTool -wait`);
+          #########################
+          # Pan Chai - wait command will now returned immediately. Scripts needs to check every
+          #            2 seconds to see if the status has changed.
+          #########################
+          if ( $return_value[0] eq "Apply" ) {
+             $bin = $return_value[1];
+             $status = &binFactorSelect_binInputFile($infile,$bin,$tmpimgfile,$xcol,$ycol,$timeout);
+             $previousBin = $return_value[1];
+          }
+          sleep 2;
+    }
+
+    system("xpaset -p $pow binFactorTool -close");
+
+    if ( $previousBin != $return_value[1] ) {
+       $bin = $return_value[1];
+    #  $status = &binFactorSelect_binInputFile($infile,$bin,$tmpimgfile,$xcol,$ycol,$timeout);
+    }
+
+    return;
+}
+
+
+sub binFactorSelect_getpar {
+
+    if (PILGetString("infile",$infile)) {
+       print "Error to get parameter \"infile\"\n";
+       exit(-1);
+    }
+
+    if (PILGetString("bin",$bin)){
+       print "Error to get parameter \"bin\"\n";
+       exit(-1);
+    }
+
+    if (PILGetString("tmpimgfile",$tmpimgfile)){
+       print "Error to get parameter \"tmpimgfile\"\n";
+       exit(-1);
+    }
+
+    if (PILGetReal("timeout",$timeout)){
+       print "Error to get parameter \"timeout\"\n";
+       exit(-1);
+    }
+
+    if (PILGetString("xcol",$xcol)) {
+       print "Error to get parameter \"xcol\"\n";
+       exit(-1);
+    }
+
+    if (PILGetString("ycol",$ycol)) {
+       print "Error to get parameter \"ycol\"\n";
+       exit(-1);
+    }
+}

@@ -1,0 +1,19 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	=
+
+HD_LIBRARY_ROOT         = BNK
+
+HD_LIB_STYLE		= ${HD_LIB_STYLE_F77}
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+HD_INSTALL_HEADERS	=
+
+HD_LIBRARY_SRC_c	= bnk.c shmbnk.c sized_io.c stream.c
+
+# HD_INSTALL_HELP		= README.sized_io
+
+include ${HD_STD_MAKEFILE}

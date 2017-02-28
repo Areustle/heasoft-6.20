@@ -1,0 +1,667 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotstarid/uvotstarid,v $
+# $Revision: 1.20 $
+# $Date: 2005/03/21 14:05:12 $
+#
+#	This tool takes a source list and attempts star identification
+#	and aspect correction.
+#
+# $Log: uvotstarid,v $
+# Revision 1.20  2005/03/21 14:05:12  rwiegand
+# Simplified an expression.
+#
+# Revision 1.19  2005/03/04 19:52:43  rwiegand
+# Support for sorting catalog in memory.  Split parameter for maximum
+# correction into a rotation limit and a translation limit.
+#
+# Revision 1.18  2005/01/31 21:14:51  rwiegand
+# Changed PIL type of partition parameter to deal with trailing spaces.
+#
+# Revision 1.17  2004/11/04 21:27:57  rwiegand
+# Added cleanup parameter.
+#
+# Revision 1.16  2004/11/04 20:19:33  rwiegand
+# Added keycard copying from input to output.
+#
+# Revision 1.15  2004/11/03 20:39:31  rwiegand
+# Propagate input source table columns to output.  Avoid expending effort
+# redirecting match [since the results were not being used].
+#
+# Revision 1.14  2004/06/17 21:33:50  rwiegand
+# Updated parameter names for Martin.  Use new HEAdas perl task support.
+# Partitioned catalog loading placed in UVOT/xxx modules.
+#
+# Revision 1.13  2004/05/10 17:58:11  rwiegand
+# Use Task::FITS support for transferring key classes.  Default reference
+# position given by {RA,DEC}_PNT keywords.
+#
+# Revision 1.12  2004/02/13 22:31:48  rwiegand
+# Read and write FITS source lists.  Divided hypothesis processing into a
+# source specific stage and a more in-depth analysis of those that pass the
+# first filter.
+#
+# Revision 1.11  2003/11/26 17:25:47  rwiegand
+# Updated angle parameters to be in arcsec instead of radians.  Object fields
+# renamed for compatibility with libraries.
+#
+# Revision 1.10  2003/06/11 21:38:36  miket
+# global name changes from tfc/starid to uvottfc/uvotstarid
+#
+# Revision 1.9  2002/12/12 21:00:06  rwiegand
+# Updated to use PIL parameter files (via pquery2).
+#
+# Revision 1.8  2002/11/26 16:05:23  rwiegand
+# Set executable bit on the drivers
+#
+# Revision 1.7  2002/11/22 22:10:54  rwiegand
+# Added a final direct match to determine which sources have no corresponding
+# catalog object.  Updated reporting of results.
+#
+# Revision 1.6  2002/11/21 16:35:20  wiegand
+# Complete processing based on the solution provided by the StarID::Task.
+# Rotate all of the sources according to the optimal quaternion and check
+# for matches in the catalog.
+#
+# Revision 1.5  2002/11/18 19:44:40  wiegand
+# Added weightings for ambiguous vs unambiguous doublets.
+#
+# Revision 1.4  2002/11/13 14:33:03  wiegand
+# Corrected doublet matching callback (ought to look into optimization).
+#
+# Revision 1.3  2002/11/12 19:49:24  wiegand
+# More robust magnitude estimation from counts
+#
+# Revision 1.2  2002/09/30 21:00:27  wiegand
+# Dump a report in writeResults
+#
+# Revision 1.1  2002/09/30 18:33:38  wiegand
+# Initial revision
+#
+
+use strict;
+
+package UVOT::StarID;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+
+use StarID;
+use atFunctions qw(atRotVect);
+use UVOT::SourceTable;
+use UVOT::CatalogLoader;
+
+
+
+# main
+{
+	my $tool = UVOT::StarID->new(
+			tool => 'uvotstarid',
+			version => 'v1.3',
+			);
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file partition=file
+				reflist=string matchtol=real radius=real
+				magmin=real nsrcmin=int nsrcmax=int lossbase=real
+				postol=real magtol=real difftol=real
+				poscorr=real rotcorr=real hyplim=int hypmin=int hypmax=int
+				clobber=bool cleanup=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadSources
+		if $self->isValid;
+
+	$self->selectSources
+		if $self->isValid;
+
+	$self->loadCatalog
+		if $self->isValid;
+
+	$self->performStarIdentification
+		if $self->isValid;
+
+	$self->writeResults
+		if $self->isValid;
+
+	$self->removeTemporaries;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		if (-e $args->{outfile}) {
+			$self->error(BAD_INPUT,
+				"$args->{outfile} exists and clobber not set");
+		}
+	}
+
+	if ($args->{reflist} !~ /^NONE$/i) {
+		# match non-negative reals in decimal notation
+		my $rePos = qr(\d+\.\d*|\.\d+|\d+);
+		my @refs;
+		my @str = split(',', $args->{reflist});
+		foreach my $str (@str) {
+			if ($str =~ /^(\w+):($rePos)([+\-]$rePos)$/) {
+				my ($key, $ra, $dec) = ($1, $2, $3);
+				my $source = StarID::Source->new(
+						ID => $key,
+						RA => Math::degreesToRadians($ra),
+						DEC => Math::degreesToRadians($dec),
+						);
+				$source->{UNIT} = Math::rd2unit($source->ra, $source->dec);
+				push(@refs, $source);
+				$self->report("reference: key=$key, ra=$ra, dec=$dec")
+					if $self->chatter(6);
+			}
+			else {
+				$self->warning("ignoring invalid reference $str");
+			}
+		}
+		$self->{reference} = \@refs;
+	}
+
+	if ($args->{clobberFlag}) {
+		if (-e $args->{outfile}) {
+			unlink($args->{outfile})
+				or $self->warning("unable to unlink $args->{outfile} [$!]");
+		}
+	}
+}
+
+
+sub loadSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $loader = UVOT::SourceTable->new(tool => $self->{tool});
+
+	# at some point will want to make set of columns to load configurable
+	my $sources = $loader->loadFile($args->{infile},
+			scale => 'radians',
+			leaveOpen => 1,
+			);
+
+	if (not $loader->isValid) {
+		$self->error(BAD_INPUT,
+				"unable to load $args->{infile}");
+	}
+	else {
+
+		$self->{loadcol} = $loader->{loaded};
+
+		if (not $self->{reference}) {
+			my $header = $loader->{fits}->read_header;
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(RA_PNT DEC_PNT) ],
+					);
+			my $source = StarID::Source->new(
+					ID => 'PNT',
+					RA => Math::degreesToRadians($self->{RA_PNT}),
+					DEC => Math::degreesToRadians($self->{DEC_PNT}),
+					);
+			$source->{UNIT} = Math::rd2unit($source->ra, $source->dec);
+			$self->{reference} = [ $source ];
+		}
+
+		$self->{cards} = [ ];
+		$self->storeHeaderCards($loader->{fits},
+				types => [ TYP_COMM_KEY, TYP_CONT_KEY,
+						TYP_USER_KEY, TYP_REFSYS_KEY ],
+				array => $self->{cards},
+				);
+
+
+		{
+			my $status = 0;
+			$loader->{fits}->close_file($status);
+		}
+
+		my $count = @$sources;
+		$self->report("loaded $count sources from $args->{infile}")
+			if $self->chatter(2);
+
+		foreach my $s (@{ $sources }) {
+			$s->{UNIT} = Math::rd2unit($s->{RA}, $s->{DEC});
+			bless($s, 'StarID::Source');
+		}
+
+		$self->{allSources} = $sources;
+	}
+}
+
+
+sub selectSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @filtered;
+	foreach my $s (@{ $self->{allSources} }) {
+		if ($s->mag <= $args->{magmin}) {
+			push(@filtered, $s);
+		}
+	}
+
+	my @sorted = sort { $a->mag <=> $b->mag } @filtered;
+
+	my @sources;
+	my $limit = Math::min(scalar(@sorted), $args->{nsrcmax});
+	for (my $i = 0; $i < $limit; ++$i) {
+
+		my $s = $sorted[$i];
+
+		$s->{ID} = "$i\[$s->{ROW}]";
+		$s->{UNIT} = Math::rd2unit($s->ra, $s->dec);
+
+		push(@sources, $s);
+
+		$self->report("source $s->{ID} dump: " . $self->stringify($s))
+			if $self->chatter(4);
+
+		my $skyp = sprintf('RA=%.6f DEC=%.6f MAG=%.2f',
+					Math::radiansToDegrees($s->ra),
+					Math::radiansToDegrees($s->dec),
+					$s->mag);
+$self->report("source $s->{ID}: $skyp");
+	}
+
+	$self->{selected} = \@sources;
+	$self->report("selected $limit sources for matching");
+}
+
+
+sub loadCatalog
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $loader = UVOT::CatalogLoader->new(
+			task => $self,
+			directory => $args->{partition},
+			sources => $self->{allSources},
+			);
+
+	$loader->execute;
+
+	if (not $loader->isValid) {
+		$self->error(BAD_INPUT,
+				"unable to load $args->{partition}");
+	}
+	else {
+		$self->{catalog} = $loader->getCatalog;
+		my $count = $self->{catalog}->size;
+		$self->report("loaded $count objects from catalog");
+
+		my $spec = $loader->{spec};
+		my $ra = sprintf('%.4f', Math::radiansToDegrees($spec->ra));
+		my $dec = sprintf('%.4f', Math::radiansToDegrees($spec->dec));
+		my $arcmin = sprintf('%.2f', Math::radiansToDegrees($spec->{radius}*60));
+		$self->report("\tRA $ra DEC $dec, radius $arcmin arcmin");
+
+	}
+}
+
+
+sub performStarIdentification
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{outSources} = $self->{allSources};
+
+	my $count = @{ $self->{selected} };
+	if ($count < $args->{nsrcmin}) {
+		$self->warning('insufficient sources for star matching');
+		return;
+	}
+
+	my $target = $self->{reference}[0];
+
+	my %args = (
+		tool => $self->{tool},
+
+		args => {
+			chatter => $self->chatter,
+			lossCorrection => $args->{lossbase},
+			maxTheses => $args->{hyplim},
+			minAssertions => $args->{hypmin},
+			maxAssertions => $args->{hypmax},
+		},
+
+		target => $target,
+
+		catalog => $self->{catalog},
+
+		sources => $self->{selected},
+
+		directInfo => {
+			matches => 0,
+			magTolerance => $args->{magtol},
+			posTolerance => Math::degreesToRadians($args->{postol} / 3600),
+			minCosAngle => cos(Math::degreesToRadians($args->{postol} / 3600)) ,
+		},
+
+		directMatchRadius => Math::degreesToRadians($args->{postol} / 3600),
+		directMatch => sub {
+			my ($task, $source, $object) = @_;
+
+			my $info = $task->{directInfo};
+
+			my $su = $source->unit;
+			my $ou = $object->unit;
+
+			my $candidate = 0;
+
+			# magnitude tolerance should be a function of source
+			#	knowledge (a source with medium and low priority
+			#	data has a better known magnitude than one with
+			#	only high priority data).
+
+$self->report("direct match: testing $source->{ID} to $object->{ID}")
+	if $self->chatter(8);
+=pod
+			my $angle = Math::u3angle($su, $ou);
+			if (not defined($source->{minAngle}) or
+					($angle < $source->{minAngle})) {
+				$source->{minAngle} = $angle;
+			}
+=cut
+
+			my $cos = Math::u3cosangle($su, $ou);
+			my $magdiff = undef;
+			if ($object->mag ne 'NULL') {
+				$magdiff = abs($source->mag - $object->mag);
+			}
+
+			if ($cos < $info->{minCosAngle}) {
+				# exceeded position tolerance
+$self->report("direct match: position mismatch "
+		. "[cos=$cos < $info->{minCosAngle}]")
+	if $self->chatter(9);
+			}
+			elsif (defined($magdiff) and $magdiff > $info->{magTolerance}) {
+				# exceeded magnitude tolerance
+$self->report("direct match: magnitude mismatch [$magdiff > $info->{magTolerance}]")
+	if $self->chatter(9);
+			}
+			else {
+				$candidate = 1;
+$self->report("direct match: candidate $source->{ID} to $object->{ID}")
+	if $self->chatter(7);
+			}
+
+			return $candidate;
+		},
+
+		doubletInfo => {
+			matches => 0,
+			tolerance => Math::degreesToRadians($args->{difftol} / 3600),
+
+			# filled in by doubletPrepare
+			source => undef,
+			other => undef,
+			distance => undef,
+		},
+
+		doubletPrepare => sub {
+			my ($task, $source, $other) = @_;
+
+			my $info = $task->{doubletInfo};
+
+			$info->{source} = $source;
+			$info->{other} = $other;
+			$info->{cosangle} = $source->cosangle($other);
+			$info->{angle} = $source->angle($other);
+$self->report("doublet matching $source->{ID} and $other->{ID}")
+	if $self->chatter(8);
+		},
+
+		doubletMatch => sub {
+			my ($task, $s1, $s2) = @_;
+			my $doublet = 0;
+			my $info = $task->{doubletInfo};
+
+			if (abs($info->{angle} - $s1->angle($s2))
+					> $info->{tolerance}) {
+				# exceeded doublet tolerance
+			}
+			else {
+				$doublet = 1;
+$self->report("doublet match found for $s1->{ID}")
+	if $self->chatter(8);
+			}
+			return $doublet;
+		},
+	);
+
+	my $sid = StarID::Task::DirectDoublet->new(%args);
+
+	$sid->execute;
+
+	if ($args->{regionfile}) {
+		$self->writeRegionFile($self->{selected}, $sid->catalog->contents);
+	}
+
+	$self->{solution} = $sid->solution;
+	if (not $self->{solution}) {
+		$self->warning('star identification failed');
+	}
+	else {
+		$self->correct($sid);
+	}
+}
+
+
+sub writeRegionFile
+{
+	my ($self, $selected, $contents) = @_;
+
+	open(STARS, ">stars.reg");
+
+	foreach my $s (@$selected) {
+		printf STARS "image;text(%fd,%fd) # text={$s->{ID}}\n",
+				Math::radiansToDegrees($s->ra),
+				Math::radiansToDegrees($s->dec);
+	}
+
+	foreach my $o (@$contents) {
+		printf STARS "image;circle(%fd,%fd,2) # text={$o->{ID}}\n",
+					Math::radiansToDegrees($o->ra),
+					Math::radiansToDegrees($o->dec);
+	}
+
+	close(STARS);
+}
+
+
+sub correct
+{
+	my ($self, $sid) = @_;
+
+	my $thesis = $self->{solution};
+
+	my $q = $thesis->{bodyToReference};
+	$self->report("optimal quaternion @$q");
+
+	$self->{catalog} = $sid->{catalog};
+
+	# require that quaternion corresponds to
+	# 1. position change of less than $args->{poscorr} [arcsec]
+	# 2. rotation of less than $args->{rotcorr} [arcmin]
+
+	my $posarcsec = 0;
+	{
+		my $mincos = 1;
+		foreach my $s (@{ $self->{allSources} }) {
+			my $rotated = atRotVect(q => $q, in => $s->unit);
+			my $cos = Math::v3cosangle($rotated, $s->unit);
+			if ($cos < $mincos) {
+				$mincos = $cos;
+			}
+		}
+		$posarcsec = 3600 * Math::radiansToDegrees(POSIX::acos($mincos));
+		my $str = sprintf('%.3f', $posarcsec);
+		$self->report("\tposition => $str arcsec");
+	}
+
+	my $rotarcmin = 60 * 2 * Math::radiansToDegrees(POSIX::acos($q->[3]));
+	{
+		my $str = sprintf('%.3f', $rotarcmin);
+		$self->report("\trotation => $str arcmin");
+	}
+
+	my $args = $self->args;
+	if ($posarcsec > $args->{poscorr}) {
+		$self->report("skipping correction [exceeds maximum translation]");
+		$self->{outSources} = $self->{allSources};
+	}
+	elsif ($rotarcmin > $args->{rotcorr}) {
+		$self->report("skipping correction [exceeds maximum rotation]");
+		$self->{outSources} = $self->{allSources};
+	}
+	else {
+
+		# transform source vectors
+
+		my @corrected;
+		foreach my $s (@{ $self->{allSources} }) {
+			my $rotated = atRotVect(q => $q, in => $s->unit);
+			my ($ra, $dec) = Math::v3rdl($rotated);
+			my $corrected = StarID::Source->new(
+				%$s,
+				UNIT => $rotated,
+				RA => $ra,
+				DEC => $dec,
+			);
+			push(@corrected, $corrected);
+		}
+
+		$self->{corrected} = \@corrected;
+		$self->{outSources} = \@corrected;
+	}
+}
+
+
+
+sub redirect
+{
+	my ($self, $sid) = @_;
+
+	my $thesis = $self->{solution};
+
+	# perform direct match again with reduced tolerances
+	# results from the rest of this block are not being used...
+	my $tolerance = 4 * sqrt($thesis->{meanLoss});
+	my $arcsecTol = 3600 * Math::radiansToDegrees($tolerance);
+	$self->report("redirecting match with tolerance of $arcsecTol arcsecs");
+
+	my $direct = $sid->{directInfo};
+	$direct->{posTolerance} = $tolerance;
+	$direct->{minCosAngle} = cos($tolerance);
+	$sid->directMatch;
+
+	# sources without direct matches are not in catalog
+	foreach my $s (@{ $self->{corrected} }) {
+		if (not $s->directed) {
+			push(@{ $self->{unmatched} }, $s);
+		}
+	}
+}
+
+
+sub writeResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $thesis = $self->{solution};
+
+	if ($thesis) {
+
+		$self->report("initial loss $thesis->{initialLoss}");
+		$self->report("final loss $thesis->{finalLoss}");
+		$self->report("normalized loss $thesis->{ratedLoss}");
+
+		# my $q = $thesis->{bodyToReference};
+		# $self->report("optimal quaternion @$q");
+	}
+
+	my $writer = UVOT::SourceTable->new(
+			tool => $self->{tool},
+			sources => $self->{outSources},
+			scale => 'radians',
+			catalog => $self->{catalog},
+			outfile => $args->{outfile},
+			reference => $self->{reference},
+			matchtol => $args->{matchtol},
+			unobserved => $args->{radius},
+			history => $args->{history},
+			);
+
+	$writer->execute(leaveOpen => 1,
+			columns => $self->{loadcol},
+			);
+
+	if (not $writer->isValid) {
+		$self->error(BAD_OUTPUT, "unable to save results");
+	}
+	else {
+
+		my $status = 0;
+		my $fits = $writer->{fits};
+
+		foreach my $hdu (1, 2) {
+
+			if ($fits->movabs_hdu($hdu, undef, $status)) {
+				$self->error(BAD_OUTPUT,
+					"unable to move to HDU $hdu [$status]");
+				next;
+			}
+
+			foreach my $card (@{ $self->{cards} }) {
+				$fits->write_record($card, $status);
+			}
+
+			$fits->update_key_str('CREATOR', "$self->{tool} $self->{version}",
+					'File creation software', $status);
+
+			$fits->write_date($status);
+		}
+
+		$self->putParameterHistory($fits);
+		$self->updateChecksums($fits, 1, 2);
+
+		$fits->close_file($status);
+	}
+}
+

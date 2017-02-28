@@ -1,0 +1,392 @@
+#!/usr1/local/bin/perl
+use Getopt::Std;
+use Astro::FITS::CFITSIO qw( :shortnames :constants );
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+acisxspec 
+
+EOHELP
+exit 0;
+}
+ $infile =0;
+ $ra =0;
+ $dec =0;
+ $radius =0;
+ $bin =0;
+ $tbin =0;
+ $tmpimgfile =0;
+ $srcregfile =0;
+ $backregfile =0;
+ $timerngfile =0;
+ $xcol=0;
+ $ycol=0;
+ $eventsfile=0;
+ $srcphafile =0;
+ $backphafile =0;
+ $srcarffile =0;
+ $srcrmffile =0;
+ $device =0;
+ $timeout=0;
+ $lcrvfile ="lcrv.fits";
+ $fptr =0;
+ 
+
+exit headas_main(\&acisxspec);
+
+sub acisxspec {
+ my $tname ="acisxspec";
+ my $tvers ="1.0";
+
+ &acisxspec_getpar();
+
+ $status = &acisxspec_work();
+
+}
+
+
+sub acisxspec_work {
+  my $return_value;
+
+  $| =1;
+
+
+
+
+  $eventsfile = $infile;
+  $gtifile =$eventsfile;
+  $status=0;
+  print "Create light curve for  '$infile' \n";
+if ( $eventsfile =~ /\[\w+\]/i ) {
+  $gtifile =~ s/\[\w+\]//i;
+  if (ffopen($fptr,$infile,READONLY,$status)) {
+          print "open $infile error\n";
+          exit $status;
+  } 
+} else {
+  if (ffopen($fptr,$infile,READONLY,$status)) {
+          print "open $infile error\n";
+          exit $status;
+  } else {
+     if ( ffthdu($fptr,$hdunum,$status)) {
+          print "get hdunum error\n";
+          exit $status;
+     }
+     $found = 0;
+     for ($i=2; $i <=$hdunum && !$found; $i++ ) {
+         if(ffmahd($fptr,$i,$hdutype,$status)) {
+             print "move to extension $i error\n";
+             exit $status;
+         }
+         if ( ffgkey($fptr,"EXTNAME",$extname,$comment,$status)) {
+             print "read keyword EXTNAME of the  extension $i error\n";
+             exit $status;
+         }
+         if ( $extname =~ /event/i || $extname =~ /stdevt/i ) {
+             $found =$i;
+             break;
+         } elsif ( ffgkey($fptr,"HDUCLAS1",$hduclas1,$comment,$status)) {
+             $status =0;
+         } elsif ( $hduclas1 =~ /event/i) {
+             $found =$i;
+             break;
+         }
+     }
+     if ( !$found ) {
+         print "Could not find events extension please specify it.\n";
+         exit(1);
+     }
+     $extname =~ s/\ //g;
+     $extname =~ s/'//g;
+
+     $eventsfile = sprintf("%s[%s]",$infile,$extname);
+  } 
+}
+
+
+  if ( ffgnrw($fptr,$numrows,$status)) {
+          print "read rownum error\n";
+          exit $status;
+  }
+
+  if ( $tbin =~/def/i) {
+       $tbin = int($numrows/1000);
+       if ( $tbin == 0) {
+            $tbin =1;
+       } 
+  }
+
+
+ system("rm -rf tmpgti");
+ system("ftcopy $gtifile\[gti\] tmpgti copyall=no");
+
+  system("fcurve infile=$eventsfile gtifile=tmpgti outfile=\"!$lcrvfile\" timecol=TIME columns=$xcol binsz=$tbin lowval=INDEF highval=INDEF binmode=Event_rate");
+
+ system("rm -rf tmpgti");
+ 
+  $infile = sprintf "%s[1]",$lcrvfile;
+  if ( -e $timerngfile ) {
+      system("rm -f $timerngfile");
+      system("touch $timerngfile");
+  }
+  # system("selectxrange '$infile' '$timerngfile' TIME $xcol y $timeout Time Events/s"); 
+  system("selectxrange infile='$infile' rangefile='$timerngfile' x=TIME y=$xcol sort=y timeout=$timeout xname=Time yname=Events/s");
+  print "Selectxrange done \n";
+
+  $infile = sprintf "%s[bin $xcol=%d, $ycol=%d]",$eventsfile,$bin,$bin;
+  print "Bin '$infile' \n";
+  $return_value =`fcopy '$infile' '$tmpimgfile'`;
+
+  if ( $return_value ) {
+      exit $return_value;
+  }
+  
+
+  if ( $tmpimgfile =~/^!/ ) {
+      $tmpimgfile1 =substr($tmpimgfile,1);
+  } else {
+      $tmpimgfile1 =$tmpimgfile;
+  }
+
+  if ( !(-e $tmpimgfile1) ) {
+       exit 1;
+  }
+
+
+
+  print "Select the source and background regions......\n";
+
+  if ( -e $srcregfile ) {
+     system ("rm -rf $srcregfile");
+  }
+  if ( -e $srcphafile ) {
+     system ("rm -rf $srcphafile");
+  }
+  if ( -e $backregfile ) {
+       system("rm -f $backregfile");
+  }
+  if ( -e $backphafile ) {
+       system("rm -f $backphafile");
+  }
+  
+
+  $return_value= `make2region '$tmpimgfile1' '$srcregfile'  '$backregfile' ra=$ra dec=$dec radius=$radius timeout=$timeout`;
+
+
+
+      $xpa_user =$ENV{XPA_USER};
+      $helpdir =$ENV{LHEA_HELP};
+      
+
+      if ( !(defined $xpa_user) || $xpa_user eq "") {
+          $pow = "pow";
+          $heraXPA = "heraXPA";
+      } else {
+          $pow ="pow_$xpa_user";
+          $heraXPA = "heraXPA_$xpa_user";
+      }
+      $result = `xpaget xpans 2>/dev/null`;
+      if ($result !~ /heraXPA/) {
+          $heraXPA = $pow;
+      }
+
+
+  if ( !(-e $srcregfile) ) {
+      print "Error:source region file has not been saved!\n";
+      exit 1;
+  }
+
+
+  print "Select region done\n";
+  
+  @list =  split(/\//,$eventsfile);
+
+  $eventsfile = $list[$#list];
+  
+#  print "filter region $srcregfile \n";
+#  system("cat $srcregfile");
+#  print "filter region $backregfile \n";
+#  system("cat $backregfile");
+
+
+  $srcarffile= $srcphafile;
+  $srcrmffile= $srcphafile;
+  $srcarffile =~ s/.\w+$/.arf/;
+  $srcrmffile =~ s/.\w+$/.rmf/;
+  system("rm -f $srcarffile");
+  system("rm -f $srcrmffile");
+  open FD,">comfile.xco";
+  print FD "\n";
+  print FD "set datadir ./\n";
+#  print FD "read events $eventsfile reset_miss=yes\n";
+  print FD "read events $eventsfile \n\n";
+  if ( -e $timerngfile ) {
+    print FD "filter time file \"$timerngfile\" \n"
+  }
+  print FD "filter region $srcregfile \n";
+  print FD "extract spectrum \n";
+#  print FD "save spectrum $srcphafile group_spectrum=yes\n\n";
+  print FD "save spectrum resp=yes $srcphafile\n\n";
+  print FD "\n\n";
+  print FD "clear region\n\n";
+  if ( -e $backregfile ) {
+  print FD "filter region $backregfile \n";
+  print FD "extract spectrum \n";
+  print FD "save spectrum $backphafile group_spectrum=yes\n\n";
+  }
+  print FD "quit \n\n\n";
+  close FD;
+
+
+  $helpfile = "$helpdir/longrunningtime_warning.html";
+  #system("cat $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+  system("echo $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+
+  print "Run  xselect \@comfile ";
+  system("echo \"\n\n\n\n\" | xselect \@comfile");
+
+  system ("rm -rf comfile.xco");
+
+                            
+          
+#  system("echo \"$help\" |xpaset $pow helpPage");
+#  print "Run pcarf $srcphafile CALDB $srcarffile CALDB\n";
+##  system("pcarf $srcphafile CALDB '!$srcarffile' CALDB"); 
+#  system("fkeypar $srcarffile\[1\] RESPFILE\n"); 
+#  system("fkeypar $srcarffile+1 RESPFILE\n"); 
+#  $tmprmffile = `pquery fkeypar value`;
+#  $tmprmffile =~ s/\'//g;
+#  chop ($tmprmffile);
+#  print "cp $tmprmffile $srcrmffile\n";
+#  system("cp $tmprmffile $srcrmffile");
+
+#  system("fparkey $srcrmffile $srcphafile\[1\] RESPFILE add=yes");
+#  system("fparkey $srcarffile $srcphafile\[1\] ANCRFILE add=yes");
+#  system("fparkey $backphafile $srcphafile\[1\] BACKFILE add=yes");
+
+
+  open FD,">comfile.xcm";
+  print FD  "data $srcphafile\n";
+#  if ( -e $backphafile ) {
+#  print FD  "backgrnd $backphafile\n";
+#  }
+#  print FD  "response $srcrmffile\n";
+#  print FD  "arf $srcarffile\n";
+  print FD  "show\n";
+  print FD  "cpd $device \n\n";
+  print FD  "ignore bad \n\n";
+  print FD  "setplot energy \n\n";
+  print FD  "plot data \n\n";
+  close FD;
+
+  $helpfile = "$helpdir/acisxspec_1.html";
+  #system("cat $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+  system("echo $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+  
+
+  print "Run xspec - comfile.xcm\n";
+  system("xspec - comfile.xcm"); 
+
+#  system ("rm -rf comfile.xcm $srcphafile $backphafile  $srcarffile $tmpimgfile ");
+#  system ("rm -rf comfile.xcm $srcphafile $backphafile  $srcarffile $tmpimgfile ");
+  system ("rm -rf comfile.xcm $tmpimgfile ");
+
+  return 0;
+
+
+}
+
+
+sub acisxspec_getpar {
+
+ if (PILGetString("infile",$infile)) {
+    print "Error to get parameter \"infile\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("xcol",$xcol)) {
+    print "Error to get parameter \"xcol\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("ycol",$ycol)) {
+    print "Error to get parameter \"ycol\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("ra",$ra)){
+    print "Error to get parameter \"ra\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("dec",$dec)){
+    print "Error to get parameter \"dec\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("radius",$radius)){
+    print "Error to get parameter \"radius\"\n";
+    exit(-1);
+ }
+
+ if (PILGetInt("bin",$bin)){
+    print "Error to get parameter \"bin\"\n";
+    exit(-1);
+ }
+
+ if (PILGetInt("tbin",$tbin)){
+    print "Error to get parameter \"tbin\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("srcregfile",$srcregfile)){
+    print "Error to get parameter \"srcregfile\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("backregfile",$backregfile)){
+    print "Error to get parameter \"backregfile\"\n";
+    exit(-1);
+ }
+ if (PILGetString("timerngfile",$timerngfile)){
+    print "Error to get parameter \"backregfile\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("srcphafile",$srcphafile)){
+    print "Error to get parameter \"srcphafile\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("backphafile",$backphafile)){
+    print "Error to get parameter \"backphafile\"\n";
+    exit(-1);
+ }
+# if (PILGetString("srcarffile",$srcarffile)){
+#    print "Error to get parameter \"srcarffile\"\n";
+#    exit(-1);
+# }
+# if (PILGetString("srcrmffile",$srcrmffile)){
+#    print "Error to get parameter \"srcarffile\"\n";
+#    exit(-1);
+# }
+ if (PILGetString("tmpimgfile",$tmpimgfile)){
+    print "Error to get parameter \"tmpimgfile\"\n";
+    exit(-1);
+ }
+ if (PILGetString("device",$device)){
+    print "Error to get parameter \"device\"\n";
+    exit(-1);
+ }
+ if (PILGetReal("timeout",$timeout)){
+    print "Error to get parameter \"timeout\"\n";
+    exit(-1);
+ }
+
+}
+

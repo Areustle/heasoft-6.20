@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= ftools
+
+HD_COMPONENT_VERS	=
+
+HD_SUBDIRS		= src
+
+HD_INSTALL_HEADERS	= include/gro.h
+
+include ${HD_STD_MAKEFILE}

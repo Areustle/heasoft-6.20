@@ -1,0 +1,57 @@
+#! /usr1/local/bin/perl
+
+my @types = qw(
+  bool char signed_char unsigned_char short
+  int long unsigned_short unsigned_int unsigned_long
+  float double long_double
+);
+grep s/_/ /g, @types;
+my @fields = qw#
+  is_specialized min() max() digits10
+  is_signed is_integer epsilon() round_error()
+#;
+
+print <<EOT;
+#include <iostream>
+/* If this implementation has <limits>, lie to hoops_numeric_limits.h
+   so that it includes its own implementation anyway. */
+#ifdef HAVE_LIMITS
+#include <limits>
+#define REALLY_HAVE_LIMITS
+#undef HAVE_LIMITS
+//#else
+///* This should be removed when HAVE_LIMITS is really being set by the build: */
+//#define REALLY_HAVE_LIMITS
+#endif
+#include "hoops/hoops_numeric_limits.h"
+int main() {
+  int status = 0;
+#ifdef REALLY_HAVE_LIMITS
+EOT
+
+my $msg;
+foreach my $type (@types) {
+  foreach my $field (@fields) {
+    if ($type =~ /char/) {
+      $msg = "\"numeric_limits<$type>::$field == \" << (int) std::numeric_limits<$type>::$field << \" not \" << (int) hoops::numeric_limits<$type>::$field";
+    } else {
+      $msg = "\"numeric_limits<$type>::$field == \" << std::numeric_limits<$type>::$field << \" not \" << hoops::numeric_limits<$type>::$field";
+    }
+    print <<EOT;
+  if (std::numeric_limits<$type>::$field != hoops::numeric_limits<$type>::$field) {
+    status = 1;
+    std::cerr << $msg << std::endl;
+  }
+EOT
+  }
+} 
+
+print <<EOT;
+#else
+  std::cout << "This implementation doesn't have <limits>; not really testing anything!" << std::endl;
+#endif
+
+  if (0 == status) std::cout << "Test succeeded." << std::endl;
+  return status;
+}
+EOT

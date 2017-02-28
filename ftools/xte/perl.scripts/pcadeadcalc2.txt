@@ -1,0 +1,258 @@
+
+NAME
+    pcadeadcalc2 - Calculate deadtime for PCA Standard2 file (or background)
+
+USAGE
+    Standard2:  pcadeadcalc2 std2file std2file_DT hkfiles=@hkfiles.lis
+    Background: pcadeadcalc2 bkgfile  bkgfile_DT  std2file=std2file_DT
+
+DESCRIPTION
+
+    pcadeadcalc2 calculates PCA deadtime quantities for data in the
+    Standard2 mode.  This tool calculates the dead time due to various
+    terms, including GoodXenon counts, Very Large Event (VLE) counts,
+    Propane layer counts, and other counts in the detector.  Also, by
+    default, the tool filters out bad data during times which are
+    known to be "bad" for typical scientific analysis.
+
+    This tool is designed to function for both Standard2 files and
+    also for background files created with pcabackest.  The tool is
+    run in a slightly different way for each, described below.
+
+    As output, the tool produces a "new" Standard2 or background file
+    which contain dead-time related quantities appended as new columns
+    to the table.  The user can use these quantities to adjust their
+    light curves or spectra to remove the effects of dead-time.
+
+    pcadeadcalc2 does not apply any deadtime correction by itself, but
+    merely calculates dead-time related quantities, and (optionally)
+    filters out PCU data during known bad states.  See 'pcadeadspect2'
+    for more information about to correct Standard2 spectra.
+
+    The most useful columns in the FITS table are:
+        LiveTimePcu0
+        LiveTimePcu1
+        LiveTimePcu2
+        LiveTimePcu3
+        LiveTimePcu4
+    which represent the detector live-time for each PCU in the PCA array,
+    I.e. the number of effective seconds each PCU was sensitive to X-rays
+    during each 16-second counting interval.  When a PCU's high voltage is
+    disabled, the detector is considered "dead".
+
+    Other useful quantities in the output file are:
+        PCUN_ON       - is PCU N enabled?
+        DeadTimePcuN  - [sec] effective dead-time for PCU N
+        LiveFracPcuN  - fractional live-time for PCU N
+        BadPcuN       - PCU N is OFF or in a known bad state
+
+BAD SCIENCE TIMES
+
+    By default, zero_bad=YES, which instructs pcadeadcalc2 to filter
+    out data from PCUs which are in a known "bad" state for scientific
+    analysis.  It does this by setting the Xenon counts to zero during
+    these times, as well as OnTime = LiveTime = 0.  This setting
+    occurs on a PCU-by-PCU basis.
+
+    pcadeadcalc2 has a list of known conditions which would flag a PCU
+    as "bad" for scientific analysis.  The tool's categorization does
+    not mean that such data cannot be analyzed, but it does mean that
+    typically a scientist would not analyze these data, but even if
+    they did, it would require special care.  The conditions also
+    represent the RXTE PCA team's best recommendations for data
+    filtering for generic observations and typical scientific
+    analysis.  The conditions for declaring a "bad time" are:
+
+      1. A PCU's high voltage is disabled.
+      2. A PCU's high voltage transition occurred in the previous or
+         next Standard2 sample. (disable with transition_bad=NO)
+      3. A PCU breakdown event occurred between TIME-600 and TIME+150.
+         (only if breakfile is set)
+      4. PCU0 is missing its propane layer (i.e., after 2000-05-20).
+         (disable with propane_bad=NO)
+      5. PCU1 is missing its propane layer (i.e., after 2006-12-25).
+         (disable with propane_bad=NO)
+
+    Most of these conditions can be disabled, as indicated in the list.
+    
+
+BREAKDOWNS
+
+    PCA breakdown events can create subtle effects even before the
+    high voltage is turned off.  The user is strongly recommended to
+    download a up-to-date version of the RXTE calibration database
+    (CALDB) and set breakfile=CALDB, which is the default.  This will
+    automatically flag breakdown events as "bad" times on an
+    individual PCU-by-PCU basis.
+
+
+HOW TO RUN
+
+    Standard2 files (files beginning with "FS4a"), contain various
+    counting rates and spectra that are used for science.  The user
+    must provide as input the name of the Standard2 file and the names
+    of the PCA housekeeping files via the 'hkfiles' parameter (i.e.,
+    files beginning with "FH5a,b,c,d,e").
+
+    Background files are produced by the task 'pcabackest' or
+    'runpcabackest' and represent an estimated background which
+    exactly corresponds to a Standard2 file in the same observation.
+    Background estimates do not have many of the rates required to
+    compute the deadtime, so the user must first run 'pcadeadcalc2' on
+    the corresponding Standard2 file, and then use the output of that
+    as input via the 'std2file' parameter.
+
+    Let us assume that following files are present:
+         FS4a     - Standard2 data
+         FS4a_bkg - Background estimates (from pcabackest)
+    and we wish to calculate deadtime quantities    
+         FS4a_DT     - Standard2 *PLUS* deadtime quantities
+         FS4a_bkgDT - Background estimates *PLUS*  """
+
+    First, change directories to the OBSID/pca directory, and then
+    obtain a list-file with the housekeeping files with this command,
+
+      ls FH5* > hkfiles.lis
+
+    This should list all 5 PCU housekeeping files.
+
+
+    Next, run pcadeadcalc2 on the Standard2 file,
+
+      pcadeadcalc2 infile=FS4a outfile=FS4a_DT hkfiles=@hkfiles.lis
+
+    This should create a new file, FS4a_DT, with deadtime correction
+    quantities.
+
+
+    Finally, run pcadeadcalc2 on the background file, using the results
+    of the previous run via the 'std2file' parameter,
+
+      pcadeadcalc2 infile=FS4a_bkg outfile=FS4a_bkgDT std2file=FS4a_DT
+
+    Note that the file name used with 'std2file' is the file *with 
+    dead-time quantities*, not the original Standard2 file.
+    
+
+HOW TO USE OUTPUTS
+
+    This section briefly describes how these outputs can be used.
+
+    The user can simply plot the various quantities to get
+    a sense of the deadtime variations during an observation.  The
+    most relevant quantities are TIME vs. LiveFracPcuN.
+
+    For spectral analysis, the outputs of pcadeadcalc2 can be run as
+    input to 'saextrct'.  Most importantly, the same time filtering
+    (i.e. GTI files) can be applied to the accumulation of counts
+    spectrum data and the live-time time quantities.
+
+    For example, if the spectrum is accumulated like this,
+
+       saextrct infile=FS4a gtiorfile=APPLY gtiandfile=myfile.gti 
+         outroot=spect accumulate=ONE ... 
+         columns=X1LSpecPcu2,X1RSpecPcu2 
+         printmode=SPECTRUM lcmode=SUM spmode=SUM ...
+
+    i.e. accumulate one summed spectrum for PCU2, then the user can
+    make a similar live-time spectrum like this,
+
+       saextrct infile=FS4a gtiorfile=APPLY gtiandfile=myfile.gti 
+         outroot=live accumulate=ONE ... 
+         columns=LiveTimePcu2 
+         printmode=SPECTRUM lcmode=SUM spmode=SUM ...
+
+    In other words, *ONLY CHANGING* the columns parameter to refer to
+    the live-time column.  The result will be a spectrum with a single
+    energy bin which is described as "COUNTS" but is really the number
+    of live-time seconds.  You can print it with this command,
+
+      ftlist live.pha T
+
+      ==> 3915.53 sec  (EXAMPLE RESULT)
+
+    which should print a single number.  This number is the *effective*
+    exposure for the spectrum and can be placed in the EXPOSURE keyword of
+    the original spectrum, for example like this,
+
+      fthedit spect.pha EXPOSURE add 3915.53  ## EXAMPLE RESULT!!!
+
+
+    A similar process should be used with the background file
+    (FS4a_bkgDT in this example) to extract a spectrum with
+    'saextrct', and the EXPOSURE of the resulting spectrum should be
+    modified in a similar fashion.
+
+    For light curve analysis, the user may extract a "light curve" of
+    live-time values and correct the light curve values in a similar
+    way.
+
+
+PARAMETERS
+
+    infile [filename]
+        Name of the Standard2 or background file.
+
+    outfile [filename]
+        Name of the output file which will have dead-time quantities appended.
+
+    (hkfiles) [string]
+        When the input is Standard2 file, specify a list of PCA
+        housekeeping files.  This can either be a comma-separated
+        list, or a @filename.txt where filename.txt contains a list of
+        files.  There must be exactly five files specified because there
+        are five PCUs.
+
+    (std2file) [string]
+        When the input is a background estimate file, specify the
+        output of a previous run of pcadeadcalc2 which has been applied
+        to the corresponding Standard2 file.
+
+    (breakfile = 'CALDB') [string]
+        Set to a file name which contains PCU breakdown GTI
+        information.  If set to 'CALDB', then the task will query
+        CALDB for the appropriate file.  If set to 'NONE', then no PCU
+        breakdown processing will be done.
+
+    (zero_bad = YES) [boolean]
+        If set, then the task will set the Xenon counts to zero any
+        PCU which is considered to be in a "bad" science state at the
+        given time, as described above.  If not set, then Xenon counts
+        are not changed.
+
+    (transition_bad = YES) [boolean]
+        If set, then PCU high voltage transitions are considered "bad"
+        science times (+/- 16 sec).  If not set, then only PCU high
+        voltage "off" is considered bad.
+
+    (propane_bad = YES) [boolean]
+        If set, then PCUs are considered "bad" if their propane layers
+        are gone.  If not set, then the propane layer status is not
+        considered.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 2) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+    See main text.
+
+CAVEATS
+
+    This task does not show report dead-time during the single time
+    bin during the transition between low-voltage and high-voltage.
+
+BUGS
+    Please report problems to xtehelp@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    saextrct
+

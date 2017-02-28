@@ -1,0 +1,1599 @@
+# ----------------------------------------------------------------------
+# Navigate an XTE FITS database (XFDB) based on user-selected source
+# names, time ranges, subsystems and application IDs/configurations.
+# ======================================================================
+# ----------------------------------------------------------------------
+# Set path for autoloader to include the directory containing the XDF-
+# specific widgets.  Uncomment one of the paths below and comment out
+# the others.
+# ----------------------------------------------------------------------
+#					For pre-installation test
+
+
+# load the necessary shared libraries
+set FTOOLSTCL $env(FTOOLS)/lib
+load [glob $FTOOLSTCL/libfitstcl.{s\[ol\]*,dylib,dll}]
+
+
+package require Itcl
+package require Itk
+package require -exact Iwidgets 2.2
+#
+# the following are necessary when using 
+# wish8.0 but that causes problems on 
+# SunOS4.1 so we're back to itkwish3.0
+#
+#namespace import itcl::*
+#namespace import itk::*
+
+
+load [glob $FTOOLSTCL/libxdf.{s\[ol\]*,dylib,dll}]
+
+
+
+
+# externally controled modes
+#
+#  xselect2, set up to communicate with xselect2
+#
+set xdf_modes(xselect2) 0
+if {-1 != [lsearch $argv -xsel*]} {
+    set xdf_modes(xselect2) 1
+    set xdf_modes(xselect2_path) [lindex $argv \
+					 [expr [lsearch $argv -xsel*] + 1]]
+    puts "in xselect2 mode, path is $xdf_modes(xselect2_path)"
+}
+
+#set xTcl_widgets ./iwidgets2.2.0
+
+# make it prettier
+
+option add *borderWidth 1
+option add *vscrollMode dynamic
+option add *hscrollMode dynamic
+option add *font fixed
+
+#					If installed stand-alone, this
+#					should be defined the same as
+#					WIDGET_DIR in the Makefile
+#set xTcl_widgets $DEFINE_ME/lib/xtcl/widgets2.1.0
+#					If installed as part of FTOOLS
+#set xTcl_widgets $env(FTOOLS)/lib/iwidgets2.2.0
+#					Test for existence of directory
+#					$xTcl_widgets
+#if {![file exists $xTcl_widgets]} {
+#    puts stderr {== Can't find $xTcl_widgets directory ==}
+#}
+#lappend auto_path $xTcl_widgets
+
+
+# ----------------------------------------------------------------------
+# Define saver/estore file pathname, default/initial FMI directory path,
+# and default/initial selection lists
+# ----------------------------------------------------------------------
+set savres $env(HOME)/.xdf2.1
+
+#					Create e-mail address as
+#					password for anonymous ftp
+#					login
+
+#					Try to determine the fully
+#					qualified host name, or at
+#					least the machine name
+if {[info exists env(HOSTNAME)]} {
+    set local_host $env(HOSTNAME)
+} elseif {[info exists env(HOST)]} {
+    set local_host $env(HOST)
+} else {
+    set local_host [exec hostname]
+}
+#puts stdout $local_host
+#					Appropriate FTP login password
+set user $env(USER)
+#puts stdout $user
+set email_addr [format "%s@%s" $user $local_host]
+#puts stdout $email_addr
+if {[info exists env(XFDB)]} {
+    set default_fmi_path $env(XFDB)
+} else {
+    set default_fmi_path /data/osiris02/xtegof/FITS/FD
+}
+
+set root_dir $default_fmi_path
+#puts stdout $default_fmi_path
+
+# ----------------------------------------------------------------------
+#  PROC:  update_item_selection selectionFrame itemName state
+#
+#  Used as the action for XdfBox widgets.  Invoked whenever an entry in
+#  the list is selected/deselected to update a bar of item selections
+#  drawn above the selection list.
+# ----------------------------------------------------------------------
+proc update_item_selection {selection item state} {
+    switch $state {
+	on {
+	    if {[catch " \
+		    frame $selection.x$item \
+		    -bg $item \
+		    -geometry 3x20 \
+		    -borderwidth 2 \
+		    -relief raised
+	    "] == 0} {
+		pack append $selection $selection.x$item {left expand fill}
+	    }
+	}
+	off {
+	    catch "destroy $selection.x$item"
+	}
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  help text
+#
+#  Used as the action for Help buttons.
+# ----------------------------------------------------------------------
+proc help { title text } {
+    global prompt
+
+    set f [toplevel .hlp]
+
+    wm title $f "Help XDF $title"
+
+    set t [text $f.t -setgrid true -wrap word -width 60 -height 20 \
+	    -yscrollcommand "$f.sy set"]
+    scrollbar $f.sy -orient vert -relief sunken -command "$f.t yview"
+    button $f.close -text "Close" -command {set prompt(exit) 1}
+
+    $t insert end $text
+    pack $f.sy -side right -fill y
+    pack $f.t -side top -fill both -expand true
+    pack $f.close -side left -fill x -expand true
+
+    focus $f.close
+    grab $f
+    tkwait variable prompt(exit)
+    grab release $f
+    destroy $f
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  edit
+#
+#  Used as the action for edit buttons.
+# ----------------------------------------------------------------------
+proc edit { title text } {
+    global prompt
+    global new_text
+
+    set f [toplevel .editor]
+
+    wm title $f "Edit XDF $title List"
+
+    set t [text $f.t -setgrid true -wrap char -borderwidth 2 \
+		-width 60 -height 20 -yscrollcommand "$f.sy set" \
+		-cursor top_left_arrow]
+
+    scrollbar $f.sy -orient vert -relief sunken -command "$f.t yview"
+
+    button $f.exit -text "Exit" -command {set prompt(exit) 1}
+    button $f.save -text "Save" -command "set new_text {}; set i 1; while {\[set line \[$f.t get \$i.0 \$i.end\]\] >= 0} {lappend new_text \$line; incr i}"
+
+    set new_text $text
+    foreach line $text {
+	$t insert end $line\n
+    }
+
+    pack $f.sy -side right -fill y
+    pack $f.t -side top -fill both -expand true
+    pack $f.save -side left -fill x -expand true
+    pack $f.exit -side left -fill x -expand true
+
+    focus $f.exit
+    grab $f
+    tkwait variable prompt(exit)
+    grab release $f
+    destroy $f
+    return $new_text
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  save
+#
+#  Used as the action for the save and quit buttons
+# ----------------------------------------------------------------------
+proc save {root_dir, savres} {
+    global root_dir
+    global save_file
+    global xdf_modes
+    global ftpoption
+    global main
+#    exec rm -f $savres
+
+    if [catch {open $savres {WRONLY CREAT TRUNC}} savresId] {
+	error "Cannot open $savres: $savresId"
+    } else {
+	
+	puts $savresId [format {set root_dir "%s"} $root_dir]
+	puts $savresId [format {set save_file "%s"} $save_file]
+	puts $savresId [format {set ftpoption "%s"} $ftpoption]
+
+	puts $savresId "$main.strf.sources.box configure -items { \\"
+	foreach label [$main.strf.sources.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.strf.sources.box curselection] {
+	    puts $savresId [format {$main.strf.sources.box selection set {%d}} \
+		    $index]
+	}
+
+	puts $savresId "$main.strf.time_ranges.box configure -items { \\"
+	foreach label [$main.strf.time_ranges.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.strf.time_ranges.box curselection] {
+	    puts $savresId [format {$main.strf.time_ranges.box selection set {%d}} \
+		    $index]
+	}
+
+	puts $savresId "$main.observations.box configure -items { \\"
+	foreach label [$main.observations.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.observations.box curselection] {
+	    puts $savresId [format {$main.observations.box selection set {%d}} \
+		    $index]
+	}
+
+	puts $savresId "$main.subappf.subsystems.box configure -items { \\"
+	foreach label [$main.subappf.subsystems.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.subappf.subsystems.box curselection] {
+	    puts $savresId [format {$main.subappf.subsystems.box selection set {%d}} \
+		    $index]
+	}
+
+	puts $savresId "$main.subappf.appids_configs.box configure -items { \\"
+	foreach label [$main.subappf.appids_configs.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.subappf.appids_configs.box curselection] {
+	    puts $savresId [format {$main.subappf.appids_configs.box selection set {%d}} \
+		    $index]
+	}
+
+	puts $savresId "$main.data_descriptors.box configure -items { \\"
+	foreach label [$main.data_descriptors.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.data_descriptors.box curselection] {
+	    puts $savresId [format {$main.data_descriptors.box selection set {%d}} \
+		    $index]
+	}
+
+	puts $savresId "$main.fits_files.box configure -items { \\"
+	foreach label [$main.fits_files.box get 0 end] {
+	    puts $savresId [format "{%s} \\" $label]
+	}
+	puts $savresId "}"
+	foreach index [$main.fits_files.box curselection] {
+	    puts $savresId [format {$main.fits_files.box selection set {%d}} \
+		    $index]
+	}
+
+	close $savresId
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  go
+#
+#  Used as the action for the go button
+# ----------------------------------------------------------------------
+proc go {root_dir, file_list savres email_addr} {
+    global root_dir
+    global save_file
+    global xdf_modes
+    global ftpoption
+
+    if {[string length [string trim $save_file]] == 0} {
+	set save_file fits_files.xdf
+    }
+
+    exec rm -f $save_file
+ 
+    if [catch {open $save_file {WRONLY CREAT TRUNC}} fits_filesId] {
+	error "Cannot open $save_file: $fits_filesId"
+    } else {
+
+	foreach label $file_list {
+	    #puts $fits_filesId [format "%s/%s" $root_dir $label]
+	    if {[file exists $label]} {
+		puts $fits_filesId $label
+	    } elseif {[file exists $label.gz]} {
+		#exec gzip -d $label
+		puts $fits_filesId $label
+	    } else {
+		if {![string compare $ftpoption "FTP No Files"]} {
+		    lappend notfound $label
+		} else {
+		    puts $fits_filesId $label
+		}
+	    }
+	}
+
+	close $fits_filesId
+    }
+
+    if {[string compare $ftpoption "FTP No Files"]} {
+	xdf_ftp $root_dir $file_list
+    } 
+
+    if {[info exists notfound]} {
+	error "The following files weren't found: $notfound"
+    }
+	
+    # talk to xselect2, if necessary
+}
+
+
+
+
+proc makefullftppath {rel} {
+   
+    # expects a path name of the form OBSID/restofpath
+
+    set proposal P[string range $rel 0 4]
+    set AO AO[string range $rel 0 0]
+    set retfile $AO/$proposal/$rel
+    return $retfile
+}
+
+
+# ----------------------------------------------------------------------
+#  PROC:  xdf_ftp
+#
+#  Retrieve the given list of FITS files from XTE master FITS file
+#  archive
+# ----------------------------------------------------------------------
+proc xdf_ftp {root_dir file_list} {
+    global command output log but
+    
+    
+    set remote_host legacy.gsfc.nasa.gov
+    set remote_root /xte/data/archive
+    
+    foreach local_pathname $file_list {
+	#set local_pathname [format "%s/%s" $root_dir $relative_pathname]
+	set relative_pathname [string range $local_pathname \
+				   [string length $root_dir] end]
+	set relative_pathname [string trimleft $relative_pathname /]
+	if {[regexp {^[A|B]} $relative_pathname]} {
+	    # ok, we have a full path
+	} elseif {[regexp {^[0-9]} $relative_pathname]} {
+	    # ok, we have a proposal level relative path
+	    set relative_pathname [makefullftppath $relative_pathname]
+	} else {
+	    # we have a obsid level path
+	    set FMI [fits open $root_dir/FMI 0]
+	    $FMI move +1
+	    set obsid [lindex [$FMI get table obsid] 0]
+	    $FMI close
+	    set relative_pathname [makefullftppath [format "%s/%s" $obsid \
+							$relative_pathname]]
+	}
+	if {[file exists $local_pathname]} {
+		continue
+	    } elseif [file exists $local_pathname.gz] {
+		#exec gzip -d $local_pathname.gz
+		continue
+	    } else {
+		file mkdir [file dirname $local_pathname]
+		set remote_filename [format "%s/%s.gz" \
+					 /xte/data/archive $relative_pathname]
+		if {[catch {ftp_get_file $remote_host $remote_filename \
+				$local_pathname.gz}]} {
+		    if {[catch {ftp_get_file $remote_host $remote_filename \
+				    $local_pathname}]} {
+			# Try the B0 ones
+			regsub A0 $remote_filename B0 remote_filename
+			if {[catch {ftp_get_file $remote_host \
+					$remote_filename \
+					$local_pathname.gz}]} {
+			    catch {ftp_get_file $remote_host $remote_filename \
+				       $local_pathname}
+			}
+		    }
+		}   
+		
+	    }
+	if [file exists $local_pathname.gz] {
+		#exec gzip -d $local_pathname
+	    }
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  Run
+#
+#  Run a program and arrange to read its output
+# ----------------------------------------------------------------------
+proc Run {} {
+    global command output log but
+    if [catch {open "|$command"} output] {
+        $log insert end $output\n
+    } else {
+        fileevent $output readable Log
+        $log insert end $command\n
+        $but config -text Abort -command Stop
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  Log
+#
+#  Read and log the output from the program
+# ----------------------------------------------------------------------
+proc Log {} {
+    global output log
+    if [eof $output] {
+        Stop
+    } else {
+        gets $output line
+        $log insert end $line\n
+        $log see end
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  Stop
+#
+#  Stop the program and fix up the button
+# ----------------------------------------------------------------------
+proc Stop {} {
+    global output but
+    catch {close $output}
+    $but config -text "Go" -command Run
+}
+# ----------------------------------------------------------------------
+#  PROC:  restore
+#
+#  Used as the action for the restore button
+# ----------------------------------------------------------------------
+proc restore {root_dir, savres} {
+    global root_dir
+    global save_file
+    global ftpoption
+    global main
+
+    if [file exists $savres] {
+	if [catch {source $savres} errmsg] {
+	    error "Unable to restore $savres.  Error was $errmsg"
+	}
+    } else {
+	save $root_dir $savres
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  make_obslist
+#
+#  Used as the action for the make_obslist button
+# ----------------------------------------------------------------------
+proc make_obslist {root_dir} {
+    global main
+    global ftpoption 
+
+    
+    if [catch {SelectObs $root_dir [$main.strf.sources.box getcurselection] \
+		   [$main.strf.time_ranges.box getcurselection]} result] {
+        global errorInfo
+        set savedInfo $errorInfo
+        error $result $savedInfo
+    } else {
+	$main.observations.box configure -items $result
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  make_appidconfiglist
+#
+#  Used as the action for the make_appidconfiglist button
+# ----------------------------------------------------------------------
+proc make_appidconfiglist {root_dir} {
+    global main
+
+    if [catch {SelectAppIds $root_dir \
+		   [$main.observations.box getcurselection] \
+		   [$main.subappf.subsystems.box getcurselection]} result] {
+        global errorInfo
+        set savedInfo $errorInfo
+        error $result $savedInfo
+    } else {
+	$main.subappf.appids_configs.box configure -items $result
+    }
+}
+
+# ----------------------------------------------------------------------
+#  PROC:  make_filelist
+#
+#  Used as the action for the make_filelist button
+# ----------------------------------------------------------------------
+proc make_filelist {root_dir} {
+    global main
+
+    if [catch {SelectFiles $root_dir [$main.observations.box getcurselection] \
+	    [$main.subappf.subsystems.box getcurselection] \
+	    [$main.subappf.appids_configs.box getcurselection] \
+	    [$main.strf.time_ranges.box getcurselection]} result] {
+         global errorInfo
+        set savedInfo $errorInfo
+        error $result $savedInfo
+    } else {
+	$main.fits_files.box configure -items $result
+    }
+}
+
+# ----------------------------------------------------------------------
+#  Build main window...
+# ----------------------------------------------------------------------
+
+set tmain [iwidgets::scrolledframe .sf -width 930 -height 710]
+set main [.sf childsite]
+pack $tmain -fill both -expand yes
+
+frame $main.controls_1 
+frame $main.controls_2
+
+
+set helptext_xdf {XTE Data Finder
+===============
+    
+    
+Summary
+-------
+
+XDF is a tool to navigate the XTE FITS Database (XFDB).
+Its purpose is to select FITS data tables based on selection
+criteria provided by the user.
+
+The user interface consists of six 'Selection Boxes', one
+text widget, and various action buttons.
+
+
+Selection Boxes
+---------------
+
+All boxes contain four or five buttons that operate on them:
+
+Help:  Pop up help window for Selection Box.
+All:   Select all items in the Selection Box.
+None:  De-select all items in the Selection Box.
+Reset: Reset contents of Selection Box to default value.
+Edit:  (for some) Edit the contents of the Selection Box.
+
+The boxes are:
+
+1. Source List
+>>Created by the user.
+Allows the user to specify particular source names.
+Wildcard characters are accepted.
+No selection means 'no constraints'.
+
+2. Time Range List
+>>Created by the user.
+The user may specify certain time ranges in the format:
+	yyyyMMMdd at hh:mm:ss.s to yyyyMMMdd at hh:mm:ss.s
+For instance:
+	1995Apr07 at 12:00:00 to 1995JUN30 at 22:23:24
+No selection means 'no constraints'.
+
+3. Subsystem List
+>>User selects from a fixed list.
+Allows the user to select one or more from the list of
+15 XTE subsystems.
+No selection means 'all'.
+
+4. Observation List
+>>Created by action button.
+Observations are selected from the database on the basis
+of the selection criteria currently set by the Source List
+and the Time Range List.
+The user _has_ to select one or more items from this list.
+
+5. AppId/Configuration List
+>>Created by action button.
+AppIds (spacecraft data sources) and, for the science data,
+data modes and configurations are selected from the
+database on the basis of the selection criteria currently
+set by the Observation List and the Subsystem List.
+The user _has_ to select one or more items from this list.
+
+6. FITS File List
+>>Created by action button.
+FITS data table files are selected from the database on the
+basis of the selection criteria currently set by the
+Observation List, the Subsystem List,
+the AppId/Configuration List, and the Time Range List.
+Files may be selected and their names saved in the file
+./fits_files.xdf.  If none are selected, the Save FileList
+action will save all names in the list.
+This is, at the moment, the end product of XDF.
+
+
+Directions for Use
+------------------
+
+1. Set the path to the top of the database.
+
+2. Set source name selection (if any).
+
+3. Set time range selection (if any).
+
+4. Press action button to make Observation List.
+
+5. Select observations.
+
+6. Set subsystem selection (if any).
+
+7. Press action button to make AppId/Configuration List
+
+8. Select AppId/Configuration combinations.
+
+9. Adjust observation, time range, subsystem selection, if
+   desired.  Only additional restrictions will have effect!
+
+10.Press action button to make File List.
+
+11.Select files and press action button to save their names.
+
+
+The Button Bar
+--------------
+
+Reset
+Reset the contents of all boxes to their default values.
+
+Save
+Save the current contents and state of all boxes.
+
+Restore
+Restore the contents and state of all boxes as it was last
+saved.
+
+Make ObsList
+Construct the list of observations on the basis of source
+names and time ranges.
+
+Make AppIdConfigList
+Construct the list of AppIds and Configurations on the basis
+of the selected observations and subsystems.
+
+Make FileList
+Construct the list of FITS data files on the basis of the
+selected observations, subsystems, AppId/configurations
+combinations, and time ranges.
+
+Save FileList
+Save the names of selected files (all if none selected) in
+the file ./fits_files.xdf.
+
+Help
+Display this text.
+
+Path
+The (file system) path to the XFDB Master Index that is to
+be used.
+
+Quit
+Exit XDF.  The contents and state of all boxes is saved
+before exiting.  This is automatically restored at the next
+execution.
+}
+
+iwidgets::pushbutton $main.controls_2.help -text "Help" -command { \
+	help Main $helptext_xdf \
+    }
+
+label $main.controls_2.path -text "Path:" -relief flat -borderwidth 2 -padx 5
+
+entry $main.controls_2.pname -bg white -fg black -relief sunken \
+    -textvariable root_dir -width 30
+#entryfield $main.controls_1.pname -bg white -fg black -relief sunken -textvariable root_dir \
+	-width 64
+
+label $main.controls_2.file -text "File Name:" -relief flat -borderwidth 2 -padx 5
+
+entry $main.controls_2.fname -bg white -fg black -relief sunken \
+    -textvariable save_file -width 30
+bind $main.controls_2.fname <Return> {string trim $save_file \015}
+
+iwidgets::combobox $main.controls_2.ftp \
+    -items {"FTP No Files" "FTP Data Files" "FTP Any Files"} \
+    -textvariable ftpoption -editable false
+
+set ftpoption "FTP No Files"
+
+
+iwidgets::pushbutton $main.controls_1.reset -text "Reset" -command {
+	$main.strf.sources.box configure -items $sources;
+	$main.strf.time_ranges.box configure -items $time_ranges;
+	$main.observations.box configure -items "";
+	$main.subappf.subsystems.box configure -items $subsystems;
+	$main.subappf.appids_configs.box configure -items "";
+	$main.data_descriptors.box configure -items "";
+	$main.fits_files.box configure -items "";
+        set root_dir $default_fmi_path
+    }
+
+iwidgets::pushbutton $main.controls_1.save -text "Save" -command {save $root_dir $savres}
+
+iwidgets::pushbutton $main.controls_1.restore -text "Restore" -command {restore $root_dir $savres}
+
+iwidgets::pushbutton $main.controls_1.make_obslist -text "Make ObsList" \
+    -command {make_obslist $root_dir}
+
+iwidgets::pushbutton $main.controls_1.make_appidconfiglist \
+    -text "Make AppIdConfigList" -command {make_appidconfiglist $root_dir}
+
+iwidgets::pushbutton $main.controls_1.make_filelist -text "Make FileList" \
+    -command {make_filelist $root_dir}
+
+iwidgets::pushbutton $main.controls_1.go -text "Save Filelist" -command { \
+        set file_list [$main.fits_files.box getcurselection]
+	if {$file_list == ""} {
+	    set file_list [$main.fits_files.box get 0 end]
+	}
+
+        go $root_dir $file_list $savres $email_addr
+        }
+
+iwidgets::pushbutton $main.controls_2.quit -text "Quit" -command {save $root_dir $savres; exit}
+
+# -borderwidth 5
+pack $main.controls_1 -side top -expand yes -fill both
+pack $main.controls_1.reset -side left -padx 1 -anchor nw
+pack $main.controls_1.save -side left -padx 1 -anchor nw
+pack $main.controls_1.restore -side left -padx 1 -anchor nw
+pack $main.controls_1.make_obslist -side left -padx 1 -anchor nw
+pack $main.controls_1.make_appidconfiglist -side left -padx 1 -anchor nw
+pack $main.controls_1.make_filelist -side left -padx 1 -anchor nw
+pack $main.controls_1.go -side left -padx 1 -expand yes -anchor nw
+
+
+pack $main.controls_2 -side top -expand yes -fill both
+pack $main.controls_2.help -side left -padx 1
+pack $main.controls_2.ftp -side left -padx 1
+pack $main.controls_2.path -side left -padx 0
+pack $main.controls_2.pname -side left -padx 1
+pack $main.controls_2.file -side left -padx 0
+pack $main.controls_2.fname -side left -padx 1
+pack $main.controls_2.quit -side left -padx 1
+
+
+#wm withdraw .
+
+# frame to hold the sources and time ranges
+
+frame $main.strf
+
+# frame to hold the subsystems and appid 
+
+frame $main.subappf
+
+# ----------------------------------------------------------------------
+#  Make a editable XdfBox for source names...
+# ----------------------------------------------------------------------
+set title "Sources"
+
+set sources [list {*}]
+
+set sources_all_none 0
+
+set helptext {$helptext_sources}
+set helptext_sources {"Source List
+
+Creation:
+Created by the user.
+
+Description:
+Allows the user to specify particular source names.
+Wildcard characters are accepted.
+
+Default action:
+No selection means 'no constraints'.
+"}
+
+frame $main.strf.sources -relief raised
+
+label $main.strf.sources.label -text $title -relief ridge 
+#-borderwidth 5
+
+frame $main.strf.sources.selection -relief sunken
+
+iwidgets::scrolledlistbox $main.strf.sources.box -items $sources \
+    -selectmode multiple -selectbackground lightblue \
+    -vscrollmode static -hscrollmode dynamic \
+    -width 450 -height 80 \
+    -exportselection false
+
+$main.strf.sources.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.strf.sources.box.help -text Help \
+    -borderwidth 1 -defaultring yes	-width 5 \
+    -command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.strf.sources.box.all_none -text All/None \
+    -borderwidth 1 -defaultring yes -width 5 \
+    -command {
+	if {$sources_all_none == 0} {
+	    $main.strf.sources.box selection set 0 end
+	    set sources_all_none 1
+	} else {
+	    $main.strf.sources.box configure -items [$main.strf.sources.box get 0 end]
+	    set sources_all_none 0
+	}
+    }
+
+iwidgets::pushbutton $main.strf.sources.box.reset -text Reset \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command "$main.strf.sources.box configure -items $sources"
+
+iwidgets::pushbutton $main.strf.sources.box.edit -text Edit \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {$main.strf.sources.box configure -items [edit Sources \
+		[$main.strf.sources.box get 0 end]]}
+
+pack $main.strf.sources -expand yes -fill both -expand yes -side left
+pack $main.strf.sources.selection -side top -fill x -expand yes
+pack $main.strf.sources.label -side top -fill x -expand yes
+pack $main.strf.sources.box -side top -expand yes -fill both
+pack $main.strf -expand yes -fill both
+
+pack $main.strf.sources.box -side bottom -anchor s -expand yes -fill both
+pack $main.strf.sources.box.help -side left -expand yes -fill both
+pack $main.strf.sources.box.all_none -side left -expand yes -fill both
+pack $main.strf.sources.box.reset -side left -expand yes -fill both
+pack $main.strf.sources.box.edit -side left -expand yes -fill both
+
+
+# ----------------------------------------------------------------------
+#  Make a editable XdfBox for time ranges...
+# ----------------------------------------------------------------------
+set title "Time Ranges"
+
+set time_ranges [list {1994JAN01 at 00:00:00.0 to 2010JAN01 at 23:59:59.9}]
+
+set time_ranges_all_none 0
+
+set helptext {$helptext_time_ranges}
+set helptext_time_ranges {"Time Range List
+
+Creation:
+Created by the user.
+
+Description:
+The user may specify certain time ranges in the format:
+	yyyyMMMdd at hh:mm:ss.s to yyyyMMMdd at hh:mm:ss.s
+For instance:
+	1995Apr07 at 12:00:00 to 1995JUN30 at 22:23:24
+
+Default action:
+No selection means 'no constraints'.
+"}
+
+frame $main.strf.time_ranges -relief raised
+
+label $main.strf.time_ranges.label -text $title -relief ridge 
+#-borderwidth 5
+
+frame $main.strf.time_ranges.selection -relief sunken 
+#-borderwidth 5 -relief sunken
+
+iwidgets::scrolledlistbox $main.strf.time_ranges.box -items $time_ranges \
+	-selectmode multiple -selectbackground lightblue \
+        -vscrollmode static -hscrollmode dynamic \
+	-width 450 -height 80 \
+	-exportselection false
+
+$main.strf.time_ranges.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.strf.time_ranges.box.help -text Help \
+	-borderwidth 1 -defaultring yes	-width 5 \
+	-command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.strf.time_ranges.box.all_none -text All/None \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {
+		if {$time_ranges_all_none == 0} {
+			$main.strf.time_ranges.box selection set 0 end
+			set time_ranges_all_none 1
+		} else {
+			$main.strf.time_ranges.box configure -items \
+				[$main.strf.time_ranges.box get 0 end]
+			set time_ranges_all_none 0
+		}
+	}
+
+iwidgets::pushbutton $main.strf.time_ranges.box.reset -text Reset \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command "$main.strf.time_ranges.box configure -items {$time_ranges}"
+
+iwidgets::pushbutton $main.strf.time_ranges.box.edit -text Edit \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {$main.strf.time_ranges.box configure -items \
+		[edit "Time Ranges" [$main.strf.time_ranges.box get 0 end]]}
+
+pack $main.strf.time_ranges  -expand yes -fill both -side right
+pack $main.strf.time_ranges.label -side top -fill x -expand yes
+pack $main.strf.time_ranges.selection -side top -fill x -expand yes
+pack $main.strf.time_ranges.box -side top -expand yes -fill both
+
+pack $main.strf.time_ranges.box.help -side left -expand yes -fill both
+pack $main.strf.time_ranges.box.all_none -side left -expand yes -fill  both
+pack $main.strf.time_ranges.box.reset -side left -expand yes -fill both
+pack $main.strf.time_ranges.box.edit -side left -expand yes -fill both
+
+
+
+# ----------------------------------------------------------------------
+#  Make a de-selection box for observations...
+# ----------------------------------------------------------------------
+set title "Observations"
+
+set observations [list \
+]
+set observations_all_none 0
+
+set helptext {$helptext_observations}
+set helptext_observations {"Observation List
+
+Creation:
+Created by action button.
+
+Description:
+Observations are selected from the database on the basis
+of the selection criteria currently set by the Source List
+and the Time Range List.
+
+Default action:
+The user _has_ to select one or more items from this list.
+"}
+
+frame $main.observations -relief raised
+
+label $main.observations.label -text $title -relief ridge 
+#-borderwidth 5
+
+frame $main.observations.selection -relief sunken 
+#-borderwidth 5 -relief sunken
+
+iwidgets::scrolledlistbox $main.observations.box -items $observations \
+	-selectmode multiple -selectbackground lightblue \
+        -vscrollmode static -hscrollmode dynamic \
+	-width 50 -height 80 \
+	-exportselection false
+
+$main.observations.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.observations.box.help -text Help \
+	-borderwidth 1 -defaultring yes	-width 5 \
+	-command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.observations.box.all_none -text All/None \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {
+		if {$observations_all_none == 0} {
+			$main.observations.box selection set 0 end
+			set observations_all_none 1
+		} else {
+			$main.observations.box configure -items \
+			    [$main.observations.box get 0 end]
+			set observations_all_none 0
+		}
+	}
+
+iwidgets::pushbutton $main.observations.box.reset -text Reset \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command "$main.observations.box configure -items {$observations}"
+
+pack $main.observations -fill both -expand yes -side top
+pack $main.observations.label -side top -fill x -expand yes
+pack $main.observations.selection -side top -fill x -expand yes
+pack $main.observations.box -side top -expand yes -fill both
+
+pack $main.observations.box -fill both -expand yes
+pack $main.observations.box.help -side left -expand yes -fill both 
+pack $main.observations.box.all_none -side left -expand yes -fill both 
+pack $main.observations.box.reset -side left -expand yes -fill both
+
+# ----------------------------------------------------------------------
+#  Make a de-selection box for subsystem names...
+# ----------------------------------------------------------------------
+set title "Subsystems"
+
+set subsystems [list {01 PCA} {02 HEXTE} {03 EDS} {04 ACS} {05 ACE} {06 FDS} \
+{07 GSACE} {08 IPSDU} {09 SPSDU} {10 PSE} {11 IFOG} {12 Orbit Emphemeris} \
+{13 Clock} {14 Calibration} {15 Standard Products} \
+]
+set subsystems_all_none 0
+
+set helptext {$helptext_subsystems}
+set helptext_subsystems {"Subsystem List
+
+Creation:
+User selects from a fixed list.
+
+Description:
+Allows the user to select one or more from the list of
+15 XTE subsystems.
+
+Default action:
+No selection means 'all'.
+"}
+
+frame $main.subappf.subsystems -relief raised
+
+label $main.subappf.subsystems.label -text $title -relief ridge 
+#-borderwidth 5
+
+frame $main.subappf.subsystems.selection -relief sunken 
+#-borderwidth 5 -relief sunken	
+
+iwidgets::scrolledlistbox $main.subappf.subsystems.box -items $subsystems \
+	-selectmode multiple -selectbackground lightblue \
+        -vscrollmode static -hscrollmode dynamic \
+	-width 50 -height 80 \
+	-exportselection false
+
+#	-selectioncommand "update_item_selection $main.subappf.subsystems.selection "
+
+$main.subappf.subsystems.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.subappf.subsystems.box.help -text Help \
+	-borderwidth 1 -defaultring yes	-width 5 \
+	-command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.subappf.subsystems.box.all_none -text All/None \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {
+		if {$subsystems_all_none == 0} {
+			$main.subappf.subsystems.box selection set 0 end
+			set subsystems_all_none 1
+		} else {
+			$main.subappf.subsystems.box configure -items $subsystems
+			set subsystems_all_none 0
+		}
+	}
+
+iwidgets::pushbutton $main.subappf.subsystems.box.reset -text Reset \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command "$main.subappf.subsystems.box configure -items {$subsystems}"
+
+pack $main.subappf -fill both -expand yes -side top
+pack $main.subappf.subsystems -fill both -expand yes -side left
+pack $main.subappf.subsystems.label -side top -fill x -expand yes
+pack $main.subappf.subsystems.selection -side top -fill x -expand yes
+pack $main.subappf.subsystems.box -side top -expand yes -fill both
+
+pack $main.subappf.subsystems.box -fill both -expand yes
+pack $main.subappf.subsystems.box.help -side left -expand yes -fill both 
+pack $main.subappf.subsystems.box.all_none -side left -expand yes -fill both 
+pack $main.subappf.subsystems.box.reset -side left -expand yes -fill both
+
+# ----------------------------------------------------------------------
+#  Make a de-selection box for appids and configs...
+# ----------------------------------------------------------------------
+set title "AppIds/Configurations"
+
+set appids_configs [list \
+]
+set appids_configs_all_none 0
+
+set helptext {$helptext_appids_configs}
+
+set helptext_appids_configs {"AppId/Configuration List
+
+Creation:
+Created by action button.
+
+Description:
+AppIds (spacecraft data sources) and, for the science data,
+data modes and configurations are selected from the
+database on the basis of the selection criteria currently
+set by the Observation List and the Subsystem List.
+
+Default action:
+The user _has_ to select one or more items from this list."}
+
+frame $main.subappf.appids_configs -relief raised
+label $main.subappf.appids_configs.label -text $title -relief ridge 
+
+#-borderwidth 5
+
+frame $main.subappf.appids_configs.selection -relief sunken
+
+
+iwidgets::scrolledlistbox $main.subappf.appids_configs.box -items $appids_configs \
+	-selectmode multiple -selectbackground lightblue \
+        -vscrollmode static -hscrollmode dynamic \
+	-width 50 -height 80 \
+	-exportselection false
+
+$main.subappf.appids_configs.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.subappf.appids_configs.box.help -text Help \
+	-borderwidth 1 -defaultring yes	-width 5 \
+	-command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.subappf.appids_configs.box.all_none -text All/None \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {
+		if {$appids_configs_all_none == 0} {
+			$main.subappf.appids_configs.box selection set 0 end
+			set appids_configs_all_none 1
+		} else {
+			$main.subappf.appids_configs.box configure -items \
+                            [$main.subappf.appids_configs.box get 0 end]
+			set appids_configs_all_none 0
+		}
+	}
+
+iwidgets::pushbutton $main.subappf.appids_configs.box.reset -text Reset \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command "$main.subappf.appids_configs.box configure -items {$appids_configs}"
+
+pack $main.subappf.appids_configs -expand yes -fill both -side right
+pack $main.subappf.appids_configs.label -side top -fill x -expand yes
+pack $main.subappf.appids_configs.selection -side top -fill x -expand yes
+pack $main.subappf.appids_configs.box -side top -expand yes -fill both
+
+pack $main.subappf.appids_configs.box -expand yes -fill both
+pack $main.subappf.appids_configs.box.help -side left -expand yes -fill both 
+pack $main.subappf.appids_configs.box.all_none -side left -expand yes -fill both 
+pack $main.subappf.appids_configs.box.reset -side left -expand yes -fill both
+
+
+# ----------------------------------------------------------------------
+#  Make a de-selection box for data descriptors
+# ----------------------------------------------------------------------
+set title "Data Descriptors"
+
+set data_descriptors [list \
+]
+set data_descriptors_all_none 0
+
+set helptext {$helptext_data_descriptors}
+set helptext_data_descriptors {"
+"}
+
+frame $main.data_descriptors -relief raised
+
+label $main.data_descriptors.label -text $title -relief ridge 
+
+frame $main.data_descriptors.selection -relief sunken
+
+iwidgets::scrolledlistbox $main.data_descriptors.box -items $data_descriptors \
+	-selectmode multiple -selectbackground lightblue \
+        -vscrollmode static -hscrollmode dynamic \
+	-width 50 -height 80 \
+	-exportselection false
+
+$main.data_descriptors.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.data_descriptors.box.help -text Help \
+	-borderwidth 1 -defaultring yes	-width 5 \
+	-command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.data_descriptors.box.all_none -text All/None \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command {
+		if {$data_descriptors_all_none == 0} {
+			$main.data_descriptors.box selection set 0 end
+			set data_descriptors_all_none 1
+		} else {
+			$main.data_descriptors.box configure \
+			    -items $data_descriptors
+			set data_descriptors_all_none 0
+		}
+	}
+
+iwidgets::pushbutton $main.data_descriptors.box.reset -text Reset \
+	-borderwidth 1 -defaultring yes -width 5 \
+	-command "$main.data_descriptors.box configure -items {$data_descriptors}"
+
+#pack $main.data_descriptors  -fill both -expand yes -side bottom
+#pack $main.data_descriptors.label -side top -fill x -expand yes
+#pack $main.data_descriptors.selection -side top -fill x -expand yes
+#pack $main.data_descriptors.box -side top -expand yes -fill both
+
+#pack $main.data_descriptors.box -fill both -expand yes
+#pack $main.data_descriptors.box.help -side left -expand yes -fill both 
+#pack $main.data_descriptors.box.all_none -side left -expand yes -fill both 
+#pack $main.data_descriptors.box.reset -side left -expand yes -fill both
+
+# ----------------------------------------------------------------------
+#  Make a de-selection box for FITS files
+# ----------------------------------------------------------------------
+set title "FITS Files"
+
+set fits_files [list \
+]
+set fits_files_all_none 0
+
+set helptext {$helptext_fits_files}
+set helptext_fits_files {"FITS File List
+
+Creation:
+Created by action button.
+
+Description:
+FITS data table files are selected from the database on the
+basis of the selection criteria currently set by the
+Observation List, the Subsystem List, the
+AppId/Configuration List, and the Time Range List.
+Files may be selected and their names saved in the file
+./fits_files.xdf.  If none are selected, the Save FileList
+action will save all names in the list.
+
+Default action:
+No selection means 'all'.
+"}
+
+frame $main.fits_files -relief raised
+
+label $main.fits_files.label -text $title -relief ridge
+
+frame $main.fits_files.selection -relief sunken
+
+iwidgets::scrolledlistbox $main.fits_files.box -items $fits_files \
+	-selectmode multiple -selectbackground lightblue \
+        -vscrollmode static -hscrollmode dynamic \
+	-width 50 -height 80 \
+	-exportselection false
+
+$main.fits_files.box configure -selectbackground lightblue
+
+iwidgets::pushbutton $main.fits_files.box.help -text Help \
+    -borderwidth 1 -defaultring yes	-width 5 \
+    -command "help {$title} $helptext"
+
+iwidgets::pushbutton $main.fits_files.box.all_none -text All/None \
+    -borderwidth 1 -defaultring yes -width 5 \
+    -command {
+	if {$fits_files_all_none == 0} {
+	    $main.fits_files.box selection set 0 end
+	    set fits_files_all_none 1
+	} else {
+	    $main.fits_files.box configure -items \
+		[$main.fits_files.box get 0 end]
+	    set fits_files_all_none 0
+	}
+    }
+
+iwidgets::pushbutton $main.fits_files.box.reset -text Reset \
+    -borderwidth 1 -defaultring yes -width 5 \
+    -command "$main.fits_files.box configure -items {$fits_files}"
+
+pack $main.fits_files -side bottom -expand yes -fill both
+pack $main.fits_files.label -side top -fill x -expand yes
+pack $main.fits_files.selection -side top -fill x -expand yes
+pack $main.fits_files.box -side top -expand yes -fill both
+
+pack $main.fits_files.box -expand yes -fill both
+pack $main.fits_files.box.help -side left -expand yes -fill both 
+pack $main.fits_files.box.all_none -side left -expand yes -fill both 
+pack $main.fits_files.box.reset -side left -expand yes -fill both
+
+
+# ----------------------------------------------------------------------
+#  Pack into main window
+# ----------------------------------------------------------------------
+wm title . "XTE Data Finder"
+
+frame $main.boxes_1 
+#-borderwidth 5
+lower $main.boxes_1
+#pack $main.boxes_1 
+#pack $main.strf.sources -side left -expand yes -fill both 
+#pack $main.strf.time_ranges -side right -expand yes -fill both
+#pack $main.strf -side top
+
+frame $main.boxes_2 
+#-borderwidth 5
+lower $main.boxes_2
+#pack $main.boxes_2 
+#pack $main.observations -side left -expand yes -fill both
+
+frame $main.boxes_3 
+#-borderwidth 5
+lower $main.boxes_3
+#pack $main.boxes_3 
+#pack $main.subappf.subsystems -side left -expand yes -fill both 
+#pack $main.subappf.appids_configs -side left -expand yes -fill both
+
+frame $main.boxes_4 
+#-borderwidth 5
+lower $main.boxes_4
+#pack $main.boxes_4 
+#pack $main.data_descriptors -side left -expand yes -fill both
+
+frame $main.boxes_5 
+#-borderwidth 5
+lower $main.boxes_5
+#pack $main.boxes_5 
+#pack $main.fits_files -side left -expand yes -fill both
+
+#pack $main 
+#pack $main.controls_1 -side top -expand yes -fill both 
+#pack $main.controls_2 -side top -expand yes -fill both 
+#pack $main.boxes_1 -side top -expand yes -fill both 
+#pack $main.boxes_2 -side top -expand yes -fill both 
+#pack $main.boxes_3 -side top -expand yes -fill both 
+#pack $main.boxes_5 -side top -fill x
+
+
+#	$main.boxes_4 -side top -expand yes -fill both \
+
+wm min . 0 0
+
+restore $root_dir $savres
+if {$xdf_modes(xselect2)} {
+	set root_dir $xdf_modes(xselect2_path)
+}
+
+
+proc get_master_fmi {outfile} {
+
+    global get_master_fmi_variable
+
+    set get_master_fmi_variable 0
+
+    set t [toplevel .getfmi]
+    wm title $t "Get Master FMI File?"
+    set tf [frame $t.f -relief ridge]
+    set tfm [message $tf.msg -justify center -text \
+            "Do you want to get the Master FMI file from the HEASARC FTP site and put it in the file $outfile?"]
+    pack $tf -side top -fill both -expand yes
+    pack $tfm -fill both -expand yes
+    set bf [frame $t.f1]
+    pack $bf -side bottom
+    set tb [button $bf.ok -text Ok -command "set get_master_fmi_variable 1"]
+    pack $tb -side left
+    set fb [button $bf.cancel -text Cancel -command \
+		"set get_master_fmi_variable 0"]
+    pack $fb -side right
+    tkwait variable get_master_fmi_variable
+    destroy $t
+    if {$get_master_fmi_variable} {
+	ftp_get_file legacy.gsfc.nasa.gov /xte/data/archive/FMI $outfile
+    }
+    return $get_master_fmi_variable
+}
+
+proc ftp_get_file {site file args} {
+    global data_sock data ftp_sock ftp_file
+    set data_sock 0
+
+    updatestatuslog "ftp_get_file called with site $site"
+    updatestatuslog "   file $file"
+    updatestatuslog "   and args $args"
+
+    set ftp_file $file
+
+    if {[string length $args] != 0} {
+	set filename $args
+    } else {
+	set filename [file tail $file]
+    }
+    
+    updatestatuslog \
+	"Getting $file from $site and putting it in $filename"
+
+    file mkdir [file dirname $filename]
+    
+
+    updatestatuslog "Establishing FTP connection ..."
+
+    set ftp_sock [socket $site ftp]
+    fconfigure $ftp_sock -blocking 0 -buffering none
+    fileevent $ftp_sock readable ftp_read_line
+
+    set reslt [ftp_read]
+    if {$reslt > 3} {
+	return
+    }
+
+    updatestatuslog "Logging in ..."
+
+    puts $ftp_sock "USER anonymous"
+    set reslt [ftp_read]
+    if {$reslt > 3} {
+	return
+    }
+
+    puts $ftp_sock "PASS dah@"
+    set reslt [ftp_read]
+    if {$reslt > 3} {
+	return
+    }
+
+    updatestatuslog "Setting up for transfer ..."
+
+    puts $ftp_sock "TYPE I"
+    set reslt [ftp_read]
+    if {$reslt > 3} {
+	return
+    }
+
+    updatestatuslog "Opening server port ..."
+
+    #set serv_port 62785
+    set serv_sock [socket -server notify_connect 0]
+
+    updatestatuslog "Setting up to retrieve file ..."
+    
+    set hostip [lindex [fconfigure $ftp_sock -sockname] 0]
+    set serv_port [lindex [fconfigure $serv_sock -sockname] 2]
+    set serv_up [expr "int($serv_port/256)"]
+    set serv_lw [expr "$serv_port-$serv_up*256"]
+    regsub -all {\.} $hostip "," hostip
+
+    puts $ftp_sock "PORT $hostip,$serv_up,$serv_lw"
+    set reslt [ftp_read]
+    if {$reslt > 3} {
+	close $serv_sock
+	return
+    }
+
+
+    puts $ftp_sock "RETR $file"
+
+    set reslt [ftp_read]
+    if {$reslt > 3} {
+	close $serv_sock
+	return
+    }
+
+    updatestatuslog "Retrieving file ..."
+
+    set outf [open $filename w]
+    fconfigure $outf -translation binary
+    fconfigure $data_sock -translation binary
+
+    while { ! [eof $data_sock] } {
+	xdfbcopy $data_sock $outf 1024
+    }
+
+    close $outf
+
+    if { $reslt == 1 } {
+	set reslt [ftp_read]
+	if {$reslt > 3} {
+	    close $serv_sock
+	    close $data_sock
+	    return
+	}
+    }
+
+    updatestatuslog "Closing connection ..."
+
+    puts $ftp_sock "QUIT"
+    set reslt [ftp_read]
+
+    close $serv_sock
+    close $data_sock
+
+    #wm deiconfiy .
+
+    return $filename
+} 
+
+
+
+proc ftp_read_line {} {
+    global ftp_line ftp_sock read_code ftp_file
+
+    #  puts "Beginning ..."
+    
+    set read_code 0
+    set count 0
+    
+    #  puts "Reading ..."
+    
+    while { [gets $ftp_sock ftp_line] == -1 && [fblocked $ftp_sock]} {
+	
+	#    puts "Retrying ..."
+	
+	after 1000
+	incr count
+	if { $count >= 120 } {
+	    set read_code 10
+	    close $ftp_sock
+	    error "FTP connection timed out (in ftp_read_line)."
+	    return
+	}
+    }
+    
+    #  puts "Printing .."
+    
+    updatestatuslog  $ftp_line
+    
+    #  puts "Testing ..."
+    
+    if [eof $ftp_sock] { 
+	close $ftp_sock 
+	set read_code 11
+    }
+    
+    if [regexp {^[0-9][0-9][0-9] } $ftp_line] {
+	set read_code [string index $ftp_line 0]
+	if {$read_code > 3} {
+	    close $ftp_sock
+	    error "Getting file $ftp_file"
+	}
+    }
+    
+    #  puts "End ..."
+    return
+}
+
+proc ftp_read {} {
+    global ftp_line ftp_sock read_code
+    while {1} { 
+	set read_code -1
+	
+	set count 0
+	update
+	while { $read_code == -1 } {
+	    after 1000
+	    incr count
+	    if { $count >= 120 } {
+		puts stderr "FTP connection timed out (in ftp_read)."
+		close $ftp_sock
+		return 10
+	    }
+	    update
+	}
+	
+	if {$read_code > 0} {
+	    return $read_code
+	}
+    }
+}
+
+
+proc notify_connect {sock addr port} {
+    global data_sock
+    set data_sock $sock
+    return
+}
+
+proc updatestatuslog {str} {
+
+    if {[winfo exist .ftpgetfile]} {
+	set getfile .ftpgetfile
+	set statuslog $getfile.status.text
+    } else {
+	set getfile [toplevel .ftpgetfile]
+	wm title $getfile "XDF FTP files"
+	frame $getfile.status -relief ridge
+	set statuslog [scrolledtext $getfile.status.text]
+	pack $getfile.status
+	pack $statuslog
+    }
+
+    wm deiconify $getfile
+
+    $statuslog insert end "$str\n"
+    $statuslog see end
+}
+
+

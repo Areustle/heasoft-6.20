@@ -1,0 +1,517 @@
+#!/usr/bin/perl
+##!/usr1/local/bin/perl
+use Getopt::Std;
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+gisxspec 
+
+EOHELP
+exit 0;
+}
+
+
+ $g2elist =0;
+ $g3elist =0;
+ $ra =0;
+ $dec =0;
+ $radius =0;
+ $bin =0;
+ $tmpimgfile =0;
+ $tmpimgfile1 =0;
+ $tmpimgfile2 =0;
+ $srcreg =0;
+ $backreg =0;
+ $xcol=0;
+ $ycol=0;
+ $eventsfile=0;
+ $srcpha =0;
+ $backpha =0;
+ $srcarf =0;
+ $srcrmf =0;
+ $g2srcpha =0;
+ $g2backpha =0;
+ $g3srcpha =0;
+ $g3backpha =0;
+ $g2srcarf =0;
+ $g2srcrmf =0;
+ $g3srcarf =0;
+ $g3srcrmf =0;
+ $device =0;
+ $timeout=0;
+ $case =0;
+exit headas_main(\&gisxspec);
+
+sub gisxspec {
+
+ my $tname ="gisxspec";
+ my $tvers ="1.0";
+
+ 
+
+ &gisxspec_getpar();
+
+ $status = &gisxspec_work();
+
+}
+
+
+sub gisxspec_work {
+  my $return_value;
+
+  $| =1;
+  
+  @elist = split(/;|,| /,$g2elist);
+  @elist1 = split(/;|,| /,$g3elist);
+
+  if ( ($elist[0] =~ /^-$/) && ($elist1[0] =~ /^-$/) ) {
+       $case =3;
+  } elsif ( $elist[0] =~ /^-$/) {
+       $case =1;
+  } elsif ( $elist1[0] =~ /^-$/) {
+       $case =2;
+  } else {
+       $case =0;
+  }
+  
+
+
+  if ( $case == 0 || $case == 2) { 
+  system("fkeypar '$elist[0]\[events\]' 'PHA_BINS'"); 
+  $bin0 = `pquery fkeypar value`;
+  foreach $file (@elist) {
+     system("fkeypar '$file\[events\]' 'PHA_BINS'"); 
+     $bin1 = `pquery fkeypar value`;
+     if ($bin1 !=$bin0 ) {
+      print "Error:PHA_BINS are not the same, only the same PHA_BINS can be combined\n";
+      exit 1;
+     }
+  }
+
+  } else {
+      $bin0 =-1;
+  }
+
+  if ( $case == 0 || $case == 1) { 
+    if ( $bin0 ==-1 ) {
+      system("fkeypar '$elist1[0]\[events\]' 'PHA_BINS'");
+      $bin0 = `pquery fkeypar value`;
+    }
+     
+  foreach $file (@elist1) {
+     system("fkeypar '$file\[events\]' 'PHA_BINS'"); 
+     $bin1 = `pquery fkeypar value`;
+     if ($bin1 !=$bin0 ) {
+      print "Error:PHA_BINS are not the same, only same the PHA_BINS can be combined\n";
+      exit 1;
+     }
+  }
+  }
+
+
+
+  if ( $case == 3) {
+    exit(0);
+  }
+
+
+  if ( $case ==0 ) {  
+  	$infile = sprintf "%s[bin $xcol=%d, $ycol=%d]",$elist[0],$bin,$bin;
+  	print "Bin '$infile' \n";
+  	$return_value =`fcopy '$infile' '$tmpimgfile'`;
+  	if ( $return_value ) {
+      	exit $return_value;
+  	}
+
+  	$infile = sprintf "%s[bin $xcol=%d, $ycol=%d]",$elist1[0],$bin,$bin;
+  	print "Bin '$infile' \n";
+  	$return_value =`fcopy '$infile' '$tmpimgfile1'`;
+  	if ( $return_value ) {
+      	exit $return_value;
+  	}
+  	if ( $tmpimgfile =~/^!/ ) {
+      	$tmpimgfile =substr($tmpimgfile,1);
+  	} 
+  	if ( $tmpimgfile1 =~/^!/ ) {
+      	$tmpimgfile1 =substr($tmpimgfile1,1);
+  	} 
+  	system("farith $tmpimgfile $tmpimgfile1 $tmpimgfile2 ADD");
+  	$tmpimgfile =$tmpimgfile2;
+  } elsif ($case ==1 ) {
+  	$infile = sprintf "%s[bin $xcol=%d, $ycol=%d]",$elist1[0],$bin,$bin;
+  	print "Bin '$infile' \n";
+  	$return_value =`fcopy '$infile' '$tmpimgfile'`;
+  	if ( $return_value ) {
+      	exit $return_value;
+  	}
+  } else {
+  	$infile = sprintf "%s[bin $xcol=%d, $ycol=%d]",$elist[0],$bin,$bin;
+  	print "Bin '$infile' \n";
+  	$return_value =`fcopy '$infile' '$tmpimgfile'`;
+  	if ( $return_value ) {
+      	exit $return_value;
+  	}
+  }
+ 
+
+  
+
+  if ( $tmpimgfile =~/^!/ ) {
+      $tmpimgfile1 =substr($tmpimgfile,1);
+  } else {
+      $tmpimgfile1 =$tmpimgfile;
+  }
+
+  if ( !(-e $tmpimgfile1) ) {
+       exit 1;
+  }
+
+
+
+  print "Select the source and background regions......\n";
+
+  if ( -e $srcreg ) {
+     system ("rm -rf $srcreg");
+  }
+  if ( -e $g2srcpha ) {
+     system ("rm -rf $g2srcpha");
+  }
+  if ( -e $g2backreg ) {
+       system("rm -f $g2backreg");
+  }
+  if ( -e $g2backpha ) {
+       system("rm -f $g2backpha");
+  }
+  if ( -e $srcrmf ) {
+       system("rm -f $srcrmf");
+  }
+  
+
+  $return_value= `make2region '$tmpimgfile1' '$srcreg'  '$backreg' ra=$ra dec=$dec radius=$radius timeout=$timeout`;
+
+
+
+      $xpa_user =$ENV{XPA_USER};
+      $helpdir = $ENV{LHEA_HELP};
+
+      if ( !(defined $xpa_user) || $xpa_user eq "") {
+          $pow = "pow";
+          $heraXPA = "heraXPA";
+
+      } else {
+          $pow ="pow_$xpa_user";
+          $heraXPA = "heraXPA_$xpa_user";
+      }
+      $result = `xpaget xpans`;
+
+      if ($result !~ /heraXPA/) {
+          $heraXPA = $pow;
+      }
+
+
+  if ( !(-e $srcreg) ) {
+      print "Error:source region file has not been saved!\n";
+      exit 1;
+  }
+
+
+  print "Select region done\n";
+  
+ 
+          
+
+  open FD,">comfile.xco";
+  print FD "\n";
+  print FD "set datadir ./\n";
+  foreach $file (@elist) {
+     @tmplist =  split(/\//,$file);
+     $file =$tmplist[$#tmplist];
+  print FD "read events $file reset_miss=yes\n";
+  }
+     @tmplist =  split(/\//,$srcreg);
+     $srcreg =$tmplist[$#tmplist];
+  print FD "filter region $srcreg \n";
+  print FD "extract spectrum \n";
+  print FD "save spectrum $g2srcpha group_spectrum=yes\n\n";
+  print FD "clear region\n\n";
+  if ( -e $backreg ) {
+     @tmplist =  split(/\//,$backreg);
+     $backreg =$tmplist[$#tmplist];
+  print FD "filter region $backreg \n";
+  print FD "extract spectrum \n";
+  print FD "save spectrum $g2backpha group_spectrum=yes\n\n";
+  }
+  print FD "quit \n\n\n";
+  close FD;
+
+  if ( !($elist[0] =~ /^-$/ )) {
+  print "Run  xselect \@comfile ";
+  system("xselect \@comfile");
+  }
+
+  system ("rm -rf comfile.xco");
+
+
+  open FD,">comfile.xco";
+  print FD "\n";
+  print FD "set datadir ./\n";
+  foreach $file (@elist1) {
+     @tmplist =  split(/\//,$file);
+     $file =$tmplist[$#tmplist];
+  print FD "read events $file reset_miss=yes\n";
+  }
+     @tmplist =  split(/\//,$srcreg);
+     $srcreg =$tmplist[$#tmplist];
+  print FD "filter region $srcreg \n";
+  print FD "extract spectrum \n";
+  print FD "save spectrum $g3srcpha group_spectrum=yes\n\n";
+  print FD "clear region\n\n";
+  if ( -e $backreg ) {
+     @tmplist =  split(/\//,$backreg);
+     $backreg =$tmplist[$#tmplist];
+  print FD "filter region $backreg \n";
+  print FD "extract spectrum \n";
+  print FD "save spectrum $g3backpha group_spectrum=yes\n\n";
+  }
+  print FD "quit \n\n\n";
+  close FD;
+  if (!($elist1[0] =~/^-$/) ) {
+  print "Run  xselect \@comfile ";
+  system("xselect \@comfile");
+  }
+
+  system ("rm -rf comfile.xco");
+                            
+  if( !($elist[0] =~ /^-$/)) {        
+#  system("echo \"$help\" |xpaset $pow helpPage");
+  print "Run ascaarf $g2srcpha CALDB '!$g2srcarf' yes yes\n";
+  system("ascaarf $g2srcpha CALDB '!$g2srcarf' yes yes"); 
+  system("fkeypar $g2srcarf\[1\] RESPFILE\n"); 
+  $g2srcrmf = `pquery fkeypar value`;
+  $g2srcrmf =~ s/\'//g;
+  chop ($g2srcrmf);
+  system("cp $g2srcrmf $srcrmf");
+  }
+
+  if( !($elist1[0] =~ /^-$/) ){        
+  print "Run ascaarf $g3srcpha CALDB '!$g3srcarf' yes yes\n";
+  system("ascaarf $g3srcpha CALDB '!$g3srcarf' yes yes"); 
+  system("fkeypar $g3srcarf\[1\] RESPFILE\n"); 
+  $g3srcrmf = `pquery fkeypar value`;
+  $g3srcrmf =~ s/\'//g;
+  chop ($g3srcrmf);
+  system("cp $g3srcrmf $srcrmf");
+  }
+
+
+  system("rm -f list_file");
+  open FD,">list_file";
+  print FD "$g2srcpha $g3srcpha\n";
+  print FD "$g2backpha $g3backpha\n";
+  print FD "$g2srcarf $g3srcarf\n";
+#  print FD "$srcrmf $srcrmf\n";
+  close FD;
+
+  if ( -e $srcpha) {
+   system("rm -rf $srcpha");
+  }
+  if ( -e $backpha) {
+   system("rm -rf $backpha");
+  }
+  if ( -e $srcarf) {
+   system("rm -rf $srcarf");
+  }
+  system("rm -rf tmp.pha");
+  system("rm -rf tmp1.pha");
+  if ( !($elist[0] =~ /^-$/) && !( $elist1[0] =~ /^-$/) ) {
+  system("addascaspec list_file $srcpha $srcarf $backpha");
+  } elsif (!($elist[0] =~ /^-$/ )) {
+  system ("cp -f $g2srcpha $srcpha");
+  system ("cp -f $g2srcarf $srcarf");
+  if ( -e $g2backpha ) {
+  system ("cp -f $g2backpha $backpha");
+  }
+  } elsif (!($elist1[0] =~ /^-$/) ) {
+  system ("cp -f $g3srcpha $srcpha");
+  system ("cp -f $g3srcarf $srcarf");
+  if ( -e $g3backpha ) {
+  system ("cp -f $g3backpha $backpha");
+  }
+  } else {
+    exit(0);
+  }
+
+  system("fcopy $srcpha tmp.pha");
+  system("fcopy $backpha tmp1.pha");
+  system("rm -rf $srcpha $backpha");
+  system("echo \"bad 0-59 848-1023 & exit\" |grppha tmp.pha $srcpha");
+  system("echo \"bad 0-59 848-1023 & exit\" |grppha tmp1.pha $backpha");
+ 
+  system("rm -rf tmp.pha tmp1.pha");
+
+  system("fparkey $srcrmf $srcpha\[1\] RESPFILE add=yes");
+  system("fparkey $srcarf $srcpha\[1\] ANCRFILE add=yes");
+  system("fparkey $backpha $srcpha\[1\] BACKFILE add=yes");
+
+  @tmplist =  split(/\//,$srcpha);
+  $srcpha = $tmplist[$#tmplist];
+  open FD,">comfile.xcm";
+  print FD  "data $srcpha\n";
+#  if ( -e $$backpha ) {
+#  print FD  "backgrnd $backpha\n";
+#  }
+
+#  if ( $elist[0] =~ /^-$/ ) {
+#  print FD  "response $g3srcrmf\n";
+#  } else {
+#  print FD  "response $g2srcrmf\n";
+#  }
+
+#  if ( -e $srcrmf ) {
+#     print "response $srcrmf\n";
+#  }
+#  print FD  "arf $srcarf\n";
+
+  print FD  "show\n";
+  print FD  "cpd $device \n\n";
+  print FD  "ignore bad \n\n";
+  print FD  "setplot energy \n\n";
+  print FD  "plot data \n\n";
+  close FD;
+
+  $helpfile ="$helpdir/gisxspec_1.html";
+  #system("cat \"$helpfile\" |xpaset $heraXPA helpPage 2>/dev/null");
+  system("echo $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+  
+
+  print "Run xspec - comfile.xcm\n";
+  system("xspec - comfile.xcm"); 
+
+#  system ("rm -rf comfile.xcm $srcphafile $backphafile  $srcarffile $tmpimgfile ");
+#  system ("rm -rf comfile.xcm $srcphafile $backphafile  $srcarffile $tmpimgfile ");
+  system ("rm -rf comfile.xcm $tmpimgfile tmpimgfile1 tmpimgfile2 ");
+
+  return 0;
+
+
+}
+
+
+sub gisxspec_getpar {
+
+ if (PILGetString("g2elist",$g2elist)) {
+    print "Error to get parameter \"g2list\"\n";
+    exit(-1);
+ }
+ if (PILGetString("g3elist",$g3elist)) {
+    print "Error to get parameter \"g2list\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("xcol",$xcol)) {
+    print "Error to get parameter \"xcol\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("ycol",$ycol)) {
+    print "Error to get parameter \"ycol\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("ra",$ra)){
+    print "Error to get parameter \"ra\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("dec",$dec)){
+    print "Error to get parameter \"dec\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("radius",$radius)){
+    print "Error to get parameter \"radius\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("bin",$bin)){
+    print "Error to get parameter \"bin\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("srcregfile",$srcreg)){
+    print "Error to get parameter \"srcreg\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("backregfile",$backreg)){
+    print "Error to get parameter \"backreg\"\n";
+    exit(-1);
+ }
+ if (PILGetString("srcpha",$srcpha)){
+    print "Error to get parameter \"srcpha\"\n";
+    exit(-1);
+ }
+ if (PILGetString("backpha",$backpha)){
+    print "Error to get parameter \"backphafile\"\n";
+    exit(-1);
+ }
+ if (PILGetString("srcarf",$srcarf)){
+    print "Error to get parameter \"srcarf\"\n";
+    exit(-1);
+ }
+ if (PILGetString("srcrmf",$srcrmf)){
+    print "Error to get parameter \"srcrmf\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("g2srcpha",$g2srcpha)){
+    print "Error to get parameter \"g2srcpha\"\n";
+    exit(-1);
+ }
+ if (PILGetString("g2backpha",$g2backpha)){
+    print "Error to get parameter \"g2backpha\"\n";
+    exit(-1);
+ }
+ if (PILGetString("g2srcarf",$g2srcarf)){
+    print "Error to get parameter \"g2srcarf\"\n";
+    exit(-1);
+ }
+ if (PILGetString("g3srcpha",$g3srcpha)){
+    print "Error to get parameter \"g3srcpha\"\n";
+    exit(-1);
+ }
+ if (PILGetString("g3backpha",$g3backpha)){
+    print "Error to get parameter \"g3backpha\"\n";
+    exit(-1);
+ }
+ if (PILGetString("g3srcarf",$g3srcarf)){
+    print "Error to get parameter \"g2srcarf\"\n";
+    exit(-1);
+ }
+ if (PILGetString("tmpimgfile",$tmpimgfile)){
+    print "Error to get parameter \"tmpimgfile\"\n";
+    exit(-1);
+ }
+ if (PILGetString("tmpimgfile1",$tmpimgfile1)){
+    print "Error to get parameter \"tmpimgfile1\"\n";
+    exit(-1);
+ }
+ if (PILGetString("tmpimgfile2",$tmpimgfile2)){
+    print "Error to get parameter \"tmpimgfile2\"\n";
+    exit(-1);
+ }
+ if (PILGetString("device",$device)){
+    print "Error to get parameter \"device\"\n";
+    exit(-1);
+ }
+ if (PILGetReal("timeout",$timeout)){
+    print "Error to get parameter \"timeout\"\n";
+    exit(-1);
+ }
+
+}
+
+

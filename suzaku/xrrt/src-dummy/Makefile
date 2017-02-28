@@ -1,0 +1,15 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	=
+
+HD_LIBRARY_ROOT         = xrrt-dummy
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+HD_LIBRARY_SRC_c	= xrrt-dummy.c
+
+HD_SHLIB_LIBS		= ${HD_LFLAGS} 
+
+include ${HD_STD_MAKEFILE}

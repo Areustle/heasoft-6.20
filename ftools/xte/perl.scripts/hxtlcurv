@@ -1,0 +1,559 @@
+#!/usr1/local/bin/perl5
+$rcsId = '$Id: hxtlcurv,v 3.8 2013/01/24 21:41:30 irby Exp $x' ;
+print "\nhxtlcurv> using perl v. $]\n" ;
+#
+# This script produces deadtime-corrected, background-subtracted 
+# HEXTE light curves.
+#
+# Richard Bentley, UCSD/CASS, rbentley@mamacass.ucsd.edu
+# D. Gruber 12/97 - changed from hxtdeadlc to more modern hxtdead
+# D. Gruber 2/98 - added -p option (do pha)
+# D. Gruber 2/98 - added -g option (apply external GTI or file to extractor)
+# D. Gruber 10/98 - abandoned independent background estimates. Using finterp.
+# D. Gruber 12/98 - added selection for columns in archive data, fixed bug
+#                   in background estimation for short (<8s) time bins.
+# D. Gruber  2/99 - force full energy range for all pha accumulations
+# D. Gruber  2/99 - allow detector subset for live-time correction
+# D. Gruber  9/99 - change -v reporting from rcs Id to a hard-wired number
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+getopts('i:k:r:b:g:t:l:u:c:d:e:phv');
+			
+if (defined $opt_v) {  # rcs version string
+#  chop($rcsId) ;
+#  print "hxtlcurv> rcs version string $rcsId\n" ;
+   print "hxtlcurv> version 4.0\n" ;
+  exit() ;
+}
+			
+if (defined $opt_h) {  # help flag
+    print <<EOHELP1;
+
+NAME
+     hxtlcurv - a script that produces background-corrected HEXTE
+     light curves.
+ 
+USAGE
+     hxtlcurv [-i "hexte science data file name"]
+              [-k "hexte dead-time coefficients file name"]
+              [-r "hexte 16-s hk file name (contains Rates)"]
+              [-b "bin size in seconds"]
+              [-g "good-time-interval file name"]
+              [-t "timeint file name, produced by timetrans"]
+              [-l "lower energy channel number for light curve"]
+              [-u "upper energy channel number for light curve"]
+              [-d "data column list (archive files only)"]
+              [-e "detector list for dead time correction"]
+              [-c "chatter level for hxtdead"]
+              [-p "make pha files too"]
+              [-v (version number written to standard output)]
+              [-h (help text written to standard output)]
+ 
+DESCRIPTION
+     hxtlcurv  produces  a  background subtracted light curve and
+     optionally an average spectrum from HEXTE science or archive
+     data  using  the  off-source rocking measurements.  Standard 
+     interval selection options are supported. In addition to the 
+     data file, required inputs include the contemporaneous HEXTE
+     rates file and deadtime  coefficients  files.  The  hxtlcurv  
+     script  queries  the user for each of these as needed. If no
+     timeint file is given, the TSTART and TSTOP  keyword  values
+     from  the science file are used.  The script then checks for
+     source and background files having the same name as the sci-
+     ence  file  with  the addition of "_src" or "_bkg" suffixes,
+     respectively.  If these are not found,  hxtback  is  run  to
+     produce  them.   Then  either saextrct or seextrct is run to
+     produce  the light curve files,  which are passed to hxtdead
+     for deadtime correction.  Finally, a background light  curve
+     is interpolated and passed to lcmath for background subtrac-
+     tion from the source-looking light curve.
+ 
+PARAMETERS (SWITCHES/FLAGS)
+     -i infile
+        The name of the input HEXTE science FITS file that is  to
+        be operated upon.  Output files will also start with this
+        name.
+ 
+     -k hexte 128-s housekeeping file name
+        The name of the 128-s housekeeping file  associated  with
+        the science data.  This file is needed by hxtdead.
+ 
+     -r hexte 16-s hk file name
+        The name of the 16-s housekeeping  file  associated  with
+        the science data.  This file contains rates and is needed
+        by hxtdead.
+
+     -b time bin size for output light curve.  Must be 16 seconds 
+        or less. Default is 16 seconds.
+
+     -d (archive data) column names. Must be either TimSerCnt  or
+        some combination of SpecDet0 SpecDet1 Specdet2  Specdet3.
+        Default is all 4 spectral columns.
+     
+     -e detectors subset for which dead-time correction is done
+        by hxtdead.  Default is 0123 (all of them).
+
+     -t timeint file name
+        Name of file containing start and stop times, produced by
+        timetrans.
+ 
+     -l lower energy channel
+        The low energy channel number for the light curve.
+ 
+     -u upper energy channel
+        The upper energy channel number for the light curve.
+ 
+     -c chatter level
+        The chatter level for hxtdead.
+ 
+     -p pha files will also be accumulated and deadtime corrected
+
+     -v hxtlcurv version information will be written to  standard
+        output.
+ 
+     -h This help text will be written to standard output.
+ 
+EXAMPLES
+     1. hxtlcurv -h
+         Help text will be displayed.  
+ 
+     2. hxtlcurv
+         User will be prompted for filenames.  Default time  bins
+         of 16 sec.
+ 
+     3. hxtlcurv  -i FS50_3f3ad0b-3f3b040 -r FH53_3f3ad0b-3f3b040
+         -k caldb -b 4.0 -g good.gti
+         Script will run without prompting,  using  FS50_3f3ad0b-
+         3f3b040  as  science input file, FH53_3f3ad0b-3f3b040 as
+         rates file, and the deadtime coefficients file which has
+         been installed in the calibration database.  Four second
+         time bins. GTI file good.gti is ANDed with rocking GTIs.
+ 
+     4. hxtlcurv  -i FS52_3f3ad0b-3f3b040 -r FH53_3f3ad0b-3f3b040
+         -k caldb -b 4.0 
+         Script will run without prompting,  using  FS52_3f3ad0b-
+         3f3b040  as  archive input file, FH53_3f3ad0b-3f3b040 as
+         rates file, and the deadtime coefficients file which has
+         been  installed  in the calibration database.  Specified
+         four second time bins will be changed to 16 sec  by  the
+         extract tool. 
+
+      5. hxtlcurv -i FS52_3f3ad0b-3f3b040 -r FH53_3f3ad0b-3f3b040
+         -k caldb -b 2 -d TimSerCnt
+         Runs as above, producing two second rate averages of the
+         1-second archive multiscalar data.
+ 
+CAUTIONS
+     Limited by the rocking and the extract tools to time bins of 
+     16 seconds or less, and 16 seconds only for archive spectral
+     data.  Calculated errors assume incorrectly that  background 
+     estimates are independent, not quite true. The RMS is under-
+     estimated by 20 percent in the worst case of weak source and
+     16-sec time bins.  Some point-to-point correlation up to  32 
+     seconds is also present. Rocking data only. No list-of-files 
+     option for input.
+
+BUGS
+     The script has not been made operational under VMS.  Channel
+     selection with archive multiscalar data produces zero rates.
+     This appears to be a bug in saextrct.  Use  event-list  data
+     if you want a light curve with time bins shorter than 16 sec
+     and a limited channel range.
+
+     Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+ 
+SEE ALSO
+     hxtback, hxtdead, saextrct, seextrct, finterp and lcmath for
+     more information.
+
+EOHELP1
+exit;
+    }
+#
+# now on to the program ...
+
+require "utils.pl";   # needed for runcom
+
+#
+# flag for debug output
+#
+$DEBUG = 0 ;
+#
+# Get the rcs version number:
+@idStrings = split /\s/, $rcsId ;
+$version = $idStrings[2] ;
+#############################################
+#
+# Check for valid input file:
+#
+#############################################
+
+  if (defined $opt_i)
+  {
+    print "hxtlcurv> Input file provided was: $opt_i\n" ;
+    $infile = $opt_i ;
+  }
+  else                     #otherwise get user input or whatever was used last by fselect
+  {
+    @infile2=&runcom('pget fselect infile');
+    chop($infile2[0]);
+    print "hxtlcurv> Enter HEXTE FITS file:[$infile2[0]]";
+    ($infile = <STDIN>);
+    if($infile =~ /^./){   # if file name starts with any character . . .
+      chop($infile);}      # get rid of newline
+    else{    # user didn't enter a name, so use the one from fselect
+      $infile = $infile2[0];
+    }
+  }
+#
+# See if the input file is event list.
+#
+  $keyword = "DATAMODE" ;
+  @resultf=&runcom('fkeyprint infile="'.$infile.'" keynam="'.$keyword.'" exact=yes');
+  @temp_array = grep(/^DATAMODE= /,@resultf) ;  # get the right line
+  @temp = split (/\s+/,$temp_array[0]);   # split into 'words'
+  $datamode =  $temp[1] ;   # this should be the datamode string
+  print "hxtlcurv> DATAMODE: $datamode\n" ;
+#
+# Check for valid rates file:
+#
+  if (defined $opt_r)
+ {
+    print "hxtlcurv> rates file provided was: $opt_r\n" ;
+    $engvalf = $opt_r ;
+  }
+  else                     #otherwise get user input or whatever was used last by hxtdead
+  {
+    @engvalftmp=&runcom('pget hxtdead engvalf');
+    chop($engvalftmp[0]);
+    print "hxtlcurv> Enter HEXTE rates file:[$engvalftmp[0]]";
+    ($engvalf = <STDIN>);
+    if($engvalf =~ /^./){   # if file name starts with any character . . .
+      chop($engvalf);}      # get rid of newline
+    else{    # user didn't enter a name, so use the one from hxtdead
+      $engvalf = $engvalftmp[0];
+    }
+  }
+#
+# Check for coefficients file:
+#
+  if (defined $opt_k)
+ {
+    print "hxtlcurv> coefficients file provided was: $opt_k\n" ;
+    $calvalf = $opt_k ;
+  }
+  else                     #otherwise get user input or whatever was used last by hxtdead
+  {
+    @calvalftmp=&runcom('pget hxtdead calvalf');
+    chop($calvalftmp[0]);
+    print "hxtlcurv> Enter HEXTE coefficients file:[$calvalftmp[0]]";
+    ($calvalf = <STDIN>);
+    if($calvalf =~ /^./){   # if file name starts with any character . . .
+      chop($calvalf);}      # get rid of newline
+    else{    # user didn't enter a name, so use the one from hxtdead
+      $calvalf = $calvalftmp[0];
+    }
+  }
+#
+# chatter level for hxtdead
+#
+  $chatter = 5;
+  if(defined $opt_c)
+  { $chatter = $opt_c;}
+# subset for dead time correction
+  $detset = "0123";
+  if(defined $opt_e)
+   { $detset = $opt_e;}
+  print "hxtlcurv> dead time set: $detset \n" ;
+#
+# Check for valid bin period argument:
+#
+
+  if (defined $opt_b)  # if user-specified bin period
+  {
+    print "hxtlcurv> bin size specified was: $opt_b sec\n" ;
+    $binsz = $opt_b ;
+  } 
+  else    # dwell not specified, so set to default value of 16s
+  {
+    $binsz = 16 ;
+    print "hxtlcurv> dwell period set to default value of 16s\n" ;
+  }
+if ($binsz > 16 )
+{
+    print "hxtlcurv>\007 ERROR - Bin size $binsz invalid.  Must be 16 or less\n" ;
+    exit() ;
+}
+
+#
+# make source- and bkg-selected files, if needed
+#
+ ($nzif = $infile) =~ s/\.gz// ;  #get file name w/o directory
+ ($datf = $nzif) =~ s#.*/## ;  #get file name w/o directory
+  $srcf = $datf . "_src" ;
+  $bkgf = $datf . "_bkg" ;
+
+  if ( ! -e $srcf || ! -e $bkgf )
+  {  # if either src or bkg missing, run hxtback to make them
+#      @args = ("hxtback", "-i", "$infile", "-b") ;
+      @args = ("hxtback -i $infile -b") ;
+      printf "hxtlcurv> running %s\n", "@args" ;
+      $rc = 0xffff & system @args ;
+      print "hxtlcurv> done running hxtback\n" ;
+  }
+# (big section for jammed files has been deleted)
+$srcfext = $srcf ;
+$bkgfext = $bkgf ;
+
+# run the extract programs 
+# First, check for a GTI file:
+if (defined $opt_g)
+{
+  $extgti = $opt_g ;
+}
+else
+{
+  $extgti='-' ;
+}
+print "hxtlcurv> extgti: $extgti\n" ;
+# Next, check for a timeint file:
+if (defined $opt_t)
+{
+  $timeint = '@'.$opt_t ;
+}
+else
+{
+  $timeint='INDEF' ;
+}
+print "hxtlcurv> timeint: $timeint\n" ;
+#
+# check for lower and upper energy limits:
+#
+if (defined $opt_l)
+{
+  $chmin = $opt_l ;
+}
+else
+{
+  $chmin='INDEF' ;
+}
+print "hxtlcurv> chmin: $chmin\n" ;
+if (defined $opt_u)
+{
+  $chmax = $opt_u ;
+}
+else
+{
+  $chmax='INDEF' ;
+}
+print "hxtlcurv> chmax: $chmax\n" ;
+if (defined $opt_p)
+{
+  if ( $chmin == 'INDEF' && $chmax == 'INDEF' )
+  { $extract = 'ONCE';
+    $prmode = 'BOTH' ;
+  }
+  else
+  {
+    $extract = 'TWICE';
+    $prmode = 'LIGHTCURVE';
+  }
+}
+else
+{
+  $prmode = 'LIGHTCURVE' ;
+  $extract = 'ONCE';
+}
+print "hxtlcurv> prmode: $prmode\n" ;
+print "hxtlcurv> extract: $extract\n" ;
+#
+# run s{a,e}extrct:
+#
+#
+# See if the file contains event data
+#
+print "hxtlcurv> run fkeyprint to get HDUCLAS1\n" ;
+@temp = &runcom('fkeyprint infile="'.$infile.'"+1 keynam=HDUCLAS1 | grep HDUCLAS1=') ;
+#print "hxtlcurv> temp: $temp[0]\n" ;
+@tokens = split /\s+'/, $temp[0] ;
+$dtype = $tokens[1] ;
+print "hxtlcurv> dtype: $dtype\n" ;
+#$binsz = 2 * $dwell ;
+if ($dtype eq 'EVENTS') {
+  @args = ("seextrct infile=$srcfext outroot = $srcfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME columns=Event binsz=$binsz timeint=$timeint chmin=$chmin chmax=$chmax printmode=$prmode lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+  printf "hxtlcurv> running:\n%s\n", "@args" ;
+  $rc = 0xffff & system @args ;
+  if ($rc == 0) {
+    printf "hxtlcurv> back from running seextrct on source\n" ;
+  }
+  else {
+    printf "hxtlcurv> seextrct unsuccessful; status 0x%#04x\n", $rc ;
+  }
+  if ( $extract eq 'TWICE' ) {
+    @args = ("seextrct infile=$srcfext outroot = $srcfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME columns=Event binsz=$binsz timeint=$timeint chmin=INDEF chmax=INDEF printmode=SPECTRUM lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+    printf "hxtlcurv> running:\n%s\n", "@args" ;
+    $rc = 0xffff & system @args ;
+    if ($rc == 0) {
+      printf "hxtlcurv> back from running seextrct on src spectrum\n" ;
+    }
+    else {
+      printf "hxtlcurv> seextrct unsuccessful; status 0x%#04x\n", $rc ;
+    }
+  }
+  @args = ("seextrct infile=$bkgfext outroot = $bkgfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME columns=Event binsz=16.0 timeint=$timeint chmin=$chmin chmax=$chmax printmode=$prmode lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+  printf "hxtlcurv> running:\n%s\n", "@args" ;
+  $rc = 0xffff & system @args ;
+  if ($rc == 0) {
+    printf "hxtlcurv> back from running seextrct on background\n" ;
+  }
+  else {
+    printf "hxtlcurv> seextrct unsuccessful; status 0x%#04x\n", $rc ;
+  }
+  if ( $extract eq 'TWICE' ) {
+    @args = ("seextrct infile=$bkgfext outroot = $bkgfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME columns=Event binsz=16.0 timeint=$timeint chmin=INDEF chmax=INDEF printmode=SPECTRUM lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+    printf "hxtlcurv> running:\n%s\n", "@args" ;
+    $rc = 0xffff & system @args ;
+    if ($rc == 0) {
+      printf "hxtlcurv> back from running seextrct on bkg spectrum\n" ;
+    }
+    else {
+      printf "hxtlcurv> seextrct unsuccessful; status 0x%#04x\n", $rc ;
+    }
+  }
+}
+elsif ( $dtype eq "ARRAY" ) {
+#
+# column list for archive data files
+#
+  if (defined $opt_d)
+  { $col_list = $opt_d ;
+  }
+  else
+  {
+     $col_list = "SpecDet0 SpecDet1 SpecDet2 SpecDet3" ;
+  }
+  print "hxtlcurv> Columns: $col_list\n" ;
+#
+  @args = ("saextrct infile=$bkgfext outroot = $bkgfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME accumulate=ONE columns=\'$col_list\' binsz=16. timeint=$timeint chmin=$chmin chmax=$chmax printmode=$prmode lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+  printf "hxtlcurv> running:\n%s\n", "@args" ;
+  $rc = 0xffff & system @args ;
+  if ($rc == 0) {
+    printf "hxtlcurv> back from running saextrct on background\n" ;
+  }
+  else {
+    printf "hxtlcurv> saextrct unsuccessful; status 0x%#04x\n", $rc ;
+  }
+  if ( $extract eq 'TWICE' ) {
+    @args = ("saextrct infile=$bkgfext outroot = $bkgfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME accumulate=ONE columns=\'$col_list\' binsz=16. timeint=$timeint chmin=INDEF chmax=INDEF printmode=SPECTRUM lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+    printf "hxtlcurv> running:\n%s\n", "@args" ;
+    $rc = 0xffff & system @args ;
+    if ($rc == 0) {
+      printf "hxtlcurv> back from running saextrct on bkg spectrum\n" ;
+    }
+    else {
+      printf "hxtlcurv> saextrct unsuccessful; status 0x%#04x\n", $rc ;
+    }
+  }
+  @args = ("saextrct infile=$srcfext outroot = $srcfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME accumulate=ONE columns=\'$col_list\' binsz=$binsz timeint=$timeint chmin=$chmin chmax=$chmax printmode=$prmode lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+  printf "hxtlcurv> running:\n%s\n", "@args" ;
+  $rc = 0xffff & system @args ;
+  if ($rc == 0) {
+    printf "hxtlcurv> back from running saextrct on source\n" ;
+  }
+  else {
+    printf "hxtlcurv> saextrct unsuccessful; status 0x%#04x\n", $rc ;
+  }
+  if ( $extract eq 'TWICE' ) {
+    @args = ("saextrct infile=$srcfext outroot = $srcfext gtiorfile=APPLY gtiandfile=$extgti timecol=TIME accumulate=ONE columns=\'$col_list\' binsz=16. timeint=$timeint chmin=INDEF chmax=INDEF printmode=SPECTRUM lcmode=RATE spmode=SUM timemin=INDEF timemax=INDEF chint=INDEF chbin=INDEF") ;
+    printf "hxtlcurv> running:\n%s\n", "@args" ;
+    $rc = 0xffff & system @args ;
+    if ($rc == 0) {
+      printf "hxtlcurv> back from running saextrct on src spectrum\n" ;
+    }
+    else {
+      printf "hxtlcurv> saextrct unsuccessful; status 0x%#04x\n", $rc ;
+    }
+  }
+}
+else {
+  print "hxtlcurv> HDUCLAS1 keyword has value $dtype, neither EVENTS nor ARRAY. stopping\n" ;
+}
+#
+# dead-time correct
+#
+$srcfextlc = $srcfext . ".lc" ;
+@args = ("hxtdead $calvalf $engvalf $srcf $srcfextlc chatter=$chatter detectors=$detset") ;
+printf "hxtlcurv> running:\n%s\n", "@args" ;
+$rc = 0xffff & system @args ;
+if ($rc == 0) {
+  printf "hxtlcurv> back from running hxtdead on source light curve\n" ;
+}
+else {
+  printf "hxtlcurv> hxtdead unsuccessful on lc; status 0x%#04x\n", $rc ;
+}
+if (defined $opt_p)
+   {
+   $srcfextpha = $srcfext . ".pha" ;
+   @args = ("hxtdead $calvalf $engvalf $srcf $srcfextpha chatter=$chatter detectors=$detset") ;
+   printf "hxtlcurv> running:\n%s\n", "@args" ;
+   $rc = 0xffff & system @args ;
+   if ($rc == 0) {
+     printf "hxtlcurv> back from running hxtdead on source pha\n" ;
+   }
+   else {
+      printf "hxtlcurv> hxtdead unsuccessful; status 0x%#04x\n", $rc ;
+   }
+   }
+$bkgfextlc = $bkgfext . ".lc" ;
+@args = ("hxtdead $calvalf $engvalf $bkgf $bkgfextlc chatter=$chatter detectors=$detset") ;
+printf "hxtlcurv> running:\n%s\n", "@args" ;
+$rc = 0xffff & system @args ;
+if ($rc == 0) {
+  printf "hxtlcurv> back from running hxtdead on background\n" ;
+}
+else {
+  printf "hxtlcurv> hxtdead unsuccessful; status 0x%#04x\n", $rc ;
+}
+if (defined $opt_p)
+   {
+   $bkgfextpha = $bkgfext . ".pha" ;
+   @args = ("hxtdead $calvalf $engvalf $bkgf $bkgfextpha chatter=$chatter detectors=$detset") ;
+   printf "hxtlcurv> running:\n%s\n", "@args" ;
+   $rc = 0xffff & system @args ;
+   if ($rc == 0) {printf "hxtlcurv> back from running hxtdead on bkg pha\n" ;}
+   else {printf "hxtlcurv> hxtdead unsuccessful; status 0x%#04x\n", $rc ;}
+   }
+# now make a bkg light curve interpolated to times of src light curve
+$bkg_intrplc = 'bkg_intrp.lc';
+@args = ("finterp infile1=$srcfextlc+1 infile2=$bkgfextlc+1 outfile=$bkg_intrplc incol=rate order=1 extrap=REPEAT");
+  printf "hxtlcurv> running:\n%s\n", "@args" ;
+  $rc = 0xffff & system @args ;
+  if ($rc == 0) {printf "hxtlcurv> back from running finterp on src\n" ;}
+  else {printf "hxtlcurv> finterp unsuccessful; status 0x%#04x\n", $rc ;}
+
+#
+# produce the bg-subtracted light curve
+#
+$infilelc = $datf . ".lc" ;
+@args = ("lcmath infile=$srcfextlc bgfile=$bkg_intrplc outfile=$infilelc multi = 1.0 multb = 1.0 addsubr=no docor=no err_mode=5") ;
+printf "hxtlcurv> running:\n%s\n", "@args" ;
+$rc = 0xffff & system @args ;
+if ($rc == 0) {
+  printf "hxtlcurv> back from running lcmath\n" ;
+}
+else {
+  printf "hxtlcurv> lcmath unsuccessful; status 0x%#04x\n", $rc ;
+}
+unlink("idflist.tmp") ; #clean up after lcmath
+unlink($bkg_intrplc) ; #clean up after lcmath
+#
+#clean up
+#
+$srcflc = $srcf . ".lc" ;
+$bkgflc = $bkgf . ".lc" ;
+print "hxtlcurv> produced light curve files $srcflc $bkgflc and $infilelc\n" ;

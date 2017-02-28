@@ -1,0 +1,749 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotevtlc/uvotevtlc,v $
+# $Revision: 1.13 $
+# $Date: 2010/06/30 20:56:07 $
+#
+# $Log: uvotevtlc,v $
+# Revision 1.13  2010/06/30 20:56:07  rwiegand
+# Added subpixel parameter.
+#
+# Revision 1.12  2010/06/23 21:21:19  rwiegand
+# Implemented detector sensitivity correction.  Documented calibration
+# file parameters.
+#
+# Revision 1.11  2009/07/22 00:47:31  rwiegand
+# Support special fwhmsig parameter value indicating to use advised value.
+#
+# Revision 1.10  2009/07/20 13:38:44  rwiegand
+# Added uvotsource calibration parameters.  Allow user control of output
+# TIME column via new basetime parameter.
+#
+# Revision 1.9  2008/12/11 21:33:59  rwiegand
+# Write user and time keywords from input primary to each output HDU.
+#
+# Revision 1.8  2008/10/15 20:35:13  rwiegand
+# Reimplemented to use uvotsource for photometry.
+#
+
+use strict;
+
+package UVOT::EventLightCurve;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+
+
+{
+	my $task = __PACKAGE__->new(version => '1.2');
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			loadHeader
+			determineGTIs
+			filterEvents
+			findImageBounds
+			makeLightCurve
+			appendSTDGTI
+			updateLightCurve
+			)) {
+		$self->$step;
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file
+				srcreg=file bkgreg=file gtifile=file
+				timebinalg=string timedel=string snrthresh=string
+				tstart=string tstop=string
+				calibrate=boolean deadtimecorr=boolean
+				zerofile=file coinfile=file psffile=file
+				lssfile=file sensfile=file
+				basetime=string frametime=string apercorr=string fwhmsig=real
+				subpixel=integer
+				history=boolean cleanup=boolean clobber=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile)) {
+			my $path = $args->{$key};
+			if (-e $path) {
+				$self->error(BAD_INPUT,
+					"$path exists and clobber not set");
+			}
+		}
+	}
+
+	my $algorithm = uc($args->{timebinalg});
+	if ($algorithm eq 'G' or $algorithm eq 'GTI') {
+		$self->{algorithmGTI} = 1;
+	}
+	elsif ($algorithm eq 'U' or $algorithm eq 'UNIFORM') {
+		$self->{algorithmUniform} = 1;
+	}
+	else {
+		$self->error(BAD_INPUT, "unknown algorithm '$args->{timebinalg}'");
+	}
+
+	my $basetime = uc($args->{basetime});
+	if ($basetime eq 'INDEF') {
+		$self->{BASETIME} = 0;
+	}
+	elsif ($basetime =~ /^KEY:.+/) {
+		# need to look at header for keyword value
+		$self->{BASETIME} = $basetime;
+	}
+	elsif ($basetime eq 'TRIGTIME') {
+		# need to look at header for keyword value
+		$self->{BASETIME} = "KEY:$basetime";
+	}
+	elsif ($basetime =~ /^\d+\.\d+$/) {
+		$self->{BASETIME} = $args->{basetime} + 0;
+	}
+	else {
+		$self->error(BAD_INPUT, "invalid basetime '$args->{basetime}'");
+	}
+
+	$self->{histfile} = $self->temporary('hist', extension => '.fits');
+
+	if (uc($args->{snrthresh}) ne 'NONE') {
+		$self->warning('parameter snrthresh is obsolete');
+	}
+
+	$self->{minFRACEXP} = $ENV{UVOTEVTLC_MIN_FRACEXP} || 0.1;
+	$self->{FRACEXP} = { };
+}
+
+
+sub loadHeader
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $status;
+	my $fits = SimpleFITS->readonly($args->{infile});
+	if (not $fits or $fits->status) {
+		my $status = $fits->status;
+		$self->error(BAD_INPUT,
+				"unable to open $args->{infile} [$status]");
+		undef($fits);
+		return;
+	}
+
+	my @cards;
+	$self->storeHeaderCards($fits->handle, array => \@cards,
+			types => [ Astro::FITS::CFITSIO::TYP_REFSYS_KEY,
+					Astro::FITS::CFITSIO::TYP_USER_KEY ]);
+	$self->{CARDS} = \@cards;
+
+	my $header;
+	$status = $fits->move('EVENTS')
+			->readheader($header)
+			->status;
+
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load $args->{infile} header [$status]");
+	}
+	else {
+		$self->{HEADER} = $header;
+		$self->setBasetime($header);
+	}
+
+	if ($fits) {
+		$fits->close;
+	}
+}
+
+
+
+sub setBasetime
+{
+	my ($self, $header) = @_;
+
+	my $basetime = $self->{BASETIME};
+	my $note = $basetime;
+
+	if ($basetime =~ /KEY:(.+)/) {
+		my $key = $1;
+		if (defined($header->{$key})) {
+			my $value = $header->{$key};
+			if (Task::FITS::isReal($value)) {
+				$note = "$basetime = $value";
+				$self->{BASETIME} = $value;
+			}
+			else {
+				$self->error(BAD_INPUT,
+						"$basetime '$value' does not look like a real");
+			}
+		}
+		else {
+			$self->error(BAD_INPUT,
+					"unable to determine basetime $note");
+		}
+	}
+
+	$self->parameterNote(basetime => $note);
+}
+
+
+# this prunes down the events to just those which are in the
+# source or background regions and occur during the global time constraints
+
+sub filterEvents
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $filter = "(regfilter('$args->{srcreg}')"
+			. ".OR.regfilter('$args->{bkgreg}'))";
+
+	if (uc($args->{tstart}) ne 'INDEF') {
+		$filter .= ".AND.(TIME>=$args->{tstart})";
+	}
+
+	if (uc($args->{tstop}) ne 'INDEF') {
+		$filter .= ".AND.(TIME<=$args->{tstop})";
+	}
+
+	if (uc($args->{gtifile}) ne 'NONE') {
+		$filter .= ".AND.gtifilter('$args->{gtifile}')";
+	}
+
+	$self->{tmpevents} = $self->temporary('events', extension => '.fits');
+
+	my $command = $self->buildCommand('ftcopy',
+			infile => $args->{infile} . "[EVENTS][$filter]",
+			outfile => $self->{tmpevents},
+			);
+
+	$self->shell($command);
+}
+
+
+sub determineGTIs
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $fits = SimpleFITS->readonly($args->{infile});
+
+	my $status = $fits->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $args->{infile} [$status]");
+		return;
+	}
+
+	my $nhdu = $fits->nhdu;
+
+	# collect HDUs named \w*GTI\w*
+	my $gtiext = $self->temporary('allgti', extension => '.txt');
+	my $fh = FileHandle->new($gtiext, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $gtiext [$!]");
+		return;
+	}
+
+	for (my $i = 1; $i < $nhdu; ++$i) {
+		my $extname;
+		$status = $fits->move($i+1)->readkey(EXTNAME => $extname)->status;
+		if ($status) {
+			$self->warning("unable to determine EXTNAME of HDU $i+1 [$status]");
+			$self->setstatus(0);
+		}
+		elsif ($extname =~ /^(\w*GTI\w*)$/) {
+			$fh->print($args->{infile} . "[$extname]\n");
+		}
+	}
+
+	$fh->close;
+	undef($fits);
+
+	my $allgtis = $self->temporary('all', extension => '.gti');
+	if ($self->isValid) {
+		# combine GTIs
+		my $command = $self->buildCommand('ftmerge',
+				infile => '@' . $gtiext,
+				outfile => $allgtis,
+				copyall => 'NO',
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		# sort/filter GTIs
+		$self->{gtifile} = $self->temporary('uelc', extension => '.gti');
+		my $command = $self->buildCommand('ftsort',
+				infile => $allgtis . "[1][col #EXTNAME='STDGTI']",
+				outfile => $self->{gtifile},
+				columns => 'START',
+				unique => 'YES',
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		# load filtered GTIs
+		my @gti;
+		$self->{GTIs} = \@gti;
+		my $status = SimpleFITS->readonly($self->{gtifile})
+				->move('STDGTI')
+				->loadtable(\@gti)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to load $self->{gtifile} [$!]");
+		}
+	}
+}
+
+
+sub findImageBounds
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('ftstat',
+			infile => $self->{tmpevents} . '[EVENTS][col X; Y]',
+			);
+
+	my $result = $self->shell($command);
+	return if not $self->isValid;
+
+	my $which = '';
+
+	foreach my $line (@{ $result->{lines} }) {
+		if ($line =~ /^([XY])\s*\[pixel\]/) {
+			$which = $1;
+		}
+		elsif ($line =~ /^\s*(min|max|good):\s*(\d+)/) {
+			my $what = $1;
+			my $value = $2;
+			$self->{"$which$what"} = $value;
+		}
+		else {
+			# ignore
+		}
+	}
+
+	foreach my $key (qw(Xmin Xmax Ymin Ymax)) {
+		if (not defined($self->{$key})) {
+			$self->error(BAD_INPUT, "unable to determine $key");
+		}
+	}
+
+	if (not $self->{Xgood}) {
+		$self->warning('there are no events in the region');
+	}
+}
+
+
+sub makeLightCurve
+{
+	my ($self) = @_;
+
+	if ($self->{algorithmGTI}) {
+		$self->makeLightCurveGTI;
+	}
+	else {
+		$self->makeLightCurveUniform;
+	}
+}
+
+
+sub max2
+{
+	my ($a, $b) = @_;
+	if ($a > $b) {
+		return $a;
+	}
+	return $b;
+}
+
+
+sub min2
+{
+	my ($a, $b) = @_;
+	if ($a < $b) {
+		return $a;
+	}
+	return $b;
+}
+
+
+sub findOverlap
+{
+	my ($self, $from, $to) = @_;
+
+	my $sum = 0;
+
+	foreach my $gti (@{ $self->{GTIs} }) {
+		my $t0 = max2($from, $gti->{START});
+		my $t1 = min2($to, $gti->{STOP});
+		if ($t1 > $t0) {
+			$sum += $t1 - $t0;
+		}
+	}
+
+	return $sum;
+}
+
+
+sub findFRACEXP
+{
+	my ($self, $from, $to) = @_;
+
+	my $delta = $to - $from;
+
+	my $sum = $self->findOverlap($from, $to);
+
+	my $fracexp = $sum / $delta;
+
+	return $fracexp;
+}
+
+
+sub makeLightCurveUniform
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $timedel = $args->{timedel};
+
+	my $tstart = $args->{tstart};
+	if (uc($tstart) eq 'INDEF') {
+		$tstart = $self->{HEADER}{TSTART};
+	}
+
+	my $tstop = $args->{tstop};
+	if (uc($tstop) eq 'INDEF') {
+		$tstop = $self->{HEADER}{TSTOP};
+	}
+
+	if (not $timedel) {
+		$timedel = $tstop - $tstart;
+	}
+
+	my $binimage = "[binr X=$self->{Xmin}:$self->{Xmax}"
+			. ", Y=$self->{Ymin}:$self->{Ymax}]";
+
+	my $basefile = $self->{tmpevents} . '[EVENTS]';
+
+	for (my $bin = 0; $self->isValid; ++$bin) {
+
+		my $tbinstart = $tstart + $bin * $timedel;
+		my $tbinstop = $tbinstart + $timedel;
+
+		last if ($tbinstart >= $tstop);
+
+		my $fracexp = $self->findFRACEXP($tbinstart, $tbinstop);
+# printf "bin $bin: [%.1f, %.1f] FRACEXP=%.3f\n",
+#		$tbinstart, $tbinstop, $fracexp;
+
+		next if $fracexp < $self->{minFRACEXP};
+
+		my $exposure = $fracexp * ($tbinstop - $tbinstart);
+		my $keys = "[col #EXPOSURE=$exposure;"
+				. " #TSTART=$tbinstart; #TSTOP=$tbinstop]";
+
+		my $timefilter = "[TIME>=$tbinstart.AND.TIME<$tbinstop]";
+
+		my $subimage = $self->temporary('subimage', extension => '.img');
+
+		my $command = $self->buildCommand('ftcopy',
+				infile => "$basefile$timefilter$binimage$keys",
+				outfile => $subimage,
+				copyall => 'no',
+				);
+
+		$self->shell($command);
+
+		if ($self->isValid) {
+			my $binkey = 'BIN' . $bin;
+			$self->{FRACEXP}{$binkey} = $fracexp;
+			$self->runUvotsource($subimage, $binkey);
+		}
+	}
+}
+
+
+sub makeLightCurveGTI
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $gtifile;
+	if (uc($args->{gtifile}) eq 'NONE') {
+		$gtifile = $self->{gtifile};
+		$self->report('taking time bins from infile since gtifile not specified');
+	}
+
+	my $fits = SimpleFITS->readonly($gtifile);
+
+	my $status = $fits->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $gtifile [$status]");
+		return;
+	}
+
+	my $nhdu = $fits->nhdu;
+
+	# collect GTI HDUs (those that have START and STOP columns)
+	my @gti;
+	my $extname;
+	my $bin = 0;
+
+	for (my $i = 1; $i < $nhdu; ++$i) {
+		$fits->move($i+1);
+		$fits->readkey(EXTNAME => $extname);
+		my $startcol = $fits->colnum('START');
+		my $stopcol = $fits->colnum('STOP');
+		if ($fits->status) {
+			# this does not look like a GTI extension
+			$fits->setstatus(0);
+		}
+		else {
+			my @table;
+			$status = $fits->loadtable(\@table)->status;
+			if ($status) {
+				$self->warning("unable to load GTI table $i [$status]");
+				$self->setstatus(0);
+			}
+			elsif (@table > 0) {
+				foreach my $e (@table) {
+					$e->{EXTNAME} = "BIN$bin";
+					++$bin;
+				}
+				push(@gti, @table);
+			}
+			else {
+				$self->warning("empty GTI extension $i");
+			}
+		}
+	}
+	undef($fits);
+
+	my $binimage = "[binr X=$self->{Xmin}:$self->{Xmax}"
+			. ", Y=$self->{Ymin}:$self->{Ymax}]";
+
+	my $basefile = $self->{tmpevents} . '[EVENTS]';
+
+	foreach my $gti (@gti) {
+
+		my $gtifilter = "[(TIME>=$gti->{START}).AND.(TIME<$gti->{STOP})]";
+
+		my $fracexp = $self->findFRACEXP($gti->{START}, $gti->{STOP});
+# printf "bin $bin: [%.1f, %.1f] FRACEXP=%.3f\n",
+#		$tbinstart, $tbinstop, $fracexp;
+
+		next if $fracexp < $self->{minFRACEXP};
+
+		my $exposure = $fracexp * ($gti->{STOP} - $gti->{START});
+
+		my $keys = "[col #EXPOSURE=$exposure;"
+				. " #TSTART=$gti->{START}; #TSTOP=$gti->{STOP}]";
+
+		my $subimage = $self->temporary('subimage', extension => '.img');
+
+		my $command = $self->buildCommand('ftcopy',
+				infile => "$basefile$gtifilter$binimage$keys",
+				outfile => $subimage,
+				copyall => 'no',
+				);
+
+		$self->shell($command);
+
+		if ($self->isValid) {
+			$self->runUvotsource($subimage, $gti->{EXTNAME});
+			$self->{FRACEXP}{$gti->{EXTNAME}} = $fracexp;
+		}
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub runUvotsource
+{
+	my ($self, $image, $extname) = @_;
+
+	my $args = $self->args;
+
+	my $status = SimpleFITS->readwrite($image)
+			->writekey(EXTNAME => $extname)
+			->close
+			->status;
+
+	my $command = $self->buildCommand('uvotsource',
+			image => $image,
+			srcreg => $args->{srcreg},
+			bkgreg => $args->{bkgreg},
+			sigma => 3,
+			output => 'RATE',
+			outfile => $self->{histfile},
+			frametime => $args->{frametime},
+			deadtimecorr => $args->{deadtimecorr},
+			zerofile => $args->{zerofile},
+			coinfile => $args->{coinfile},
+			psffile => $args->{psffile},
+			lssfile => $args->{lssfile},
+			sensfile => $args->{sensfile},
+			apercorr => $args->{apercorr},
+			fwhmsig => $args->{fwhmsig},
+			subpixel => $args->{subpixel},
+			);
+
+	$self->shell($command);
+}
+
+
+sub updateLightCurve
+{
+	my ($self) = @_;
+
+	my @lc;
+	my $timepixr;
+
+	my @fracexp;
+	my @time;
+
+	my $fits = SimpleFITS->readwrite($self->{histfile})
+			->move('MAGHIST')
+			->readkey(TIMEPIXR => $timepixr)
+			->loadtable(\@lc)
+			;
+
+	my $status = $fits->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to load MAGHIST table [$status]");
+		undef($fits);
+	}
+	else {
+		foreach my $row (@lc) {
+			my $binkey = $row->{EXTNAME};
+			my $fracexp = 1;
+			if (exists($self->{FRACEXP}{$binkey})) {
+				$fracexp = $self->{FRACEXP}{$binkey};
+			}
+
+			push(@fracexp, $fracexp);
+
+			my $time = $row->{TSTART} + $timepixr * $row->{TELAPSE}
+					- $self->{BASETIME};
+			push(@time, $time);
+		}
+
+	}
+
+	if ($self->isValid) {
+		my %fracexp = (
+			TTYPE => [ FRACEXP => 'Fractional exposure' ],
+			TFORM => 'E',
+		);
+
+		$status = $fits->writecol('TIME', { }, \@time)
+				->insertcol(\%fracexp)
+				->writecol('FRACEXP', { }, \@fracexp)
+				->status;
+
+		if ($status) {
+			$self->error(BAD_OUTPUT,
+					"unable to update table with TIME / FRACEXP [$status]");
+		}
+	}
+
+	foreach my $extname (qw(1 MAGHIST STDGTI)) {
+		if ($self->isValid) {
+			$self->updateCards($fits, $extname);
+		}
+	}
+
+	if ($fits) {
+		my $status = $fits->close->status;
+		undef($fits);
+		if ($status) {
+			$self->error(BAD_OUTPUT,
+					"unable to close updated table [$status]");
+		}
+	}
+}
+
+
+sub updateCards
+{
+	my ($self, $fits, $extname) = @_;
+
+	my $status = $fits->move($extname)->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to update $extname header [$status]");
+		return;
+	}
+
+	foreach my $card (@{ $self->{CARDS}}) {
+		next if $card =~ /^COMMENT/;
+		next if $card =~ /^HISTORY/;
+		if ($card =~ /^([-_\w]+)\s*=/) {
+			my $key = $1;
+			$fits->handle->update_card($key, $card, $status);
+			if ($status) {
+				$self->warning("unable to write keycard '$card' [$status]");
+			}
+		}
+		last if $status;
+	}
+}
+
+
+sub appendSTDGTI
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('ftappend',
+			infile => $self->{gtifile} . '[1]',
+			outfile => $self->{histfile},
+			);
+	$self->shell($command);
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		$self->moveFile($self->{histfile}, $args->{outfile});
+	}
+
+	if ($self->isValid) {
+		$self->putParameterHistory($args->{outfile});
+	}
+}
+

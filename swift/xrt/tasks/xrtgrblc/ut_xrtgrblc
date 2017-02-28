@@ -1,0 +1,150 @@
+#!/usr/bin/perl -w
+#
+# ut_xrtgrblc
+#
+# Modification History:
+#
+#       2007-11-20: V0.1 initial version, adapted from ut_xrtmkarf
+#
+use strict;
+use ut_xrtobj;
+
+# main
+{
+# Object Istances
+    my $ut = ut_xrtobj->new(
+			     name    => "xrtgrblc",
+			     utname  => "ut_xrtgrblc",
+			     version => "0.1",
+			    );
+    
+# Set Parameters
+    my $input   = $ut->getParam( "input_dir" );
+    my $output  = $ut->getParam( "output_dir" ) . "/" . $ut->getParam( "utname" );
+    my $chat    = $ut->getParam( "chatter" );
+    my $clobber = $ut->getParam( "clobber" );
+
+    $ut->setParam( "output_dir", $output ); 
+    
+
+# I/O Directory Check
+    $ut->checkIODirectory( )
+        if $ut->isValid;
+
+# Environment check
+    my @chk_env = ( "LHEASOFT", "HEADAS", "CALDB" );
+ 
+    $ut->checkEnvironment( @chk_env )
+        if $ut->isValid;
+    
+    my $ArchDir = "ut_xrtgrblc";
+    
+# File suffixes for input and prototype
+    my @suffs = qw( 
+        00285654000_xpcet.arf
+        00285654000_xpcetsra.lc
+        00285654000_xpcetsr.pha
+        00285654000_xpcetbg.pha
+        00285654000_xpcetsrrb.lc
+        00285654000_xpce1sra.lc
+        00285654000_xpce2sra.lc
+        00285654000_xwtet.arf
+        00285654000_xwtetsra.lc
+        00285654000_xwtetsr.pha
+        00285654000_xwtetbg.pha
+        00285654000_xwtetsrrb.lc
+        00285654000_xwte1sra.lc
+        00285654000_xwte2sra.lc
+    );
+
+# Input Files Check
+    my @chk_inp = ( "$input/$ArchDir/sw00285654000sat.fits.gz",
+                    "$input/$ArchDir/sw00285654000s.mkf.gz",
+                    "$input/$ArchDir/sw00285654000xhd.hk.gz",
+                    "$input/$ArchDir/sw00285654000xwtw2po_cl.evt.gz",
+                    "$input/$ArchDir/sw00285654000xpcw2po_cl.evt.gz"
+		   );
+
+    $ut->checkExist( "Input", @chk_inp )
+	if $ut->isValid;
+    
+# Prototype Check
+    $ut->checkExist( "Prototype", map( "$input/$ArchDir/sw$_.gz", @suffs ) )
+        if $ut->isValid;
+
+# Executables Files Check
+    my @chk_exe = ( "xrtgrblc", "ftdiff", "fverify", "pquery2" );
+    $ut->checkExecutable( @chk_exe )
+        if $ut->isValid;
+
+# Task Files Check
+    my $tchat = $chat - 1 < 0 ? 0 : $chat - 1;
+    my %par_task = (
+        evtfiles     => "\"$input/$ArchDir/sw00285654000xwtw2po_cl.evt.gz,$input/$ArchDir/sw00285654000xpcw2po_cl.evt.gz\"",
+        mkffiles     => "\"$input/$ArchDir/sw00285654000s.mkf.gz,$input/$ArchDir/sw00285654000s.mkf.gz\"",
+        xhdfiles     => "\"$input/$ArchDir/sw00285654000xhd.hk.gz,$input/$ArchDir/sw00285654000xhd.hk.gz\"",
+        attfiles     => "\"$input/$ArchDir/sw00285654000sat.fits.gz,$input/$ArchDir/sw00285654000sat.fits.gz\"",
+        outdir       => "$output/output",
+        outstem      => "ut00285654000",
+        object       => "DEFAULT",
+        srcra        => "\"02:12:32.95\"",
+        srcdec       => "\"-02:11:40.6\"",
+        psfcorrmeth  => 'xrtlccorr',
+        usecentroid  => 'yes',
+        centroidhbox => 0.4,
+        fldsrcdist   => 0.01,
+        detthresh    => 3.0,
+        minpccnts    => 40,
+        minwtcnts    => 60,
+        minenergy    => 0.3,
+        maxenergy    => 10.0,
+        splitenergy  => 2.0,
+        splitorbits  => 'yes',
+        maketimeexpr => "\"(TIME-TIME{-1}<5.1.or.ISNULL(TIME{-1})).and.Vrd1>0.and.ang_dist.lt.0.5.and.ten_arcmin==1.and.settled==1\"",
+        bincurve     => 'yes',
+        bintype      => 1,
+        pcsteprates  => "\"1:20,10:50,100:75,10000:150\"",
+        wtsteprates  => "\"1:20,10:50,100:75,10000:150\"",
+        pcframetime  => 2.51,
+        wtframetime  => 0.5,
+        plotcurves   => 'yes',
+        cutlowbins   => 'yes',
+        gapintv      => 200.0,
+        nhmap        => 1,
+        usernh       => 0,
+        maxredchisq  => 1.3,
+        minredchisq  => 0.7,
+        usetrigtime  => 'yes',
+        trigtime     => 0.0,
+        trigfrombat  => 'yes',
+        usetargid    => 'yes',
+        clean        => 'yes',
+	chatter      => $tchat,
+	clobber      => "$clobber",
+        history      => 'no'
+    );
+
+    # to get around (unacknowledged) rename bug in swiftxform
+    $ENV{HEADAS_TMPDIR} = $output;
+
+    $ut->runTask( %par_task )
+        if $ut->isValid;
+        
+    if ( $ut->isValid ) {
+	
+# fverify
+        # xrtgrblc makes a directory
+        $output .= "/output";
+
+        foreach my $output ( map( "$output/ut$_", ( @suffs, "00285654000_info.fits" ) ) ) {
+            $ut->fverify( $output );
+        }
+	
+# ftdiff
+        foreach my $list ( map( [ "$output/ut$_", "$input/$ArchDir/sw$_.gz" ], @suffs ) ) {
+            $ut->ftdiff( @$list );
+        }
+    }    
+    
+    $ut->delete( );
+}

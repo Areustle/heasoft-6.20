@@ -1,0 +1,300 @@
+#!/usr/bin/perl
+##!/usr1/local/bin/perl
+# Authors: Ziqin Pan
+# Description: make2region creates and displays regions on POW window and save
+#              them as a region file.
+# Modifiction: Original created on 12/08/04
+#
+
+use Getopt::Std;
+use Math::Trig;
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+
+make2region creates and displays regions on POW window and save 
+them as a region file.
+
+EOHELP
+exit 0;
+}
+
+ $infile =0;
+ $regionfile1 =0;
+ $regionfile2 =0;
+ $ra =0;
+ $dec =0;
+ $radius=0;
+ $timeout=0;
+
+exit headas_main(\&make2region);
+
+sub make2region {
+
+ my $tname ="make2region";
+ my $tvers ="1.0";
+
+
+ &make2region_getpar();
+
+ $status =
+ &make2region_work($infile,$regionfile1,$regionfile2,$ra,$dec,$radius,$timeout);
+
+
+}
+ 
+
+sub make2region_work {
+
+
+   my @val =@_;
+
+   $| = 1;
+
+   $proc_id=fork;
+   if ( $proc_id == 0) {
+      system("POWplot $val[0] &");
+      
+   }
+   elsif ( defined $proc_id) {
+      $outputfile1 =$val[1];
+      if ( $val[1] eq "" ) {
+         $outputfile1 ="pow.reg1";
+      }
+      $outputfile2 =$val[2];
+      if ( $val[1] eq "" ) {
+         $outputfile1 ="pow.reg2";
+      }
+
+      my $count =0;
+      $xpa_user =$ENV{XPA_USER};
+      $host =$ENV{HOST};
+      $helpdir = $ENV{LHEA_HELP};
+
+      if ( !(defined $xpa_user) || $xpa_user eq "") {
+          $pow = "pow";
+          #########################
+          # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+          #########################
+          $heraXPA = "heraXPA";
+      } else {
+          $pow ="pow_$xpa_user";
+          #########################
+          # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+          #########################
+          $heraXPA = "heraXPA_$xpa_user";
+      }
+
+      #########################
+      # Pan Chai - check to see if XPA entry point heraXPA exists.. if not,
+      #            use pow (this is most likely for command line running)
+      #########################
+      $result = `xpaget xpans 2>/dev/null`;
+
+      if ($result !~ /heraXPA/) {
+         $heraXPA = $pow;
+      }
+
+      print "Try to access to POWplot on $pow. Please wait!\n";
+      $lbx ="NULL";
+      while (($lbx =~ /NULL/) || ($lbx =~ /XPA/i) || ($lbx =="")) {
+          if ($count > $val[6] ) {
+             print "Access to POW plot timeout\n";
+             kill 9, $proc_id;
+             return 1;
+          }
+          sleep 5;
+           $value = `xpaget $pow bounds 2>/dev/null`;
+          ($lbx,$lby,$rtx,$rty) = split(/ /,$value,4); 
+           chop($lbx);
+          $count =$count+5;
+
+      }
+
+
+      ($lbx,$lby,$rtx,$rty) = split(/ /,$value,4); 
+
+
+      if ( $val[3] eq "def") {
+         $val[3] = ($lbx+$rtx)/2.;
+         if ($val[3] < 0 ) {
+            $val[3] =-$val[3];
+         $ah = $val[3]/15.;
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $h =0-$h;
+         $val[3] = join(':',$h,$m,$s);
+         } else {
+         $ah = $val[3]/15.;
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $val[3] = join(':',$h,$m,$s);
+         }
+      } else {
+      }
+
+      if ($val[4] eq "def") {
+	$val[4] = ($lby+$rty)/2.;
+        if ($val[4] <0) {
+           $val[4] =-$val[4];
+         $ah = $val[4];
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $h =0-$h;
+         $val[4] = join(':',$h,$m,$s);
+        } else {
+         $ah = $val[4];
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $val[4] = join(':',$h,$m,$s);
+        }
+      } else {
+      }
+
+      
+      if ( $val[5] eq "def" ) {
+          $val[5] = ($rty -$lby)/8.*60;
+          if( $val[5] <0) {
+             $val[5] =-$val[5] ;
+          }
+      } 
+
+     
+      $helpfile = "$helpdir/make2region_1.html";
+
+      if (-e $outputfile1 ) {
+          system("rm -f $outputfile1");
+      }
+      $region ="fk5; circle($val[3],$val[4],$val[5]')";
+      system("xpaset -p $pow scope 100 100");
+      system("xpaset -p $pow regionTool -open");
+      system("xpaset -p $pow regionName $outputfile1");
+      system("echo \"$region\" |xpaset $pow regions");
+
+      #########################
+      # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+      #########################
+      system("echo \"$helpfile\" |xpaset $heraXPA  helpPage");
+      #system("cat \"$helpfile\" |xpaset $heraXPA  helpPage");
+
+      $return_value= `xpaget $pow regionTool -wait`;
+      #########################
+      # Pan Chai - wait command will now returned immediately. Scripts needs to check every
+      #            2 seconds to see if the status has changed.
+      #########################
+      while ($return_value eq "NOT_YET") {
+            sleep 2;
+            $return_value= `xpaget $pow regionTool -wait`;
+      }
+      system("xpaset -p $pow regionTool -close");
+
+      #########################
+      # Pan Chai - close of helpPage is just withdraw the widget
+      #########################
+      system("xpaset -p $heraXPA helpPage -close");
+
+
+      if ( !(-e $outputfile1) ) {
+      $helpfile = "$helpdir/make2region_2.html";
+
+      #########################
+      # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+      #########################
+      system("echo \"$helpfile\" |xpaset $heraXPA helpPage 2>/dev/null");
+      #system("cat \"$helpfile\" |xpaset $heraXPA helpPage 2>/dev/null");
+
+         print "Error:source region file has not been saved!\n";
+         exit 1;
+      }
+
+      if (-e $outputfile2 ) {
+          system("rm -f $outputfile2");
+      }
+      $helpfile = "$helpdir/make2region_3.html";
+
+      #########################
+      system("xpaset -p $pow regionTool -open");
+      system("xpaset -p $pow regionName $outputfile2");
+      system("echo \"$region\" |xpaset $pow regions");
+
+      #########################
+      # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+      #########################
+      system("echo \"$helpfile\" |xpaset $heraXPA helpPage");
+      #system("cat \"$helpfile\" |xpaset $heraXPA helpPage");
+
+      $return_value= `xpaget $pow regionTool -wait`;
+      #########################
+      # Pan Chai - wait command will now returned immediately. Scripts needs to check every
+      #            2 seconds to see if the status has changed. This will work with old way
+      #            since the return_value in old way will return either 0 or 1 after user inputs.
+      #########################
+      while ($return_value eq "NOT_YET") {
+            sleep 2;
+            $return_value= `xpaget $pow regionTool -wait`;
+      }
+
+      system("xpaset -p $pow close");
+
+      #########################
+      # Pan Chai - close of helpPage is just withdraw the widget
+      #########################
+      if ( $heraXPA !~ /^pow$/ ) {
+      system("xpaset -p $heraXPA helpPage -close");
+      }
+         
+   }
+
+   return 0;
+
+}
+
+
+sub make2region_getpar {
+  
+
+ if (PILGetString("infile",$infile)) {
+    print "Error to get parameter \"infile\"\n";
+    exit(-1)
+ }
+
+ if (PILGetString("regionfile1",$regionfile1)){
+    print "Error to get parameter \"regionfile1\"\n";
+    exit(-1)
+ }
+ if (PILGetString("regionfile2",$regionfile2)){
+    print "Error to get parameter \"regionfile2\"\n";
+    exit(-1)
+ }
+
+ if (PILGetString("ra",$ra)){
+    print "Error to get parameter \"ra\"\n";
+    exit(-1)
+ }
+ if (PILGetString("dec",$dec)){
+    print "Error to get parameter \"dec\"\n";
+    exit(-1)
+ }
+ if (PILGetString("radius",$radius)){
+    print "Error to get parameter \"radius\"\n";
+    exit(-1)
+ }
+ if (PILGetReal("timeout",$timeout)){
+    print "Error to get parameter \"timeout\"\n";
+    exit(-1)
+ }
+
+}
+

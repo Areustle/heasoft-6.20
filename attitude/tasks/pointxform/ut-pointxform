@@ -1,0 +1,156 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/pointxform/ut-pointxform,v $
+# $Revision: 1.1 $
+# $Date: 2005/03/03 19:25:20 $
+#
+#		pointxform unit test
+#
+#
+# $Log: ut-pointxform,v $
+# Revision 1.1  2005/03/03 19:25:20  rwiegand
+# Convert coordinates between telescope definition (TELDEF) systems.
+#
+
+use strict;
+
+package Test::Pointxform;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+use DirHandle;
+
+
+
+# main
+{
+	my $tool = Test::Pointxform->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->iterateTests
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+
+sub iterateTests
+{
+	my ($self) = @_;
+
+	my $input = $self->args->{input};
+
+	my $dh = DirHandle->new($input);
+	my @names = $dh->read;
+	undef($dh);
+
+	foreach my $name (@names) {
+		if ($name =~ /^test/) {
+			my $fh = FileHandle->new("$input/$name");
+			my @config = <$fh>;
+			undef($fh);
+
+			my %test;
+			foreach my $line (@config) {
+				next if $line =~ /^\s*$/;
+				next if $line =~ /^\s*#/;
+				$line =~ s/^\s+//;
+				$line =~ s/\s+$//;
+				my ($key, $value) = split(/\s+/, $line, 2);
+				$test{$key} = $value;
+			}
+
+			$test{name} = substr($name, 5);
+
+			$self->runTest(\%test);
+			last if not $self->isValid;
+		}
+	}
+
+}
+
+
+
+sub runTest
+{
+	my ($self, $test) = @_;
+
+	$self->report("pointxform test $test->{name}");
+
+	foreach my $key (qw(from x y teldef align)) {
+		if (not exists($test->{$key})) {
+			$self->error(BAD_INPUT, "missing $key");
+		}
+	}
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @task = (
+		from       => $test->{from},
+		to         => $test->{to} || 'ALL',
+		x          => $test->{x},
+		y          => $test->{y},
+		teldeffile => "$input/$test->{teldef}",
+		alignfile  => "$input/$test->{align}",
+		attfile    => $test->{attfile} ? "$input/$test->{attfile}" : 'NONE',
+		ra         => $test->{ra} || 0,
+		dec        => $test->{dec} || 0,
+		roll       => $test->{roll} || 0,
+		time       => $test->{time} || 0,
+		fromworld  => $test->{fromworld} || 'no',
+		chatter    => 0,
+	);
+
+	my %task = @task;
+
+	# build command line
+	my $command = $self->buildCommand('pointxform', @task);
+
+	my $tmp = $self->temporary('result');
+	my $result = $self->shell($command . " > $tmp 2>&1");
+
+
+	$self->shell("diff $input/template.$test->{name} $tmp");
+}
+
+

@@ -1,0 +1,514 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotoptsum/uvotoptsum,v $
+# $Revision: 1.3 $
+# $Date: 2011/03/29 15:12:18 $
+#
+# $Log: uvotoptsum,v $
+# Revision 1.3  2011/03/29 15:12:18  rwiegand
+# Allow the user the specify the time relative to which exponential decay
+# is calculated (new parameter timezero).
+#
+# Revision 1.2  2009/07/07 20:40:47  rwiegand
+# Use Stephen's special case code for alpha near -1.
+#
+# Revision 1.1  2009/06/08 13:49:25  rwiegand
+# Task to determine optimal weighting of images assuming a simple power-law.
+#
+
+use strict;
+
+package UVOT::OptSum;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+use POSIX;
+use SimpleFITS;
+
+
+{
+	my $task = __PACKAGE__->new(version => '1.1');
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			getTimeZero
+			loadHistory
+			calculateWeights
+			writeWeightfile
+			runUvotimsum
+			)) {
+		$self->$step;
+		last if not $self->isValid;
+	}
+
+}
+
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				imagefile=file maghistfile=file
+				sumfile=file weightfile=file
+				alpha=real
+				exclude=string
+				flexframetime=real ignoreframetime=boolean timezero=string
+				history=boolean cleanup=boolean clobber=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile weightfile)) {
+			my $path = $args->{$key};
+			if (-e $path) {
+				$self->error(BAD_INPUT,
+					"$path exists and clobber not set");
+			}
+		}
+	}
+
+}
+
+
+sub getTimeZero
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $error = undef;
+	my $header = undef;
+
+	my $status = SimpleFITS->readonly($args->{imagefile})
+			->readheader($header, clean => 1)
+			->close
+			->status;
+	if ($status) {
+		$error = "unable to open $args->{imagefile} [$status]";
+	}
+
+	if ($error) {
+		# will report below
+	}
+	elsif (Task::FITS::isReal($args->{timezero})) {
+		$self->{TIMEZERO} = $args->{timezero};
+	}
+	else {
+		my $key = $args->{timezero};
+		if (defined($header->{$key})) {
+			$self->{TIMEZERO} = $header->{$key};
+			$self->report("timezero $args->{timezero} => $self->{TIMEZERO}");
+		}
+		else {
+			$error = "unable to determine timezero from key $key";
+		}
+	}
+
+	if ($error) {
+		$self->error(BAD_INPUT, $error);
+	}
+}
+
+
+sub loadHistory
+{
+	my ($self) = @_;
+
+	my @history;
+	$self->{HISTORY} = \@history;
+
+	my $args = $self->args;
+
+	my $input = $args->{maghistfile};
+	my $fits = SimpleFITS->readonly($input);
+	my $status = $fits->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+			"unable to open $input [$status]");
+	}
+	else {
+		my $spec = $self->parseInputURL($input);
+		if (not $spec->{extspec}) {
+			# choose second HDU
+			$status = $fits->move(2)->status;
+			if ($status) {
+				$self->error(BAD_INPUT,
+					"unable to move to second HDU [$status]");
+			}
+		}
+
+		if (not $status) {
+			$status = $fits->loadtable(\@history)->status;
+			if ($status) {
+				$self->error(BAD_INPUT,
+					"unable to move to load table [$status]");
+			}
+		}
+
+	}
+
+	if ($fits) {
+		$status = $fits->close->status;
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to close $input [$status]");
+		}
+	}
+
+	if (not $status) {
+		# check what was loaded
+		my $count = @history;
+		if ($count == 0) {
+			$self->error(BAD_INPUT,
+				"no records loaded from $input");
+		}
+		else {
+			$self->verbose("loaded $count rows");
+			my $first = $history[0];
+			foreach my $key (qw(TSTART TSTOP EXPOSURE COI_TOT_RATE_ERR)) {
+				if (not exists($first->{$key})) {
+					$self->error(BAD_INPUT,
+						"$input table does not contain $key");
+				}
+			}
+
+		}
+	}
+}
+
+
+sub calculateWeights
+{
+	my ($self) = @_;
+
+	my $alpha = $self->args->{alpha};
+
+	foreach my $e (@{ $self->{HISTORY} }) {
+
+		# find offsets from TIMEZERO
+		$e->{TSTART_TIMEZERO} = $e->{TSTART} - $self->{TIMEZERO};
+		$e->{TSTOP_TIMEZERO} = $e->{TSTOP} - $self->{TIMEZERO};
+
+	}
+
+	if (abs($alpha + 1) < 0.01) {
+		$self->warning("exponent is close to -1; applying specialization");
+		$self->calculateWeightsStephenAlpha($alpha);
+	}
+	else {
+		$self->calculateWeightsNormalAlpha($alpha);
+	}
+
+
+	my $C_model_sum = 0;
+
+	foreach my $e (@{ $self->{HISTORY} }) {
+		$C_model_sum += $e->{C_model};
+	}
+
+
+	my $weighting_factor_sum = 0;
+
+	foreach my $e (@{ $self->{HISTORY} }) {
+
+		# Equation 15 creates the probability vector which must total to 1
+		$e->{PROBABILITY} = $e->{C_model} / $C_model_sum;
+
+		# Need to supply the error in total counts so multiply coi_src_rate_err
+		# by the exposure time
+		$e->{COI_TOT_ERR} = $e->{EXPOSURE} * $e->{COI_TOT_RATE_ERR};
+
+		# Now compute weighting factor from Equation 19
+		$e->{WEIGHTING_FACTOR} = $e->{PROBABILITY}**2 / $e->{COI_TOT_ERR}**2;
+
+		$weighting_factor_sum += $e->{WEIGHTING_FACTOR};
+	}
+
+	# The actual weights that we want to apply to uvotimsum come from the
+	# coefficients of C_src,i in Equation 17
+
+	foreach my $e (@{ $self->{HISTORY} }) {
+		$e->{WEIGHT_ACTUAL} = $e->{WEIGHTING_FACTOR}
+				/ $weighting_factor_sum / $e->{PROBABILITY};
+	}
+
+}
+
+
+sub calculateWeightsStephenAlpha
+{
+	my ($self, $alpha) = @_;
+
+	my $first = undef;
+
+	foreach my $e (@{ $self->{HISTORY} }) {
+
+		if (not $first) {
+			$first = $e;
+		}
+
+		# note that this normalizes the first term R_1 * (tstop,1 - tstart,1)
+		# to unity
+		$e->{C_model} =
+				($first->{TSTOP_TIMEZERO} - $first->{TSTART_TIMEZERO})
+				* log($e->{TSTOP_TIMEZERO} / $e->{TSTART_TIMEZERO})
+				/ log($first->{TSTOP_TIMEZERO} / $first->{TSTART_TIMEZERO})
+				;
+	}
+}
+
+
+
+sub calculateWeightsNormalAlpha
+{
+	my ($self, $alpha) = @_;
+
+	my $first = 1;
+	my $expalpha0;
+
+	foreach my $e (@{ $self->{HISTORY} }) {
+
+		# Numerator vector
+		$e->{EXPALPHA} = pow($e->{TSTOP_TIMEZERO}, $alpha+1)
+				- pow($e->{TSTART_TIMEZERO}, $alpha+1);
+
+		if ($first) {
+			$first = 0;
+			$expalpha0 = $e->{EXPALPHA};
+		}
+
+		# Equation 10 normalize to first value
+		$e->{C_model} = $e->{EXPALPHA} / $expalpha0;
+	}
+
+}
+
+
+sub writeWeightfile
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# if the user doesn't want to keep the weightfile allow it
+	if (uc($args->{weightfile}) eq 'NONE') {
+		$self->{weightfile} = $self->temporary('weights', ext => '.dat');
+	}
+	else {
+		$self->{weightfile} = $args->{weightfile};
+	}
+
+	my $fh = FileHandle->new($self->{weightfile}, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT,
+			"unable to create $self->{weightfile} [$!]");
+		return;
+	}
+
+	# This uses EXTNAMEs which will be unique even if maghistfile
+	# corresponds to multiple sw*uff_sk.img files.  But this will
+	# be confused if the user passes an image file with non-unique 
+	foreach my $e (@{ $self->{HISTORY} }) {
+		$fh->printf("%s: %.7f\n", $e->{EXTNAME}, $e->{WEIGHT_ACTUAL});
+	}
+
+	$fh->close;
+}
+
+
+sub runUvotimsum
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	if (uc($args->{sumfile}) eq 'NONE') {
+		$self->verbose("not creating uvotimsum");
+		return;
+	}
+
+	my $command = $self->buildCommand('uvotimsum',
+			infile => $args->{imagefile},
+			outfile => $args->{sumfile},
+			exclude => $args->{exclude},
+			weightfile => $self->{weightfile},
+			flexframetime => $args->{flexframetime},
+			ignoreframetime => $args->{ignoreframetime},
+			clobber => $args->{clobber},
+			history => $args->{history},
+			cleanup => $args->{cleanup},
+			chatter => $args->{chatter},
+			);
+
+	$self->shell($command);
+}
+
+
+__END__
+
+
+
+Date: Thu, 15 May 2008 15:08:24 -0400
+From: Wayne Landsman <Wayne.B.Landsman@nasa.gov>
+Subject: Optimal image addition
+
+Bob,
+
+    Here are some notes on creating a new tool uvotoptsum based on the 
+optimal coaddition algorithm given in a paper by Morgan et al.      
+Their paper is available at
+http://arxiv.org/abs/0805.1426 with the relevant equations being (10), 
+(15), (17) and (19).        I think we get the most flexibility if we 
+make it a standalone tool that uses the output photometry file created 
+by uvotmaghist.     The fhelp could start as follows:
+
+uvotoptsum - Optimally coadd images
+
+Inputs:
+
+image - name of file containing images to be optimally coadded
+alpha - temporal decay index, default = -0.9
+maghistfits - name of photometry FITS file created by uvotmaghist
+
+Parameters accepted by uvotimsum should probably also be accepted by 
+uvotoptsum.      Like uvotimsum one nearly always wants to avoid adding 
+duplicate exposure IDs (event and image data) and images that are not 
+aspect corrected.
+
+I attach an IDL script uvotoptsum.pro that performs the optimal weight 
+calculations and then calls uvotimsum with these weights.
+
+One change I made to the equations in the paper is that they take the 
+variance to be equal to the number of counts (Poisson model).     We 
+have some small deviations from  their simple model (dead-time 
+correction, co-I correction, binomial statistics) so I instead take the 
+variance from coi_tot_err^2.     
+
+Note that the "weights" we want to apply to uvotimsum are not the same 
+as the  "weighting factor" given in equation 19 in the paper .     
+Rather they are the coefficients  with which one multiplies the source 
+counts in Equation 17.
+
+We will probably have to iterate on this tool a few times.
+
+--Wayne
+
+
+
+--------------020901030606070209040405
+Content-Type: text/plain;
+ name="uvotoptsum.pro"
+Content-Transfer-Encoding: 7bit
+Content-Disposition: inline;
+ filename="uvotoptsum.pro"
+
+pro uvotoptsum,imagefile, maghistfile, alpha
+; Purpose:
+;   Co-add UVOT images using optimal co-addition described by Morgan et al.
+; Inputs
+;   imagefile - name of image file to be optimally coadded 
+;   maghistfile - name of output photometry FITS table created by uvotmaghist
+;   alpha - temporal decay index, default =-0.9
+
+if N_params() LT 2 then begin 
+    print,'Syntax - uvotoptsum, imagefile, maghistfile,[alpha]'
+    return
+    endif
+
+alpha =  N_elements(alpha) EQ 0 ?  -0.9 : alpha    ;Default value of alpha
+
+;Trigger time not in maghist output? so get it from image file
+h = headfits(imagefile)
+trigtime = sxpar(h,'TRIGTIME')
+
+
+tab= mrdfits(maghistfile,1)     ;Read the uvotmaghist ouptut
+
+
+;Get some values from uvotmaghist output
+tstart = tab.tstart - trigtime    ;Tstart vector
+tstop = tab.tstop - trigtime        ;Tstop vector
+exposure = tab.exposure           ;Exposure time vector
+coi_tot_rate_err = tab.coi_tot_rate_err ;Error on co-I corrected total cnt rate
+
+;Build the vector terms needed in equation 10.   The first term 
+; (R_1*(tstop,1 -tstart_1)) giving the first count rate can be set to unity.
+      
+expalpha = tstop^(alpha+1) - tstart^(alpha+1)    ;Numerator vector
+C_model = (expalpha/expalpha[0])      ;Equation 10 normalize to first value
+
+; Equation 15 creates the  probability vector which must total to 1 
+p = c_model/total(c_model)        
+
+; Need to supply the error in total counts so multiply coi_src_rate_err by the
+; exposure time
+
+coi_tot_err = exposure*coi_tot_rate_err
+
+;Now compute weighting factor from Equation 19
+w = p^2/coi_tot_err^2     
+ 
+
+; The actual weights that we want to apply to uvotimsum come from the 
+; coefficients of C_src,i in Equation 17
+
+wt =  w/total(w)/p
+
+; Print these weights to a file weightb.dat to be read by uvotimsum.
+n = N_elements(tab)
+id = strtrim(indgen(n)+1,2) + ': '
+forprint,id, wt,f='(a,f10.7)',t='weightb.dat',/nocomm
+
+; Now spawn to uvotimsum using Bourne shell
+cmd = 'uvotimsum expmap=no infile='  + imagefile +  $
+   ' maskfile=NONE exclude=DEFAULT outfile=optsum.img ' + $
+    ' clobber=y weightfile=weightb.dat'    
+spawn,cmd,/sh
+return
+end
+
+--------------020901030606070209040405--
+
+
+
+-------- Original Message --------
+Subject: 	Uvotoptsum
+Date: 	Thu, 28 May 2009 13:59:46 -0500
+From: 	Holland, Stephen T. (GSFC-660.1)[UNIVERSITY OF MARYLAND] <stephen.t.holland@nasa.gov>
+
+Hi,
+
+      I think I see how to make uvotoptsum work for cases where the  
+decay index is exactly -1.  In the Morgan et al. (2008, ApJ, 683, 913)  
+paper the equations are derived assuming that alpha != -1.  However,  
+if I derive them assuming that alpha = -1 then their equation 10 becomes
+
+C_model,i = R_1 * (t_stop,1 - t_start,1)  *  ln(t_stop,i/t_start,i) /  
+ln(t_stop,1/t_start,1)
+
+This equation should be checked in case I made an error deriving it.
+
+So, in the calculateWeights subroutine in uvotopt all that is needed  
+is some sort of switch that depends on $alpha.  If $alpha != -1 then  
+do what the code currently does.  If $alpha = -1 then replace the  
+calculation of C_model with the equation above.
+
+      In practice the switch should probably have some sort of  
+tolerance in it so that values of $alpha that are very close to (but  
+not exactly equal to) -1 do not cause C_model to explode due to the  
+denominator becoming nearly zero.
+
+

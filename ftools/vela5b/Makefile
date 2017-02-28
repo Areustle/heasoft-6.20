@@ -1,0 +1,11 @@
+HD_COMPONENT_NAME	= ftools
+
+HD_COMPONENT_VERS	=
+
+HD_SUBDIRS		= src
+
+HD_INSTALL_HELP		= help/vela5b.txt
+
+HD_INSTALL_PFILES	= vela5b.par
+
+include ${HD_STD_MAKEFILE}

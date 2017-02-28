@@ -1,0 +1,880 @@
+C--- System dependent routines (VMS version)
+C--- Contains entry points for:
+C CONC    (SUB)  Converts filename to system preferred case
+C DEBUGH
+C DIRPOS  (SUB)  Return the number of characters in directory spec
+C FRELUN  (SUB)  Free up a logical unit number
+C GETDAT  (SUB)  Get current date
+C GETDIR  (SUB)  Get the current working directory
+C GETLUN  (SUB)  Get a free logical unit number
+C GETRAN  (FUN)  Get a random number
+C GETROT  (SUB)  Get the user's root directory
+C GETTIM  (SUB)  Get the current time
+C GETTS
+C GETUSE  (SUB)  Get the current user ID
+C GTRCLN  (FUN)  Get the record length of a direct access file
+C I2CONV  (FUN)  Convert I*2 from IBM byte order to processor byte order
+C I4CONV  (FUN)  Convert I*4 from IBM byte order to processor byte order
+C INITTS
+C LEAVE   (SUB)  Routine to signal a successful exit from a program
+C LOCASE  (SUB)  Convert to lower case
+C MOVBYT  (SUB)  Move bytes
+C OPENWR  (SUB)  Open wrapup
+C PLTTER         Toggle graphics/alpha mode on terminal
+C PROMPT  (SUB)  Prompt
+C RDULI2  (SUB)  Read a record and keep trying if locked
+C RDULKC  (SUB)  Read a character string and keep trying if locked
+C PTEND   (SUB)  Add prefix to file names
+C RDFORN  (SUB)  Read a foreign command, i.e., the command line
+C SPAWN   (SUB)  Spawn to the operating system
+C TRLOG   (SUB)  Translate logical name
+C UNLOCK  (SUB)  Unlock a file
+C UPC     (SUB)  Convert to upper case
+C XCOPY   (SUB)  Copy file
+C DIRIMG  (SUB)  List all *.img files
+C GETENV  (SUB)  Fakes getting an environment variable. Really gets a symbol.
+C*********
+      SUBROUTINE CONC(CBUF)
+      CHARACTER CBUF*(*)
+C---
+C Convert case of CBUF to default case of system.
+C For VMS this is upper case.
+C---
+C CBUF    I/O  The file name to be converted.
+C---
+      CALL UPC(CBUF)
+      RETURN
+      END
+C*********
+      SUBROUTINE DEBUGH
+      EXTERNAL SS$_DEBUG
+C---
+C Sets up the VAX debug handler
+C---
+      CALL LIB$SIGNAL(SS$_DEBUG)
+      RETURN
+      END
+C*********
+      SUBROUTINE DIRPOS(CFILE, ISTA, IEND)
+      CHARACTER CFILE*(*)
+      INTEGER   ISTA, IEND
+C---
+C CFILE is a full filespec containing the disk and directory names.
+C Upon return CFILE(ISTA:IEND) contains only the directory spec.
+C---
+C CFILE   I    The full file name
+C ISTA      O  First valid character in directory spec, can be zero
+C IEND      O  Last valid character in directory spec, can be zero
+C---
+C 1989-Jul-08 - [AFT]
+C---
+      INTEGER   LENACT
+      INTEGER   I, LFILE
+C---
+      LFILE=LENACT(CFILE)
+      IEND=0
+      DO 190 I=1,LFILE
+         IF(CFILE(I:I).EQ.',') IEND=I
+         IF(CFILE(I:I).EQ.':') IEND=I
+         IF(CFILE(I:I).EQ.']') IEND=I
+  190 CONTINUE
+      ISTA=MIN(1,IEND)
+      RETURN
+      END
+C*********
+      SUBROUTINE GETDAT (CDATE)
+      character(9) CDATE
+C---
+C Return date in format dd-mmm-yy
+C---
+C CDATE     O  The current date
+C---
+      CALL DATE(CDATE)
+      RETURN
+      END
+C*********
+      SUBROUTINE getdir(directory)
+
+      CHARACTER*(*) directory
+
+c return the user's current working directory   Nick 28.5.91
+c this opens a scratch file, tests its existance, then closes it with
+c delete
+c this routine duplicates the sun-unix getcwd routine
+c 08-AUG-1992 : replaced the call the openwr with SYS$SETDDIR VMS system
+c               service routine - Song Yom
+
+      character(10) file
+      character(80) full_file_name
+      character(256) wrtstr
+      INTEGER io, ierr, ista, iend
+      INTEGER*4 SYS$SETDDIR
+      INTEGER*4 STATUS
+      INTEGER*4 DIRLEN
+      character(255) DIRSPC
+
+C
+C     Get the current directory name.
+C
+      STATUS = SYS$SETDDIR (,DIRLEN,DIRSPC)
+C
+C     If successful, construct the full directory specification.
+C     Otherwise, signal a message to the user.
+C
+      IF (STATUS) THEN
+         INQUIRE (FILE=DIRSPC(:DIRLEN),NAME=FULL_FILE_NAME,
+     &   IOSTAT=IERR)
+         IF (IERR .EQ. 0) THEN
+            CALL UPC (FULL_FILE_NAME)
+            CALL DIRPOS (FULL_FILE_NAME,ISTA,IEND)
+            DIRECTORY = FULL_FILE_NAME(ISTA:IEND)
+         ELSE
+            DIRECTORY = ' '
+         ENDIF
+      ELSE
+         WRITE (WRTSTR,'(A)')
+     &   ' Error in determining current directory location'
+         CALL XWRITE (WRTSTR,5)
+      ENDIF
+C
+      RETURN
+      END
+C*********
+      REAL FUNCTION GETRAN(ISEED)
+      INTEGER   ISEED
+C---
+C Returns a real uniformly distributed between 0 and 1
+C---
+C ISEED   I/O  Random seed.
+C---
+      REAL      RAN
+C---
+      GETRAN = RAN(ISEED)
+      RETURN
+      END
+C*********
+      SUBROUTINE getrot(rootname)
+
+      CHARACTER*(*) rootname
+
+c get the root directory name
+
+      rootname='sys$login:'
+      RETURN
+      END
+C*********
+      SUBROUTINE GETTIM (CTIME)
+      character(8) CTIME
+C---
+C Return time in format hh:mm:ss
+C---
+C CTIME     O  The current time
+C---
+      CALL TIME(CTIME)
+      RETURN
+      END
+C*********
+      SUBROUTINE GETTS (IVALUE)
+      INTEGER   IVALUE(5)
+C---
+C Get the runtime statistics :
+C   IVALUE(1) - Elapsed real time in 10msec tics
+C   IVALUE(2) - elapsed CPU time in 10msec tics
+C   IVALUE(3) - buffered I/O count
+C   IVALUE(4) - direct I/O count
+C   IVALUE(5) - page fault count
+C---
+      INCLUDE '($SSDEF)'
+      INCLUDE '($SYSSRVNAM)'
+      INTEGER   ISTAT
+      INTEGER   LIB$STAT_TIMER
+      REAL      RVALUE
+      INTEGER   I, ITMP
+      BYTE      FIRSTVAL(8)
+      EQUIVALENCE (ITMP, FIRSTVAL)
+C---
+C On the VAX elapsed time is returned in a delta system time format.
+C Thus it is a negative quadword, with a delta of 100 nsec.
+      ISTAT=LIB$STAT_TIMER(1,ITMP)
+      IF (ISTAT.NE.SS$_NORMAL) THEN
+         CALL LIB$SIGNAL(%VAL(ISTAT))
+         RETURN
+      END IF
+C Throw away bottom two and top two bytes, negate, and convert to
+C hundredths of a second.
+      DO I=1,4
+         FIRSTVAL(I)=FIRSTVAL(I+2)
+      END DO
+      IVALUE(1)=-ITMP
+      RVALUE=IVALUE(1)*6.5536E-1
+      IVALUE(1)=RVALUE
+      DO I=2,5
+         ISTAT=LIB$STAT_TIMER(I,IVALUE(I))
+         IF (ISTAT.NE.SS$_NORMAL) THEN
+            CALL LIB$SIGNAL(%VAL(ISTAT))
+            RETURN
+         END IF
+      END DO
+      RETURN
+      END
+C*********
+      SUBROUTINE GETUSE(CUSER, IERR)
+      CHARACTER CUSER*(*)
+      INTEGER   IERR
+C---
+C Return the name of the current user
+C---
+C CUSER     O  The current user id
+C IERR      O  =1 if valid, <>0 could not generate user id
+C---
+C Include the JPI equest codes
+      INTEGER   LIB$GETJPI,IRET,LEN
+      INCLUDE '($JPIDEF)'
+C Include the system status codes
+      INCLUDE '($SSDEF)'
+C---
+      IRET = LIB$GETJPI(JPI$_USERNAME,,,,CUSER,LEN)
+      IF(IRET.EQ.SS$_NORMAL) THEN
+         IERR =0
+         CUSER(LEN+1:)=' '
+      ELSE
+         call lib$signal(%val(iret))
+         IERR=IRET
+      END IF
+      RETURN
+      END
+C*********
+      INTEGER FUNCTION GTRCLN(CFILE)
+      CHARACTER CFILE*(*)
+C---
+C Get the record length (in bytes) of a direct access unformatted file
+C assuming that the first sixteen bytes are :
+C  C*4  Machine ID ('Sun ' or 'VAX ')
+C  I*4  Check integer
+C  R*4  Check real
+C  I*4  Number of bytes per record
+C Also checks whether check integer and real are correct.
+C---
+C CFILE   I    The filename
+C GTRCLN    O  If successful = # bytes per record
+C              If failed to open file = 0
+C              If failed integer check = -1
+C              If failed real check = -2
+C---
+      INTEGER FIDINT
+      REAL    FIDRL
+      PARAMETER (FIDINT=123456, FIDRL=1.23456E+07)
+      REAL    CHKRL
+      INTEGER CHKINT, NBYTES, ILUN, IERR
+      CHARACTER CMACH*4
+
+      INQUIRE(FILE=CFILE,RECL=NBYTES)
+      CALL GETLUN(ILUN)
+      CALL OPENWR(ILUN, CFILE, 'OLD', 'D', ' ', NBYTES, 1, IERR)
+      IF (IERR .NE. 0) THEN
+         GTRCLN=0
+         RETURN
+      END IF
+      READ(ILUN,REC=1,IOSTAT=IERR) CMACH, CHKINT, CHKRL, NBYTES
+      CLOSE(ILUN)
+      CALL FRELUN(ILUN)
+      IF (CHKINT .NE. FIDINT) THEN
+         GTRCLN=-1
+         RETURN
+      END IF
+      IF (CHKRL .NE. FIDRL) THEN
+         GTRCLN=-2
+         RETURN
+      END IF
+      GTRCLN=NBYTES
+      RETURN
+      END
+C*********
+      INTEGER*2 FUNCTION I2CONV(IX)
+      INTEGER*2 IX
+C---
+C Convert an INTEGER*2 from IBM byte order to processor byte order.
+C---
+C IX      I    The number to be converted
+C---
+      I2CONV= ISHFTC(IX, 8, 16)
+      RETURN
+      END
+C*********
+      INTEGER*4 FUNCTION I4CONV(I4DATA)
+      INTEGER*2 I4DATA(2)
+C---
+C Convert an INTEGER*4 from IBM byte order to processor byte order.
+C---
+C ISHF    I    The number to be converted
+C---
+      INTEGER*2 I2TMP(2), I2CONV
+      INTEGER*4 I4TMP
+      EQUIVALENCE (I2TMP, I4TMP)
+C---
+      I2TMP(2)=I2CONV(I4DATA(1))
+      I2TMP(1)=I2CONV(I4DATA(2))
+      I4CONV=I4TMP
+      RETURN
+      END
+C*********
+      SUBROUTINE INITTS
+      INCLUDE '($SSDEF)'
+      INCLUDE '($SYSSRVNAM)'
+      INTEGER   LIB$INIT_TIMER
+      INTEGER   ISTAT
+C---
+C Initialize the runtime statistics
+C---
+      ISTAT=LIB$INIT_TIMER(%VAL(0))
+      IF (ISTAT.NE.SS$_NORMAL) THEN
+         CALL LIB$SIGNAL(%VAL(ISTAT))
+         CALL EXIT
+      END IF
+      RETURN
+      END
+C*********
+      SUBROUTINE leave
+
+c subroutine to exit from programs
+
+      INTEGER*2 exit_success
+
+      exit_success=1
+      CALL exit(exit_success)
+
+      RETURN
+      END
+C*********
+      SUBROUTINE LOCASE(CBUF)
+      CHARACTER CBUF*(*)
+C---
+C Converts CBUF to lower case.
+C---
+C CBUF    I/O  The character array to convert to lower case
+C---
+      INTEGER   I, ITMP
+C---
+      DO 120 I=1,LEN(CBUF)
+         ITMP=ICHAR(CBUF(I:I))
+         IF(ITMP.GT.64 .AND. ITMP.LT.91) CBUF(I:I)=CHAR(ITMP+32)
+  120 CONTINUE
+      RETURN
+      END
+C*********
+C- MOVBYT - move bytes from A to B
+      SUBROUTINE MOVBYT(nbytes,a,b)
+C  interface to the lib$movc3 system routine for moving bytes - [AMTP]
+C Import :
+      integer nbytes                 ! no of bytes to move
+      byte a(*)                      ! source of bytes
+C Export :
+      byte b(*)                      ! destination of bytes
+C Local constant :
+      integer maxk                   ! maximum for lib$movc3
+      parameter (maxk=65535)
+C Local variables :
+      integer k1,k2,dk
+C-
+      k1=1
+      k2=min(k1+maxk-1,nbytes)
+      dk=k2-k1+1
+      do while(k2.lt.nbytes)
+         call lib$movc3(dk,a(k1),b(k1))
+         k1=k2+1
+         k2=min(k1+maxk-1,nbytes)
+         dk=k2-k1+1
+      end do
+      call lib$movc3(dk,a(k1),b(k1))
+      return
+      end
+C*********
+      SUBROUTINE OPENWR(LUN,CFILE,CSTAT,CACC,CAR,LRECL,IREAD,IER)
+      CHARACTER CFILE*(*), CSTAT*(*), CACC*(*), CAR*(*)
+      INTEGER   LUN, LRECL, IREAD, IER
+C---
+C Wrapup routine for the Fortran OPEN statement.  This version will
+C force the filename to be case insensitive, UNLESS the the first
+C character of CFILE is a backslash.  If the first character is a
+C backslash, then it should not be considered part of the filename
+C on any system.
+C   CFILE can be of the form 'disk,dir/sub,file' in which case, OPENWR
+C will create 3 strings and call PTEND to construct the (system-
+C dependent) file name.  This provides a system independent way
+C to specify file names.
+C---
+C LUN     I    The logical unit number to be opened
+C CFILE   I/O  The name of the file
+C CSTAT   I    ='OLD', 'NEW' or 'UNKNOWN'
+C CACC    I    ='D' for direct access, 'U' for unformatted, 'E' for append
+C CAR     I    Carriage control, 'L' for 'LIST' or 'F'
+C LRECL   I    Record length (required for direct access files)
+C IREAD   I    <>0 for READONLY, SHARED
+C IER       O  <>0 if file not opened
+C---
+C 1989-Aug-10 - Do not call CONC if file name starts with backslash [AFT]
+C 1989-Jul-07 - Allow file names of form 'disk,dir/sub,file' [AFT]
+C 1989-Feb-13 - Latest mod [AFT]
+C 1991-May-28 - Added direct access, formated ifile=5 [NEW,LA]
+C 1992-Oct-28 - Lengthened CDISK, CDIR [OD]
+C---
+      INTEGER   LENACT, IQUEST
+C
+      CHARACTER CTMP*80
+      CHARACTER CDISK*60, CDIR*60
+      INTEGER   IFILE, IOS, IS, KP, LFILE, LTMP
+C---
+      LFILE=LENACT(CFILE)
+C---
+C Special treatment for terminal device.
+C---
+      IF(LFILE.EQ.0) THEN
+C Needs additional check to prevent trashing a terminal
+         IF(CAR(1:1).EQ.'L'.OR.CAR(1:1).EQ.'l') THEN
+            OPEN(UNIT=LUN, FILE='TT:', STATUS='NEW',
+     :        CARRIAGECONTROL='LIST', IOSTAT=IOS)
+            GOTO 140
+         END IF
+      END IF
+C---
+C Sort out file type.
+C  0 = sequential access, formatted         " " only
+C  1 = direct access => unformatted           "D" + anything
+C  2 = sequential access, unformatted         "U" only
+C  3 = sequential access, formatted, append   "E" only
+C  4 = sequential access, unformatted, append "UE" only
+C  5 = direct access, formatted,              "DF" only
+C
+      CTMP=CACC
+      CALL UPC(CTMP)
+      IF(INDEX(CTMP,'D').NE.0 .and. index(ctmp,'F').eq.0 ) THEN
+         IFILE=1
+      ELSE IF(INDEX(CTMP,'D').NE.0 .and. index(ctmp,'F').ne.0 ) THEN
+         IFILE=5
+      ELSE IF(INDEX(CTMP,'U').NE.0 .AND. INDEX(CTMP,'E').NE.0) THEN
+         IFILE=4
+      ELSE IF(INDEX(CTMP,'U').NE.0) THEN
+         IFILE=2
+      ELSE IF(INDEX(CTMP,'E').NE.0) THEN
+         IFILE=3
+      ELSE
+         IFILE=0
+      END IF
+C---
+C Check for a "+" as the first character of the first name in which case
+C force an append
+      IF(CFILE(1:1) .EQ. '+') THEN
+         IF(IFILE.EQ.0) IFILE=3
+         IF(IFILE.EQ.2) IFILE=4
+         CFILE=CFILE(2:)
+         LFILE=LFILE-1
+      END IF
+C
+      KP=0
+      CALL ALF(CFILE, LFILE, KP, CTMP, LTMP)
+      IS=1
+      IF(LTMP.LT.LFILE) THEN
+C Discovered a 'system independent' file specification.  Decode.
+         CDISK=CTMP
+         CALL ALF(CFILE, LFILE, KP, CTMP, LTMP)
+         CDIR=CTMP
+         CALL ALF(CFILE, LFILE, KP, CTMP, LTMP)
+         CFILE=CTMP
+         CALL PTEND(CDISK, CDIR, CFILE)
+         LFILE=LENACT(CFILE)
+      ELSE
+C If first chacter is a backslash, then ignore it
+         IF(CFILE(1:1).EQ.CHAR(92)) THEN
+            IS=2
+         ELSE
+C Otherwise convert case
+            CALL CONC(CFILE)
+         END IF
+      END IF
+C---
+  130 CONTINUE
+      IF(IREAD.EQ.0) THEN
+C- Read/Write
+         IF(IFILE.EQ.1) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        ACCESS='DIRECT', RECL=LRECL/4, IOSTAT=IOS)
+         ELSE IF(IFILE.EQ.2) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        FORM='UNFORMATTED', IOSTAT=IOS)
+         ELSE IF(IFILE.EQ.3) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        ACCESS='APPEND', IOSTAT=IOS)
+         ELSE IF(IFILE.EQ.4) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        ACCESS='APPEND', FORM='UNFORMATTED', IOSTAT=IOS)
+         ELSE IF(IFILE.EQ.5) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        ACCESS='DIRECT', FORM='FORMATTED', RECL=LRECL,
+     :        SHARED, IOSTAT=IOS)
+         ELSE
+            IF(CAR(1:1).EQ.'L' .OR. CAR(1:1).EQ.'l') THEN
+              IF(LRECL.LE.0) THEN
+                 OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :            CARRIAGECONTROL='LIST',IOSTAT=IOS)
+              ELSE
+                 OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :            CARRIAGECONTROL='LIST',RECL=LRECL,IOSTAT=IOS)
+              ENDIF
+            ELSE
+              IF(LRECL.LE.0) THEN
+                 OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :            IOSTAT=IOS)
+              ELSE
+                 OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :            RECL=LRECL,IOSTAT=IOS)
+              ENDIF
+            END IF
+         END IF
+      ELSE
+C- READONLY
+         IF(IFILE.EQ.1) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        ACCESS='DIRECT', RECL=LRECL/4, READONLY, IOSTAT=IOS)
+         ELSE IF(IFILE.EQ.2) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        FORM='UNFORMATTED', READONLY, IOSTAT=IOS)
+         ELSE IF(IFILE.EQ.5) THEN
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        ACCESS='DIRECT', FORM='FORMATTED', RECL=LRECL,
+     :        SHARED, READONLY, IOSTAT=IOS)
+         ELSE
+            OPEN(UNIT=LUN, FILE=CFILE(:LFILE), STATUS=CSTAT,
+     :        READONLY, IOSTAT=IOS)
+         END IF
+      END IF
+C
+  140 IF(IOS.EQ.0) THEN
+         INQUIRE(UNIT=LUN,NAME=CTMP)
+         IF (LENACT(CTMP).GT.LEN(CFILE)) THEN
+            WRITE (*,*)'CFILE in OPENWR is too short!'
+            WRITE (*,*)'Opening file ',CTMP(1:LENACT(CTMP))
+            WRITE (*,*)'Press RETURN to continue'
+            READ (*,*)
+         ELSE
+            CFILE = CTMP
+         ENDIF
+      END IF
+      IER=IOS
+      RETURN
+      END
+C*********
+      SUBROUTINE PLTTER(CTYPE)
+      CHARACTER CTYPE*(*)
+C---
+C CTYPE='A' switches terminal into alpha mode.
+C CTYPE='G' switches terminal into graphics mode.
+C NOTE: Caps.
+C---
+      INCLUDE '($IODEF)'
+      INCLUDE '($DVIDEF)'
+      CHARACTER CBUF*32
+      INTEGER   DVI$DEVTYPE
+      INTEGER    LIST(3)
+      INTEGER*2 ILIST(6)
+      EQUIVALENCE (LIST,ILIST)
+      INTEGER   ITERM, ICHAN, IDEV, ILEN, IFUNC
+      SAVE ITERM,ICHAN
+      DATA ITERM/-1/
+C---
+C- ITERM is negative first time, so find out terminal number
+C- and allocate a channel for QIO's.
+      IF(ITERM.LT.0) THEN
+         ILIST(1)=4
+         ILIST(2)=DVI$_DEVTYPE
+         LIST(2)=%LOC(IDEV)
+         LIST(3)=%LOC(ILEN)
+         CALL SYS$GETDVIW(,,'TT:',LIST,,,,)
+         ITERM=IDEV
+         IF(IDEV.EQ.16) ITERM=244
+         IF(ITERM.EQ.244 .OR. ITERM.EQ.110) THEN
+            CALL SYS$ASSIGN('TT',ICHAN,,)
+         END IF
+      END IF
+      IF(ITERM.EQ.244) THEN
+C- Cifer 2634
+         IF(CTYPE(1:1).EQ.'A') THEN
+            CBUF=CHAR(27)//'^T'
+         ELSE
+            CBUF=CHAR(27)//'^'//CHAR(18)
+         END IF
+         IFUNC=IO$_WRITEVBLK.OR.IO$M_NOFORMAT
+         CALL SYS$QIOW(,%VAL(ICHAN),%VAL(IFUNC),,,,
+     :         %REF(CBUF),%VAL(3),,,,)
+         CALL LIB$WAIT(.1)
+      ELSE IF(ITERM.EQ.110) THEN
+C- VT200
+         IF(CTYPE(1:1).EQ.'A') THEN
+            CBUF=CHAR(27)//'[?38l'
+         ELSE
+            CBUF=CHAR(27)//'[?38h'
+         END IF
+         IFUNC=IO$_WRITEVBLK.OR.IO$M_NOFORMAT
+         CALL SYS$QIOW(,%VAL(ICHAN),%VAL(IFUNC),,,,
+     :         %REF(CBUF),%VAL(6),,,,)
+      END IF
+C-
+      RETURN
+      END
+C*********
+      SUBROUTINE PROMPT(CBUF, LBUF)
+      CHARACTER CBUF*(*)
+      INTEGER   LBUF
+C---
+C Write CBUF to the terminal leaving the cursor at the end of CBUF
+C when finished.
+C---
+C CBUF    I    The prompt string
+C LBUF    I    The number of valid characters in CBUF (can be zero)
+C---
+      INTEGER   LENACT
+      INTEGER   LB
+C---
+      LB= LBUF
+      IF(LB.EQ.0) LB= LENACT(CBUF)
+      IF(LB.GT.0) THEN
+         WRITE(*,111) CBUF(:LB)
+  111    FORMAT(1X, A, ' ', $)
+      END IF
+      RETURN
+      END
+C*********
+      SUBROUTINE rduli2(lu,rec_no,len,ibuf,status)
+
+c  read a record and keep trying if it is locked           nick 12.03.90
+c  from microvms programmers manual 9-8
+
+       
+      INTEGER*4 lu, len, iostat, status, io_ok, rec_no, i
+      PARAMETER (io_ok=0)
+      INTEGER*2 ibuf(*)
+      INCLUDE '($fordef)'
+
+      READ (lu,REC=rec_no,IOSTAT=iostat) (ibuf(i),i=1,len)
+      IF ( iostat.NE.io_ok ) THEN
+        CALL errsns(,,,,status)
+        IF ( status.EQ.for$_sperecloc ) THEN
+          DO WHILE (status.EQ.for$_sperecloc)
+            READ (lu,REC=rec_no,IOSTAT=iostat) (ibuf(i),i=1,len)
+            IF ( iostat.NE.io_ok ) THEN
+              CALL errsns(,,,,status)
+              IF ( status.NE.for$_sperecloc )
+     &              CALL lib$signal(%val(status))
+            END IF
+          END DO
+        ELSE
+          CALL lib$signal(%val(status))
+        END IF
+      END IF
+      RETURN
+      END
+C*********
+      SUBROUTINE rdulkc(lu,string,ieof,status)
+
+c  read a record and keep trying if it is locked           nick 12.03.90
+c  from microvms programmers manual 9-8
+c  for character strings
+
+       
+      INTEGER*4 lu, iostat, status, io_ok, ieof
+      PARAMETER (io_ok=0)
+      CHARACTER*(*) string
+      INCLUDE '($fordef)'
+
+      ieof = 0
+
+      READ (lu,END=100,FMT='(a)',IOSTAT=iostat) string
+
+      IF ( iostat.NE.io_ok ) THEN
+        CALL errsns(,,,,status)
+        IF ( status.EQ.for$_sperecloc ) THEN
+          DO WHILE (status.EQ.for$_sperecloc)
+            READ (lu,END=100,FMT='(a)',IOSTAT=iostat) string
+            IF ( iostat.NE.io_ok ) THEN
+              CALL errsns(,,,,status)
+              IF ( status.NE.for$_sperecloc )
+     &              CALL lib$signal(%val(status))
+            END IF
+          END DO
+        ELSE
+          CALL lib$signal(%val(status))
+        END IF
+      END IF
+      RETURN
+ 100  CONTINUE
+      ieof = 1
+      RETURN
+      END
+C*********
+      SUBROUTINE PTEND(CDISK, CDIR, CFILE)
+      CHARACTER CDISK*(*), CDIR*(*), CFILE*(*)
+C---
+C Prefix exTENsion.  Add 'prefix' to file name.
+C---
+C CDISK     I    The disk name
+C CDIR      I    The directory name
+C CFILE     I/O  The file name
+C---
+C  2-Aug-1988 - [AFT]
+C---
+      INTEGER   LENACT
+      INTEGER   I, LDISK, LDIR, LFILE, LOUT
+C---
+C- Check for an environment variable as the disk
+      LDISK=LENACT(CDISK)
+      IF(LDISK.GT.0 .AND. CDISK(1:1).NE.'$') LDISK=LDISK+1
+C---
+C- Check that created filename will not overrun buffer.
+      LDIR =LENACT(CDIR)+2
+      LFILE=LENACT(CFILE)
+      LOUT=LDISK+LDIR+LFILE
+      IF(LOUT.GT.LEN(CFILE)) THEN
+         WRITE(*,*) 'PTEND error, not enough room to create filename.'
+         RETURN
+      END IF
+C---
+C- Move characters in CFILE
+      DO 170 I=0,LFILE-1
+         CFILE(LOUT-I:LOUT-I)=CFILE(LFILE-I:LFILE-I)
+  170 CONTINUE
+C---
+C- Finish the job
+      IF(LDISK.GT.0) THEN
+         IF(CDISK(1:1).EQ.'$') THEN
+            CFILE(1:LDISK)=CDISK(2:LDISK)//':'
+         ELSE
+            CFILE(1:LDISK)=CDISK(1:LDISK-1)//':'
+         END IF
+      END IF
+      CFILE(LDISK+1:LDISK+1)='['
+C---
+C- Copy directory name changing '/' to '.'.
+      DO 190 I=1,LDIR-2
+         IF(CDIR(I:I).NE.'/') THEN
+            CFILE(LDISK+1+I:LDISK+1+I)=CDIR(I:I)
+         ELSE
+            CFILE(LDISK+1+I:LDISK+1+I)='.'
+         END IF
+  190 CONTINUE
+      CFILE(LDISK+LDIR:LDISK+LDIR)=']'
+      RETURN
+      END
+C*********
+      SUBROUTINE RDFORN(CBUF, LBUF)
+      CHARACTER CBUF*(*)
+      INTEGER   LBUF
+C---
+C Reads the entire command line.
+C---
+C CBUF      O  Data from the command line
+C LBUF      O  The number of valid characters in CBUF (can be zero)
+C---
+      CALL LIB$GET_FOREIGN(CBUF,,LBUF)
+      RETURN
+      END
+C*********
+      SUBROUTINE SPAWN(CBUF, LBUF, IER)
+      CHARACTER CBUF*(*)
+      INTEGER   LBUF, IER
+C---
+C Spawn to operating system.  If LBUF=0 then this routine should
+C spawn a shell and leave the user in the shell until the user logs
+C out or exits the shell.  If LBUF<>0 then the system should only
+C execute that one command and immediately return to the calling
+C routine.
+C---
+C CBUF    I    The system command to execute
+C LBUF    I    The number of valid characters in CBUF (can be zero)
+C IER       O  =0 spawn was successful, <>0 otherwise
+C---
+      INTEGER   LIB$SPAWN
+C---
+      IER=LIB$SPAWN(CBUF(:LBUF))
+      RETURN
+      END
+C*********
+      SUBROUTINE TRLOG(CBUF, LBUF, CRET, LRET)
+      CHARACTER CBUF*(*), CRET*(*)
+      INTEGER   LBUF, LRET
+C---
+C Translate the logical name CBUF(:LBUF) to return CRET(:LRET)
+C---
+C CBUF    I    The string to translate
+C LBUF    I    The number of valid characters in CBUF (can be zero)
+C CRET      O  The translated string
+C LRET      O  The number of valid characters in CRET (can be zero)
+C---
+      INTEGER   SYS$TRNLOG
+      INTEGER   ISTAT
+C---
+      CRET=' '
+      ISTAT=SYS$TRNLOG( CBUF(1:LBUF), LRET, CRET, , ,)
+      IF(ISTAT.NE.1) LRET=0
+      RETURN
+      END
+C*********
+      SUBROUTINE unlock(io)
+
+c subroutine to call the vms system call "unlock"  Nick 28.5.91
+
+      INTEGER*4 io
+
+      UNLOCK io
+
+      RETURN
+      END
+C*********
+      SUBROUTINE UPC(CSTR)
+      CHARACTER CSTR*(*)
+C---
+C Converts character array in CSTR to upper case.
+C---
+C CSTR    I/O  The string to convert to upper case
+C---
+      CALL STR$UPCASE(CSTR,CSTR)
+      RETURN
+      END
+C*********
+      subroutine xcopy(ifile, ofile)
+c     fwj haberl   25-OCT-1990 
+c     copy file 'ifile' to 'ofile'
+      character*(*) ifile, ofile
+      
+      character(256) string
+      INTEGER lstring, lenact, ierr
+
+      string = 'copy '//ifile(1:lenact(ifile))//' '//
+     &                      ofile(1:lenact(ofile))
+      lstring = lenact(string)
+      call spawn(string, lstring, ierr)
+      return
+      end
+C*********
+      subroutine dirimg(cext)
+
+c--
+c  just spawn a 'dir' command
+c--
+
+      character*(*) cext
+      character(256) string
+      integer       lstring
+      integer       ierr
+      integer       lenact
+
+      string = ' dir *.'//cext
+      lstring = lenact(string)
+      call spawn (string,lstring,ierr)
+      return
+      end
+C*********
+      subroutine getenv(name, value)
+
+      character*(*) name, value
+
+      call lib$get_symbol(name, value)
+      end

@@ -1,0 +1,167 @@
+#
+#     Filename: makefile.xan
+#
+#      Version: 1.4.1
+#
+#  Description: top level makefile for Xronos
+#
+#        Notes: Version 1.0 is for use with HEASARC/FTOOLS v4.0 and later
+#
+# Modification history:
+#         v1.5: added install target to install xrdefaults
+#
+#       v1.4.1: added dispatch functionality to release
+#
+#         v1.4: making preiraf target work correctly
+#
+#         v1.3: numerous small fixes to various targets
+#
+#         v1.2: adding targets to install help and perl scripts
+#
+#         v1.1: adding variable XRMAKE which may be, for instance, make or
+#               xmake
+#
+# Main Xronos variables:
+#    DATADIR  - directory containing reference data files
+#    HSRCLIBS - source directory for the general HEASARC software libraries
+#    XRBINDIR - destination directory for Xronos binaries when built
+#    XRHELPDIR- destination directory for Xronos help files
+#    XRLIB    - file name of Xronos library, without path
+#    XRLIBDIR - destination directory for Xronos library when built
+#    XRSCRDIR - destination directory for Xronos perl scripts
+#    XRMAKE   - name of make utility being used
+#
+SHELL     =	/bin/sh
+
+DATADIR   =	$(XANADU)/refdata
+HSRCLIBS  =	$(XANBIN)/lib
+XRBINDIR  =	$(XANBIN)/bin
+XRDEFAULTS=	$(XANBIN)/xrdefaults
+XRHELPDIR =	$(XANBIN)/help
+XRLIB     =	libxron.a
+XRLIBDIR  =	$(HSRCLIBS)
+XRSCRDIR  =	$(XANBIN)/scripts
+XRTARGET    =	install
+XRMAKE    =	xmake
+
+# Set up libraries
+LIBFITSIO=      $(HSRCLIBS)/libcfitsio.a
+PGPLOT  =       $(HSRCLIBS)/libpgplot.a
+XANLIB  =       $(HSRCLIBS)/libxanlib.a
+
+LIBLIST =       $(XRLIBDIR)/$(XRLIB) $(XANLIB) \
+                $(LIBFITSIO) $(PGPLOT) $(SYSLIB)
+
+# Target lists
+XRSUBLIB=	math par fits interval output programs
+XRTASKS	=	autocor crosscor earth2sun efold efsearch lcmath \
+		lcstats lcurve listdata powspec rbf2fits timeskew
+
+all: standalone
+
+standalone: xrlib xrtasks clean
+
+dispatch: xrlib xrtasks-dispatch
+
+preiraf:
+	-cd iraf; ./fixiraf.sh
+	-cd src/rbf2fits; $(XRMAKE) preiraf
+
+install-gen: xrperl xrhelp
+	-if [ ! -d $(XRDEFAULTS) ]; then mkdir $(XRDEFAULTS); fi
+	-cp defaults/* $(XRDEFAULTS)/
+
+install-dispatch: install-gen
+	-mv xronos_dispatch $(XRBINDIR)/
+	-cd $(XRBINDIR); $(XANADU)/xronos/xronos_ln.sh
+	
+install-standalone: install-gen
+	
+xrlib:
+	@-echo "Xronos library build"; \
+	if test -s $(XRLIBDIR)/$(XRLIB) -a ! -s ./$(XRLIB); then \
+	    echo "Updating $(XRLIBDIR)/$(XRLIB)"; \
+	    cp -p $(XRLIBDIR)/$(XRLIB) ./$(XRLIB); \
+	else \
+	    echo "Building $(XRLIB)"; \
+	fi; \
+	for subdir in $(XRSUBLIB); do \
+	    (cd $$subdir; $(XRMAKE) "XRLIB=$(XRLIB)" "AR=ar"); \
+	done; \
+	echo "Checking for newly compiled modules"; \
+	for subdir in $(XRSUBLIB); do \
+	    (cd $$subdir; $(XRMAKE) insert "XRLIB=$(XRLIB)" "AR=ar"); \
+	done; \
+	$(RANLIB) ./$(XRLIB); \
+	mv -f ./$(XRLIB) $(XRLIBDIR)/$(XRLIB)
+
+xrtasks:
+	echo "Xronos task build"; \
+	for subdir in $(XRTASKS); do \
+	    if [ $$subdir != 'rbf2fits' -o '$(EXT)' = 'sun' -o \
+	          '$(EXT)' = 'osf' ]; then \
+	        (cd src/$$subdir; \
+	         $(XRMAKE) $(XRTARGET) \
+	             "HSRCLIBS=$(HSRCLIBS)" "XRBINDIR=$(XRBINDIR)" \
+	             "XRLIB=$(XRLIB)" "XRLIBDIR=$(XRLIBDIR)"); \
+	    fi; \
+	done
+
+xrtasks-dispatch:
+	@echo "Making dispatch executable"
+	$(XRMAKE) xrtasks "XRTARGET=../../libxrdisp.a" \
+	    "HSRCLIBS=$(HSRCLIBS)" "XRBINDIR=$(XRBINDIR)" \
+	    "XRLIB=$(XRLIB)" "XRLIBDIR=$(XRLIBDIR)"
+	$(XRMAKE) xrtasks "XRTARGET=libupdate" \
+	    "HSRCLIBS=$(HSRCLIBS)" "XRBINDIR=$(XRBINDIR)" \
+	    "XRLIB=$(XRLIB)" "XRLIBDIR=$(XRLIBDIR)"
+	$(RANLIB) libxrdisp.a
+	@if [ '$(EXT)' = 'sun' -o '$(EXT)' = 'osf' ]; then \
+	    rm -f ./xronos_dispatch.c; \
+	    cp host/xronos_dispatch.c ./xronos_dispatch.c; \
+	    rm -f ./xronos_ln.sh; \
+	    cp host/xronos_ln.sh ./xronos_ln.sh; \
+	else \
+	    rm -f ./xronos_dispatch.c; \
+	    sed -e '/rbf/d' host/xronos_dispatch.c > ./xronos_dispatch.c; \
+	    rm -f ./xronos_ln.sh; \
+	    sed -e '/rbf/d' host/xronos_ln.sh > ./xronos_ln.sh; \
+	fi
+	@chmod 775 xronos_ln.sh
+	$(XRMAKE) xronos_dispatch.o
+	$(CCOMPL) $(CCOP) -o xronos_dispatch xronos_dispatch.o \
+	    libxrdisp.a $(LIBLIST)
+
+xrperl:
+	-cd perl.scripts; $(XRMAKE) install "XRSCRDIR=$(XRSCRDIR)"
+
+xrhelp:
+	-cp help/*.txt $(XRHELPDIR)/.; \
+	cp doc/*.hlp $(XRHELPDIR)/.
+
+clean:
+	@-echo "Xronos cleanup"; \
+	rm -f *.o; \
+	rm ./xronos_dispatch.c; \
+	rm ./xronos_ln.sh; \
+	for subdir in $(XRSUBLIB); do \
+	    rm -f $$subdir/*.o; \
+	done; \
+	for subdir in $(XRTASKS); do \
+	    (cd src/$$subdir; $(XRMAKE) clean); \
+	done
+	cd iraf; ./fixiraf.sh remove
+
+spotless: clean
+	@-echo "Xronos: removing all built objects"; \
+	rm -f ./$(XRLIB); \
+	rm -f $(XRLIBDIR)/$(XRLIB); \
+	rm -f ./libxrdisp.a; \
+	rm -f ./xronos_dispatch; \
+	rm -f $(XRBINDIR)/xronos_dispatch; \
+	for task in $(XRTASKS); do \
+	    rm -f src/$$task/$$task; \
+	    rm -f $(XRBINDIR)/$$task; \
+	    rm -f $(XRBINDIR)/$$task.par; \
+	done; \
+	cd perl.scripts; $(XRMAKE) distclean

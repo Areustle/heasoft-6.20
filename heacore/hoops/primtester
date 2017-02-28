@@ -1,0 +1,689 @@
+#! /usr1/local/bin/perl
+@types = ( 'bool', 'char', 'signed char', 'short', 'int', 'long',
+    'unsigned char', 'unsigned short', 'unsigned int', 'unsigned long',
+    'float', 'double', 'long double');
+
+################################################################################
+$primexception = "Hexception";
+$namespace = "hoops";
+print <<EOT;
+#include <iostream>
+#include <sstream>
+#include <string>
+#include "hoops/hoops.h"
+#include "hoops/hoops_limits.h"
+
+static int sStatus = ${namespace}::P_OK;
+static const int ERROR_UNDETECTED = $namespace::P_UNEXPECTED + 1;
+
+int SetGlobalStatus (int status) {
+  using namespace $namespace;
+  if (P_OK == sStatus) {
+    if (P_OK == status) sStatus = ERROR_UNDETECTED;
+    else sStatus = status;
+  }
+  return sStatus;
+}
+
+int main() {
+  using namespace $namespace;
+  const char *code[1024];
+
+  for (int ii = 0; ii < 1024; ++ii) code[ii] = "";
+  code[P_OK] = "P_OK";
+  code[P_ILLEGAL] = "P_ILLEGAL";
+  code[P_OVERFLOW] = "P_OVERFLOW";
+  code[P_UNDERFLOW] = "P_UNDERFLOW";
+  code[P_BADSIZE] = "P_BADSIZE";
+  code[P_PRECISION] = "P_PRECISION";
+  code[P_SIGNEDNESS] = "P_SIGNEDNESS";
+  code[P_STR_OVERFLOW] = "P_STR_OVERFLOW";
+  code[P_STR_INVALID] = "P_STR_INVALID";
+  code[P_STR_NULL] = "P_STR_NULL";
+  code[P_UNEXPECTED] = "P_UNEXPECTED";
+  code[ERROR_UNDETECTED] = "ERROR_UNDETECTED";
+
+  std::cout.precision(32);
+  std::cerr.precision(32);
+EOT
+
+print '
+  // Declare one variable for each primitive type\'s maximum.
+';
+
+foreach my $type (@types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print "  const $type max_$var = Lim<$type>::max();\n";
+}
+
+print '
+  // Declare one variable for each primitive type\'s minimum.
+';
+
+foreach my $type (@types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print "  const $type min_$var = Lim<$type>::min();\n";
+}
+
+print '
+  // Declare one variable for each primitive type\'s scratch value.
+';
+
+foreach my $type (@types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print "  $type tmp_$var;\n";
+}
+
+print '
+  // Status variable, used to test success of each conversion.
+  int status = P_OK;
+';
+
+print '
+  // Declare one variable of each Prim type, and initialize them to maximum.
+';
+
+foreach my $type (@types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print "  IPrim * hd_prim_$var = 0;\n";
+}
+
+print '
+  IPrim * hd_prim_std_string = 0;
+';
+
+print '
+  // Catch-all try block:
+  try {
+    PrimFactory factory;
+';
+
+foreach my $type (@types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print "    hd_prim_$var = factory.NewIPrim(Lim<$type>::max());\n";
+}
+
+################################################################################
+print '
+    // Test whether construction from maximum value worked
+';
+
+foreach my $type (@types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print
+'    {
+      '.$type.' tmp_'.$var.';
+      hd_prim_'.$var.'->To(tmp_'.$var.');
+      if (Lim<'.$type.'>::max() != tmp_'.$var.') {
+        SetGlobalStatus(P_UNEXPECTED);
+        std::cerr << "ERROR: Immediately after creation, hd_prim_'.$var.' has value " << hd_prim_'.$var.' << ", not " << Lim<'.$type.'>::max() << std::endl;
+       }
+    }
+';
+}
+
+################################################################################
+print '
+    // At this point, each Prim variable contains the maximum value for
+    // its underlying type. Try converting each one to each type of
+    // C++ primitive variable. This should cause a maximum number of
+    // overflows and no underflows.
+';
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  foreach my $type2 (@types) {
+    my $var2 = $type2;
+    $var2 =~ s% %_%g;
+    my $conv = "hd_prim_$var1->To(tmp_$var2)";
+    print <<END_OF_TEST;
+    tmp_$var2 = 0; // Not maximum value for any type.
+    status = P_OK;
+    try {
+      $conv;
+    } catch (const $primexception &x) {
+      status = x.Code();
+    }
+
+    switch (status) {
+      case P_ILLEGAL:
+      case P_UNDERFLOW:
+      case P_STR_OVERFLOW:
+      case P_STR_INVALID:
+      case P_STR_NULL:
+      case P_UNEXPECTED:
+        SetGlobalStatus(status);
+        std::cerr << "ERROR: While converting from maximum, $conv threw a " <<
+          code[status] << " exception." << std::endl;
+        break;
+      case P_OK:
+      case P_BADSIZE:
+      case P_SIGNEDNESS:
+        {
+          $type1 tmp_$var1;
+          hd_prim_$var1->To(tmp_$var1);
+          if (tmp_$var1 != ($type1) tmp_$var2) {
+            SetGlobalStatus(status);
+            std::cerr << "ERROR: While converting from maximum, $conv converted incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2;
+            if (P_OK != status)
+              std::cerr << std::endl << "and threw a " <<
+                  code[status] << " exception";
+            std::cerr << "." << std::endl;
+          }
+        }
+        break;
+      case P_PRECISION:
+        {
+          long double difference;
+          try {
+            hd_prim_$var1->To(difference);
+          } catch (const $primexception & x) {}
+          difference -= tmp_$var2;
+          if (0. > difference) {
+            try {
+              hd_prim_$var1->To(difference);
+            } catch (const $primexception & x) {}
+            difference = tmp_$var2 - difference;
+          }
+          long double maxdiff = Lim<$type1>::round_error();
+          if (maxdiff < Lim<$type2>::round_error())
+            maxdiff = Lim<$type2>::round_error();
+          if (maxdiff < difference) {
+            std::cerr << "WARNING: While converting from maximum, $conv rounded incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2 << " diff " << difference << " maxdiff " << maxdiff << std::endl;
+          }
+        }
+        break;
+      case P_OVERFLOW:
+        if (max_$var2 != tmp_$var2) {
+          SetGlobalStatus(status);
+          std::cerr << "ERROR: While converting from maximum, $conv converted incorrectly from " <<
+              hd_prim_$var1 << " to " << tmp_$var2 << std::endl <<
+              "while returning status " << code[status] << std::endl;
+        }
+        break;
+    }
+END_OF_TEST
+  }
+}
+
+################################################################################
+print '
+    // Try to set each Prim variable to the minimum value for its underlying type.
+';
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  print "    hd_prim_$var1->From(Lim<$type1>::min());\n";
+}
+print "\n";
+
+################################################################################
+print '
+    // At this point, each Prim variable contains the minimum value for
+    // its underlying type. Try converting each one to each type of
+    // C++ primitive variable. This should cause a maximum number of
+    // underflows and no overflows.
+';
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  foreach my $type2 (@types) {
+    my $var2 = $type2;
+    $var2 =~ s% %_%g;
+    my $conv = "hd_prim_$var1->To(tmp_$var2)";
+    print <<END_OF_TEST;
+    tmp_$var2 = 1; // Not minimum value for any type.
+    status = P_OK;
+    try {
+      $conv;
+    } catch (const $primexception &x) {
+      status = x.Code();
+    }
+
+    switch (status) {
+      case P_ILLEGAL:
+      case P_OVERFLOW:
+      case P_STR_OVERFLOW:
+      case P_STR_INVALID:
+      case P_STR_NULL:
+      case P_UNEXPECTED:
+        SetGlobalStatus(status);
+        std::cerr << "ERROR: While converting from minimum, $conv threw a " <<
+          code[status] << " exception." << std::endl;
+        break;
+      case P_OK:
+      case P_BADSIZE:
+      case P_SIGNEDNESS:
+        {
+          $type1 tmp_$var1;
+          hd_prim_$var1->To(tmp_$var1);
+          if (($type2) tmp_$var1 != tmp_$var2) {
+            SetGlobalStatus(status);
+            std::cerr << "ERROR: While converting from minimum, $conv converted incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2;
+            if (P_OK != status)
+              std::cerr << std::endl << "and threw a " <<
+                  code[status] << " exception";
+            std::cerr << "." << std::endl;
+          }
+        }
+        break;
+      case P_PRECISION:
+        {
+          long double difference;
+          try {
+            hd_prim_$var1->To(difference);
+          } catch (const $primexception & x) {}
+          difference -= tmp_$var2;
+          if (0. > difference) {
+            try {
+              hd_prim_$var1->To(difference);
+            } catch (const $primexception & x) {}
+            difference = tmp_$var2 - difference;
+          }
+          long double maxdiff = Lim<$type1>::round_error();
+          if (maxdiff < Lim<$type2>::round_error())
+            maxdiff = Lim<$type2>::round_error();
+          if (maxdiff < difference) {
+            std::cerr << "WARNING: While converting from minimum, $conv rounded incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2 << " diff " << difference << " maxdiff " << maxdiff << std::endl;
+          }
+        }
+        break;
+      case P_UNDERFLOW:
+        if (min_$var2 != tmp_$var2) {
+          SetGlobalStatus(status);
+          std::cerr << "ERROR: While converting from minimum, $conv converted incorrectly from " <<
+              *hd_prim_$var1 << " to " << tmp_$var2 << std::endl <<
+              "while returning status " << code[status] << std::endl;
+        }
+        break;
+    }
+END_OF_TEST
+  }
+}
+
+################################################################################
+print '
+    // Try to assign each Prim variable a value which can be converted
+    // to all types without throwing an exception, namely, 1.
+';
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  print "    hd_prim_$var1->From(Lim<bool>::max());\n";
+}
+print "\n";
+
+################################################################################
+print '
+    // At this point, each Prim variable contains the value 1
+    // Try converting each one to each type of C++ primitive variable.
+    // This should lead to a minimum of exceptions.
+';
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  foreach my $type2 (@types) {
+    my $var2 = $type2;
+    $var2 =~ s% %_%g;
+    my $conv = "hd_prim_$var1->To(tmp_$var2)";
+    print <<END_OF_TEST;
+    tmp_$var2 = 0; // 0 is not 1
+    status = P_OK;
+    try {
+      $conv;
+    } catch (const $primexception &x) {
+      status = x.Code();
+    }
+
+    switch (status) {
+      case P_ILLEGAL:
+      case P_OVERFLOW:
+      case P_UNDERFLOW:
+      case P_STR_OVERFLOW:
+      case P_STR_INVALID:
+      case P_STR_NULL:
+      case P_UNEXPECTED:
+        SetGlobalStatus(status);
+        std::cerr << "ERROR: While converting from 1, $conv threw a " <<
+          code[status] << " exception." << std::endl;
+        break;
+      case P_OK:
+      case P_BADSIZE:
+      case P_SIGNEDNESS:
+        {
+          $type1 tmp_$var1;
+          hd_prim_$var1->To(tmp_$var1);
+          if (tmp_$var1 != ($type1) tmp_$var2) {
+            SetGlobalStatus(status);
+            std::cerr << "ERROR: While converting from 1, $conv converted incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2;
+            if (P_OK != status)
+              std::cerr << std::endl << "and threw a " <<
+                  code[status] << " exception";
+            std::cerr << "." << std::endl;
+          }
+        }
+        break;
+      case P_PRECISION:
+        {
+          long double difference;
+          try {
+            hd_prim_$var1->To(difference);
+          } catch (const $primexception & x) {}
+          difference -= tmp_$var2;
+          if (0. > difference) {
+            try {
+              hd_prim_$var1->To(difference);
+            } catch (const $primexception & x) {}
+            difference = tmp_$var2 - difference;
+          }
+          long double maxdiff = Lim<$type1>::round_error();
+          if (maxdiff < Lim<$type2>::round_error())
+            maxdiff = Lim<$type2>::round_error();
+          if (maxdiff < difference) {
+            SetGlobalStatus(status);
+            std::cerr << "ERROR: While converting from 1, $conv rounded incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2 << " diff " << difference << " maxdiff " << maxdiff << std::endl;
+          }
+        }
+        break;
+    }
+END_OF_TEST
+  }
+}
+
+################################################################################
+print '
+    // Assign Prim floating types a non-integral value, and
+    // confirm that it converts correctly to all types.
+
+    hd_prim_float->From(1 + Lim<float>::epsilon());
+    hd_prim_double->From(1 + Lim<float>::epsilon());
+//    hd_prim_long_double = 1 + Lim<float>::epsilon();
+';
+
+foreach my $type1 ('float', 'double', 'long double') {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  foreach my $type2 (@types) {
+    my $var2 = $type2;
+    $var2 =~ s% %_%g;
+    my $conv = "hd_prim_$var1->To(tmp_$var2)";
+    print <<END_OF_TEST;
+    tmp_$var2 = 0; // 0 is not 1
+    status = P_OK;
+    try {
+      $conv;
+    } catch (const $primexception &x) {
+      status = x.Code();
+    }
+
+    switch (status) {
+      case P_ILLEGAL:
+      case P_UNDERFLOW:
+      case P_STR_OVERFLOW:
+      case P_STR_INVALID:
+      case P_STR_NULL:
+      case P_UNEXPECTED:
+        SetGlobalStatus(status);
+        std::cerr << "ERROR: While converting from 1 + epsilon, $conv threw a " <<
+          code[status] << " exception." << std::endl;
+        break;
+      case P_OK:
+      case P_BADSIZE:
+      case P_SIGNEDNESS:
+        {
+          $type1 tmp_$var1;
+          hd_prim_$var1->To(tmp_$var1);
+          if (tmp_$var1 != ($type1) tmp_$var2) {
+            SetGlobalStatus(status);
+            std::cerr << "ERROR: While converting from 1 + epsilon, $conv converted incorrectly from " <<
+                *hd_prim_$var1 << " to " << tmp_$var2;
+            if (P_OK != status)
+              std::cerr << std::endl << "and threw a " <<
+                  code[status] << " exception";
+            std::cerr << "." << std::endl;
+          }
+        }
+        break;
+      case P_OVERFLOW:
+        if (P_BOOL != Lim<$type2>::GetCode()) {
+          SetGlobalStatus(status);
+          std::cerr << "ERROR: While converting from 1 + epsilon, $conv threw a " <<
+            code[status] << " exception." << std::endl;
+          break;
+        }
+      case P_PRECISION:
+        if (1 != tmp_$var2) {
+          SetGlobalStatus(status);
+          std::cerr << "ERROR: While converting from 1 + epsilon, $conv converted incorrectly from " <<
+              *hd_prim_$var1 << " to " << tmp_$var2;
+        }
+        break;
+    }
+END_OF_TEST
+  }
+}
+
+print
+'    std::string tmp_std_string = "A non-numeric string";
+    hd_prim_std_string = factory.NewIPrim(tmp_std_string);
+    if (hd_prim_std_string->StringData().compare(tmp_std_string)) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: After initialization from std::string, hd_prim_char is " << *hd_prim_std_string << ", not " << tmp_std_string << std::endl;
+    }
+';
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  my $conv = "hd_prim_std_string->To(tmp_$var1)";
+
+  print <<END_OF_TEST;
+    try {
+      $conv;
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting from a non-numeric string, $conv didn't throw an exception" << std::endl;
+    } catch (const $primexception &x) {
+      if (P_STR_INVALID != x.Code()) {
+        SetGlobalStatus(P_UNEXPECTED);
+        std::cerr << "ERROR: While converting to $var1, $conv returned incorrect code " << code[x.Code()] << std::endl;
+      }
+    }
+END_OF_TEST
+}
+
+foreach my $type1 (@types) {
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  my $conv = "hd_prim_std_string->From(tmp_$var1)";
+  my $val;
+  if ($type1 eq 'bool') { $val = 'true'; } else { $val = '1'; }
+
+  print <<END_OF_TEST;
+    tmp_$var1 = 1;
+    try {
+      $conv;
+      if (hd_prim_std_string->StringData().compare("$val")) {
+        SetGlobalStatus(P_UNEXPECTED);
+        std::cerr << "ERROR: While converting from $var1, $conv converted incorrectly from " << tmp_$var1 << " to " << *hd_prim_std_string << std::endl;
+      }
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting from $var1, $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+END_OF_TEST
+}
+
+foreach my $type1 (@types) {
+  next if ($type1 eq 'bool' or $type1 eq 'char');
+  my $var1 = $type1;
+  $var1 =~ s% %_%g;
+  my $conv = "hd_prim_std_string->To(tmp_$var1)";
+  my $val;
+  if ($type1 eq 'bool') { $val = 'true'; } else { $val = '1'; }
+
+  print <<END_OF_TEST;
+    tmp_$var1 = 0;
+    try {
+      $conv;
+      if (hd_prim_std_string->StringData().compare("$val")) {
+        SetGlobalStatus(P_UNEXPECTED);
+        std::cerr << "ERROR: While converting to $var1, $conv converted incorrectly from " << tmp_$var1 << " to " << *hd_prim_std_string << std::endl;
+      }
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+END_OF_TEST
+}
+
+my $var1 = 'bool';
+my $conv = "hd_prim_std_string->To(tmp_$var1)";
+print <<END_OF_TEST;
+    tmp_$var1 = false;
+    try {
+      $conv;
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+    if (true != tmp_$var1) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv converted incorrectly from " << *hd_prim_std_string << " to " << tmp_$var1 << std::endl;
+    }
+END_OF_TEST
+
+my $var1 = 'char';
+my $conv = "hd_prim_std_string->To(tmp_$var1)";
+print <<END_OF_TEST;
+    tmp_$var1 = 0;
+    try {
+      $conv;
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+    if (1 != tmp_$var1) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv converted incorrectly from " << *hd_prim_std_string << " to " << tmp_$var1 << std::endl;
+    }
+END_OF_TEST
+
+my $var1 = 'char';
+my $conv = "hd_prim_std_string->To(tmp_$var1)";
+print <<END_OF_TEST;
+    hd_prim_std_string->From(-1);
+    tmp_$var1 = 0;
+    try {
+      $conv;
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv didn't throw" << std::endl;
+    } catch (const $primexception &x) {
+      if (P_SIGNEDNESS != x.Code()) {
+        SetGlobalStatus(P_UNEXPECTED);
+        std::cerr << "ERROR: While converting to $var1, $conv returned incorrect code " << code[x.Code()] << std::endl;
+      }
+    }
+    if (-1 != (signed char) tmp_$var1) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting to $var1, $conv converted incorrectly from " << *hd_prim_std_string << " to " << tmp_$var1 << std::endl;
+    }
+END_OF_TEST
+
+my $var1 = 'float';
+my $conv = "hd_prim_$var1->From(tmp_double)";
+print <<END_OF_TEST;
+    try {
+      tmp_double = 0.;
+      $conv;
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting from 0., $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+END_OF_TEST
+
+my $var1 = 'float';
+my $conv = "hd_prim_$var1->From(tmp_long_double)";
+print <<END_OF_TEST;
+    try {
+      tmp_long_double = 0.L;
+      $conv;
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting from 0.L, $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+END_OF_TEST
+
+my $var1 = 'float';
+my $conv = "hd_prim_$var1->From(tmp_string)";
+print <<END_OF_TEST;
+    try {
+      std::ostringstream os;
+      os << Lim<double>::min();
+      std::string tmp_string = os.str();
+      $conv;
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting from string 0., $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+END_OF_TEST
+
+my $var1 = 'double';
+my $conv = "hd_prim_$var1->From(tmp_long_double)";
+print <<END_OF_TEST;
+    try {
+      tmp_long_double = 0.L;
+      $conv;
+    } catch (const $primexception &x) {
+      SetGlobalStatus(P_UNEXPECTED);
+      std::cerr << "ERROR: While converting from 0.L, $conv returned incorrect code " << code[x.Code()] << std::endl;
+    }
+END_OF_TEST
+
+################################################################################
+
+print '
+  } catch (const '.$primexception.' &x) {
+    std::cerr << "An unexpected exception " << code[status] << " was caught at the top level!" << std::endl;
+    SetGlobalStatus(status);
+  } catch (...) {
+    std::cerr << "A completely unexpected exception was caught at the top level!" << std::endl;
+    SetGlobalStatus(-1);
+  }
+';
+print '
+  delete hd_prim_std_string;
+
+';
+
+foreach my $type (reverse @types) {
+  my $var = $type;
+  $var =~ s% %_%g;
+  print "  delete hd_prim_$var;\n";
+}
+
+print '
+  // Final status check and report.
+  if (P_OK == sStatus)
+    std::cout << "Test succeeded." << std::endl;
+  else
+    std::cerr << "Test failed with error " << code[sStatus] << std::endl;
+  return sStatus;
+}
+';

@@ -1,0 +1,161 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotmodmap/ut-uvotmodmap,v $
+# $Revision: 1.9 $
+# $Date: 2005/11/02 15:19:32 $
+#
+#	ut-uvotmodmap
+#		test correction of image for modulo-8 spatial fixed-attern noise	
+#
+# $Log: ut-uvotmodmap,v $
+# Revision 1.9  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.8  2004/05/12 15:42:25  rwiegand
+# Intra-tool parameter consistency renaming effort.
+#
+# Revision 1.7  2004/05/05 21:38:13  rwiegand
+# Use Task::HEAdas base class.
+#
+
+use strict;
+
+package Test::Uvotmodmap;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+{
+	my $tool = Test::Uvotmodmap->new(
+			tool => 'ut-uvotmodmap',
+			);
+
+	eval {
+		$tool->parseOptions(
+				argv => [ @ARGV ],
+				options => [ qw(input output chatter) ],
+				);
+
+		$tool->execute;
+	};
+
+	if ($@) {
+		$tool->error(BAD_TASK, "exception: $@");
+	}
+
+	$tool->report('test ' . ($tool->{code} ? 'failed' : 'passed'));
+	exit($tool->{code});
+}
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotmodmap
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	$self->report("validating set up");
+
+	# validate environment
+	foreach my $var (qw(HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	my $args = $self->args;
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $args->{$key}\n");
+		}
+	}
+
+}
+
+
+sub runUvotmodmap
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @task = (
+		infile        => "$input/input.fits",
+		badpixfile    => "$input/quality.fits",
+		outfile       => "$output/MOD8MAP_OUT.fits",
+		mod8prod      => 'yes',
+		mod8file      => "$output/MOD8MAP_PPS.fits",
+		nsig          => 3,
+		ncell         => 16,  
+		clobber       => 'yes',
+		history       => 'yes',
+		chatter       => 3,
+	);
+
+	my %task = (
+		@task,
+		outtemplate => "$input/MOD8MAP_OUT.fits",
+		mod8template => "$input/MOD8MAP_PPS.fits",
+	);
+
+	# run uvotmodmap
+	{
+		my $command = $self->buildCommand('uvotmodmap', @task);
+		$self->shell($command);
+	}
+
+	# verify outputs
+	{
+		my $command = qq(ftverify infile=$task{mod8file} outfile=STDOUT);
+		$self->shell($command);
+	}
+
+	{
+		my $command = qq(ftverify infile=$task{outfile} outfile=STDOUT);
+		$self->shell($command);
+	}
+
+	{
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $task{outfile},
+			infile2 => $task{outtemplate},
+			tolerance => 0.0001,
+			hdumaxdiff => 20,
+			exclude => 'HISTORY,DATE,FILENAME,CREATOR',
+			);
+		$self->shell($command);
+	}
+
+	{
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $task{mod8file},
+			infile2 => $task{mod8template},
+			tolerance => 0.0001,
+			hdumaxdiff => 20,
+			exclude => 'HISTORY,DATE,FILENAME,CREATOR',
+			);
+		$self->shell($command);
+	}
+
+}
+

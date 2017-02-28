@@ -1,0 +1,23 @@
+HD_COMPONENT_NAME	= demo
+
+HD_COMPONENT_VERS	=
+
+HD_CTASK		= f77demo
+
+HD_CTASK_SRC_c		= f77demo_main.c
+
+HD_CTASK_SRC_f		= f77demo.f
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_FFLAGS		= ${HD_STD_FFLAGS}
+
+HD_CLIBS		= ${HD_STD_CLIBS} ${F77LIBS4C}
+
+HD_INSTALL_TASKS	= ${HD_CTASK}
+
+HD_INSTALL_PFILES	= f77demo.par
+
+HD_INSTALL_HELP		= f77demo.html
+
+include ${HD_STD_MAKEFILE}

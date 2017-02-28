@@ -1,0 +1,12 @@
+      FUNCTION ARCCOS (X)
+      REAL*8 X,ARCCOS,PI
+      PARAMETER (PI=3.14159265358979323846D0)
+*
+      IF (X.LE.-1.D0) THEN
+         ARCCOS = PI
+      ELSEIF (X.GE.1.D0) THEN
+         ARCCOS = 0.0D0
+      ELSE
+         ARCCOS = ACOS(X)
+      ENDIF
+      END

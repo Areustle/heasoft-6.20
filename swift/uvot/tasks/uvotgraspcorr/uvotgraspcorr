@@ -1,0 +1,1054 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotgraspcorr/uvotgraspcorr,v $
+# $Revision: 1.13 $
+# $Date: 2012/01/19 22:08:48 $
+#
+# $Log: uvotgraspcorr,v $
+# Revision 1.13  2012/01/19 22:08:48  rwiegand
+# Allow multiple input files to be specified using a comma-delimited list
+# or @<path> where <path> is a file with one input file per line.
+#
+# Revision 1.12  2011/11/02 17:57:42  rwiegand
+# Specified CALDB code name for grism distortion.
+#
+# Revision 1.11  2009/07/28 15:55:06  rwiegand
+# The clobber parameter was not being correctly applied.
+#
+# Revision 1.10  2009/07/15 18:39:27  rwiegand
+# Added outfile parameter and saving aspect corrections.
+#
+# Revision 1.9  2008/10/29 17:32:35  rwiegand
+# Wayne provided filtering region for V clocked grism.
+#
+# Revision 1.8  2008/09/15 20:47:41  rwiegand
+# Corrected UV filter name.  Updated column names to match uvotdetect.
+#
+# Revision 1.7  2008/07/02 15:52:46  rwiegand
+# Allow a circular region on the detector to be specified for filtering
+# sources.  This is useful for the clocked grisms.
+#
+# Revision 1.6  2008/04/22 21:53:53  rwiegand
+# Load grism distortion from CALDB.
+#
+# Revision 1.5  2008/04/04 21:52:47  rwiegand
+# Implemented basic support for multiple grisms/clockings.  Allow user to
+# specify [AB]P_i_j coefficients.  Initialize CRPIXnS and CRVALnS keywords
+# in headers.
+#
+# Revision 1.4  2008/04/02 20:25:58  rwiegand
+# Use uvotapplywcs instead of uvotxy2sky.
+#
+# Revision 1.3  2008/04/02 18:37:00  rwiegand
+# Corrected application of rotation.
+#
+# Revision 1.2  2008/04/02 17:25:15  rwiegand
+# Store all distortion coefficients in a single hash.  Support loading
+# coefficients from an external file.
+#
+# Revision 1.1  2008/04/02 15:06:24  rwiegand
+# Tool for aspect correcting UVOT grism images.
+#
+
+use strict;
+
+package Grism::Correct;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+use SimpleFITS;
+use UVOT::AspcorrTable;
+use Astro::FITS::CFITSIO qw(:constants);
+
+
+my %NOMINAL_U_GRISM = (
+
+	A_1_0 => -0.00125153527908,
+	A_0_1 =>  0.0,
+	A_2_0 => -1.21308092203E-05,
+	A_1_1 =>  3.57697489791E-06,
+	A_0_2 => -4.98655501953E-06,
+	A_3_0 => -2.23440999701E-10,
+	A_2_1 =>  2.81157465077E-10,
+	A_1_2 =>  1.07794901513E-09,
+	A_0_3 =>  1.81850672672E-09,
+
+	B_1_0 =>  0.0,
+	B_0_1 => -0.0119355520972,
+	B_2_0 =>  1.29190114841E-06,
+	B_1_1 => -6.22446958796E-06,
+	B_0_2 =>  6.50166571708E-06,
+	B_3_0 =>  1.56072306730E-09,
+	B_2_1 =>  3.10676603198E-09,
+	B_1_2 =>  1.83793386146E-09,
+	B_0_3 =>  3.04122140950E-12,
+
+	AP_1_0 =>  0.00125480395117,
+	AP_0_1 => -1.36411236372E-07,
+	AP_2_0 =>  1.21386986790E-05,
+	AP_1_1 => -3.57720222046E-06,
+	AP_0_2 =>  5.12067402118E-06,
+	AP_3_0 =>  5.04857662962E-10,
+	AP_2_1 => -4.41525720641E-10,
+	AP_1_2 => -8.91001063794E-10,
+	AP_0_3 => -2.06470726234E-09,
+
+	BP_1_0 =>  4.40624953378E-07,
+	BP_0_1 =>  0.0121093187715,
+	BP_2_0 => -1.42450854484E-06,
+	BP_1_1 =>  6.34534204537E-06,
+	BP_0_2 => -6.67738246399E-06,
+	BP_3_0 => -1.67566093500E-09,
+	BP_2_1 => -3.07108005097E-09,
+	BP_1_2 => -2.02039013787E-09,
+	BP_0_3 =>  8.68667185361E-11,
+
+	REFPIX1 => '1448.000000',
+	REFPIX2 => '703.000000',
+
+);
+
+
+my %WCS_DEFAULT = (
+	PC1_1S => 1,
+	PC1_2S => 0,
+	PC2_1S => 0,
+	PC2_2S => 1,
+);
+
+
+
+{
+	my $task = __PACKAGE__->new(version => '1.1');
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			checkInput
+			correctGrismImages
+			saveCorrections
+			finalize
+			)) {
+		$self->$step;
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file catspec=file
+				starid=string distfile=file
+				clobber=boolean history=boolean cleanup=boolean chatter=integer
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+	if (uc($args->{outfile}) ne 'NONE' and -e $args->{outfile}) {
+		if (not $args->{clobberFlag}) {
+			$self->error(BAD_INPUT,
+					"$args->{outfile} exists and clobber not set");
+		}
+		else {
+			if (not unlink($args->{outfile})) {
+				$self->error(BAD_INPUT,
+						"unable to clobber $args->{outfile} [$!]");
+			}
+		}
+	}
+}
+
+
+sub zeroCoefficients
+{
+	my ($href) = @_;
+	for (my $i = 0; $i < 4; ++$i) {
+		for (my $j = 0; $j < 4; ++$j) {
+			next if $i + $j > 3;
+			foreach my $tag (qw(A B AP BP)) {
+				$href->{join('_', $tag, $i, $j)} = 0.0;
+			}
+		}
+	}
+}
+
+
+sub loadConstantsFITS
+{
+	my ($self, $path) = @_;
+
+	my $header;
+	my $status = SimpleFITS->readonly($path)
+			->readheader($header, clean => 1)
+			->close
+			->status;
+
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load grism distortion from $path [$status]");
+		return;
+	}
+
+	$self->{CONSTANTS} = $header;
+	$self->report("loaded grism distortion from $path");
+}
+
+
+sub loadConstantsText
+{
+	my ($self, $path) = @_;
+
+	zeroCoefficients($self->{CONSTANTS});
+
+	my $fh = FileHandle->new($path);
+	if (not $fh) {
+		$self->error(BAD_INPUT, "unable to open $path [$!]");
+		return;
+	}
+
+	$self->report("loading constants from $path");
+
+	while (<$fh>) {
+		chomp;
+		if (/^\s*#/) {
+			# ignore comment
+		}
+		elsif (/^\s*$/) {
+			# ignore blank
+		}
+		elsif (/^\s*([AB]P?_(\d)_(\d))\s*=\s*(.+)/) {
+			my $which = $1;
+			my $i = $2;
+			my $j = $3;
+			my $coeff = $4;
+			if ($i + $j > 3) {
+				$self->warning("invalid coefficient: $which: i=$i, j=$j");
+			}
+			$self->{CONSTANTS}{$which} = $coeff;
+			$self->report("$which = $coeff");
+		}
+		elsif (/^\s*(REFPIX[12])\s*=\s*(.+)/) {
+			my $which = $1;
+			my $value = $2;
+			$self->{CONSTANTS}{$which} = $value;
+			$self->report("$which = $value");
+		}
+		else {
+			chomp;
+			$self->error(BAD_INPUT, "invalid distortion content: $_");
+		}
+	}
+	undef($fh);
+}
+
+
+sub checkImageHeader
+{
+	my ($header) = @_;
+	my $filter = $header->{FILTER} || 'UNKNOWN';
+	if ($filter !~ /^UGRISM|VGRISM$/) {
+		return "not grism image [FILTER=$filter]";
+	}
+	if ($header->{NAXIS} != 2) {
+		return "not 2 dimensional [NAXIS=$header->{NAXIS}]";
+	}
+	if ($header->{NAXIS1} * $header->{NAXIS2} < 1) {
+		return "does not have positive area";
+	}
+	if ($header->{CTYPE1} !~ /^DET/) {
+		return "not a detector image [CTYPE1=$header->{CTYPE1}]";
+	}
+
+	return 0;
+}
+
+
+sub selectConstants
+{
+	my ($self, $header) = @_;
+
+	my $arg = $self->args->{distfile};
+
+	$self->{CONSTANTS} = \%NOMINAL_U_GRISM;
+
+	my $path = undef;
+	if (uc($arg) eq 'DEFAULT') {
+		# already primed
+	}
+	elsif ($arg =~ /^CALDB/i) {
+		$path = $self->queryCALDB('GRISMDISTORTION',
+				header => $header,
+				qualifiers => $arg,
+				asString => 1,
+				);
+		$self->parameterNote(distfile => $path)
+			if $path;
+		if (not $path) {
+			$self->error(BAD_INPUT, 'unable to locate grism distortion in CALDB');
+		}
+	}
+	elsif ($arg =~ /^TEXT:(.+)/i) {
+		$self->loadConstantsText($1);
+	}
+	else {
+		my $spec = $self->parseInputURL($arg);
+		if ($spec->{extspec}) {
+			$path = $arg;
+		}
+		else {
+			my $extname = sprintf('%s_%04d_DISTORTION',
+					$header->{FILTER}, $header->{WHEELPOS});
+			$path = $arg . "[$extname]";
+		}
+	}
+
+	if ($path) {
+		$self->loadConstantsFITS($path);
+	}
+
+	if ($self->isValid) {
+		my $k = $self->{CONSTANTS};
+		foreach my $which (qw(A B AP BP)) {
+			for (my $iPlusJ = 1; $iPlusJ <= 3; ++$iPlusJ) {
+				for (my $j = 0; $j <= $iPlusJ; ++$j) {
+					my $i = $iPlusJ - $j;
+					my $key = join('_', $which, $i, $j);
+					$k->{$key} ||= 0;
+				}
+			}
+		}
+	}
+}
+
+
+sub getWheelposInfo
+{
+	my ($header) = @_;
+	my $wheelpos = $header->{WHEELPOS} || 0;
+	my $href;
+	if ($wheelpos == 160) {
+		$href = {
+			THETA0 => 144.5,
+			FILTER_X => 2300,
+			FILTER_Y => 200,
+			FILTER_R => 1440,
+		};
+	}
+	elsif ($wheelpos == 200) {
+		$href = {
+			THETA0 => 151.4,
+		};
+	}
+	elsif ($wheelpos == 955) {
+		$href = {
+			THETA0 => 140.5,
+			FILTER_X => 2300,
+			FILTER_Y => 200,
+			FILTER_R => 1500,
+		};
+	}
+	elsif ($wheelpos == 1000) {
+		$href = {
+			THETA0 => 148.1,
+		};
+	}
+	else {
+		$href = {
+			THETA0 => 146,
+		};
+	}
+	return $href;
+}
+
+
+sub checkInput
+{
+	my ($self) = @_;
+
+	my @input;
+
+	my $infile = $self->args->{infile};
+
+	if ($infile =~ /^@(.+)/) {
+		my $path = $1;
+		my $fh = FileHandle->new($path);
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to open input file list $path");
+		}
+		else {
+			my @tmp = <$fh>;
+			undef($fh);
+			chomp(@tmp);
+			@input = grep { length > 0 } @tmp;
+		}
+	}
+	else {
+		@input = split(/\s*,\s*/, $infile);
+	}
+
+	foreach my $path (@input) {
+		last if not $self->isValid;
+		$self->checkInputAux($path);
+	}
+}
+
+
+sub checkInputAux
+{
+	my ($self, $path) = @_;
+
+	my $status = 0;
+	my $fits = SimpleFITS->readwrite($path);
+	if ($status = $fits->status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my $nhdu = $fits->nhdu;
+	my $header;
+
+	my @hdu;
+
+	if ($self->{HDUs}) {
+		push(@hdu, @{ $self->{HDUs} });
+	}
+
+	# for AspcorrTable::saveCorrections...
+	my @KEYS = qw(EXTNAME FILTER EXPOSURE TSTART TSTOP WHEELPOS);
+
+	for (my $i = 0; $i < $nhdu; ++$i) {
+
+		$header = '';
+		$status = $fits->move($i+1)->readheader($header, clean => 1)->status;
+		if (not $status and not $self->{CARDS}) {
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(OBS_ID RA_PNT DEC_PNT PA_PNT) ],
+					hash => $self, 
+					);
+
+			$self->{CARDS} = [ ]; 
+			$self->storeHeaderCards($fits->handle,
+					types => [ TYP_COMM_KEY, TYP_CONT_KEY,
+							TYP_USER_KEY, TYP_REFSYS_KEY ],
+					array => $self->{CARDS}, 
+					exclude => \@KEYS,
+					);
+		}
+
+		my $problem = checkImageHeader($header);
+		if ($problem) {
+			$self->verbose("ignoring HDU0 $i [$problem]");
+			next;
+		}
+
+		if (not $self->{CONSTANTS}) {
+			$self->selectConstants($header);
+			return if not $self->isValid;
+		}
+
+#		my $detWCS = $self->getWCS($header);
+#		if (not $detWCS->{TYPE}) {
+#			$self->error(BAD_INPUT, "unable to get detector WCS");
+#		}
+#
+		my $skyWCS = $self->getWCS($header, suffix => 'S');
+		if (not $skyWCS->{TYPE}) {
+			$self->error(BAD_INPUT, "unable to get sky WCS");
+			next;
+		}
+#		elsif ($header->{CTYPE1S} =~ /-SIP$/) {
+#			$status = $fits->writekey(CTYPE1S => 'RA---TAN')
+#					->writekey(CTYPE2S => 'DEC--TAN')
+#					->status;
+#			if ($status) {
+#				$self->warning("unable to update CTYPEnS [$status]");
+#			}
+#		}
+
+		my $aspcorr = 0;
+		if (not $header->{ASPCORR}) {
+			$status = $fits->writekey(ASPCORR => 'NONE')
+					->status;
+			if ($status) {
+				$self->warning("unable to update ASPCORR [$status]");
+			}
+		}
+		elsif ($header->{ASPCORR} ne 'NONE') {
+			$aspcorr = 1;
+		}
+
+		my $pretty;
+		if ($header->{EXTNAME}) {
+			$pretty = "$header->{EXTNAME} / $i+1";
+		}
+		else {
+			$pretty = "HDU $i+1";
+		}
+
+		my $wheelInfo = getWheelposInfo($header);
+
+		my %info = (
+			PATH => $path,
+			EXT0 => $i,
+			PATH_EXT => $path . "[$i]",
+			# DET_WCS => $detWCS,
+			%$wheelInfo,
+			ASPCORR => $aspcorr,
+			CRVAL1S => $skyWCS->{CRVAL1},
+			CRVAL2S => $skyWCS->{CRVAL2},
+			CROTA2S => $skyWCS->{CROTA2},
+		);
+
+		foreach my $key (@KEYS) {
+			if (defined($header->{$key})) {
+				$info{$key} = $header->{$key};
+			}
+			else {
+				$self->warning("$pretty missing $key");
+			}
+		}
+
+		foreach my $key (qw(PC1_1S PC1_2S PC2_1S PC2_2S)) {
+			if (exists($header->{$key})) {
+				$info{$key} = $header->{$key};
+			}
+			else {
+				$info{$key} = $WCS_DEFAULT{$key};
+			}
+		}
+
+		push(@hdu, \%info);
+	}
+
+	$status = $fits->close->status;
+	if ($status) {
+		$self->warning("unable to close FITS file [$status]");
+	}
+
+	if (not @hdu) {
+		$self->warning('no grism images to process');
+	}
+
+	$self->{HDUs} = \@hdu;
+}
+
+
+sub correctGrismImages
+{
+	my ($self) = @_;
+	foreach my $info (@{ $self->{HDUs} }) {
+		$self->verbose("processing $info->{PATH_EXT}");
+		$self->patchSkyWCS($info);
+		$self->findCorrection($info);
+		$self->applyCorrection($info)
+			if $info->{CORRECTED};
+		last if not $self->isValid;
+	}
+}
+
+
+sub patchSkyWCS
+{
+	my ($self, $info) = @_;
+
+	if ($info->{ASPCORR}) {
+		$self->report('image was already aspect corrected, not resetting CRVALnS');
+		return;
+	}
+
+	my $k = $self->{CONSTANTS};
+
+	$info->{xyfile} = $self->temporary('xy', ext => '.txt');
+	$self->shell("echo $k->{REFPIX1} $k->{REFPIX2} > $info->{xyfile}");
+	$info->{skyfile} = $self->temporary('sky', ext => '.txt');
+	my @table = ({ });
+	$self->convertPixToSky($info, \@table);
+
+	$info->{CRVAL1S} = $table[0]{RA};
+	$info->{CRVAL2S} = $table[0]{DEC};
+
+	my $keyfile = $self->temporary('fthedit', ext => '.key');
+	my $fh = FileHandle->new($keyfile, 'w');
+	$fh->print("
+CRPIX1S = $k->{REFPIX1}
+CRPIX2S = $k->{REFPIX2}
+CRVAL1S = $info->{CRVAL1S}
+CRVAL2S = $info->{CRVAL2S}
+");
+	my $command = $self->buildCommand('fthedit',
+			infile => $info->{PATH_EXT},
+			keyword => '@' . $keyfile,
+			);
+	$self->shell($command);
+}
+
+
+sub findCorrection
+{
+	my ($self, $info) = @_;
+
+	my $args = $self->args;
+
+	my %local = map { ($_ => 1) } qw(max.rate theta.zero theta.diff
+			aprof.min aprof.max filter.detx filter.dety filter.radius);
+	my @defaults = qw(rot.err=60 mag.err=6 filter.base=2.0 filter.median=1.0
+					refilter.base=1.75 refilter.median=0 group.angle=8
+					max.rate=50 theta.diff=15.0 aprof.min=2 aprof.max=10);
+	push(@defaults, "theta.zero=$info->{THETA0}");
+	if ($info->{FILTER_R}) {
+		push(@defaults,
+				"filter.radius=$info->{FILTER_R}",
+				"filter.detx=$info->{FILTER_X}",
+				"filter.dety=$info->{FILTER_Y}",
+				);
+	}
+	my @par;
+	my %par;
+	foreach my $arg (split(/\s+/, $args->{starid}), @defaults) {
+		next if $arg =~ /^NONE$/i;
+		my ($k, $v) = split('=', $arg);
+		if (not exists($par{$k})) {
+			push(@par, $k) if not $local{$k};
+			$par{$k} = $v;
+		}
+	}
+
+	my $starid = join(' ', map { "$_=$par{$_}" } @par);
+	$info->{starid} = $starid;
+	$info->{detected} = $self->temporary('detect');
+
+	# run uvotdetect/SExtractor
+	my @threshold = qw(4 8);
+	my $minSources = 16;
+
+	while ($self->isValid and @threshold) {
+		my $threshold = pop(@threshold);
+
+		unlink($info->{detected});
+		my $command = $self->buildCommand('uvotdetect',
+				infile => $info->{PATH_EXT},
+				outfile => $info->{detected},
+				sexargs => '-DEBLEND_MINCONT 0.1',
+				threshold => $threshold,
+				zerobkg => -1,
+				calibrate => 'no',
+				);
+		$self->shell($command);
+
+		if (-f $info->{detected}) {
+			my $detfilt = $self->temporary('detfilt');
+			my $theta0 = $par{'theta.zero'};
+			my $dtheta = $par{'theta.diff'};
+			my $amin = $par{'aprof.min'};
+			my $amax = $par{'aprof.max'};
+			my $filter = "(abs(UTHETA_IMAGE+180.0-$theta0)<$dtheta)"
+					. ".AND.(UA_IMAGE>$amin).AND.(UA_IMAGE<$amax)";
+			if (my $r = $par{'filter.radius'}) {
+				my $x0 = $par{'filter.detx'};
+				my $y0 = $par{'filter.dety'};
+				$filter .= ".AND.(sqrt((UX_IMAGE-$x0)**2+(UY_IMAGE-$y0)**2)<$r)";
+			}
+			my $ftcopy = $self->buildCommand('ftcopy',
+					infile => $info->{detected} . "[SOURCES][$filter]",
+					outfile => $detfilt,
+					);
+			$self->shell($ftcopy);
+			$info->{detected} = $detfilt;
+		}
+		my @table;
+		my $status = SimpleFITS->readonly($info->{detected})
+				->move('SOURCES')
+				->loadtable(\@table)
+				->close
+				->status;
+		my $count = @table;
+		if ($status) {
+			@threshold = ();
+			$self->error(BAD_OUTPUT,
+					"unable to a to load uvotdetect output [$status]");
+		}
+		elsif ($count < $minSources) {
+			# try again with next threshold
+		}
+		else {
+			# detection succeeded
+			@threshold = ();
+		}
+	}
+
+	return if not $self->isValid;
+
+	$self->updateRADEC($info);
+	return if not $self->isValid;
+
+	my @catspec = split(',', $args->{catspec});
+
+	while (not $info->{CORRECTED} and @catspec) {
+		$info->{catspec} = shift(@catspec);
+		$self->runSTARID($info);
+	}
+}
+
+
+sub updateRADEC
+{
+	my ($self, $info) = @_;
+	my @table;
+	my $fits = SimpleFITS->readwrite($info->{detected})
+			->move('SOURCES')
+			->loadtable(\@table);
+	my $status = $fits->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to a to load uvotdetect output [$status]");
+		return;
+	}
+
+	$info->{xyfile} = $self->temporary('xy', ext => '.txt');
+	$self->applyDistortion($info, \@table);
+	return if not $self->isValid;
+
+	$info->{skyfile} = $self->temporary('sky', ext => '.txt');
+	$self->convertPixToSky($info, \@table);
+	return if not $self->isValid;
+
+	my @ra = map { $_->{RA} } @table;
+	my @dec = map { $_->{DEC} } @table;
+	my @mag = map { $_->{MAG} } @table;
+	$fits->writecol('RA', { }, \@ra);
+	$fits->writecol('DEC', { }, \@dec);
+	$fits->writecol('MAG', { }, \@mag);
+	$status = $fits->close->status;
+	if ($status) {
+		$fits->error(BAD_OUTPUT, "unable to update RA/DEC [$status]");
+	}
+}
+
+
+sub applyDistortion
+{
+	my ($self, $info, $table) = @_;
+
+	my $k = $self->{CONSTANTS};
+	my $fh = FileHandle->new($info->{xyfile}, 'w');
+
+	foreach my $o (@$table) {
+		my $dx = $o->{UX_IMAGE} - $k->{REFPIX1};
+		my $dy = $o->{UY_IMAGE} - $k->{REFPIX2};
+
+		my $dx2 = $dx * $dx;
+		my $dx3 = $dx2 * $dx;
+		my $dy2 = $dy * $dy;
+		my $dy3 = $dy2 * $dy;
+
+		my $dXnew = $dx + $k->{A_1_0}*$dx + $k->{A_2_0}*$dx2 + $k->{A_3_0}*$dx3
+			+ $k->{A_1_1}*$dx*$dy + $k->{A_2_1}*$dx2*$dy + $k->{A_1_2}*$dx*$dy2
+			+ $k->{A_0_3}*$dy3 + $k->{A_0_2}*$dy2 + $k->{A_0_1}*$dy;
+
+		my $dYnew = $dy + $k->{B_1_0}*$dx + $k->{B_2_0}*$dx2 + $k->{B_3_0}*$dx3
+			+ $k->{B_1_1}*$dx*$dy + $k->{B_2_1}*$dx2*$dy + $k->{B_1_2}*$dx*$dy2
+			+ $k->{B_0_3}*$dy3 + $k->{B_0_2}*$dy2 + $k->{B_0_1}*$dy;
+
+# printf "dx=%.2f dy=%.2f dXnew=%.2f dYnew=%.2f |new|/|orig|=%.2f\n",
+#		$dx, $dy, $dXnew, $dYnew,
+#		Math::hypot($dXnew, $dYnew)/Math::hypot($dx, $dy);
+		my $xNew = $dXnew + $k->{REFPIX1};
+		my $yNew = $dYnew + $k->{REFPIX2}; 
+
+		$fh->print("$xNew $yNew\n");
+		$o->{MAG} = 20 - $o->{RATE} / 10;
+# $fh->print("image; ellipse($o->{UX_IMAGE}, $o->{UY_IMAGE}, $o->{UA_IMAGE}, $o->{UB_IMAGE}, $o->{UTHETA_IMAGE})\n");
+# $fh->print("#\tra=$ra dec=$dec\n");
+	}
+
+	$fh->close;
+}
+
+
+sub convertPixToSky
+{
+	my ($self, $info, $table) = @_;
+
+	my $command = $self->buildCommand('uvotapplywcs',
+			infile => $info->{xyfile},
+			outfile => $info->{skyfile},
+			wcsfile => $info->{PATH_EXT},
+			operation => 'PIX_TO_WORLD',
+			to => 'S',
+			);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my $fh = FileHandle->new($info->{skyfile});
+	foreach my $o (@$table) {
+		my $line = <$fh>;
+		if (not $line) {
+			$self->error(BAD_EXECUTE, 'convertPixToSky: not enough lines');
+			last;
+		}
+		my ($px, $py, $ra, $dec) = split(' ', $line);
+		if (defined($dec)) {
+			$o->{RA} = $ra;
+			$o->{DEC} = $dec;
+		}
+	}
+
+	undef($fh);
+}
+
+
+sub deleteMatchingKeys
+{
+	my ($h, $re) = @_;
+	my @match;
+	foreach my $key (keys(%$h)) {
+		if ($key =~ $re) {
+			push(@match, $key);
+		}
+	}
+	foreach my $key (@match) {
+		delete $h->{$key};
+	}
+}
+
+
+sub runSTARID
+{
+	my ($self, $info) = @_;
+
+	my $args = $self->args;
+
+	my $idfile = $self->temporary('starid');
+
+	my $command = $self->buildCommand('aspcorr',
+			infile => $info->{PATH},
+			inhdu => $info->{EXT0},
+			outhdu => 'NONE',
+			method => 'STARID',
+			catspec => $info->{catspec},
+			starid => $info->{starid},
+			srcfile => $info->{detected} . '[SOURCES]',
+			idfile => $idfile,
+			cleanup => $args->{cleanup},
+			);
+
+	my %args;
+	if (not $self->chatter(3)) {
+		$args{lines} = 24;
+	}
+
+	my $result = $self->shell($command . ' 2>&1', \%args);
+	if (not $self->isValid) {
+		# even if aspcorr failed, want to get partial results and continue
+		$self->{code} = 0;
+	}
+	# even if aspect correction fails, we still want to remember
+	# number of detected/reference sources
+
+	if (-f $idfile) {
+		# collect aspcorr results
+		my $header;
+		my $status = SimpleFITS->readonly($idfile)
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to load $idfile header [$status]");
+		}
+		else {
+			my $reKey = qr(^ASP);
+			deleteMatchingKeys($info, $reKey);
+			foreach my $key (keys(%$header)) {
+				if ($key =~ $reKey) {
+					$info->{$key} = $header->{$key};
+				}
+			}
+
+			my $aspcorr = ($header->{ASPCORR} eq 'YES') ? 1 : 0;
+			$info->{ASPCORR} = $aspcorr;
+			if ($aspcorr) {
+				my @q = (0) x 4;
+				for (my $i = 0; $i < 4; ++$i) {
+					my $qkey = "ASPQ$i";
+					if (not exists($info->{$qkey})) {
+						$self->error(BAD_TASK,
+								"aspect correction missing $qkey");
+					}
+					else {
+						$q[$i] = $info->{$qkey};
+					}
+				}
+				if ($self->isValid) {
+					$info->{QDELTA} = \@q;
+					$info->{CORRECTED} = $aspcorr;
+				}
+			}
+		}
+	}
+}
+
+
+sub reportPC
+{
+	my ($label, $rm) = @_;
+	my $det = sqrt($rm->[0][0] * $rm->[1][1] - $rm->[0][1] * $rm->[1][0]);
+require POSIX;
+	my $angle = POSIX::acos($rm->[0][0]);
+	print "$label: angle = $angle [det $det]\n";
+}
+
+
+sub applyCorrection
+{
+	my ($self, $info) = @_;
+
+	# determine the corrected CRVALn
+	my $u = Math::rd2unit(Math::toRadians($info->{CRVAL1S}),
+				Math::toRadians($info->{CRVAL2S}));
+	my $v = Math::v3q($u, $info->{QDELTA});
+	my ($ra_r, $dec_r) = Math::v3rdl($v);
+	my $crval1s = Math::toDegrees($ra_r);
+	my $crval2s = Math::toDegrees($dec_r);
+
+	# determine the corrected rotation keywords
+	my ($nx, $ny) = Math::createSystem($v);
+	my $nxhat = Math::v3q($nx, $info->{QDELTA});
+	my $px = Math::v3dot($nxhat, $nx);
+	my $py = Math::v3dot($nxhat, $ny);
+
+#	my $degrees = Math::toDegrees(atan2($py, $px));
+#	my $crota2s = $info->{CROTA2S} - $degrees;
+#	my $pc11 = cos(Math::toRadians($crota2s));
+#	my $pc12 = -sin(Math::toRadians($crota2s));
+#	my $pc21 = -$pc12;
+#	my $pc22 = $pc11;
+
+	my $radians = atan2($py, $px);
+	my $pcdelta = [
+		[ cos($radians), sin($radians) ],
+		[ -sin($radians), cos($radians) ],
+	];
+	# reportPC('pcdelta', $pcdelta);
+	my $pcold = [
+		[ $info->{PC1_1S}, $info->{PC1_2S} ],
+		[ $info->{PC2_1S}, $info->{PC2_2S} ],
+	];
+	# reportPC('pcold', $pcold);
+	my $pcnew = Math::mmult($pcdelta, $pcold);
+	# reportPC('pcnew', $pcnew);
+	my $pc11 = $pcnew->[0][0];
+	my $pc12 = $pcnew->[0][1];
+	my $pc21 = $pcnew->[1][0];
+	my $pc22 = $pcnew->[1][1];
+
+	my $tmpfile = $self->temporary('graspcorr', ext => '.key');
+	my $fh = FileHandle->new($tmpfile, 'w');
+	$fh->print("
+CTYPE1S = 'RA---TAN-SIP'
+CTYPE2S = 'DEC--TAN-SIP'
+CRVAL1S = $crval1s
+CRVAL2S = $crval2s
+ASPCORR = 'GRASPCORR'
+");
+
+
+	$fh->print("PC1_1S = $pc11\n") if (abs($pc11 - 1) > 1e-9);
+	$fh->print("PC1_2S = $pc12\n") if (abs($pc12) > 1e-9);
+	$fh->print("PC2_1S = $pc21\n") if (abs($pc21) > 1e-9);
+	$fh->print("PC2_2S = $pc22\n") if (abs($pc22 - 1) > 1e-9);
+
+	$fh->print("
+A_ORDER =     3
+B_ORDER =     3
+");
+
+	my $k = $self->{CONSTANTS};
+
+	foreach my $which (qw(A B)) {
+		for (my $iPlusJ = 1; $iPlusJ <= 3; ++$iPlusJ) {
+			for (my $j = 0; $j <= $iPlusJ; ++$j) {
+				my $i = $iPlusJ - $j;
+				my $key = join('_', $which, $i, $j);
+				next if $key eq 'A_0_1' or $key eq 'B_1_0';
+				$fh->print("$key = $k->{$key}\n");
+			}
+		}
+	}
+
+	$fh->print("
+AP_ORDER =    3 / Polynomial order, axis 1, detector to sky
+BP_ORDER =    3 / Polynomial order, axis 2, detector to sky
+");
+	foreach my $which (qw(AP BP)) {
+		for (my $iPlusJ = 1; $iPlusJ <= 3; ++$iPlusJ) {
+			for (my $j = 0; $j <= $iPlusJ; ++$j) {
+				my $i = $iPlusJ - $j;
+				my $key = join('_', $which, $i, $j);
+				# next if $key eq 'AP_0_1' or $key eq 'BP_1_0';
+				$fh->print("$key = $k->{$key}\n");
+			}
+		}
+	}
+
+	$fh->close;
+
+	my $command = $self->buildCommand('fthedit',
+			infile => $info->{PATH} . "[$info->{EXT0}]",
+			keyword => '@' . $tmpfile,
+			);
+	$self->shell($command);
+}
+
+
+sub saveCorrections
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (uc($args->{outfile}) eq 'NONE') {
+		return;
+	}
+
+	my %args = map { ($_ => $self->{$_}) }
+			qw(CARDS OBS_ID RA_PNT DEC_PNT PA_PNT);
+
+	if (not UVOT::AspcorrTable::saveCorrections($self,
+			$args->{outfile},
+			$self->{HDUs},
+			%args,
+			)) {
+		$self->error(BAD_OUTPUT, "unable to save corrections");
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	my $outfile = $args->{outfile};
+
+	if ($args->{historyFlag} and uc($outfile) ne 'NONE' and -e $outfile) {
+		$self->putParameterHistory($outfile);
+	}
+}

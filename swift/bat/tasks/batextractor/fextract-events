@@ -1,0 +1,361 @@
+#!/usr/bin/perl
+
+# $Id: fextract-events,v 1.11 2009/02/02 17:18:43 craigm Exp $
+#
+# $Log: fextract-events,v $
+# Revision 1.11  2009/02/02 17:18:43  craigm
+# Because the 'mgtime' task mangles the MJDREF keywords, we disable MJDREF processing --CM
+#
+# Revision 1.10  2006/05/03 03:22:11  craigm
+# Fix call to fthedit --CM
+#
+# Revision 1.9  2006/05/02 20:32:00  craigm
+# Prevent ftdelhdu from reporting a bogus error message --CM
+#
+# Revision 1.8  2006/04/24 20:17:01  craigm
+# Ignore the ftdelhdu errors; we have to delete until we get an error message --CM
+#
+# Revision 1.7  2006/04/24 19:49:10  craigm
+# New error messages reported by ftdelhdu: send to /dev/null --CM
+#
+# Revision 1.6  2006/04/24 19:35:10  craigm
+# Try to avoid 'ftmerge' problems AGAIN --CM
+#
+# Revision 1.5  2006/04/24 19:25:25  craigm
+# Try to avoid 'ftmerge' problems (the new appearance of the 'copyall' parameter) --CM
+#
+# Revision 1.4  2006/04/24 19:01:29  craigm
+# Protect all the system() calls with input of /dev/null; this prevents some of these tasks from waiting forever for user input --CM
+#
+# Revision 1.3  2006/04/24 18:30:47  craigm
+# Work around mgtime problem: won't 'merge' a single GTI; fix bug in the handling of command-line filters (misspelled hash key);  rename event file EXTNAME to the requested name; output FILINn keywords which record the input files --CM
+#
+# Revision 1.2  2006/04/22 03:56:13  craigm
+# Add 'cleanup' option to clean up scratch files --CM
+#
+# Revision 1.1  2006/04/22 03:20:46  craigm
+# Initial commit; this is a fast version of 'extractor' for event filtering; the idea is to replace the ultra-lame extractor with an ultra-fast version that does the same thing --CM
+#
+# Revision 1.6  2006/04/07 20:52:48  craigm
+# Add a CVS id and log variable --CM
+#
+#
+
+use HEACORE::HEAINIT;
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+eval {
+    $status = headas_main(\&fextract_events);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub fextract_events {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    my $taskname = "fextract-events";
+    my $version = "1.0";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($version);
+
+    # Prevent subsidiary tasks from pausing for input 
+    $ENV{"HEADASNOQUERY"} = 1;
+    $ENV{"HEADASPROMPT"} = "/dev/null";
+
+    eval {
+	$status = &fextract_events_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+sub fextract_events_work {
+
+    # --------------- parameters
+    ($status = PILGetString('filename', $filename)) == 0 || die "error getting 'filename' parameter";
+    ($status = PILGetString('eventsout', $eventsout)) == 0 || die "error getting 'eventsout' parameter";
+    
+    ($status = PILGetString('regionfile', $regionfile)) == 0 || die "error getting 'regionfile' parameter";
+    ($status = PILGetString('timefile', $timefile)) == 0 || die "error getting 'timefile' parameter";
+    ($status = PILGetString('xcolf', $xcolf)) == 0 || die "error getting 'xcolf' parameter";
+    ($status = PILGetString('ycolf', $ycolf)) == 0 || die "error getting 'ycolf' parameter";
+    ($status = PILGetString('tcol', $tcol)) == 0 || die "error getting 'tcol' parameter";
+    ($status = PILGetString('events', $events)) == 0 || die "error getting 'events' parameter";
+    ($status = PILGetString('gti', $gti)) == 0 || die "error getting 'gti' parameter";
+    ($status = PILGetBool('copyall', $copyall)) == 0 || die "error getting 'copyall' parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting 'clobber' parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting 'cleanup' parameter";
+
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    if ($chatter >= 5) { $verbose = 1; }
+
+    if ($eventsout =~ m/NONE/i) {
+	die "ERROR: 'eventsout' must not be NONE";
+    }
+
+    $o = $eventsout;
+    if ($filename =~ m/^(.*)\[([^\]]*)\]$/) { 
+	$keystr = $2;
+	$filename = $1;
+	$keystr =~ s/,/ /g;
+	$keystr =~ s/  */ /g;
+	$keystr =~ s/ =/=/g;
+	$keystr =~ s/= /=/g;
+	$keystr =~ s/ :/:/g;
+	$keystr =~ s/: /:/g;
+
+	$nkeys = 0;
+	foreach $keysel (split(/ /,$keystr)) {
+	    
+	    undef $xkeyname;
+	    if ($keysel =~ m/([^=]+)=([-+\d.EeDd*]+):([-+\d.EeDd*]+)/) {
+		$keyname = "$1";
+		$keylo = "$2";  $keyhi = "$3";
+	    } elsif ($keysel =~ m/([-+\d.EeDd*]+):([-+\d.EeDd*]+)/) {
+		if (! $keyname && $nkeys == 0)    { $xkeyname = 'X'; }
+		elsif (! $keyname && $nkeys == 0) { $xkeyname = 'Y'; }
+		elsif (! $keyname ) {
+		    die "ERROR: Keyword missing in event filename argument $keysel";
+		} else {
+		    $keylo = "$1"; $keyhi = "$2";
+		}
+	    } else {
+		warn "Filtering expression '$keysel' not understood";
+		next;
+	    }
+	    $xkeyname = "$keyname" if (! defined($xkeyname) );
+	    $keymin{$xkeyname} = "$keylo" if ($keylo ne "*");
+	    $keymax{$xkeyname} = "$keyhi" if ($keyhi ne "*");
+
+	    $nkeys ++;
+	}
+    }
+
+    @filenames = ();
+    if ($filename =~ m/^@/) {
+	$filename = substr($filename,1);
+	open(BATCH,"<$filename") or die "ERROR: could not open $filename";
+	while($line=<BATCH>) {
+	    chomp($line);
+	    $line =~ s/^ *//g;
+	    $line =~ s/ *$//g;
+	    next if ($line eq "");
+	    push @filenames, $line;
+	}
+	close(BATCH);
+    } else {
+	@filenames = ($filename);
+    }
+
+    # Make a merged GTI file for all input event files by UNION
+    $evgfile = "$o"."-evgti.lis";
+    open(FILE,">$evgfile") or die "ERROR: could not open $evgfile";
+    push @scratchfiles, $evgfile;
+    $nevgti = 0;
+    foreach $file (@filenames) {
+	$gfile = "$file"."[$gti]";
+	print FILE "$gfile\n";
+	$nevgti ++;
+    }
+    close(FILE);
+
+    die "ERROR: no input event files were found" if ($nevgti == 0);
+
+    $evgti = "$o"."-evgti.gti";
+    if ($nevgti == 1) {
+	$cmd = "ftcopy infile='$gfile' outfile='$evgti' copyall=NO";
+    } else {
+	# Because mgtime mangles the MJDREF keywords, we disable MJDREF processing with indates=-
+	$cmd = "mgtime ingtis='@"."$evgfile' outgti='$evgti' merge=OR indates='-'";
+    }
+    print "$cmd\n" if ($verbose);
+    unlink($evgti);
+    system("$cmd < /dev/null");
+    die "ERROR: could not create $evgti" if (! -f $evgti );
+    push @scratchfiles, $evgti;
+
+    if ("$timefile" =~ m/^@/) {
+
+	# Count the number of user-GTIs.  Since %^*&(%*&% mgtime 
+	# can't handle the case of one single GTI file, we have to
+	# special case it.
+
+	$utimefile = substr("$timefile",1);
+	open(FILE,"<$utimefile") or die "ERROR: could not open $utimefile";
+	$nugti = 0;
+	while ($line=<FILE>) {
+	    chomp($line);
+	    if ("$line" =~ m/^ *\S+ *$/) {
+		$nugti++;
+		$gfile = "$line";
+	    }
+	}
+	close(FILE);
+	
+	# Perform UNION merging of all input GTIs
+	if ($nugti > 1) {
+	    $ingti = "$o"."-ingti.gti";
+	    # Because mgtime mangles the MJDREF keywords, we disable MJDREF processing with indates=-
+	    $cmd = "mgtime ingtis='$timefile outgti='$ingti' merge=OR indates='-'";
+	    print "$cmd\n" if ($verbose);
+	    unlink($ingti);
+	    system("$cmd < /dev/null");
+	    die "ERROR: could not create $ingti" if (! -f $ingti );
+	    push @scratchfiles, $ingti;
+	    $timefile = "$ingti";
+	} elsif ($nugti == 1) {
+	    $timefile = $gfile;
+	} else {
+	    # $nugti == 0
+	    undef($timefile);
+	    warn "WARNING: empty user GTI @-file found";
+	}
+
+    } elsif ($timefile =~ m/NONE/i) {
+	undef($timefile);
+    }
+
+    if ($timefile) {
+	# Combine input GTIs with event GTIs by INTERSECTION
+	
+	$totgti = "$o"."-totgti.gti";
+	# Because mgtime mangles the MJDREF keywords, we disable MJDREF processing with indates=-
+	$cmd = "mgtime ingtis='$timefile,$evgti' outgti='$totgti' merge=AND indates='-'";
+	print "$cmd\n" if ($verbose);
+	unlink($totgti);
+	system("$cmd < /dev/null");
+	die "ERROR: could not create $totgti" if (! -f $totgti );
+	push @scratchfiles, $totgti;
+	
+	$timefile = $totgti;
+    } else {
+	$timefile = $evgti;
+    }
+
+    @filtexprs = ();
+
+    push @filtexpr, "gtifilter(\"$timefile\",$tcol)";
+    if ($regionfile !~ m/NONE/i) {
+	push @filtexpr, "regfilter(\"$regionfile\",$xcolf,$ycolf)";
+    }
+
+    foreach $keyname (keys %keymin) {
+	push @filtexpr, "$keyname >= $keymin{$keyname}";
+    }
+    foreach $keyname (keys %keymax) {
+	push @filtexpr, "$keyname <= $keymax{$keyname}";
+    }
+    $filtstr = join('&&',@filtexpr);
+    $filtstr_ext = "[$events]";
+    $filtstr_row = "[$filtstr]";
+
+    $evlfile = "$o"."-events.lis";
+    open(FILE,">$evlfile") or die "ERROR: could not open $evlfile";
+    push @scratchfiles, $evlfile;
+    foreach $file (@filenames) {
+	print FILE "$file"."$filtstr_ext$filtstr_row\n";
+    }
+    close(FILE);
+
+
+    # Create output events file
+    $cmd = "ftmerge infile='@"."$evlfile' outfile='$eventsout' chatter=$chatter history=YES ";
+    $cmd .= ($clobber)?"clobber=YES ":"clobber=NO ";
+    print "$cmd\n" if ($verbose);
+    unlink($eventsout);
+    system("$cmd < /dev/null");
+    die "ERROR: could not create $eventsout" if (! -f $eventsout );
+
+    # Remove any junk extensions ... ignore any errors
+    $status = 0;
+    $ndel = 0;
+    while ($status == 0 && $ndel < 10) {
+	$cmd = "ftdelhdu infile='$eventsout"."[2]' outfile=NONE confirm=YES < /dev/null > /dev/null 2>&1";
+	print "$cmd\n" if ($verbose);
+	$status = system("$cmd");
+	$ndel ++;
+    }
+    $status = 0;
+
+    # Vital statistics on the GTI
+    $devnull = "> /dev/null";
+    if ($verbose) { $devnull = ""; }
+    system("ftstat infile='$timefile"."[1][col START]' $devnull < /dev/null");
+    $tstart = `pget ftstat min < /dev/null`; chomp($tstart);
+
+    system("ftstat infile='$timefile"."[1][col STOP]' $devnull < /dev/null");
+    $tstop = `pget ftstat max < /dev/null`; chomp($tstop);
+
+    system("ftstat infile='$timefile"."[1][col ONTIME=STOP-START]' $devnull < /dev/null");
+    $ontime = `pget ftstat sum < /dev/null`; chomp($ontime);
+
+    $cmd = "ftappend infile='$timefile"."[1][col *;#TSTART=$tstart;#TSTOP=$tstop;#ONTIME=$ontime;#EXPOSURE=$ontime;#TELAPSE=$ontime;#LIVETIME=$ontime;#EXTNAME=\"$gti\";]' outfile='$eventsout'";
+    print "$cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+    
+    $hfile = "$o"."-head.txt";
+    open(FILE,">$hfile") or die "ERROR: could not open header file $hfile";
+    push @scratchfiles, $hfile;
+    print FILE "EXTNAME = '$events'\n";
+    print FILE "TSTART = $tstart\n";
+    print FILE "TSTOP = $tstop\n";
+    print FILE "EXPOSURE = $ontime\n";
+    print FILE "ONTIME = $ontime\n";
+    print FILE "TELAPSE = $ontime\n";
+    print FILE "LIVETIME = $ontime\n";
+    print FILE "-FILIN*\n";
+    # Write the FILINn record of input files
+    $nevfile = 1;
+    foreach $file (@filenames) {
+	$filtstr_col = sprintf("FILIN%03d = '%s'", $nevfile, "$file");
+	print FILE "$filtstr_col\n";
+	$nevfile ++;
+    }
+
+    close(FILE);
+
+    $o = "$eventsout"."[1]";
+    $cmd = "fthedit infile='$o' keyword='@"."$hfile' value=NONE ";
+    print "$cmd\n" if ($verbose);
+    system("$cmd < /dev/null");
+
+    return $status;
+}

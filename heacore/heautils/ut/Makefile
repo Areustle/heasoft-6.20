@@ -1,0 +1,16 @@
+HD_COMPONENT_NAME	= heacore
+
+HD_COMPONENT_VERS	=
+
+HD_SHLIB_LIBS		= ${HD_LFLAGS} -l${PIL} -l${CFITSIO} -l${READLINE} \
+			  -l${HEAIO} ${SYSLIBS}
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_CLIBS		= ${HD_LFLAGS} -l${HEAUTILS} -l${PIL} -l${CFITSIO} -l${READLINE} ${SYSLIBS}
+
+HD_TEST_CTASK		= heautils_test
+
+HD_TEST_CTASK_SRC_c	= heautils_test.c
+
+include ${HD_STD_MAKEFILE}

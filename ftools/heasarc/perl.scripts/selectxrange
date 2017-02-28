@@ -1,0 +1,334 @@
+#!/usr/bin/perl
+##!/usr1/local/bin/perl
+
+# Authors: Ziqin Pan
+# Description: selectxrange creates and displays time ranges on POW window and save
+#              them as a ASCII range file.
+# Modifiction: Original created on 2/14/05
+#
+
+use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+use Getopt::Std;
+use Math::Trig;
+use IO::File;
+use POSIX qw(tmpnam);
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+
+selectxrange creates and displays time range on POW window and save 
+them as a range file.
+
+EOHELP
+exit 0;
+}
+
+ $infile =0;
+ $outfile =0;
+ $x =0;
+ $y =0;
+ $sort=0;
+ $timeout=0;
+ $xname =0;
+ $yname =0;
+ $status =0;
+
+exit headas_main(\&selectxrange);
+
+sub selectxrange {
+ my $tname ="selectxrange";
+ my $tvers ="1.0"
+
+ &selectxrange_getpar();
+
+ $status = &selectxrange_work($infile,$outfile,$x,$y,$sort,$timeout,$xname,$yname);
+}
+
+
+sub selectxrange_work {
+
+
+   my @val =@_;
+
+#print "XX==> range file:  $val[1]\n";
+#print "XX==> x y columns: $val[2],$val[3]\n";
+#print "XX==> sort: $val[4]\n";
+#print "XX==> timeout: $val[5], $val[6], $val[7]\n";
+   $xname = $val[6];
+   $yname = $val[7];
+
+   $| = 1;
+
+   $proc_id=fork;
+   if ( $proc_id == 0) {
+      system("POWplot &");
+      
+   }
+   elsif ( defined $proc_id) {
+      $infile =$val[0];
+      $outfile =$val[1];
+      $x =$val[2];
+      $y =$val[3];
+      if ( $val[1] eq "" ) {
+         $outfile ="pow.xrang";
+      }
+      my $version="";
+      my $count =0;
+
+      $xpa_user =$ENV{XPA_USER};
+      $host =$ENV{REMOTEHOST};
+      $helpdir =$ENV{LHEA_HELP};
+
+      if (ffopen($fptr,$infile,READWRITE,$status)) {
+          print "open $infile error\n";
+          exit $status;
+      } elsif ( ffgcno($fptr,CASEINSEN,$x,$colnum,$status) ) {
+          print "read $x column num error\n";
+          exit $status;
+      } elsif ( ffgcno($fptr,CASEINSEN,$y,$colnum1,$status) ) {
+          print "read $y column num error\n";
+          exit $status;
+      } elsif ( ffgnrw($fptr,$numrows,$status)) {
+          print "read rownum error\n";
+          exit $status;
+      } elsif ( ffgcvd($fptr,$colnum,1,1,$numrows,0,$xdata,$anynul,$status) ) {
+          print "read $x column data error\n";
+          exit $status;
+      } elsif ( ffgcvd($fptr,$colnum1,1,1,$numrows,0,$ydata,$anynul,$status) ) {
+          print "read $x column data error\n";
+          exit $status;
+      }
+      $xmin = $$xdata[0];
+      $xmax = $$xdata[0];
+      $ymin = $$ydata[0];
+      $ymax = $$ydata[0];
+
+      for ($i=0; $i<$numrows;$i++) {
+#           push @xdatalist, $$xdata[$i];
+#           push @ydatalist, $$ydata[$i];
+
+#           $xdatalist{$i} = $$xdata[$i];
+#           $ydatalist{$i} = $$ydata[$i];
+           $indexlist[$i] = $i;
+           
+           if ( $$xdata[$i] > $xmax ) {
+               $xmax = $$xdata[$i];
+           }
+           if ( $$xdata[$i] < $xmin ) {
+               $xmin = $$xdata[$i];
+           }
+           if ( $$ydata[$i] > $ymax ) {
+               $ymax = $$ydata[$i];
+           }
+           if ( $$ydata[$i] < $ymin ) {
+               $ymin = $$ydata[$i];
+           }
+      }
+
+
+      if ( !(defined $xpa_user) || $xpa_user eq "") {
+          $pow = "pow";
+
+          #########################
+          # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+          #########################
+          $heraXPA ="heraXPA";
+      } else {
+          $pow ="pow_$xpa_user";
+
+          #########################
+          # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+          #########################
+          $heraXPA ="heraXPA_$xpa_user";
+      } 
+     
+      #########################
+      # Pan Chai - check to see if XPA entry point heraXPA exists.. if not,
+      #            use pow (this is most likely for command line running)
+      #########################
+      $result = `xpaget xpans 2>/dev/null`;
+  
+      if ($result !~ /heraXPA/) {
+         $heraXPA = $pow;
+      }
+
+      print "Try to access to POWplot on $pow . Please wait!\n";
+      while (($version =~ /NULL/) || ($version =~ /XPA/i) || ($version =="")) {
+          if ($count > $val[5] ) {
+             print "Access to POW plot timeout\n";
+             kill 9, $proc_id;
+             return 1;
+          }
+          sleep 5;
+           $version = `xpaget $pow version 2>/dev/null`;
+          $count =$count+5;
+
+      }
+      print "Access successsfully \n";
+
+      ($infile,$ext) = split(/\[/,$infile);
+      $ext =~ s/\]//g;
+      if ( $ext =="" ) {
+          $gname = sprintf ("%s_%s_%s",$infile,$x,$y);
+      } else {
+          $gname = sprintf ("%s_%s_%s_%s",$infile,$ext,$x,$y);
+      }
+
+
+     if ( $sort =~/^y$|^yes$/i) {
+        print "Sorting data by $x column\n";
+     	@sortedindexlist = sort byxdata (@indexlist);
+     	foreach $index (@sortedindexlist) {
+          push @xdatalist, $$xdata[$index] ;
+          push @ydatalist, $$ydata[$index] ;
+     	}
+     } else {
+     	foreach $index (@indexlist) {
+          push @xdatalist, $$xdata[$index] ;
+          push @ydatalist, $$ydata[$index] ;
+     	}
+     }
+
+
+      $helpfile = "$helpdir/selectxrange_1.html";
+
+
+#      system("xpaset -p $pow create data xdataName @xdatalist");
+#      system("xpaset -p $pow create data ydataName @ydatalist");
+#      system("echo @xdatalist |xpaset $pow create data xdataName");
+#      system("echo @ydatalist |xpaset $pow create data ydataName");
+#      open (FD, "|xpaset $pow create data xdataName");
+#      open (FD1, "|xpaset $pow create data ydataName");
+#      open (FD, ">tmp.xdata");
+#      open (FD1, ">tmp.ydata");
+#      do { $tmpname = tmpnam() } 
+#         until $fd = IO::File->new($tmpname, O_RDWR|O_CREAT|O_EXCL);
+#      do { $tmpname1 = tmpnam() } 
+#         until $fd1 = IO::File->new($tmpname1, O_RDWR|O_CREAT|O_EXCL);
+#      print $fd "@xdatalist";
+#      print $fd1 "@ydatalist";
+       open (FD,">$outfile");
+       print FD "@xdatalist";
+       close FD;
+       system("cat $outfile|xpaset $pow create data xdataName");
+       open (FD,">$outfile");
+       print FD "@ydatalist";
+       close FD;
+       system("cat $outfile|xpaset $pow create data ydataName");
+      
+#      system("echo \"@xdatalist\" |xpaset $pow create data xdataName");
+#      system("echo \"@ydatalist\" |xpaset $pow create data ydataName");
+#      system("cat tmp.xdata|xpaset $pow create data xdataName");
+#      system("cat tmp.ydata|xpaset $pow create data ydataName");
+#      system("cat $tmpname|xpaset $pow create data xdataName");
+#      system("cat $tmpname1|xpaset $pow create data ydataName");
+#      system("rm -rf $tmpname $tmpname1");
+#      system("xpaset -p pow scope 100 100");
+      system("xpaset -p $pow create curve  curName  xdataName  ydataName");
+      system("xpaset -p $pow curve  -name curName  pDisp false lDisp true");
+      system("xpaset -p $pow create graph  $gname  curName NULL 300 300");
+      system("xpaset -p $pow graph -name $gname xlabel $xname ylabel $yname ");
+      system("xpaset -p $pow scope 100 100");
+      system("xpaset -p $pow xrangeTool -open");
+      system("xpaset -p $pow xrangeName $outfile");
+#      if ( -e $outfile ) {
+#      system("cat $outfile | xpaset $pow xranges");
+#      }
+      if ( -e $outfile ) {
+      system("rm -f $outfile");
+      }
+
+      #########################
+      # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+      #########################
+      #system("echo \"$help\" |xpaset $heraXPA helpPage 2>/dev/null");
+      #system("cat \"$helpfile\" |xpaset $heraXPA helpPage 2>/dev/null");
+      system("echo \"$helpfile\" |xpaset $heraXPA helpPage 2>/dev/null");
+      $return_value= `xpaget $pow xrangeTool -wait`;
+      #########################
+      # Pan Chai - wait command will now returned immediately. Scripts needs to check every
+      #            2 seconds to see if the status has changed. This will work with old way
+      #            since the return_value in old way will return either 0 or 1 after user inputs.
+      #########################
+      while ($return_value eq "NOT_YET") {
+            sleep 2;
+            $return_value= `xpaget $pow xrangeTool -wait`;
+      }
+
+      $return_value= `xpaget $pow xrangeTool -close`;
+      system("xpaset -p $pow close");
+
+      #########################
+      # Pan Chai - close of helpPage is just withdraw the widget
+      #########################
+      if ( $heraXPA !~ /^pow$/ ) {
+      system("xpaset -p $heraXPA helpPage -close");
+      }
+
+
+
+
+
+#      system("xpaset -p $pow regionTool -open");
+#      system("xpaset -p $pow regionName $outputfile");
+#      system("echo \"$region\"");
+#      system("echo \"$region\" |xpaset $pow regions");
+#      $return_value= `xpaget $pow regionTool -wait`;
+#      system("xpaset -p $pow close");
+
+
+         
+   }
+
+   return 0;
+
+}
+
+sub byxdata {
+    $$xdata[$a] <=> $$xdata[$b];
+}
+
+sub selectxrange_getpar {
+
+ if (PILGetString("infile",$infile)) {
+    print "Error to get parameter \"infile\"\n";
+    exit(-1)
+ }
+
+ if (PILGetString("rangefile",$outfile)){
+    print "Error to get parameter \"rangefile\"\n";
+    exit(-1)
+ }
+
+ if (PILGetString("x",$x)){
+    print "Error to get parameter \"x\"\n";
+    exit(-1)
+ }
+ if (PILGetString("y",$y)){
+    print "Error to get parameter \"y\"\n";
+    exit(-1)
+ }
+ if (PILGetString("sort",$sort)){
+    print "Error to get parameter \"sort\"\n";
+    exit(-1)
+ }
+ if (PILGetReal("timeout",$timeout)){
+    print "Error to get parameter \"timeout\"\n";
+    exit(-1)
+ }
+ if (PILGetString("xname",$xname)){
+    print "Error to get parameter \"xname\"\n";
+    exit(-1)
+ }
+ if (PILGetString("yname",$yname)){
+    print "Error to get parameter \"yname\"\n";
+    exit(-1)
+ }
+
+}
+

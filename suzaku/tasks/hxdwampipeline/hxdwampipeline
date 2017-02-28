@@ -1,0 +1,2549 @@
+#!/usr/bin/perl -w
+
+=head1 SYNOPSIS
+
+hxdwampipeline
+
+=head1 DESCRIPTION
+
+HXD WAM PIPELINE processing ftool
+
+=head1 PROCESSING SUBROUTINES
+
+=cut
+
+##########
+# Pragmas
+##########
+use strict;
+
+#############################
+# Required core perl modules
+#############################
+use File::Find;
+use File::Basename;
+use File::Spec::Functions;
+use File::Path;
+use File::Copy;
+use Cwd 'abs_path';
+
+###########################
+# Required HEASoft modules
+###########################
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEAGen::HEAGen qw( :all );
+use Astro::FITS::CFITSIO qw( :longnames :constants );
+
+$| = 1;
+
+###################
+# Global variables
+###################
+
+my %Task = (
+    start       => scalar( localtime ),
+    name        => "hxdwampipeline",
+    mission     => "Suzaku",
+    version     => "1.0",
+    releasedate => "2010-12-01",
+    autoparams  => [ qw( indir outdir steminputs stemoutputs
+                         entrystage exitstage eventmode ) ]
+);
+
+# input parameters
+my %params = (
+
+    ############################
+    # Not parameters, but close
+    ############################
+    taskchatter        => 0,   # chatter to pass to FTOOLS
+);
+
+my %paramsStr = (
+    indir              => '',  # Input directory
+    outdir             => '',  # Output directory
+    steminputs         => '',  # Stem for finding input files
+    stemoutputs        => '',  # Root filename for output files
+    eventmode          => '',  # Event modes to process
+
+    hxdhk_fname        => '',  # HXD HK fits file name
+    mkf_fname          => '',  # Makefilter file
+    leapfile           => '',  # Leap second file name
+    tim_fname          => '',  # Input .tim FITS file name
+
+    trn_mkfexpr        => '',  # HXD TRN makefilter time screening expression
+    trn_gti_fname      => '',  # HXD TRN additional GTI file
+
+    trn_lc_mode        => '',  # TRN mode = PH or TH
+
+    trn_trigger_set    => '',  # trigger set to use for TRN (if trn_use_trigger_set)
+    trn_det_alg        => '',  # Burst detection algorithm for TRN light curvs
+    bst_trigger_set    => '',  # trigger set to use for BST (if bst_use_trigger_set)
+    bst_det_alg        => '',  # Burst detection algorithm for BST light curvs
+);
+
+my %paramsInt = (
+    entrystage         => 0,   # Pipeline entry stage
+    exitstage          => 0,   # Pipeline exit stage
+
+    time_convert_mode  => 0,   # HxdTime2aetime convert mode
+    rand_seed          => 0,   # Seed for random number generator (for hxdwampi)
+
+    th_mode            => 0,   # Data mode for BST light curves
+    trn_min_channel    => 0,   # Minimum channel number for TRN/PH light curves
+    trn_max_channel    => 0,   # Maximum channel number for TRN/PH light curves
+    bst_energy_mode    => 0,   # BST light curve production mode for eng chans
+    bst_energy_channel => 0,   # BST eng chan for the 1-channel production mode
+    bst_min_channel    => 0,   # BST min eng chan for the accum production mode
+    bst_max_channel    => 0,   # BST max eng chan for the accum production mode
+
+    trn_bgd_integ_time => 0,   # Bkg integration time for TRN light curves
+    trn_step_window    => 0,   # Window size in seconds for step fitting for TRN
+    bst_bgd_integ_time => 0,   # Bkg integration time for BST light curves
+
+    event_freq         => 0,   # Event printout frequency
+    anl_verbose        => 0,   # ANL verbose level
+    chatter            => 2,   # Terminal chattiness level
+);
+
+my %paramsFlt = (
+    trn_gtitrim        => 0.0, # HXD TRN seconds to cut from GTI START/STOP
+
+    trn_dt_clk         => 0.0, # TRN deadtime clock frequency
+    bst_dt_clk         => 0.0, # BST deadtime clock frequency
+    bst_dt_ph          => 0.0, # Deadtime for BST/PH data
+
+    trn_delta_t        => 0.0, # Burst integration time for TRN light curves
+    trn_sigma          => 0.0, # Burst detection threshold for TRN light curves
+    trn_bgd_early_gap  => 0.0, # Gap b/tw early bkg and foregnd intervals for TRN
+    trn_bgd_late_gap   => 0.0, # Gap b/tw late bkg and foregnd intervals for TRN
+    trn_step_delchi    => 0.0, # Change in delta chi-squared to be considered '1-sigma'
+    trn_gaptol         => 0.0, # Gap tolerance (s) for TRN
+    trn_overlaptol     => 0.0, # Burst detection overlap tolerance (s) for TRN
+    trn_maxdur         => 0.0, # Maximum allowed burst duration for TRN
+    bst_delta_t        => 0.0, # Burst integration time for BST light curves
+    bst_sigma          => 0.0, # Burst detection threshold for BST light curves
+    bst_bgd_early_gap  => 0.0, # Gap b/tw early bkg and foregnd intervals for BST
+    bst_bgd_late_gap   => 0.0, # Gap b/tw late bkg and foregnd intervals for BST
+    bst_gaptol         => 0.0, # Gap tolerance (s) for BST
+    bst_overlaptol     => 0.0, # Burst detection overlap tolerance (s) for BST
+    bst_maxdur         => 0.0, # Maximum allowed burst duration for BST
+);
+
+my %paramsBool = (
+    create_bstidt      => 0,   # Create new Burst ID files?
+    trn_exclude_scan   => 0,   # HXD TRN exclude "WAM scans" in selection crit?
+
+    trn_dt_cor         => 0,   # Do deadtime correction for TRN light curves?
+    bst_dt_cor         => 0,   # Do deadtime correction for BST light curves?
+
+    trn_use_trigger_set=> 0,   # Use HETE2 trigger set for TRN detection
+    trn_durest         => 0,   # Try to refine burst duration estimate (T50/T90 are always calculated) for TRN?
+    bst_use_trigger_set=> 0,   # Use HETE2 trigger set for BST detection
+    bst_durest         => 0,   # Try to refine burst duration estimate (T50/T90 are always calculated) for BST?
+
+    anl_profile        => 0,   # Enable ANL module profiling?
+    clobber            => 0,   # Overwrite existing output files?
+    history            => 0,   # Write task HISTORY keywords to output files?
+    cleanup            => 0,   # Cleanup temporary files?
+);
+
+my %paramsList = (
+    trn_tpu_board      => [ ], # HXD WAM boards to include in TRN light curves
+    bst_tpu_board      => [ ], # HXD WAM boards to include in BST light curves
+);
+
+# file name extensions and other properties
+my %fileExts = (
+    trnufevt => {
+        many  => 1,
+        entry => 1,
+        exit  => 2,
+        mode  => 'TRN',
+        desc  => 'TRN unscreened event file',
+        ext   => 'hxd_[0-9]_wam_uf.evt',
+        arch  => 'hxd/event_uf'
+    },
+    trnclevt => {
+        many  => 0,
+        entry => 3,
+        exit  => 3,
+        creat => 2,
+        mode  => 'TRN',
+        desc  => 'TRN screened event file',
+        ext   => 'hxd_0_wam_cl.evt',
+        arch  => ''
+    },
+    bstufevt => {
+        many  => 1,
+        entry => 1,
+        exit  => 3,
+        mode  => 'BST',
+        desc  => 'BST unscreened event file',
+        ext   => 'hxd_[0-9]_bst[0-9][0-9]_uf.evt',
+        arch  => 'hxd/event_uf'
+    },
+    # NO BST CLEANED EVENTS!
+    #bstclevt => {
+    #    many  => 1,
+    #    entry => 3,
+    #    exit  => 3,
+    #    mode  => 'BST',
+    #    desc  => 'BST screened event file',
+    #    ext   => 'hxd_[0-9]_bst[0-9][0-9]_cl.evt'
+    #},
+    bstidt => {
+        many  => 1,
+        entry => 1,
+        exit  => 1,
+        creat => 1,
+        mode  => 'BST',
+        desc  => 'WAM Burst ID table',
+        ext   => 'hxd_[0-9]_bstidt.fits',
+        creat_par => 'create_bstidt',
+        arch  => 'hxd/event_uf'
+    },
+    hxdhk_fname => {
+        many  => 0,
+        entry => 1,
+        exit  => 1,
+        desc  => 'HXD HK file',
+        ext   => 'hxd_0.hk',
+        auxil => 1,
+        arch  => 'hxd/hk'
+    },
+    tim_fname => {
+        many  => 0,
+        entry => 1,
+        exit  => 2,
+        desc  => 'timing packets file',
+        ext   => '.tim',
+        auxil => 1,
+        arch  => 'auxil'
+    },
+    mkf_fname => {
+        many  => 0,
+        entry => 2,
+        exit  => 2,
+        desc  => 'makefilter file',
+        ext   => '.mkf',
+        auxil => 1,
+        arch  => 'auxil'
+    }
+);
+
+# found input files
+my %infiles = ( );
+
+# global list of files to remove after run
+my @clean = ( );
+
+# valid compressed file extensions
+my $zip = qr/(\.Z|\.z|\.gzip|\.GZIP|\.gz|\.GZ|\.zip\.ZIP)?/;
+
+# defaults
+my %Defaults = (
+
+    #####################
+    # screening criteria
+    #####################
+    screening => {
+
+        # TRN mode
+        TRN => join ( '&&', 'SAA_HXD==0',
+                            'T_SAA_HXD>500',
+                            'TN_SAA_HXD>180',
+                            'COR>6',
+                            'HXD_HV_T0_CAL>700',
+                            'HXD_HV_T1_CAL>700',
+                            'HXD_HV_T2_CAL>700',
+                            'HXD_HV_T3_CAL>700',
+                            'HXD_HV_W0_CAL>700',
+                            'HXD_HV_W1_CAL>700',
+                            'HXD_HV_W2_CAL>700',
+                            'HXD_HV_W3_CAL>700' ),
+
+        # BST mode - no screening necessary
+        #BST => join ( '&&', 'SAA_HXD==0', 'T_SAA_HXD>500', 'TN_SAA_HXD>180',
+        #                    '!isnull(HXD_HV_T0_CAL)', 'HXD_HV_T0_CAL>700',
+        #                    '!isnull(HXD_HV_T1_CAL)', 'HXD_HV_T1_CAL>700',
+        #                    '!isnull(HXD_HV_T2_CAL)', 'HXD_HV_T2_CAL>700',
+        #                    '!isnull(HXD_HV_T3_CAL)', 'HXD_HV_T3_CAL>700',
+        #                    '!isnull(HXD_HV_W0_CAL)', 'HXD_HV_W0_CAL>700',
+        #                    '!isnull(HXD_HV_W1_CAL)', 'HXD_HV_W1_CAL>700',
+        #                    '!isnull(HXD_HV_W2_CAL)', 'HXD_HV_W2_CAL>700',
+        #                    '!isnull(HXD_HV_W3_CAL)', 'HXD_HV_W3_CAL>700' ),
+    },
+
+    # light curve channels
+    lc_channels => {
+        TRN => {
+            th0   => [ 2, 3 ],
+            th1   => [ 4, 7 ],
+            th2   => [ 8, 16 ],
+            th3   => [ 17, 54 ],
+            thall => [ 2, 54 ]
+        }
+    },
+);
+
+# END globals
+#------------------------------------------------------------------------------
+
+######################################
+# wrap the whole thing in headas_main
+######################################
+exit( headas_main( \&hxdwampipeline ) );
+
+=head3 hxdwampipeline
+
+=over
+
+Main subroutine. Does everything.
+
+Calls:
+
+        getParams
+        checkParams
+        findInputFiles
+        setupOutputDirectory
+        createBSTIDTable
+        calibrateWAMTRN
+        calibrateWAMBST
+        filterWAM
+        extractWAMLC
+        runSub
+        dumpTimingReport
+
+=back
+
+=cut
+
+sub hxdwampipeline {
+
+    my $stat = 0;
+
+    my $timingReport = [ ];
+
+    ##############################################
+    # set task name and version and chatter stuff
+    ##############################################
+    set_toolname( $Task{name} );
+    set_toolversion( $Task{version} );
+    setTask( $Task{name}, $Task{version} );
+    setChat( 2 );
+    setSysChat( 2 );
+
+    ###########################################################################
+    # Initialization
+    #
+    #   getting parameters, finding input files etc.
+    #
+    intro( );
+    ( $stat = getParams( ) ) == 0 || goto CLEANUP;
+    setChat( $params{chatter} );
+
+    my @stage0 = (
+        "checking input parameters" => \&checkParams,
+        "finding input files"       => \&findInputFiles,
+        "setting up output dir"     => \&setupOutputDirectory,
+        "preparing auxil files"     => \&setupAuxilFiles,
+    );
+    while ( my ( $desc, $proc ) = ( ( shift @stage0 ), ( shift @stage0 ) ) ) {
+        last unless $desc;
+        ( $stat = runSub( $timingReport, $desc, $proc ) ) == 0 || goto CLEANUP;
+    }
+    goto STAGE2 if $params{entrystage} == 2;
+    goto STAGE3 if $params{entrystage} == 3;
+    #--------------------------------------------------------------------------
+
+    ###########################################################################
+    # Stage I
+    #
+    #   calibration
+    #
+    headingnp( 2, "========= STAGE I =========" );
+    my @stage1 = (
+        "checking required files"    => [ \&checkStageRequiredFiles, 1 ],
+        "creating BSTID table"       => \&createBSTIDTable,
+        "calibrating WAM TRN events" => \&calibrateWAMTRN,
+        "calibrating WAM BST events" => \&calibrateWAMBST,
+    );
+    while ( my ( $desc, $proc ) = ( ( shift @stage1 ), ( shift @stage1 ) ) ) {
+        last unless $desc;
+        ( $stat = runSub( $timingReport, $desc, $proc ) ) == 0 || goto CLEANUP;
+    }
+    goto CLEANUP if $params{exitstage} == 1;
+    #--------------------------------------------------------------------------
+
+    ###########################################################################
+    # Stage II
+    #
+    #   filtering event lists
+    #
+STAGE2:
+    headingnp( 2, "========= STAGE II =========" );
+    my @stage2 = (
+        "checking required files"  => [ \&checkStageRequiredFiles, 2 ],
+        "creating screened events" => \&filterWAM,
+    );
+    while ( my ( $desc, $proc ) = ( ( shift @stage2 ), ( shift @stage2 ) ) ) {
+        last unless $desc;
+        ( $stat = runSub( $timingReport, $desc, $proc ) ) == 0 || goto CLEANUP;
+    }
+    goto CLEANUP if $params{exitstage} == 2;
+    #--------------------------------------------------------------------------
+
+    ###########################################################################
+    # Stage III
+    #
+    #   product generation
+    #
+STAGE3:
+    headingnp( 2, "========= STAGE III =========" );
+    my @stage3 = (
+        "checking required files" => [ \&checkStageRequiredFiles, 3 ],
+        "extracting light curves" => \&extractWAMLC,
+        "detecting event bursts"  => \&detectBursts,
+    );
+    while ( my ( $desc, $proc ) = ( ( shift @stage3 ), ( shift @stage3 ) ) ) {
+        last unless $desc;
+        ( $stat = runSub( $timingReport, $desc, $proc ) ) == 0 || goto CLEANUP;
+    }
+    #--------------------------------------------------------------------------
+
+    ###################
+    # do cleanup tasks
+    ###################
+CLEANUP:
+    if ( $params{cleanup} ) {
+        cleanup( @clean );
+    }
+    if ( $stat == 0 ) {
+        dumpTimingReport( $timingReport );
+    }
+    outtro( $stat );
+    return $stat;
+}
+
+=head3 getParams
+
+=over
+
+Gets all input parameters.
+
+Calls:
+
+        getStrParam
+        getFltParam
+        getBoolParam
+        getIntParam
+        getListParam
+        getFileParam
+
+=back
+
+=cut
+
+sub getParams {
+
+    my $stat = 0;
+
+    ###########################
+    # get automatic parameters
+    ###########################
+    my @reqparm = ( );
+    if ( exists $Task{autoparams} && ref $Task{autoparams} eq 'ARRAY' ) {
+        @reqparm = @{$Task{autoparams}};
+        foreach my $reqparm ( @reqparm ) {
+            if ( exists $paramsStr{$reqparm} ) {
+                $stat = getStrParam( $reqparm, \$paramsStr{$reqparm} );
+                return $stat unless $stat == 0;
+            } elsif ( exists $paramsInt{$reqparm} ) {
+                $stat = getIntParam( $reqparm, \$paramsInt{$reqparm} );
+                return $stat unless $stat == 0;
+            } elsif ( exists $paramsFlt{$reqparm} ) {
+                $stat = getFltParam( $reqparm, \$paramsFlt{$reqparm} );
+                return $stat unless $stat == 0;
+            } elsif ( exists $paramsBool{$reqparm} ) {
+                $stat = getBoolParam( $reqparm, \$paramsBool{$reqparm} );
+                return $stat unless $stat == 0;
+            } elsif ( exists $paramsList{$reqparm} ) {
+                $stat = getListParam( $reqparm, \$paramsList{$reqparm} );
+                return $stat unless $stat == 0;
+            } else {
+                errmsg( "Unknown parameter $reqparm" );
+                return -1;
+            }
+        }
+    }
+
+    ###########################
+    # get hidden string params
+    ###########################
+    foreach my $par ( keys %paramsStr ) {
+        next if grep /^$par$/, @reqparm;
+        $stat = getStrParam( $par, \$paramsStr{$par} );
+        return $stat unless $stat == 0;
+    }
+    map { $params{$_} = $paramsStr{$_}; } keys %paramsStr;
+
+    ########################
+    # get hidden int params
+    ########################
+    foreach my $par ( keys %paramsInt ) {
+        next if grep /^$par$/, @reqparm;
+        $stat = getIntParam( $par, \$paramsInt{$par} );
+        return $stat unless $stat == 0;
+    }
+    map { $params{$_} = $paramsInt{$_}; } keys %paramsInt;
+
+    ##########################
+    # get hidden float params
+    ##########################
+    foreach my $par ( keys %paramsFlt ) {
+        next if grep /^$par$/, @reqparm;
+        $stat = getFltParam( $par, \$paramsFlt{$par} );
+        return $stat unless $stat == 0;
+    }
+    map { $params{$_} = $paramsFlt{$_}; } keys %paramsFlt;
+
+    ############################
+    # get hidden boolean params
+    ############################
+    foreach my $par ( keys %paramsBool ) {
+        next if grep /^$par$/, @reqparm;
+        $stat = getBoolParam( $par, \$paramsBool{$par} );
+        return $stat unless $stat == 0;
+    }
+    map { $params{$_} = $paramsBool{$_}; } keys %paramsBool;
+
+    #########################
+    # get hidden list params
+    #########################
+    foreach my $par ( keys %paramsList ) {
+        next if grep /^$par$/, @reqparm;
+        $stat = getListParam( $par, \@{$paramsList{$par}} );
+        return $stat unless $stat == 0;
+    }
+    map { $params{$_} = $paramsList{$_}; } keys %paramsList;
+
+    return $stat;
+}
+
+=head3 checkParams
+
+=over
+
+Checks input parameters for sanity.
+
+=back
+
+=cut
+
+sub checkParams {
+
+    my $stat = 0;
+
+    chat( 2, "Checking input parameters\n" );
+
+    #######################################
+    # make eventmode parameter into a list
+    #######################################
+    if ( $params{eventmode} =~ /^ALL$/i ) {
+        $params{eventmode} = [ qw( BST TRN ) ];
+    } else {
+        $params{eventmode} = [ $params{eventmode} ];
+    }
+
+    #########################
+    # check entry/exit stage
+    #########################
+    if ( $params{entrystage} > $params{exitstage} ) {
+        error( 1, "entrystage must be <= exitstage\n" );
+        $stat = $stat == 0 ? -1 : $stat;
+    }
+
+    ##########################
+    # check stem input/output
+    ##########################
+    if ( $params{steminputs} eq "" ) {
+        error( 1, "empty steminputs parameter!\n" );
+        $stat = $stat == 0 ? -1 : $stat;
+    }
+    if ( $params{stemoutputs} eq "" ) {
+        error( 1, "empty stemoutputs parameter!\n" );
+        $stat = $stat == 0 ? -1 : $stat;
+    } elsif ( $params{stemoutputs} =~ /^default$/i ) {
+        $params{stemoutputs} = basename( $params{steminputs} );
+    }
+
+    ################
+    # check clobber
+    ################
+    if ( -d $params{outdir} && !$params{clobber} ) {
+        error( 1, "output dir $params{outdir} exists and clobber not set!\n" );
+        $stat = $stat == 0 ? -1 : $stat;
+    }
+
+    ############################
+    # check TPU board parameter
+    ############################
+    foreach my $mode ( @{$params{eventmode}} ) {
+        my $stat2 = checkTPUBoardParam( $mode );
+        $stat = $stat == 0 ? $stat2 : $stat;
+    }
+
+    #######################################
+    # check TRN light curve mode parameter
+    #######################################
+    if ( $params{trn_lc_mode} ne 'PH' && $params{trn_lc_mode} ne 'TH' ) {
+        error( 1, "Invalid mode %s specified for trn_lc_mode parameter\n",
+                  $params{trn_lc_mode} );
+        $stat = $stat == 0 ? -1 : $stat;
+    }
+
+    #####################
+    # setup task chatter
+    #####################
+    $params{taskchatter} = $params{chatter} == 0 ? 0 : $params{chatter} - 1;
+
+    return $stat;
+}
+
+=head3 checkTPUBoardParam
+
+=over
+
+Checks *_tpu_board parameter for valid values. Makes sorted, unique list of
+boards in @{$params{*_tpu_board}}.
+
+Inputs:
+
+        datamode (TRN or BST)
+
+Outputs:
+
+        status variable
+        updates *_tpu_board parameters
+
+=back
+
+=cut
+
+sub checkTPUBoardParam {
+
+    my $mode = shift;
+    my $stat = 0;
+    $mode = lc( $mode );
+    if ( grep /-1/, @{$params{"${mode}_tpu_board"}} ) {
+        if ( @{$params{"${mode}_tpu_board"}} > 1 ) {
+            warnlo( 2, "ignoring extra elements in "
+                     . "${mode}_tpu_board parameter, using -1\n" );
+        }
+        $params{"${mode}_tpu_board"} = [ -1 ];
+    }
+
+    my @tpu_boards = ( );
+    foreach my $tpu_board ( @{$params{"${mode}_tpu_board"}} ) {
+        if ( $tpu_board < -1 || $tpu_board > 3 ) {
+            error( 1, "${mode}_tpu_board parameter list "
+                    . "($tpu_board) out of range\n" );
+            $stat = $stat == 0 ? -1 : $stat;
+        }
+        if ( !grep /$tpu_board/, @tpu_boards ) {
+            push @tpu_boards, $tpu_board;
+        }
+    }
+    @{$params{"${mode}_tpu_board"}} = sort { $a <=> $b } @tpu_boards;
+
+    return $stat;
+}
+
+=head3 findInputFiles
+
+=over
+
+Searches input directory (indir parameter) for suitable input files.
+
+=back
+
+=cut
+
+sub findInputFiles {
+
+    my $stat = 0;
+
+    ###############
+    # run the find
+    ###############
+    chat( 2, "Finding input files\n" );
+    find( { wanted => \&matchInputFiles, no_chdir => 1 }, $params{indir} );
+
+    ################
+    # chat a little
+    ################
+    foreach my $type ( sort keys %infiles ) {
+        if ( $fileExts{$type}->{many} && exists $infiles{$type} ) {
+            chatnp( 2, "Found $fileExts{$type}->{desc}:\n" );
+            foreach my $file ( sort @{$infiles{$type}} ) {
+                chatnp( 2, "    $file\n" );
+            }
+        } elsif ( exists $infiles{$type} ) {
+            chatnp( 2, "Found $fileExts{$type}->{desc}:\n" );
+            chatnp( 2, "    $infiles{$type}\n" );
+        }
+    }
+    return $stat;
+}
+
+=head3 matchInputFiles
+
+=over
+
+Matches files found with File::Find::find() to patterns defined in %fileExts
+
+=back
+
+=cut
+
+sub matchInputFiles {
+    foreach my $type ( keys %fileExts ) {
+        my $patt = qr/$params{steminputs}$fileExts{$type}->{ext}$zip$/;
+        if ( $File::Find::name =~ /$patt/ ) {
+            if ( $fileExts{$type}->{many} && exists $infiles{$type} ) {
+                if ( fileInList( $File::Find::name, $infiles{$type} ) ) {
+                    warnlo( 1, "Duplicate %s found in input dir:\n",
+                               $fileExts{$type}->{desc} );
+                    my $bestfile = getBestFileOfType( $File::Find::name, $type,
+                                                      $infiles{$type} );
+                    die unless defined $bestfile;
+                    @{$infiles{$type}} = ( $bestfile, listWithoutFile( $bestfile ) );
+                } else {
+                    push @{$infiles{$type}}, $File::Find::name;
+                }
+                @{$infiles{$type}} = sort @{$infiles{$type}};
+            } elsif ( $fileExts{$type}->{many} ) {
+                $infiles{$type} = [ $File::Find::name ];
+            } else {
+                if ( $infiles{$type} ) {
+                    warnlo( 1, "Duplicate %s found in input dir:\n",
+                               $fileExts{$type}->{desc} );
+                    my $bestfile = getBestFileOfType( $File::Find::name, $type,
+                                                      [ $infiles{$type} ] );
+                    die unless defined $bestfile;
+                    $infiles{$type} = $bestfile;
+                } else {
+                    $infiles{$type} = $File::Find::name;
+                }
+            }
+            last;
+        }
+    }
+}
+
+sub fileInList {
+    my ( $infile, $filelist ) = @_;
+    my $base = sub { return fileparse( $_[ 0 ], $zip ); };
+    return grep { $base->( $infile ) eq $base->( $_ ) } @$filelist;
+}
+
+sub listWithoutFile {
+    my ( $infile, $filelist ) = @_;
+    my $base = sub { return fileparse( $_[ 0 ], $zip ); };
+    return grep { $base->( $infile ) ne $base->( $_ ) } @$filelist;
+}
+
+=head3 getBestFileOfType
+
+Determines best file of a given type
+
+=cut
+
+sub getBestFileOfType {
+
+    my ( $filename, $filetype, $filelist ) = @_;
+    my $bestfile = $filename;
+    my $archdir  = $fileExts{$filetype}->{arch};
+    my $newpatt  = catfile( $params{indir}, $archdir,
+                            $params{steminputs} . $fileExts{$filetype}->{ext} );
+    $newpatt = qr/$newpatt/;
+    my @duplfiles = ( );
+    foreach my $listfile ( $filename, fileInList( $filename, $filelist ) ) {
+        if ( $listfile =~ m#$newpatt# ) {
+            $bestfile = $listfile;
+            last;
+        }
+        push @duplfiles, $listfile;
+    }
+    if ( $bestfile eq $filename && $filename !~ m#$newpatt# ) {
+        my $basefile = basename( $filename, $zip );
+        error( 1, "Duplicate files named $basefile found in input directory:" );
+        map( error( 1, "    $_" ), @duplfiles );
+        error( 1, "Neither conforms to orignal archive directory structure." );
+        error( 1, "Cannot determine best file to use." );
+        return undef;
+    }
+    return $bestfile;
+}
+
+=head3 setupOutputDirectory
+
+=over
+
+Creates output directory if not extant.
+
+=back
+
+=cut
+
+sub setupOutputDirectory {
+    if ( !-d $params{outdir} ) {
+        eval { mkpath( $params{outdir} ); };
+        if ( $@ ) {
+            error( 1, "Failed to create output directory %s\ncheck path\n",
+                      $params{outdir} );
+            return -1;
+        }
+    }
+    if ( CheckInclusion( $params{indir}, $params{outdir} ) ) {
+        error( 1, "The output directory cannot be contained "
+                . "within the input directory.\n" );
+        error( 1, "Please specify another directory for output.\n" );
+        return -1;
+    }
+    return 0;
+}
+
+#####################################################################
+# Common section for CheckInclusion subroutine
+# This was borrowed from aepipeline, which borrowed from xrtpipeline
+#####################################################################
+{
+    ################################################
+    # Build a hash of the subdirectories of $outdir
+    ################################################
+    my ( $indir, $outdir );
+    my %suboutdirs;
+    my $found = 0;
+
+    sub CheckInclusion {
+        ( $indir, $outdir ) = @_;
+        $indir  = abs_path( $indir );
+        $outdir = abs_path( $outdir );
+
+        #######################################################
+        # Traverse the $outdir filesystems, noting the subdirs
+        #######################################################
+        File::Find::find( { wanted => \&buildsub, follow => 1, follow_skip => 2 }, $outdir );
+
+        ##################################
+        # Traverse the $indir filesystems
+        ##################################
+        File::Find::find( { wanted => \&lookout, follow => 1, follow_skip => 2 }, $indir );
+        return $found;
+    }
+
+    sub buildsub {
+        my ( $dev, $ino );
+        unless ( defined $File::Find::fullname ) {
+            return;
+        }
+        if ( -d $_ || -d $File::Find::fullname ) {
+            ( $dev, $ino ) = stat _;
+            $suboutdirs{$File::Find::fullname} = [ $_, $dev, $ino ];
+        }
+    }
+
+    sub lookout {
+        my ( $dev, $ino );
+        unless ( defined $File::Find::fullname ) {
+            return;
+        }
+        if ( -d $_ || -d $File::Find::fullname ) {
+            if ( $suboutdirs{$File::Find::fullname} ) {
+                ( ( $dev, $ino ) = stat _ );
+                if ( $dev == $suboutdirs{$File::Find::fullname}->[ 1 ] &&
+                    $ino == $suboutdirs{$File::Find::fullname}->[ 2 ] ) {
+                    $File::Find::prune = 1;
+                    $found             = 1;
+                }
+            }
+        }
+    }
+}
+
+=head3 setupAuxilFiles
+
+=over
+
+Sets up HXD HK file, makefilter and .tim file based on found files and input
+parameters. If a file is required given the entry and exit stages, then it is
+copied to the output directory.
+
+=back
+
+=cut
+
+sub setupAuxilFiles {
+
+    my $stat = 0;
+
+    headingnp( 2, "Determining auxiliary files to use" );
+
+    foreach my $type ( keys %fileExts ) {
+        next unless $fileExts{$type}->{auxil};
+        chat( 2, "Checking for $fileExts{$type}->{desc}\n" );
+
+        ###########################################
+        # check the entry exit stage for this file
+        # and whether we should use the default
+        ###########################################
+        my $stagematch = ( $fileExts{$type}->{entry} >= $params{entrystage} &&
+                           $fileExts{$type}->{entry} <= $params{exitstage} ) ||
+                         ( $fileExts{$type}->{exit}  >= $params{entrystage} &&
+                           $fileExts{$type}->{exit}  <= $params{exitstage} );
+        if ( $stagematch && $params{$type} =~ /^default$/i ) {
+            if ( !exists $infiles{$type} ) {
+                error( 1, "Could not determine %s to use. Check inputs.\n",
+                          $fileExts{$type}->{desc} );
+                return -1;
+            }
+            my $copy = filenameToOutput( $infiles{$type} );
+            $stat = ftcopy( $infiles{$type}, $copy, 1 );
+            return $stat unless $stat == 0;
+            $params{$type} = $infiles{$type} = $copy;
+            chat( 2, "Using %s for %s\n", $copy, $fileExts{$type}->{desc} );
+        } elsif ( $stagematch ) {
+            chat( 2, "Using %s for %s\n", $params{$type},
+                     $fileExts{$type}->{desc} );
+        } else {
+            chat( 2, "%s not needed\n", $fileExts{$type}->{desc} );
+        }
+    }
+    return $stat;
+}
+
+=head3 checkStageRequiredFiles
+
+=over
+
+Checks that required files for the given input stage are found
+
+=back
+
+=cut
+
+sub checkStageRequiredFiles {
+
+    my $stage = shift;
+
+    my $stat = 0;
+
+    headingnp( 2, "Checking for required files for Stage $stage" );
+
+    foreach my $type ( sort keys %fileExts ) {
+
+        #########################################
+        # check if this type of file is required
+        #########################################
+        my $stagematch = $fileExts{$type}->{entry} <= $stage &&
+                         $fileExts{$type}->{exit}  >= $stage;
+        if ( $stagematch ) {
+            chat( 2, "Checking for required %s\n",
+                     $fileExts{$type}->{desc} );
+            my $found = 0;
+
+            # check if we'll create the file here
+            # don't force check if so
+            if ( ( exists $fileExts{$type}->{creat_par} &&
+                   exists $params{$fileExts{$type}->{creat_par}} &&
+                   $params{$fileExts{$type}->{creat_par}} ) ||
+                 ( exists $fileExts{$type}->{creat} &&
+                   $fileExts{$type}->{creat} >= $stage ) ) {
+                chat( 2, "%s will be created, checking disabled\n",
+                         $fileExts{$type}->{desc});
+                next;
+            }
+
+            if ( exists $fileExts{$type}->{mode} &&
+                 grep( /$fileExts{$type}->{mode}/, @{$params{eventmode}} ) ) {
+                if ( !exists $infiles{$type} ) {
+                    error( 1, "Failed to find usable %s\n",
+                              $fileExts{$type}->{desc} );
+                    $stat = $stat == 0 ? -1 : $stat;
+                    $found = 0;
+                } else {
+                    $found = 1;
+                }
+            } elsif ( !exists $fileExts{$type}->{mode} &&
+                      !exists $infiles{$type} ) {
+                error( 1, "Failed to find usable %s\n",
+                          $fileExts{$type}->{desc} );
+                $stat = $stat == 0 ? -1 : $stat;
+                $found = 0;
+            } elsif ( !exists $fileExts{$type}->{mode} &&
+                      exists $infiles{$type} ) {
+                $found = 1;
+            }
+
+            ######################################
+            # make sure they're in the output dir
+            ######################################
+            if ( $stat == 0 && $found ) {
+                if ( $fileExts{$type}->{many} ) {
+                    foreach my $file ( @{$infiles{$type}} ) {
+                        my $copy = filenameToOutput( $file );
+                        if ( $copy ne $file ) {
+                            $stat = ftcopy( $file, $copy, 1 );
+                            return $stat unless $stat == 0;
+                        }
+                        $file = $copy;
+                    }
+                } else {
+                    my $copy = filenameToOutput( $infiles{$type} );
+                    if ( $copy ne $infiles{$type} ) {
+                        $stat = ftcopy( $infiles{$type}, $copy, 1 );
+                        return $stat unless $stat == 0;
+                    }
+                    $infiles{$type} = $copy;
+                }
+            }
+        }
+    }
+    return $stat;
+}
+
+=head3 createBSTIDTable
+
+=over
+
+Creates a burst ID table using hxdwambstid
+
+=back
+
+=cut
+
+sub createBSTIDTable {
+
+    my $stat = 0;
+
+    #####################################################
+    # if not creating a new set of tables, create a hash
+    # (hashed on RPT number) of bstidt files
+    #####################################################
+    if ( !$params{create_bstidt} ) {
+        my %bstidts = ( );
+        foreach my $bstidt ( @{$infiles{bstidt}} ) {
+            $bstidt =~ /hxd_(\d)_bstidt\.fits/;
+            $bstidts{$1} = $bstidt;
+        }
+        $infiles{bstidt} = \%bstidts;
+        return $stat;
+    }
+
+    headingnp( 2, "Creating Burst ID tables from TRN events" );
+
+    ###########################
+    # see if we _can_ continue
+    ###########################
+    if ( !@{$infiles{trnufevt}} ) {
+        error( 1, "At least one TRN event file required "
+                . "for bstidt_fname=CREATE\n" );
+        return -1;
+    }
+
+    ##################
+    # make the tables
+    ##################
+    $infiles{bstidt} = { };
+    foreach my $ufevt ( @{$infiles{trnufevt}} ) {
+
+        ###############################
+        # calculate the BSTID filename
+        ###############################
+        my $bstidt = filenameToOutput( $ufevt );
+        $bstidt =~ s/_(\d)_wam_uf\.evt/_$1_bstidt.fits/;
+        my $rpt = $1;
+        $infiles{bstidt}->{$rpt} = $bstidt;
+
+        ##################
+        # run hxdwambstid
+        ##################
+        chat( 2, "Creating Burst ID table for RPT #$rpt\n" );
+        chat( 2, "Burst ID table will be created as:\n    %s\n",
+                 $bstidt );
+        $stat = runSystem( 'hxdwambstid',
+                           { read_iomode        => 'readonly',
+                             time_change        => 'n',
+                             pi_change          => 'n',
+                             quality_change     => 'n',
+                             gtimode            => 'y',
+                             gti_time           => 'TIME',
+                             input_name         => $ufevt,
+                             create_name        => 'none',
+                             hklist_name        => $infiles{hxdhk_fname},
+                             create_bstidt_name => $bstidt . '.tmp',
+                             leapfile           => $params{leapfile},
+                             num_event          => -1,
+                             event_freq         => $params{event_freq},
+                             anl_verbose        => $params{anl_verbose},
+                             anl_profile        => bs( $params{anl_profile} ),
+                             chatter            => $params{taskchatter} } );
+        return $stat unless $stat == 0;
+        rename $bstidt . '.tmp', $bstidt;
+
+        #####################################
+        # processing complete for this file,
+        # stamp the history
+        #####################################
+        histStamp( $bstidt ) if $params{history};
+    }
+    return $stat;
+}
+
+=head3 calibrateWAMTRN
+
+=over
+
+Calibrates WAM TRN data. Runs the following Suzaku FTOOLS in order:
+
+        hxdwamtime
+        ...
+
+=back
+
+=cut
+
+sub calibrateWAMTRN {
+
+    my $stat = 0;
+
+    return $stat unless grep /TRN/, @{$params{eventmode}};
+
+    headingnp( 2, "Calibrating TRN mode event files" );
+
+    foreach my $ufevt ( @{$infiles{trnufevt}} ) {
+
+        ###########################################################
+        # compute the calibrated file name and remove it if extant
+        ###########################################################
+        chat( 2, "Calibrating TRN event file:\n  $ufevt\n" );
+
+        #################
+        # run hxdwamtime
+        #################
+        $stat = runSystem( 'hxdwamtime',
+                           { read_iomode       => 'create',
+                             time_change       => 'y',
+                             pi_change         => 'n',
+                             quality_change    => 'n',
+                             gtimode           => 'y',
+                             gti_time          => 'S_TIME',
+                             input_name        => $ufevt,
+                             create_name       => $ufevt . '.tmp',
+                             hklist_name       => $params{hxdhk_fname},
+                             leapfile          => $params{leapfile},
+                             tim_filename      => $params{tim_fname},
+                             time_convert_mode => $params{time_convert_mode},
+                             num_event         => -1,
+                             event_freq        => $params{event_freq},
+                             anl_verbose       => $params{anl_verbose},
+                             anl_profile       => bs( $params{anl_profile} ),
+                             chatter           => $params{taskchatter} } );
+        return $stat unless $stat == 0;
+        rename $ufevt . '.tmp', $ufevt;
+
+        #####################################
+        # processing complete for this file,
+        # stamp the history
+        #####################################
+        histStamp( $ufevt ) if $params{history};
+    }
+    return $stat;
+}
+
+=head3 calibrateWAMBST
+
+=over
+
+Calibrates WAM BST data. Runs the following Suzaku FTOOLS in order:
+
+        hxdbsttime
+
+=back
+
+=cut
+
+sub calibrateWAMBST {
+
+    my $stat = 0;
+
+    return $stat unless grep /BST/, @{$params{eventmode}};
+
+    headingnp( 2, "Calibrating BST mode event files" );
+
+    foreach my $ufevt ( @{$infiles{bstufevt}} ) {
+
+        ###########################################################
+        # compute the calibrated file name and remove it if extant
+        ###########################################################
+        chat( 2, "Calibrating BST event file:\n  $ufevt\n" );
+
+        #####################################
+        # lookup the name of the bstidt file
+        #####################################
+        $ufevt =~ /hxd_(\d)_bst\d\d_uf\.evt/;
+        my $bstidt = $infiles{bstidt}->{$1};
+        if ( !-f $bstidt ) {
+            error( 1, "\nCould not find bstidt file $bstidt for $ufevt\n" );
+            error( 1, "$ufevt will not be calibrated!\n\n" );
+            next;
+        }
+
+        #################
+        # run hxdbsttime
+        #################
+        $stat = runSystem( 'hxdbsttime',
+                           { read_iomode       => 'create',
+                             input_name        => $ufevt,
+                             create_name       => $ufevt . '.tmp',
+                             hklist_name       => $params{hxdhk_fname},
+                             leapfile          => $params{leapfile},
+                             tim_filename      => $params{tim_fname},
+                             bstidt_fname      => $bstidt,
+                             time_convert_mode => $params{time_convert_mode},
+                             num_event         => -1,
+                             event_freq        => $params{event_freq},
+                             anl_verbose       => $params{anl_verbose},
+                             anl_profile       => bs( $params{anl_profile} ),
+                             chatter           => $params{taskchatter} } );
+        return $stat unless $stat == 0;
+        rename $ufevt . '.tmp', $ufevt;
+
+        #####################################
+        # processing complete for this file,
+        # stamp the history
+        #####################################
+        histStamp( $ufevt ) if $params{history};
+    }
+    return $stat;
+}
+
+=head3 filterWAM
+
+=over
+
+Creates a GTI based on input parameters, possibly excluding WAM "scan" times.
+Then runs extractor to create cleaned event files.
+
+=back
+
+=cut
+
+sub filterWAM {
+
+    my $stat = 0;
+
+    return $stat unless grep /TRN/, @{$params{eventmode}};
+
+    #########################
+    # ONLY FILTER TRN EVENTS
+    #########################
+    my $scanGTI = undef;
+    my $scanGTI_run = 0;
+
+    headingnp( 2, "Screening TRN mode data" );
+
+    ##################################################################
+    # Wipe the screened events, in case we found one in the input dir
+    ##################################################################
+    delete $infiles{trnclevt};
+
+    ########################
+    # list of GTIs to merge
+    ########################
+    my @mgtimelist = ( );
+    if ( $params{trn_gti_fname} !~ /^none$/i ) {
+        push @mgtimelist, $params{trn_gti_fname};
+    }
+
+    ###########################################################
+    # calculate total gti filename and screened event filename
+    ###########################################################
+    my $cleangti = filenameToOutput( $infiles{trnufevt}->[ 0 ] );
+    $cleangti =~ s/_uf\.evt$/_cl.evt/;
+    $cleangti =~ s/hxd_[0-9]_wam/hxd_0_wam/;
+    $cleangti =~ s/\.evt$/.gti/;
+
+    ###########################################
+    # get the screening criteria for this mode
+    ###########################################
+    my $mkfexpr = getMKFCriteria( "TRN" );
+
+    #################################
+    # get the WAM-SCAN GTI if needed
+    #################################
+    if ( $params{trn_exclude_scan} ) {
+        if ( !defined $scanGTI && !$scanGTI_run ) {
+            ( $stat, $scanGTI ) = createWAMScanGTI( $infiles{tim_fname} );
+            return $stat unless $stat == 0;
+            $scanGTI_run = 1;
+        }
+        if ( $scanGTI ) {
+            push @mgtimelist, $scanGTI;
+        }
+    }
+
+    ################################################################
+    # if no criteria, warn the user and use the uf events from here
+    ################################################################
+    if ( !$mkfexpr && !$scanGTI &&
+         $params{trn_gti_fname} =~ /^none$/i ) {
+        warnlo( 1, "No screening specified for TRN mode data\n" );
+        warnlo( 1, "Cleaned events will be un-screened!\n" );
+    }
+
+    ###########################################
+    # run maketime to generate a screening GTI
+    ###########################################
+    my $screengti;
+    if ( $mkfexpr ) {
+        $screengti = getTmpFile( 'gti' );
+        push @clean, $screengti;
+        $stat = maketime( $params{mkf_fname}, $screengti, $mkfexpr );
+        return $stat unless $stat == 0;
+
+        #####################
+        # check for any rows
+        #####################
+        my $fptr = Astro::FITS::CFITSIO::open_file( $screengti . '[1]',
+                                                    READONLY, $stat );
+        return $stat unless $stat == 0;
+        my $nrows;
+        $fptr->get_num_rows( $nrows, $stat );
+        $fptr->close_file( $stat );
+        if ( $nrows > 0 ) {
+            push @mgtimelist, $screengti;
+        } else {
+            unlink $screengti;
+            warnhi( 1, "No good time in $screengti.\n" );
+            warnhi( 1, "No screened event will be created!\n" );
+            return 0;
+        }
+    }
+
+    ############################
+    # handle multiple GTI files
+    ############################
+    if ( @mgtimelist > 1 ) {
+        my $ingtis = join ',', @mgtimelist;
+        $stat = runSystem( 'mgtime',
+                           { ingtis   => $ingtis,
+                             outgti   => "!$cleangti",
+                             merge    => 'AND',
+                             instarts => 'START',
+                             instops  => 'STOP',
+                             indates  => '-',
+                             outstart => 'START',
+                             outstop  => 'STOP' } );
+        return $stat unless $stat == 0;
+    } elsif ( @mgtimelist > 0 ) {
+        if ( !copy( $mgtimelist[ 0 ], $cleangti ) ) {
+            error( 1, "failed to copy $mgtimelist[ 0 ] to $cleangti!\n" );
+            return -1;
+        }
+    } else {
+        $cleangti = 'NONE';
+    }
+
+    ##############################################################
+    # shrink the GTI's by $params{trn_gtitrim} to get rid of spurious
+    # artifacts around SAA/WAM scan passages
+    ##############################################################
+    if ( $cleangti ne 'NONE' && $params{trn_gtitrim} > 0.0 ) {
+        chat( 2, "Trimming clean GTI by $params{trn_gtitrim}s\n" );
+        my $newgti = getTmpFile( 'gti' );
+        my $filter = "[1][col START=START+$params{trn_gtitrim};"
+                   . "STOP=STOP-$params{trn_gtitrim}]";
+        $stat = ftcopy( $cleangti . $filter, $newgti, 1 );
+        return $stat unless $stat == 0;
+        if ( !move( $newgti, $cleangti ) ) {
+            error( 1, "failed to move $newgti to $cleangti\n" );
+            return -1;
+        }
+    }
+
+    #####################
+    # check for any rows
+    #####################
+    if ( $cleangti ne 'NONE' ) {
+        my $fptr = Astro::FITS::CFITSIO::open_file( $cleangti . '[1]',
+                                                    READONLY, $stat );
+        return $stat unless $stat == 0;
+        my $nrows;
+        $fptr->get_num_rows( $nrows, $stat );
+        $fptr->close_file( $stat );
+        if ( $nrows <= 0 ) {
+            unlink $cleangti;
+            warnhi( 1, "No good time in $cleangti.\n" );
+            warnhi( 1, "No screened event will be created!\n" );
+            return 0;
+        }
+    }
+
+    ################################
+    # calculate the output filename
+    ################################
+    my $clevt = filenameToOutput( $infiles{trnufevt}->[ 0 ] );
+    $clevt =~ s/hxd_[0-9]_(wam|bst)_uf\.evt/hxd_0_$1_cl.evt/;
+
+    #####################################################################
+    # run extractor for all uf files at once, creating one cleaned event
+    #####################################################################
+    my $filename = dumpListToTxt( @{$infiles{trnufevt}} );
+    $stat = runSystem( 'extractor',
+                       { exitnow    => 'no',
+                         filename   => '@' . $filename,
+                         eventsout  => $clevt,
+                         imgfile    => 'NONE',
+                         binf       => 1,
+                         fullimage  => 'yes',
+                         phafile    => 'NONE',
+                         specbin    => 1,
+                         wtmapb     => 'no',
+                         swmapx     => 'no',
+                         swmapy     => 'no',
+                         binh       => 1,
+                         wmapver    => 2,
+                         fitsbinlc  => 'NONE',
+                         qdpfile    => 'NONE',
+                         binlc      => 1.0,
+                         lcthresh   => 0.0,
+                         lcthwarn   => 3.0,
+                         lctzero    => 'yes',
+                         unbinlc    => 'NONE',
+                         regionfile => 'NONE',
+                         timefile   => $cleangti,
+                         adjustgti  => 'yes',
+                         gtinam     => 'GTI',
+                         xcolf      => 'TRN_DE_MODULE',
+                         ycolf      => 'TRN_DE_MODULE',
+                         zcolf      => 'NONE',
+                         xint       => 1.0,
+                         yint       => 1.0,
+                         tcol       => 'TIME',
+                         ecol       => "TRN_PI",
+                         ccol       => 'CCD_ID',
+                         gcol       => "TRN_QUALITY",
+                         gstring    => 'NONE',
+                         xcolh      => 'TRN_DE_MODULE',
+                         ycolh      => 'TRN_DE_MODULE',
+                         gtitxt     => 'NONE',
+                         xronwn     => 'NONE',
+                         events     => 'EVENTS',
+                         gti        => 'GTI',
+                         timeorder  => 'no',
+                         timeref    => 40000.0,
+                         eventkey   => 'NONE',
+                         phamax     => 'PHA_BINS',
+                         xfkey      => 'NONE',
+                         yfkey      => 'NONE',
+                         xhkey      => 'NONE',
+                         yhkey      => 'NONE',
+                         copyall    => 'yes',
+                         clobber    => 'yes' } );
+    unlink $filename;
+    return $stat unless $stat == 0;
+
+    ############################
+    # time sort the output file
+    ############################
+    $stat = runSystem( 'ftsort',
+                       { infile  => $clevt . '[EVENTS]',
+                         outfile => $clevt . '.sort',
+                         columns => 'TIME',
+                         method  => 'heap',
+                         memory  => 'yes',
+                         unique  => 'no',
+                         copyall => 'yes',
+                         clobber => 'yes',
+                         chatter => $params{taskchatter},
+                         history => bs( $params{history} ) } );
+    return $stat unless $stat == 0;
+    if ( !move( $clevt . '.sort', $clevt ) ) {
+        error( 1, "failed to move $clevt.sort to $clevt\n" );
+        return -1;
+    }
+
+    ###################################
+    # save the cleaned event file name
+    ###################################
+    $infiles{trnclevt} = $clevt;
+
+    #####################################
+    # processing complete for this file,
+    # stamp the history
+    #####################################
+    histStamp( $clevt ) if $params{history};
+
+    ##################################
+    # wipe the list of uf event files
+    ##################################
+    if ( exists $fileExts{trnufevt} &&
+         $fileExts{trnufevt}->{many} ) {
+        $infiles{trnufevt} = [ ];
+    } else {
+        $infiles{trnufevt} = undef;
+    }
+    return $stat;
+}
+
+=head3 extractWAMLC
+
+=over
+
+Extracts TRN and BST light curves using hxdmkwamlc and hxdmkbstlc. Actually
+calls subroutines extractTRNLC() or extractBSTLC(), depending on the modes
+desired by the user.
+
+=back
+
+=cut
+
+sub extractWAMLC {
+
+    my $stat = 0;
+
+    ########################
+    # loop over event modes
+    ########################
+    foreach my $mode ( @{$params{eventmode}} ) {
+        if ( $mode eq 'TRN' ) {
+            $stat = extractTRNLC( );
+            return $stat unless $stat == 0;
+        } else {
+            $stat = extractBSTLC( );
+            return $stat unless $stat == 0;
+        }
+    }
+    return $stat;
+}
+
+=head3 extractTRNLC
+
+=over
+
+Runs hxdmkwamlc for cleaned TRN event file.
+
+=back
+
+=cut
+
+sub extractTRNLC {
+
+    my $stat = 0;
+
+    headingnp( 2, "Extracting TRN light curves" );
+
+    ###############################################################
+    # calculate the output root and output merged light curve name
+    ###############################################################
+    my $outroot = filenameToOutput( $infiles{trnclevt} );
+    $outroot =~ s/_wam_(uf|cl)\.evt$//;
+    my $outlc = $outroot . '_wam.lc';
+
+    #######################
+    # loop over TPU boards
+    #######################
+    my @mergelcs = ( );
+    foreach my $tpu_board ( sort { $a <=> $b } @{$params{trn_tpu_board}} ) {
+
+        #####################
+        # chat about the TPU
+        #####################
+        if ( $tpu_board == -1 ) {
+            chat( 2, "extracting light curves for ALL TPUs\n" );
+        } else {
+            chat( 2, "extracting light curves for TPU #%d\n",
+                     $tpu_board + 1 );
+        }
+
+        ###################
+        # setup hxdmkwamlc
+        ###################
+        my $hxdmkwamlc = {
+            read_iomode    => 'readonly',
+            time_change    => 'y',
+            pi_change      => 'n',
+            quality_change => 'n',
+            gtimode        => 'y',
+            gti_time       => 'TIME',
+            leapfile       => $params{leapfile},
+            input_name     => $infiles{trnclevt},
+            outroot        => "!$outroot",
+            tpu_board      => $tpu_board,
+            dt_cor         => bs( $params{trn_dt_cor} ),
+            dt_clk         => $params{trn_dt_clk},
+            ph_mode        => 1,
+            num_event      => -1,
+            event_freq     => $params{event_freq},
+            anl_verbose    => $params{anl_verbose},
+            anl_profile    => bs( $params{anl_profile} ),
+            chatter        => $params{taskchatter}
+        };
+
+        #######################################################################
+        # extract light curves in two ways, depending on trn_lc_mode parameter
+        # if == 'PH', then extract from trn_min_channel to trn_max_channel
+        # if == 'TH', then extract TH mode 4-channel (has to be "hacky")
+        #######################################################################
+        my @newlcs = ( );
+        if ( $params{trn_lc_mode} eq 'PH' ) {
+            
+            $hxdmkwamlc->{min_channel} = $params{trn_min_channel};
+            $hxdmkwamlc->{max_channel} = $params{trn_max_channel};
+
+            $stat = runSystem( 'hxdmkwamlc', $hxdmkwamlc );
+            return $stat unless $stat == 0;
+
+            @newlcs = getWAMLCFilenames( $outroot, 'TRN', $tpu_board, 1, 1,
+                                         $params{trn_min_channel},
+                                         $params{trn_max_channel} );
+        } else {
+
+            ##############################
+            # loop over TH channel groups
+            ##############################
+            foreach my $th ( keys %{$Defaults{lc_channels}->{TRN}} ) {
+
+                $hxdmkwamlc->{min_channel}
+                        = $Defaults{lc_channels}->{TRN}->{$th}->[ 0 ];
+                $hxdmkwamlc->{max_channel}
+                        = $Defaults{lc_channels}->{TRN}->{$th}->[ 1 ];
+
+                $stat = runSystem( 'hxdmkwamlc', $hxdmkwamlc );
+                return $stat unless $stat == 0;
+
+                ##########################################
+                # get the created output files and rename
+                ##########################################
+                my @oldlcs = getWAMLCFilenames( $outroot, 'TRN', $tpu_board, 1, 1,
+                                                $hxdmkwamlc->{min_channel},
+                                                $hxdmkwamlc->{max_channel} );
+                foreach my $oldlc ( @oldlcs ) {
+                    my $newlc = $oldlc;
+                    $newlc =~ s/ph\d+_\d+\.lc$/$th.lc/;
+                    rename $oldlc, $newlc;
+                    push @newlcs, $newlc;
+                }
+            }
+        }
+
+        #################################
+        # filter out rows with FRACEXP<1
+        #################################
+        foreach my $lc ( @newlcs ) {
+            my $filtlc = $lc . ".filt";
+            $stat = ftcopy( $lc . "[1][FRACEXP>=1.0]", $filtlc, 1 );
+            return $stat unless $stat == 0;
+            if ( !move( $filtlc, $lc ) ) {
+                error( 1,"failed to move $filtlc to $lc\n" );
+                return -1;
+            }
+        }
+        push @mergelcs, @newlcs
+    }
+
+    ##########################
+    # merge and stamp history
+    ##########################
+    @mergelcs = sort @mergelcs;
+    my @trnlcs = map( $outlc . '[' . (2*$_+1) . ']',
+                      0..$#mergelcs );
+    if ( exists $infiles{trnlc} ) {
+        push @{$infiles{trnlc}}, @trnlcs;
+    } else {
+        $infiles{trnlc} = [ @trnlcs ];
+    }
+    $stat = mergeWAMLCs( \@mergelcs, $outlc );
+    unlink @mergelcs;
+    return $stat unless $stat == 0;
+
+    histStamp( $outlc ) if $params{history};
+    $stat = runSystem( 'ftchecksum',
+                       { infile  => $outlc,
+                         update  => 'yes',
+                         datasum => 'yes',
+                         chatter => $params{taskchatter} } );
+    return $stat;
+}
+
+=head3 extractBSTLC
+
+=over
+
+Runs hxdmkbstlc for BST event file(s)
+
+=back
+
+=cut
+
+sub extractBSTLC {
+
+    my $stat = 0;
+
+    headingnp( 2, "Extracting BST light curves" );
+
+    ############################
+    # loop over BST event files
+    ############################
+    my @evts = ( );
+    if ( !exists $infiles{bstclevt} || !@{$infiles{bstclevt}} ) {
+        if ( exists $infiles{bstufevt} ) {
+            @evts = @{$infiles{bstufevt}};
+        }
+    } elsif ( !exists $infiles{bstufevt} || !@{$infiles{bstufevt}} ) {
+        if ( exists $infiles{bstclevt} ) {
+            @evts = @{$infiles{bstclevt}};
+        }
+    }
+    if ( !@evts ) {
+        warnlo( 1, "No BST events to process!\n" );
+        return $stat;
+    }
+    
+    foreach my $bstevt ( sort @evts ) {
+
+        chat( 2, "Extracting BST light curves from $bstevt\n" );
+
+        ##############################################################
+        # calculate the output root and the merged output light curve
+        ##############################################################
+        my $outroot = filenameToOutput( $bstevt );
+        $outroot =~ s/_(cl|uf)\.evt$//;
+        my $outlc = $outroot . '.lc';
+
+        #######################
+        # loop over TPU boards
+        #######################
+        my @mergelcs = ( );
+        foreach my $tpu_board ( @{$params{bst_tpu_board}} ) {
+
+            #####################
+            # chat about the TPU
+            #####################
+            if ( $tpu_board == -1 ) {
+                chat( 2, "extracting light curves for ALL TPUs\n" );
+            } else {
+                chat( 2, "extracting light curves for TPU #%d\n",
+                         $tpu_board + 1 );
+            }
+
+            ###########################################
+            # run the light curve extractor hxdmkbstlc
+            ###########################################
+            $stat = runSystem( 'hxdmkbstlc',
+                               { read_iomode    => 'readonly',
+                                 input_name     => $bstevt,
+                                 outroot        => "!$outroot",
+                                 tpu_board      => $tpu_board,
+                                 th_mode        => $params{th_mode},
+                                 dt_cor         => bs( $params{bst_dt_cor} ),
+                                 dt_clk         => $params{bst_dt_clk},
+                                 dt_ph          => $params{bst_dt_ph},
+                                 energy_mode    => $params{bst_energy_mode},
+                                 energy_channel => $params{bst_energy_channel},
+                                 min_channel    => $params{bst_min_channel},
+                                 max_channel    => $params{bst_max_channel},
+                                 num_event      => -1,
+                                 event_freq     => $params{event_freq},
+                                 anl_verbose    => $params{anl_verbose},
+                                 anl_profile    => bs( $params{anl_profile} ),
+                                 chatter        => $params{taskchatter} } );
+            return $stat unless $stat == 0;
+
+            #################################
+            # save the light curve filenames
+            #################################
+            my @newlcs = getWAMLCFilenames( $outroot, 'BST', $tpu_board,
+                                            $params{th_mode},
+                                            $params{bst_energy_mode},
+                                            $params{bst_min_channel},
+                                            $params{bst_max_channel},
+                                            $params{bst_energy_channel} );
+            push @mergelcs, @newlcs;
+        }
+
+        #############################################
+        # merge all light curves for this event file
+        #############################################
+        @mergelcs = sort @mergelcs;
+        my @bstlcs = map( $outlc . '[' . (2*$_+1) . ']',
+                          0..$#mergelcs );
+        if ( exists $infiles{bstlc} ) {
+            push @{$infiles{bstlc}}, @bstlcs;
+        } else {
+            $infiles{bstlc} = [ @bstlcs ];
+        }
+        $stat = mergeWAMLCs( \@mergelcs, $outlc );
+        unlink @mergelcs;
+        return $stat unless $stat == 0;
+
+        histStamp( $outlc ) if $params{history};
+
+        $stat = runSystem( 'ftchecksum',
+                           { infile  => $outlc,
+                             update  => 'yes',
+                             datasum => 'yes',
+                             chatter => $params{taskchatter} } );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+=head3 detectBursts
+
+=over
+
+Runs hxdbstjudge on each light curve file to detect bursts.
+
+=back
+
+=cut
+
+sub detectBursts {
+
+    my $stat = 0;
+
+    #################################
+    # loop over modes (TRN then BST)
+    #################################
+    my @detfiles = ( );
+    foreach my $mode ( reverse @{$params{eventmode}} ) {
+
+        my $lcmode = lc( $mode );
+
+        next unless exists $infiles{"${lcmode}lc"};
+
+        ################################################
+        # detect bursts in every light curve we created
+        ################################################
+        foreach my $lc ( @{$infiles{"${lcmode}lc"}} ) {
+
+            next if $lc =~ /all\.lc$zip$/;
+
+            ########################################
+            # calculate the name of the output file
+            ########################################
+            my $detfile = getTmpFile( 'fits' );
+
+            ####################################################################
+            # STEP detection parameters for BST mode do not exist so fudge them
+            ####################################################################
+            my ( $step_window, $step_delchi );
+            if ( $lcmode eq 'bst' ) {
+                $step_window = 240.0;
+                $step_delchi = 2.71;
+            } else {
+                $step_window = $params{"${lcmode}_step_window"};
+                $step_delchi = $params{"${lcmode}_step_delchi"};
+            }
+
+            ##################
+            # run hxdbstjudge
+            ##################
+            $stat = runSystem( 'hxdbstjudge',
+                               { input_name      => $lc,
+                                 outfile         => $detfile,
+                                 det_alg         => $params{"${lcmode}_det_alg"},
+                                 use_trigger_set => bs( $params{"${lcmode}_use_trigger_set"} ),
+                                 trigger_set     => $params{"${lcmode}_trigger_set"},
+                                 bgd_integ_time  => $params{"${lcmode}_bgd_integ_time"},
+                                 delta_t         => $params{"${lcmode}_delta_t"},
+                                 sigma           => $params{"${lcmode}_sigma"},
+                                 bgd_early_gap   => $params{"${lcmode}_bgd_early_gap"},
+                                 bgd_late_gap    => $params{"${lcmode}_bgd_late_gap"},
+                                 gaptol          => $params{"${lcmode}_gaptol"},
+                                 overlaptol      => $params{"${lcmode}_overlaptol"},
+                                 maxdur          => $params{"${lcmode}_maxdur"},
+                                 durest          => bs( $params{"${lcmode}_durest"} ),
+                                 step_window     => $step_window,
+                                 step_delchi     => $step_delchi,
+                                 outtype         => 0, # FITS output only
+                                 leapfile        => $params{leapfile},
+                                 num_event       => -1,
+                                 event_freq      => $params{event_freq},
+                                 anl_verbose     => $params{anl_verbose},
+                                 anl_profile     => bs( $params{anl_profile} ),
+                                 chatter         => $params{taskchatter},
+                                 clobber         => 'yes' } );
+            if ( $stat != 0 ) {
+                warnhi( 1, "hxdbstjudge failed on $lc\n" );
+                warnhi( 1, "Light curve may be invalid\n" );
+                $stat = 0;
+            } 
+            if ( -e $detfile ) {
+                push @detfiles, $detfile;
+            }
+        }
+    }
+    push @clean, @detfiles;
+    return $stat unless @detfiles;
+
+    #############################################
+    # merge all detect files into a single table
+    # and remove some header keywords
+    #############################################
+    my $tmpfile = dumpListToTxt( @detfiles );
+    push @clean, $tmpfile;
+    my $outfile = catfile( $params{outdir},
+                           $params{stemoutputs} . "hxd_0_wam_bst.det" );
+    $stat = runSystem( 'ftmerge',
+                       { infile       => '@' . $tmpfile,
+                         outfile      => $outfile,
+                         columns      => '*',
+                         insertrow    => 0,
+                         lastkey      => "",
+                         copyall      => 'yes',
+                         skipbadfiles => 'yes',
+                         clobber      => 'yes',
+                         chatter      => $params{taskchatter},
+                         history      => 'no' } );
+    return $stat unless $stat == 0;
+
+    foreach my $ext ( 0, 1 ) {
+        $stat = runSystem( 'fthedit',
+                           { infile    => $outfile . "[$ext]",
+                             operation => 'a',
+                             keyword   => 'DETNAM',
+                             value     => 'WAM_ANTI',
+                             chatter   => $params{taskchatter},
+                             history   => 'no' } );
+        return $stat unless $stat == 0;
+        foreach my $key (qw( DATAMODE TLM_FILE )) {
+            $stat = runSystem( 'fthedit',
+                               { infile    => $outfile . "[$ext]",
+                                 operation => 'd',
+                                 keyword   => $key,
+                                 chatter   => $params{taskchatter},
+                                 history   => 'no' } );
+            $stat = 0;
+        }
+    }
+    $stat = runSystem( 'ftsort',
+                       { infile  => $outfile,
+                         outfile => $outfile . '.sort',
+                         columns => 'TIMESTART',
+                         method  => 'heap',
+                         memory  => 'yes',
+                         unique  => 'no',
+                         copyall => 'yes',
+                         clobber => 'yes',
+                         chatter => $params{taskchatter},
+                         history => 'no' } );
+    return $stat unless $stat == 0;
+    rename $outfile . '.sort', $outfile;
+    unlink @detfiles, $tmpfile;
+    return $stat;
+}
+
+=head1 SUPPORT SUBROUTINES
+
+=cut
+
+=head3 getWAMLCFilenames
+
+=over
+
+Given a file root name, an event mode, TPU board number, th/ph mode, min/max
+channels (TRN only), returns a list of expected output filenames.
+
+BST light curve filenames are like:
+
+    ae100039010hxd_1_bst01_wam1_th0.lc
+    ae100039010hxd_1_bst01_wam1_th1.lc
+    ae100039010hxd_1_bst01_wam1_th2.lc
+    ae100039010hxd_1_bst01_wam1_th3.lc
+    ae100039010hxd_1_bst01_wam1_thall.lc
+
+TRN light curve filenames are like:
+
+    ae404081010hxd_3_wam2_ph0_54.lc
+
+=back
+
+=cut
+
+sub getWAMLCFilenames {
+
+    my ( $base, $mode, $tpu, $thmode, $enmode, $minchan, $maxchan, $enchan ) = @_;
+
+    my @tpus = ( );
+    if ( $tpu == -1 ) {
+        @tpus = ( 0, 1, 2, 3 );
+    } else {
+        @tpus = ( $tpu );
+    }
+    my @filenames = ( );
+    foreach my $tpu ( @tpus ) {
+        my $tpuname = "wam" . $tpu;
+        if ( $mode eq 'BST' ) {
+            if ( $thmode == 0 ) {
+                if ( $enmode == -1 ) {
+                    push @filenames, map( join( '_', $base, $tpuname, "ph$_.lc" ),
+                                          0..54 );
+                } elsif ( $enmode == 0 ) {
+                    push @filenames, join( '_', $base, $tpuname,
+                                           "ph${enchan}.lc" );
+                } elsif ( $enmode == 1 ) {
+                    push @filenames, join( '_', $base, $tpuname,
+                                           "ph${minchan}_${maxchan}.lc" );
+                }
+            } else {
+                if ( $enmode == -1 ) {
+                    push @filenames, map( join( '_', $base, $tpuname, "th$_.lc" ),
+                                          ( 0..3, "all" ) );
+                } elsif ( $enmode == 0 ) {
+                    push @filenames, join( '_', $base, $tpuname,
+                                           "th${enchan}.lc" );
+                } elsif ( $enmode == 1 ) {
+                    push @filenames, join( '_', $base, $tpuname,
+                                           "th${minchan}_${maxchan}.lc" );
+                }
+            }
+        } else {
+            push @filenames, join( '_', $base, $tpuname,
+                                   "ph${minchan}_${maxchan}.lc" );
+        }
+    }
+    return @filenames;
+}
+
+=head3 mergeWAMLCs
+
+=over
+
+Merges all light curves for a given detector (wam[0-3]) and a given mode (BST/TRN)
+
+=back
+
+=cut
+
+sub mergeWAMLCs {
+    
+    my ( $lcs, $lcout ) = @_;
+
+    my $stat = 0;
+
+    my @lcs = sort @$lcs;
+    return $stat unless @lcs;
+
+    ################################################
+    # copy the first one to the new file and update
+    # the primary header to be reasonably generic
+    ################################################
+    my $lc0 = shift @lcs;
+    $stat = ftcopy( $lc0 . "[1][col #EXTNAME='RATE1';*]", $lcout, 0 );
+    return $stat unless $stat == 0;
+
+    $stat = ftappend( $lc0 . "[2][col #EXTNAME='GTI1';*]", $lcout );
+    return $stat unless $stat == 0;
+
+    my $keysfile = getTmpFile( 'txt' );
+    push @clean, $keysfile;
+    my @copykeys = qw( TELESCOP INSTRUME OBS_MODE DETNAM DATAMODE OBS_ID
+                       DATE-OBS TIME-OBS DATE-END TIME-END OBSERVER OBJECT
+                       OBS_REM RA_OBJ DEC_OBJ RA_PNT DEC_PNT RA_NOM DEC_NOM
+                       PA_NOM MEAN_EA1 MEAN_EA2 MEAN_EA3 RADECSYS EQUINOX );
+    $stat = runSystem( 'ftlist',
+                       { infile  => $lc0 . "[0][col #DETNAM='WAM_ANTI']",
+                         option  => 'K',
+                         outfile => $keysfile,
+                         clobber => 'yes',
+                         include => join( ',', @copykeys ) } );
+    return $stat unless $stat == 0;
+
+    $stat = runSystem( 'fthedit',
+                       { infile  => $lcout . "[0]",
+                         keyword => '@' . $keysfile,
+                         chatter => $params{taskchatter},
+                         history => 'no' } );
+    return $stat unless $stat == 0;
+    unlink $keysfile;
+
+    ######################
+    # now append the rest
+    ######################
+    my $i = 1;
+    foreach my $lc ( sort @lcs ) {
+        $i++;
+        $stat = ftappend( $lc . "[1][col #EXTNAME='RATE$i';*]", $lcout );
+        return $stat unless $stat == 0;
+        $stat = ftappend( $lc . "[2][col #EXTNAME='GTI$i';*]", $lcout );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+=head3 filenameToOutput
+
+=over
+
+Takes input filename and gives corresponding output filename (relative path).
+
+Inputs:
+
+        input filename
+
+Outputs:
+
+        corresponding file in output dir
+
+=back
+
+=cut
+
+sub filenameToOutput {
+
+    my $infile = shift;
+
+    ###############
+    # get basename
+    ###############
+    my $outfilebase = ( fileparse( $infile, qr/$zip/ ) )[ 0 ];
+
+    ######################################
+    # replace steminputs with stemoutputs
+    ######################################
+    my $outfile = $outfilebase;
+    my $replace = basename( $params{steminputs} );
+    $outfile =~ s/$replace/$params{stemoutputs}/;
+
+    #####################
+    # construct new name
+    #####################
+    $outfile = catfile( $params{outdir}, $outfile );
+    return $outfile;
+}
+
+=head3 getMKFCriteria
+
+=over
+
+Returns makefilter file screening criteria given an event mode.
+
+Inputs:
+
+        event mode
+
+Outputs:
+
+        selection criteria for maketime
+
+=back
+
+=cut
+
+sub getMKFCriteria {
+    my $mode   = shift;
+    my $lcmode = lc( $mode );
+    my $mkfexpr;
+    if ( $params{"${lcmode}_mkfexpr"} =~ /^default/i ) {
+        $mkfexpr = $Defaults{screening}->{$mode};
+    } else {
+        $mkfexpr = $params{"${lcmode}_mkfexpr"};
+    }
+    return $mkfexpr;
+}
+
+=head3 createWAMScanGTI
+
+=over
+
+Creates a GTI that excludes periods where the WAM is in "scan". This is
+typically done once per day by the operations team just after an SAA passage.
+
+The .tim file contains a list of operations commands in the 5th extension,
+OG_NAME column. The command hxd_t?, where ? is 0-3 marks the start of the scan,
+and the 'hxd_tpu_normal' command marks the end of the scan.
+
+NOTE: This method does not exclude all WAM scans for unknown reasons.
+
+Inputs:
+
+        .tim filename to use
+
+Outputs:
+
+        Status variable
+        Name of WAM Scan GTI
+
+=back
+
+=cut
+
+sub createWAMScanGTI {
+    
+    my $tim = shift;
+
+    my $stat = 0;
+
+    ###############################
+    # setup various filters to use
+    ###############################
+    my $colfilt1 = <<EOF;
+WAM_SCAN = ( OG_NAME == 'hxd_t0' || OG_NAME == 'hxd_t1' ||
+             OG_NAME == 'hxd_t2' || OG_NAME == 'hxd_t3' )
+           ? 2 : ( OG_NAME == 'hxd_tpu_normal' ? 1 : 0 );
+*
+EOF
+    my $colfilt2 = <<EOF;
+WAM_SCAN2(1B) = ( WAM_SCAN == 1 || WAM_SCAN == 0 ) ? 0 : 1;
+*
+EOF
+    my $rowfilt1 = <<EOF;
+#row == 1 || WAM_SCAN == 1 || WAM_SCAN == 2 || #row == NAXIS2
+EOF
+
+    ########################################################################
+    # run ftcopy to create a table containing a new column called WAM_SCAN,
+    # which is 0 when OG_NAME=='hxd_tpu_normal', 1 when OG_NAME=='hxd_t?'
+    # and 2 otherwise.
+    ########################################################################
+    my $colfile1 = dumpListToTxt( $colfilt1 );
+    my $tmpfile1 = getTmpFile( 'fits' );
+    $stat = ftcopy( $tim . '[5]' . "[col \@$colfile1]", $tmpfile1, 0 );
+    unlink $colfile1;
+    if ( $stat != 0 ) {
+        unlink $tmpfile1;
+        return $stat;
+    }
+
+    ########################################################################
+    # run ftcopy again to create another table with a new column WAM_SCAN2,
+    # which is 1 during the WAM scans, and 0 otherwise
+    ########################################################################
+    my $colfile2 = dumpListToTxt( $colfilt2 );
+    my $rowfile2 = dumpListToTxt( $rowfilt1 );
+    my $tmpfile2 = getTmpFile( 'fits' );
+    $stat = ftcopy( $tmpfile1 . '[1]' . "[\@$rowfile2][col \@$colfile2]",
+                    $tmpfile2, 0 );
+    unlink $colfile2, $rowfile2;
+    if ( $stat != 0 ) {
+        unlink $tmpfile1, $tmpfile2;
+        return $stat;
+    }
+
+    ##########################################
+    # compute the name of the output GTI file
+    ##########################################
+    my $ext = '_wam_scan.gti';
+    my $scanGTI = $tim;
+    $scanGTI =~ s/\.tim$zip$/$ext/;
+    if ( $scanGTI eq $tim ) {
+        $scanGTI .= $ext;
+    }
+
+    #################################
+    # run maketime to create the GTI
+    #################################
+    $stat = maketime( $tmpfile2, $scanGTI, 'WAM_SCAN2==0', 0.0, 1.0 );
+
+    #####################
+    # check for any rows
+    #####################
+    my $fptr = Astro::FITS::CFITSIO::open_file( $scanGTI . '[1]',
+                                                READONLY, $stat );
+    return ( $stat, $scanGTI ) unless $stat == 0;
+    my $nrows;
+    $fptr->get_num_rows( $nrows, $stat );
+    $fptr->close_file( $stat );
+    if ( $nrows <= 0 ) {
+        $scanGTI = undef;
+    }
+
+    ###############################################################
+    # if there are rows, adjust the earliest START and latest STOP
+    # to coincide with the TSTART and TSTOP from the 1st extension
+    # in the .tim file
+    ###############################################################
+    if ( $scanGTI ) {
+        $fptr = Astro::FITS::CFITSIO::open_file( $tim . '[1]',
+                                                 READONLY, $stat );
+        return ( $stat, $scanGTI ) unless $stat == 0;
+
+        ########################
+        # read the TSTART/TSTOP
+        ########################
+        my ( $tstart, $tstop );
+        $fptr->read_key_dbl( "TSTART", $tstart, undef, $stat );
+        $fptr->read_key_dbl( "TSTOP", $tstop, undef, $stat );
+        $fptr->close_file( $stat );
+
+        ###############################
+        # run ftedit to fixup scan GTI
+        ###############################
+        $stat = runSystem( 'ftedit',
+                           { infile  => $scanGTI . '[1]',
+                             column  => 'START',
+                             row     => 1,
+                             value   => $tstart,
+                             chatter => $params{taskchatter},
+                             history => 'no' } );
+        return ( $stat, $scanGTI ) unless $stat == 0;
+        $stat = runSystem( 'ftedit',
+                           { infile  => $scanGTI . '[1]',
+                             column  => 'STOP',
+                             row     => $nrows,
+                             value   => $tstop,
+                             chatter => $params{taskchatter},
+                             history => 'no' } );
+        return ( $stat, $scanGTI ) unless $stat == 0;
+    }
+
+    #######
+    # done
+    #######
+    unlink $tmpfile1, $tmpfile2;
+    return ( $stat, $scanGTI );
+}
+
+=head3 runSub
+
+=over
+
+Runs a subroutine using the timeSub subroutine timing wrapper.
+
+Timing data is stored to the array reference passed as the first argument,
+along with the subroutine description (second argument).
+
+The third argument can either be a 'CODE' reference, or a list reference. If
+the former, the code reference is passed as is to timeSub. If the latter, the
+list is expanded, and sent to timeSub. So if a list reference is given as the
+third argument, the first element in the list should be a reference to a
+subroutine, and the remaining elements should be the arguments to pass to that
+subroutine.
+
+Inputs:
+
+        array reference (timing report)
+        subroutine description
+        subroutine definition
+
+Calls:
+
+        timeSub
+
+=back
+
+=cut
+
+sub runSub {
+    my ( $timingReport, $descrip, $proc ) = @_;
+    my $stat = 0;
+    if ( defined $proc ) {
+        if ( ref $proc eq 'ARRAY' ) {
+            my $sub  = $proc->[ 0 ];
+            my @args = @{$proc}[ 1..$#$proc ];
+            $stat = timeSub( $timingReport, $descrip, $sub, @args );
+        } elsif ( ref $proc eq 'CODE' ) {
+            $stat = timeSub( $timingReport, $descrip, $proc );
+        }
+    }
+    return $stat;
+}
+
+=head3 timeSub
+
+=over
+
+Times a subroutine and adds to input timing report list ref (first arg). The
+second argument should be a 'CODE' reference to a subroutine to run. Any
+remaining arguments are passed to that subroutine.
+
+Inputs:
+
+        array reference (timing report)
+        subroutine description
+        subroutine reference
+        additional arguments to subroutine
+
+=back
+
+=cut
+
+sub timeSub( ) {
+
+    use Time::HiRes qw( gettimeofday );
+
+    my $rept = shift;
+    my $desc = shift;
+    my $subr = shift;
+    my @args = ( );
+    if ( @_ ) {
+        @args = @_;
+    }
+
+    ##############################################
+    # run the sub, recording start and stop times
+    ##############################################
+    my ( $start_sec, $start_usec ) = gettimeofday( );
+    my @start = times;
+    my @ret = $subr->( @args );
+    my @stop = times;
+    my ( $stop_sec, $stop_usec ) = gettimeofday( );
+
+    ####################################
+    # calculate the timing of this step
+    ####################################
+    my @elapsed = map( $stop[ $_ ] - $start[ $_ ], 0..$#stop );
+    my $telapse = ( $stop_sec + $stop_usec * 1.0e-6 ) -
+                  ( $start_sec + $start_usec * 1.0e-6 );
+
+    my @start_vals = localtime( $start_sec );
+    my $tstart = sprintf( "%02d:%02d:%02d", $start_vals[ 2 ],
+                         $start_vals[ 1 ], $start_vals[ 0 ] );
+
+    my @stop_vals  = localtime( $stop_sec );
+    my $tstop  = sprintf( "%02d:%02d:%02d", $stop_vals[ 2 ],
+                         $stop_vals[ 1 ], $stop_vals[ 0 ] );
+
+    ############################
+    # save the report for later
+    ############################
+    my $report = {
+        USER    => $elapsed[ 0 ],
+        CUSER   => $elapsed[ 2 ],
+        SYSTEM  => $elapsed[ 1 ],
+        CSYSTEM => $elapsed[ 3 ],
+        START   => $tstart,
+        STOP    => $tstop,
+        ELAPSE  => $telapse,
+        DESCRIP => $desc
+    };
+    push @$rept, $report;
+
+    if ( @ret > 1 ) {
+        return @ret;
+    } elsif ( @ret == 1 ) {
+        return $ret[ 0 ];
+    }
+}
+
+=head3 dumpTimingReport
+
+=over
+
+Prints the timing report. The timing report is expected to be one generated by
+timeSub.
+
+Inputs:
+
+        timing report
+
+=back
+
+=cut
+
+sub dumpTimingReport {
+
+    my $rept = shift;
+
+    headingnp( 2, "$Task{name} v$Task{version} Run-time Analysis\n" );
+
+    format STDOUT_TOP=
+@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< @|||||||  @||||||| @>>>>>> @>>>>>> @>>>>>
+"Analysis Step", "Start", "Stop", "User", "System", "\%Tot"
+-----------------------------------------------------------------------------
+.
+
+    ######################################
+    # calculate total times and fractions
+    ######################################
+    my %telapses = (
+        USER    => 0.0,
+        CUSER   => 0.0,
+        SYSTEM  => 0.0,
+        CSYSTEM => 0.0,
+        ELAPSE  => 0.0
+    );
+    foreach my $report ( @$rept ) {
+        foreach my $key ( keys %telapses ) {
+            $telapses{$key} += $report->{$key};
+        }
+    }
+    foreach my $report ( @$rept ) {
+        foreach my $key ( keys %telapses ) {
+            my $key1 = $key . "FRAC";
+            my $key2 = $key . "FRACTOT";
+            if ( $telapses{$key} != 0.0 ) {
+                $report->{$key1} = 100.0 * $report->{$key} / $telapses{$key};
+            } else {
+                $report->{$key1} = 0.0;
+            }
+            if ( $telapses{ELAPSE} != 0.0 ) {
+                $report->{$key2} = 100.0 * $report->{$key} / $telapses{ELAPSE};
+            } else {
+                $report->{$key2} = 0.0;
+            }
+        }
+        $report->{USER}   += $report->{CUSER};
+        $report->{SYSTEM} += $report->{CSYSTEM};
+    }
+
+    #################################
+    # now get totals for totals line
+    #################################
+    $telapses{DESCRIP} = "Total";
+    $telapses{START}   = $rept->[ 0 ]->{START};
+    $telapses{STOP}    = $rept->[ $#$rept ]->{STOP};
+    $telapses{USER}   += $telapses{CUSER};
+    $telapses{SYSTEM} += $telapses{CSYSTEM};
+    $telapses{ELAPSEFRACTOT} = 100.0;
+    
+    my $report;
+format STDOUT =
+@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< @<<<<<<<  @<<<<<<< @###.#s @###.#s @##.#%
+$report->{DESCRIP}, $report->{START}, $report->{STOP}, $report->{USER}, $report->{SYSTEM}, $report->{ELAPSEFRACTOT}
+.
+    foreach $report ( @$rept ) {
+        if ( $params{chatter} >= 2 ) {
+            write STDOUT;
+        }
+    }
+    if ( $params{chatter} >= 2 ) {
+        $report = \%telapses;
+        print STDOUT "----------------------------------------"
+                   . "-------------------------------------\n";
+        write STDOUT;
+    }
+}
+
+=head1 MODIFICATION HISTORY
+
+=over
+
+2010-01-11 - Initial Version
+
+=back
+
+=head1 AUTHOR
+
+=over
+
+Alex Padgett (Charles.A.Padgett@nasa.gov)
+
+=back
+
+=head1 BUGS
+
+=over
+
+None, of course.
+
+=back
+
+=cut
+

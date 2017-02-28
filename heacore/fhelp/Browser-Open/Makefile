@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= heacore
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_LIBS	= lib/Browser/Open.pm
+
+HD_PERL_SUBDIR		= Browser
+
+include ${HD_STD_MAKEFILE}

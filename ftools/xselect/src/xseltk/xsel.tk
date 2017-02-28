@@ -1,0 +1,171 @@
+#The first line should give the interpreter xseltk.
+#Set the window title
+
+#Load the POW and FITSTCL library
+
+package require Itcl
+package require Itk
+package require Iwidgets
+load $env(FTOOLS)/lib/libpow.so pow
+load $env(FTOOLS)/lib/libfitstcl.so fits
+
+wm title . XSELECT 
+set width [winfo screenwidth .]
+set x [expr int($width/3.0)]
+set height [winfo screenheight .]
+set y [expr int($height/10)]
+wm geometry . +$x+$y
+
+option readfile $env(FTOOLS)/bin/.xselect
+#read in the window setup. xsl_casmen array stores the cascade menu
+#comm array store the command menu. xsl_mastermen stores the
+#master menu bar 
+if [ catch {open "$env(FTOOLS)/bin/xselect.tkstp" "r"} fileid ] { 
+    puts stderr "can not open xselect.tkstp"
+} else { 
+   while { [gets $fileid line] >= 0}  { 
+      regsub -all -- "\[\t \]+" $line " " line
+      set line [string trim $line] 
+      if { [string length $line] == 0 }  { 
+           continue 
+      }  
+      set tmp [split $line] 
+      set first [lindex $tmp 0]
+      set nfield [llength $tmp] 
+      incr nfield -1
+      if { $first == "main" } { 
+          set xsl_mastermen [lrange $tmp 1 $nfield]
+          continue  
+      } 
+      set men_level [expr $nfield - 1] 
+      if { $first == "cas"} {  
+         set men_index [lrange $tmp 1 $men_level]
+         set men_index [join $men_index "."] 
+         set men_index [string tolower $men_index]
+         set men_index \.$men_index 
+         if { ! [info exist xsl_casmen($men_index)] } { 
+             set xsl_casmen($men_index)  [lindex $tmp $nfield]
+         } else { 
+             lappend xsl_casmen($men_index)  [lindex $tmp $nfield] 
+         }
+         continue
+      } 
+      if { $first == "com" } { 
+#        additional commands and mask
+         incr men_level -2
+         set men_index [lrange $tmp 1 $men_level]
+         set men_index [join $men_index "."] 
+         set men_index [string tolower $men_index]
+         set men_index \.$men_index 
+         set icmd [expr $nfield - 2]
+         if { ! [info exist xsl_commen($men_index)] } { 
+             set xsl_commen($men_index)  [lindex $tmp $icmd] 
+             incr icmd 
+             set xsl_comcom($men_index) [ lindex $tmp $icmd] 
+             incr icmd 
+             set xsl_commsk($men_index) [ lindex $tmp $icmd] 
+         } else { 
+             lappend xsl_commen($men_index)  [lindex $tmp $icmd] 
+             incr icmd 
+             lappend xsl_comcom($men_index)  [lindex $tmp $icmd] 
+             incr icmd 
+             lappend xsl_commsk($men_index)  [lindex $tmp $icmd] 
+         } 
+         continue
+      } 
+   }  
+}      
+
+set xsl_masterindex [string tolower $xsl_mastermen]
+
+
+# Create manubar 
+set menrt [frame .xslmenu -relief raised]
+pack $menrt -side top  -expand true -anchor w -ipady 5
+bind . <Control-Key-c> {quit no}
+foreach m $xsl_mastermen {  
+   set m [string trim $m]
+   set a [string tolower $m]
+   menubutton $menrt.b$a -text $m \
+   -menu $menrt.b$a.$a -underline 0 
+   menu $menrt.b$a.$a -tearoff no 
+   pack $menrt.b$a -side left
+}
+
+foreach aindex [lsort -ascii [array names xsl_casmen] ] { 
+   set tmp [split $aindex "."]
+   set a [lindex $tmp 1]
+   set listcas $xsl_casmen($aindex)
+   CasMenu $menrt.b$a$aindex listcas   
+}
+foreach aindex [lsort -ascii [array names xsl_commen] ] {
+set tmp [split $aindex "."]
+set a [lindex $tmp 1]
+set listcom $xsl_commen($aindex) 
+set commnd  $xsl_comcom($aindex)
+   ComMenu $menrt.b$a$aindex listcom $commnd
+}
+
+
+#Create a command entry
+frame .xslcmd
+pack .xslcmd -side top  -expand true \
+-anchor w -ipady 5 -fill x
+label .xslcmd.label -text "Command:" 
+entry .xslcmd.cmdentry -relief sunken \
+       -font  "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+       -background white \
+      -textvariable xsl_cmd
+button .xslcmd.reset -text Reset -command {set xsl_cmd " "}
+button .xslcmd.quit -text Quit -command {xslquit no}
+button .xslcmd.exit -text Exit -command {xslquit }
+button .xslcmd.help -text Help -command {help_list }
+button .xslcmd.status -text Status -command {RunCommand [list show status]}
+pack .xslcmd.label -side left -anchor w -padx 5 
+pack .xslcmd.cmdentry -side left -anchor w -padx 5
+pack .xslcmd.reset -side left -anchor w  -padx 5
+pack .xslcmd.quit -side right -anchor e  -padx 5 
+pack .xslcmd.exit -side right -anchor e  -padx 5
+pack .xslcmd.help -side right -anchor e  -padx 5 
+pack .xslcmd.status -side right -anchor e  -padx 5 
+bind .xslcmd.cmdentry <Return> [list RunEntry xsl_cmd]
+
+#create a text widget for log file.
+frame .xsllog
+pack .xsllog -side top -fill both -expand true -ipady 5 
+set logtxt [text .xsllog.log -state disabled -width 80 -height 40 \
+            -borderwidth 2 -relief raised -font \
+            "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+             -setgrid true -yscrollcommand {.xsllog.scroll set} ]
+scrollbar .xsllog.scroll -command {.xsllog.log yview} 
+pack .xsllog.scroll -side right -fill y
+pack .xsllog.log -side left -fill both -expand true
+
+frame .xslmisc
+button .xslmisc.clear -text Clear -command clear_log
+button .xslmisc.lock -text Lock -command {LockXslWin dummy }
+button .xslmisc.unlock -text UnLock -command UnLockXslWin
+
+pack .xslmisc -side bottom -fill both -expand true -ipady 5
+pack .xslmisc.clear -side left -anchor w  -padx 10 
+pack .xslmisc.lock -side left -anchor w  -padx 10 
+pack .xslmisc.unlock -side left -anchor w  -padx 10 
+
+#
+# learn option status
+#
+set XSLCTRLFLAG(LEARN) 0
+
+#
+# defined the locked widgets when command is running
+#
+DefLockXslLockwin
+#
+# Update the window status. 
+#
+UpdateXslMenu
+
+xsltermout 
+
+bell
+

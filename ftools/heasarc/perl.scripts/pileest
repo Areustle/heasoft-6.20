@@ -1,0 +1,787 @@
+#!/usr/bin/perl -w
+
+=head1 SYNOPSIS
+
+pileest
+
+=head1 DESCRIPTION
+
+Creates an estimated pileup fraction map given an event file, and an optional
+GTI file.
+
+Based on pile_estimate.sl by John E. Davis:
+
+    http://space.mit.edu/ASC/software/suzaku/pest.html
+
+=head1 SUBROUTINES
+
+=cut
+
+######################
+# libraries + pragmas
+######################
+use strict;
+
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEAGen::HEAGen qw( :all );
+use Astro::FITS::CFITSIO qw( :longnames :constants );
+use File::Copy;
+use File::Basename;
+
+$| = 1;
+
+###################
+# Global variables
+###################
+my $taskName = 'pileest';
+my $taskVers = '1.0';
+
+my %params = (
+    eventfile    => '',
+    outmap       => '',
+    gtifile      => '',
+    inreg        => '',
+    alpha        => 0.0,
+    interactive  => 0,
+    outreg       => '',
+    maxpilefrac  => 0.0,
+    contpfrac    => 0,
+    pfrac_vals   => [],
+    plotimage    => 0,
+    plotdevice   => '',
+    plotfext     => '',
+    cleanup      => 0,
+    clobber      => 0,
+    history      => 0,
+    chatter      => 0
+);
+
+my @clean = ( );
+
+################################
+# timing mode DATAMODE keywords
+################################
+my @TimingModes = qw( WINDOWED PSUM );
+
+#########
+# run it
+#########
+exit( headas_main( \&pileest ) );
+
+=head3 pileest
+
+=over
+
+Main subroutine. Does the business.
+
+=back
+
+=cut
+
+sub pileest {
+
+    ######################
+    # library setup stuff
+    ######################
+    set_toolname( $taskName );
+    set_toolversion( $taskVers );
+    setTask( $taskName, $taskVers );
+    setChat( 2 );
+    setSysChat( 3 );
+
+    ##################
+    # do the business
+    ##################
+    my $stat = 0;
+
+    !( $stat = getParams( ) ) || goto CLEANUP;
+    intro( );
+    !( $stat = checkParams( ) ) || goto CLEANUP;
+    !( $stat = pileest_work( ) ) || goto CLEANUP;
+
+CLEANUP:
+    if ( $params{cleanup} ) {
+        cleanup( @clean );
+    }
+    outtro( $stat );
+    return $stat;
+}
+
+=head3 getParams
+
+=over
+
+Queries input parameters.
+
+=back
+
+=cut
+
+sub getParams {
+
+    my $stat = 0;
+
+    ###################
+    # automatic params
+    ###################
+    foreach ( qw( eventfile outmap inreg outreg ) ) {
+        !( $stat = getFileParam( $_, \$params{$_} ) ) || return $stat;
+    }
+    !( $stat = getFltParam( 'alpha', \$params{alpha} ) ) || return $stat;
+    !( $stat = getFltParam( 'maxpilefrac', \$params{maxpilefrac} ) ) || return $stat;
+
+    ################
+    # hidden params
+    ################
+    !( $stat = getFileParam( 'gtifile',     \$params{gtifile} ) )       || return $stat;
+    !( $stat = getBoolParam( 'interactive', \$params{interactive} ) )   || return $stat;
+    !( $stat = getBoolParam( 'contpfrac',   \$params{contpfrac} ) )     || return $stat;
+    !( $stat = getListParam( 'pfrac_vals',  \@{$params{pfrac_vals}} ) ) || return $stat;
+    !( $stat = getBoolParam( 'plotimage',   \$params{plotimage} ) )     || return $stat;
+    !( $stat = getStrParam( 'plotdevice',   \$params{plotdevice} ) )    || return $stat;
+
+    !( $stat = getBoolParam( 'cleanup', \$params{cleanup} ) ) || return $stat;
+    !( $stat = getBoolParam( 'clobber', \$params{clobber} ) ) || return $stat;
+    !( $stat = getBoolParam( 'history', \$params{history} ) ) || return $stat;
+
+    !( $stat = getIntParam( 'chatter', \$params{chatter} ) ) || return $stat;
+    setChat( $params{chatter} );
+
+    return $stat;
+}
+
+=head3 checkParams
+
+=over
+
+Checks input parameters.
+
+=back
+
+=cut
+
+sub checkParams {
+    my $stat = 0;
+    if ( !$params{clobber} && -e $params{outmap} ) {
+        error( 1, "Output file $params{outmap} exists "
+                . "and clobber not set!\n" );
+        return -1;
+    }
+    if ( !$params{clobber} && -e $params{outreg} ) {
+        error( 1, "Output region file $params{outreg} exists "
+                . "and clobber not set!\n" );
+        return -1;
+    }
+    foreach my $level ( @{$params{pfrac_vals}} ) {
+        if ( $level > 1.0 || $level < 0.0 ) {
+            error( 1, "pfrac_vals values must be fractional "
+                    . "(i.e. >= 0 && <= 1)\n" );
+            return -1;
+        }
+    }
+    if ( $params{gtifile} =~ /^none$/i ) {
+        $params{gtifile} = 'NONE';
+    }
+    ( $stat, $params{plotdevice}, $params{plotfext} )
+            = getPlotDevice( $params{plotdevice}, dirname( $params{outmap} ) );
+    return $stat;
+}
+
+=head3 pileest_work
+
+=over
+
+Makes the pileup fraction map and region.
+
+=back
+
+=cut
+
+sub pileest_work {
+
+    my $stat = 0;
+
+    ##############################################
+    # setup extractor based on mission/instrument
+    ##############################################
+    chat( 2, "Determining parameters for pile-up estimation\n" );
+    my ( $miss, $inst, $dmode, $tdel, $expo );
+    my $fptr = Astro::FITS::CFITSIO::open_file( $params{eventfile},
+                                                READONLY, $stat );
+    return $stat unless $stat == 0;
+    $fptr->movnam_hdu( BINARY_TBL, 'EVENTS', 0, $stat );
+
+    $fptr->read_key_str( 'TELESCOP', $miss, undef, $stat );
+    $fptr->read_key_str( 'INSTRUME', $inst, undef, $stat );
+
+    # setup extractor
+    my $stat2 = setupExtractor( $miss, $inst );
+    return $stat2 unless $stat2 == 0;
+
+    # check if we need an extra level and setup extractor again if needed
+    my $dmodekey = xselmdbval( 'dmodekey' );
+    if ( defined $dmodekey ) {
+        $fptr->read_key_str( $dmodekey, $dmode, undef, $stat );
+
+        if ( $dmode ) {
+            $stat2 = setupExtractor( $miss, "$inst:$dmode" );
+            return $stat2 unless $stat2 == 0;
+        }
+    }
+    $fptr->read_key_dbl( 'TIMEDEL', $tdel, undef, $stat );
+    $fptr->read_key_dbl( 'EXPOSURE', $expo, undef, $stat );
+    $fptr->close_file( $stat );
+    return $stat unless $stat == 0;
+
+    #######################################################
+    # for WINDOWED or PSUM modes, use detector coordinates
+    # and use a 3x1 boxcar kernel
+    #######################################################
+    my ( $xkernsize, $ykernsize );
+    if ( $dmode && grep /$dmode/, @TimingModes ) {
+        error( 1, "WINDOWED/TIMING modes are not supported!\n" );
+        return -1;
+        #warnhi( 1, "WINDOWED/TIMING modes are experimental, check results!\n" );
+        #$HEAGen::HEAGen::MDB{imagecoord} = 'det';
+        #$xkernsize = 3;
+        #$ykernsize = 1;
+    } else {
+        $xkernsize = $ykernsize = 3;
+    }
+
+    ####################################################
+    # make an image from the event file using extractor
+    ####################################################
+    chat( 2, "Extracting image from event file\n" );
+    my $outimg = getTmpFile( 'img' );
+    push @clean, $outimg;
+    $stat = extractor( {
+                         filename => $params{eventfile},
+                         imgfile  => $outimg,
+                         timefile => $params{gtifile} } );
+    return $stat unless $stat == 0;
+
+    ##########################################
+    # get the estimated pileup fraction image
+    ##########################################
+    $stat = estimatePileFraction( $outimg, $params{outmap}, $xkernsize,
+                                  $ykernsize, $tdel, $expo, $params{alpha},
+                                  'f_t', $params{chatter}, $params{history} );
+    return $stat unless $stat == 0;
+
+    ##############################################################
+    # setup the Ximage image display command for both interactive
+    # mode and for plotting the pileup fraction map
+    ##############################################################
+    my $getregion;
+    my $dispimg = <<EOF;
+levels num=128
+display
+EOF
+    if ( !$params{contpfrac} ) {
+        my $levels = join ' ', @{$params{pfrac_vals}};
+        $dispimg = <<EOF;
+levels list={$levels}
+display loaded
+EOF
+    }
+    if ( $params{inreg} !~ /^none$/i ) {
+        $dispimg .= <<EOF;
+circle displayonly regionfile={$params{inreg}} color=3 lwidth=2 excolor=2
+EOF
+    }
+    $dispimg .= <<EOF;
+contour overlay minlevel=$params{maxpilefrac} maxlevel=$params{maxpilefrac} color=4 lwidth=2
+EOF
+
+    ##############################################################
+    # if not running interactively, calculate an exclusion region
+    ##############################################################
+    unlink $params{outreg};
+    if ( !$params{interactive} ) {
+        $stat = getExclusionRegion( $params{outmap}, $params{maxpilefrac},
+                                    $params{outreg} );
+        return $stat unless $stat == 0;
+
+    #############################################
+    # start an interactive Ximage session to get
+    # the exclusion region desired
+    #############################################
+    } else {
+        my $script = getTmpFile( "xco" );
+        push @clean, $script;
+        my $regfile = getTmpFile( 'reg' );
+        push @clean, $regfile;
+
+        my $dispimg2 = $dispimg;
+        $dispimg2 .= <<EOF;
+if { [file exists {$regfile}] } {
+    file delete -force {$regfile}
+}
+if { [file exists {$params{inreg}}] } {
+    file copy -force {$params{inreg}} {$regfile}
+}
+EOF
+        my $getregion;
+        if ( $params{inreg} !~ /^none$/i ) {
+            $getregion = <<EOF;
+circle exclude regionfile={$regfile} excolor=2 lwidth=2
+EOF
+        } else {
+            $getregion = <<EOF;
+circle new exclude regionfile={$regfile} excolor=2 lwidth=2
+EOF
+        }
+
+        open SCR, ">$script" or die "failed to open file $script\n";
+        print SCR <<EOF;
+set exit_on_startfail 1
+#cct set bb
+cct set gray1
+cpd /xtk
+read size=0 {$params{outmap}}
+$dispimg2
+chatter 0
+puts "-------------------------------------------------------------------"
+puts "** TO ZOOM IN/OUT USE <SHIFT>+<LEFT MOUSE>/<SHIFT>+<RIGHT MOUSE> **"
+puts "-------------------------------------------------------------------"
+set ans "n"
+while { ![regexp {^[yYqQ]} \$ans] } {
+    chatter 10
+    $getregion
+    chatter 0
+    puts ""
+    set ans [txread "Is the displayed exclusion region OK (y, n or quit)? "]
+    while { ![regexp {^[yYnNqQ]} \$ans] } {
+        set ans [txread "Please enter y, n or q: "]
+    }
+    if { [regexp {^[nN]} \$ans] } {
+        puts "OK, starting over"
+        $dispimg2
+    }
+}
+if { [regexp {^[qQ]} \$ans] && [file exists {$regfile}] } {
+    file delete -force {$regfile}
+}
+chatter 10
+exit
+EOF
+        close SCR;
+
+        #########
+        # run it
+        #########
+        system( "ximage \"source $script\"" );
+        $stat = $?;
+        return $stat unless $stat == 0;
+
+        #########################################################
+        # move the output region file to its final resting place
+        #########################################################
+        if ( -f $regfile ) {
+            open REG, "<$regfile" or die "failed to open file $regfile\n";
+            my @lines = <REG>;
+            chomp @lines;
+            close REG;
+            open REG2, ">$params{outreg}"
+                or die "failed to open file $params{outreg}\n";
+            print REG2 $lines[ $#lines ] . "\n";
+            close REG2;
+        }
+        if ( -f $params{outreg} ) {
+            chat( 2, "Created exclusion region in:\n    $params{outreg}\n" );
+        } else {
+            chat( 2, "No exclusion region created\n" );
+        }
+    }
+
+    ##########################
+    # make a plot if asked to
+    ##########################
+    if ( $params{plotimage} ) {
+
+        if ( -f $params{outreg} ) {
+            $dispimg .= <<EOF;
+circle displayonly regionfile={$params{outreg}} color=3 lwidth=2 excolor=2
+EOF
+        }
+        my $plotfile = $params{outmap} . '.' . $params{plotfext};
+        my $script2 = getTmpFile( 'xcm' );
+        push @clean, $script2;
+        open SCR, ">$script2" or die "failed to open file $script2\n";
+        print SCR <<EOF;
+set exit_on_startfail 1
+#cct set bb
+cct set gray1
+read size=0 {$params{outmap}}
+cpd {$plotfile$params{plotdevice}}
+set title "Estimated Pileup Fraction - [chh key=OBJECT]"
+title \$title
+$dispimg
+exit
+EOF
+        close SCR;
+        $stat = runSystem( "ximage \@$script2" );
+        return $stat unless $stat == 0;
+    }
+
+    ######################################
+    # return if no input region was given
+    ######################################
+    if ( $params{inreg} =~ /^none$/i ) {
+        return $stat;
+    }
+
+    ###########################################################
+    # write another script to calculate some values needed for
+    # best guess parameters for the pileup model in Xspec
+    ###########################################################
+    chat( 2, "Estimating best parameters for Xspec 'pileup' model\n" );
+
+    ###################################################################
+    # first create a dummy region that is the inclusion version of the
+    # generated exclusion region
+    ###################################################################
+    my $tmpreg = "";
+    if ( -f $params{outreg} ) {
+        open OUTREG, "<$params{outreg}"
+            or die "failed to open file $params{outreg}\n";
+        my $outreg = <OUTREG>;
+        close OUTREG;
+        chomp $outreg;
+        $outreg =~ s/^\s*-//;
+        $tmpreg = getTmpFile( 'reg' );
+        open TMPREG, ">$tmpreg" or die "failed to open file $tmpreg\n";
+        print TMPREG $outreg . "\n";
+        close TMPREG;
+        push @clean, $tmpreg;
+    }
+    my $dosubtract = $tmpreg ? 1 : 0;
+
+    my $script2 = getTmpFile( 'xcm' );
+    push @clean, $script2;
+    open SCR, ">$script2" or die "failed to open file $script2\n";
+    print SCR <<EOF;
+set exit_on_startfail 1
+read size=0 {$params{outmap}}
+marith mapout=2 map1*map1
+marith mapout=3 map1*map2
+map 1
+counts regionfile={$params{inreg}}
+set MYLM \$counts(total)
+if { $dosubtract == 1 } {
+    counts regionfile={$tmpreg}
+    set MYLM [expr \$MYLM - \$counts(total)]
+}
+puts "MYLM = \$MYLM"
+map 2
+counts regionfile={$params{inreg}}
+set MYLS \$counts(total)
+if { $dosubtract == 1 } {
+    counts regionfile={$tmpreg}
+    set MYLS [expr \$MYLS - \$counts(total)]
+}
+puts "MYLS = \$MYLS"
+map 3
+counts regionfile={$params{inreg}}
+set MYLC \$counts(total)
+if { $dosubtract == 1 } {
+    counts regionfile={$tmpreg}
+    set MYLC [expr \$MYLC - \$counts(total)]
+}
+puts "MYLC = \$MYLC"
+exit
+EOF
+    close SCR;
+
+    ##############################################
+    # run it and parse the ximage output for vars
+    # needed to get pileup model params
+    ##############################################
+    my $ximout;
+    ( $stat, $ximout ) = runSystem( "ximage \@$script2" );
+    return $stat unless $stat == 0;
+
+    my %ximvars = ( );
+    foreach my $line ( @$ximout ) {
+        chomp $line;
+        if ( $line =~ /^MY(\S+) = (\S+)$/ ) {
+            $ximvars{$1} = $2 * 1.0;
+        }
+    }
+    if ( !exists $ximvars{LS} || !exists $ximvars{LC} || !exists $ximvars{LM} ) {
+        error( 1, "could not estimate pileup model parameters\n" );
+        return -1;
+    }
+
+    #####################################################
+    # do the final calculation and output the parameters
+    #####################################################
+    my $lavg = $ximvars{LM} * $ximvars{LC}**2 / $ximvars{LS}**3;
+    my $fpsf = $ximvars{LS}**2 / $ximvars{LM} / $ximvars{LC};
+    my $neqv = $ximvars{LS}**3 / $ximvars{LC}**2 / ( $xkernsize * $ykernsize );
+
+    chatnp( 1, "\nSuggested Xspec pileup model parameters for spectrum extracted using:\n" );
+    if ( $params{gtifile} !~ /^none$/i ) {
+        chatnp( 1, "GTI filter:    $params{gtifile}\n" );
+    }
+    chatnp( 1, "Region filter: $params{inreg}\n" );
+    if ( -f $params{outreg} ) {
+        chatnp( 1, "Region filter: $params{outreg}\n\n" );
+    }
+    chatnp( 1, "   Frame Time                         (fr_time) : %6.4f,-1\n",
+               $tdel );
+    chatnp( 1, "   Max number of photons to pileup    (max_ph)  :      5,-1\n" );
+    chatnp( 1, "   Grade correction for single photon (g0)      :    1.0,-1\n" );
+    chatnp( 1, "   Grade morphing parameter           (alpha)   : %6.4f\n",
+               $params{alpha} );
+    chatnp( 1, "   Effective piled PSF fraction       (psffrac) : %6.4f,-1\n",
+               $fpsf );
+    chatnp( 1, "   Equivalent number of regions       (nregions): %6d,-1\n",
+               int( $neqv ) );
+    chatnp( 1, "   Fractional exposure                (fracexp) :    1.0,-1\n" );
+    return $stat;
+}
+
+=head3 estimatePileFraction
+
+=over
+
+Calculates an estimated pileup fraction image based on an input image.
+
+=back
+
+=cut
+
+sub estimatePileFraction {
+
+    my ( $inimg, $outmap, $xkernsize, $ykernsize,
+         $tdel, $expo, $alph, $method, $chatter, $history ) = @_;
+
+    my $stat = 0;
+
+    ############
+    # smooth it
+    ############
+    chat( 2, "Calculating counts/%dx%d pixels/frame\n",
+             $xkernsize, $ykernsize );
+    my $smooth = getTmpFile( 'img' );
+    push @clean, $smooth;
+    $stat = runSystem( 'fboxcar',
+                       { infile    => $inimg,
+                         outfile   => $smooth,
+                         xwindow   => $xkernsize,
+                         ywindow   => $ykernsize,
+                         boundary  => 'nearest',
+                         constant  => 0,
+                         datatype  => 'D',
+                         nullval   => 0.0,
+                         copyprime => 'yes',
+                         copyall   => 'yes',
+                         clobber   => 'yes' } );
+    return $stat unless $stat == 0;
+
+    #####################################
+    # convert to counts/3xX pixels/frame
+    #####################################
+    my $perframe = getTmpFile( 'img' );
+    push @clean, $perframe;
+    my $expr = "A*$xkernsize*$ykernsize*$tdel/$expo";
+    $stat = runSystem( 'ftimgcalc',
+                       { outfile     => $perframe,
+                         expr        => $expr,
+                         a           => $smooth,
+                         b           => 'NONE',
+                         nvectimages => 1,
+                         replicate   => 'no',
+                         diagfile    => 'NONE',
+                         resultname  => 'RESULT',
+                         bunit       => 'NONE',
+                         otherext    => 'NONE',
+                         bitpix      => 0,
+                         wcsimage    => 'INDEF',
+                         clobber     => 'yes',
+                         chatter     => $params{chatter},
+                         history     => bs( $params{history} ) } );
+    return $stat unless $stat == 0;
+
+    ###########################################################################
+    # convert it to estimated pileup fraction using 3rd order approximation in
+    # alpha. this is borrowed directly from pile_estimate.sl
+    ###########################################################################
+    chat( 2, "Estimating pile-up fraction using:\n" );
+    $expr = "(-1.0-((2.0-$alph)/2.0+(2.0*$alph^2.0-9.0*$alph+9.0)/6.0*A)*A)*A";
+    if ( $method eq 'f_t' ) {
+        chat( 2, "    f_t = 1-exp(-N)\n" );
+        $expr = "1.0-exp($expr)";
+    } elsif ( $method eq 'f_e' ) {
+        chat( 2, "    f_e = 1-alpha*N/(exp(alpha*N)-1)\n" );
+        $expr = "1.0-$alph*$expr/(exp($alph*$expr)-1.0";
+    } elsif ( $method eq 'f_f' ) {
+        chat( 2, "    f_f = 1-N/(exp(N)-1)\n" );
+        $expr = "1.0-$expr/(exp($expr)-1.0)";
+    } elsif ( $method eq 'f_r' ) {
+        chat( 2, "    f_r = 1-exp(-N)*(exp(alpha*N)-1)/(alpha*N)\n" );
+        $expr = "1.0-exp(-$expr)*(exp($alph*$expr)-1.0)/($alph*$expr)";
+    } else {
+        error( 1, "Unknown method $method in estimatePileFraction()!\n" );
+        return -1;
+    }
+    $stat = runSystem( 'ftimgcalc',
+                       { outfile     => $outmap,
+                         expr        => $expr,
+                         a           => $perframe,
+                         b           => 'NONE',
+                         nvectimages => 1,
+                         replicate   => 'no',
+                         diagfile    => 'NONE',
+                         resultname  => 'RESULT',
+                         bunit       => 'NONE',
+                         otherext    => 'NONE',
+                         bitpix      => 0,
+                         wcsimage    => 'INDEF',
+                         clobber     => 'yes',
+                         chatter     => $chatter,
+                         history     => bs( $history ) } );
+    return $stat unless $stat == 0;
+    $stat = histStamp( $outmap );
+    return $stat unless $stat == 0;
+    chat( 2, "Pile-up fraction image created in:\n    $outmap\n" );
+
+    return $stat;
+}
+
+=head3 getExclusionRegion
+
+=over
+
+Undocumented
+
+=back
+
+=cut
+
+sub getExclusionRegion {
+
+    my ( $img, $lev, $outreg ) = @_;
+
+    my $stat = 0;
+
+    ###############################################
+    # open the image file and find the first image
+    ###############################################
+    my $fptr = Astro::FITS::CFITSIO::open_file( $img, READONLY, $stat );
+    return $stat unless $stat == 0;
+
+    my ( $nhdus, $hdutype );
+    $fptr->get_num_hdus( $nhdus, $stat );
+    my $i = 1;
+    for ( ; $i <= $nhdus; $i++ ) {
+        $fptr->movabs_hdu( $i, $hdutype, $stat );
+        last if $hdutype == IMAGE_HDU;
+    }
+    if ( $hdutype != IMAGE_HDU || $stat != 0 ) {
+        error( 1, "No valid image found in file $img\n" );
+        return -1;
+    }
+    $i--;
+
+    ###################################
+    # re-open the image with filtering
+    ###################################
+    $fptr->close_file( $stat );
+    my $filt = "[$i][pix X.GE.$lev?X:#null]";
+    $fptr = Astro::FITS::CFITSIO::open_file( $img . $filt,
+                                             READONLY, $stat );
+    return $stat unless $stat == 0;
+
+    ######################
+    # read the image data
+    ######################
+    my $nullval = -1.2e34;
+    my ( $naxes, $array, $nullarray, $anynull );
+    $fptr->get_img_parm( undef, undef, $naxes, $stat );
+    my ( $naxis1, $naxis2 ) = @$naxes;
+    $fptr->read_pix( TDOUBLE, [ 1, 1 ], $naxis1 * $naxis2, $nullval,
+                     $array, $anynull ,$stat );
+    $fptr->close_file( $stat );
+    return $stat unless $stat == 0;
+
+    ########################################################################
+    # create the minimum enclosing region assuming a symmetric distribution
+    ########################################################################
+    my ( $xmin, $xmax, $ymin, $ymax ) = ( $naxis1 - 1, 0, $naxis2 - 1, 0 );
+    for ( my $x = 0; $x < $naxis1; $x++ ) {
+        for ( my $y = 0; $y < $naxis2; $y++ ) {
+            next if $array->[$y][$x] == $nullval;
+            if ( $array->[$y][$x] >= $lev ) {
+                if ( $x < $xmin ) {
+                    $xmin = $x;
+                }
+                if ( $y < $ymin ) {
+                    $ymin = $y;
+                }
+                if ( $x > $xmax ) {
+                    $xmax = $x;
+                }
+                if ( $y > $ymax ) {
+                    $ymax = $y;
+                }
+            }
+        }
+    }
+    $xmin++; $xmax++; $ymin++; $ymax++;
+    if ( $xmin > $xmax || $ymin > $ymax ) {
+        warnlo( 1, "Could not determine bounding box using threshold=$lev\n" );
+        warnlo( 1, "Found [($xmin,$ymin),($xmax,$ymax)]\n" );
+        warnlo( 1, "No region will be created\n" );
+        return 0;
+    }
+    chat( 2, "Minimum bounding region >= $lev:\n" );
+    chat( 2, "    X: %d -> %d\n    Y: %d -> %d\n",
+             $xmin, $xmax, $ymin, $ymax );
+
+    ######################
+    # generate the region
+    ######################
+    my $xcen   = ( $xmin + $xmax ) / 2.0;
+    my $ycen   = ( $ymin + $ymax ) / 2.0;
+    my $radius = $xcen - $xmin + 0.5;
+    if ( $ycen - $ymin + 0.5 > $radius ) {
+        $radius = $ycen - $ymin + 0.5;
+    }
+    my $region = "-CIRCLE($xcen,$ycen,$radius)";
+
+    open REG, ">$outreg" or die "failed to open file $outreg!\n";
+    print REG "$region\n";
+    close REG;
+    return $stat;
+}
+
+=head1 MODIFICATION HISTORY
+
+=over
+
+2010-05-05 - CAP - Initial Version
+
+=back
+
+=head1 AUTHOR
+
+=over
+
+Alex Padgett (Charles.A.Padgett@nasa.gov).
+
+=back
+
+=head1 BUGS
+
+=over
+
+None, of course.
+
+=back
+
+=cut
+

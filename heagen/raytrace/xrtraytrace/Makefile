@@ -1,0 +1,21 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	= 
+
+HD_CXXTASK		= xrtraytrace
+
+HD_CXXTASK_SRC_cxx      = ${HD_CXXTASK}.cxx ${HD_CXXTASK}_lib.cxx
+
+HD_CXXFLAGS             = ${HD_STD_CXXFLAGS}
+
+HD_CXXLIBS              = ${HD_CXXFLAGS} ${HD_STD_CXXLIBS} -l${HEAAPP} -l${AHLOG} ${SYSLIBS}
+
+HD_INSTALL_TASKS        = ${HD_CXXTASK}
+
+HD_INSTALL_PFILES       = ${HD_CXXTASK}.par
+
+HD_INSTALL_HELP         = ${HD_CXXTASK}.html
+
+HD_INSTALL_HEADERS	=
+
+include ${HD_STD_MAKEFILE}

@@ -1,0 +1,7 @@
+HD_COMPONENT_NAME	= swift
+
+HD_COMPONENT_VERS	=
+
+HD_TEST_PERL_SCRIPTS	= ut-pre200 ut-imagexform-1.0
+
+include ${HD_STD_MAKEFILE}

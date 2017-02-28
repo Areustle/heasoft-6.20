@@ -1,0 +1,486 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+sxipi -- Calculate pulse invariant (PI) values and assign grades for SXI events.
+
+
+<h2>USAGE</h2>
+
+<tt>sxipi infile outfile hkfile</tt>
+
+
+<h2>DESCRIPTION</h2>
+
+<p>
+'sxipi' calculates a pulse invariant (PI), a value proportional to the
+X-ray energy, for each event in an SXI event list by applying several pulse
+height corrections and a grade assignment.  There are 5 major steps in this
+task: 
+</p>
+
+<p>
+1. Video board temperature (or even-odd column) correction <br>
+2. Charge trail correction <br>
+3. Charge transfer inefficiency (CTI) correction <br>
+4. Grade assignment and PHA summation; <br>
+5. PHA to PI conversion (gain correction) <br>
+</p>
+
+<p>
+In Step 1, differences in PHAS between even and odd CCD columns are corrected.
+Each CCD chip is associated with two circuit boards (ASICs) where the 
+raw pixel output is amplified and digitized. To speed up the signal
+processing, one of the ASICs reads signals transferred from the even-RAWX
+pixels, while the other reads those from the odd-RAWX pixels.  The
+conversion of analog to digital signal can differ for different ASICs, and
+this conversion depends on the temperature of the video board at the
+location of the ASIC.  This step removes those differences, correcting the
+pixel pulse height values so they are on the same scale for a given event.
+The video board temperature is read from the HK file specified by the
+parameter 'hkfile', with other parameters 'hkext', 'hkcolstem', and
+'hkvideoid' specifying where in the file that information is.  Step 1 can
+be turned on and off with the 'evnoddcor' parameter.
+</p>
+
+<p>
+In Steps 2 and 3, the task corrects the pulse height information of
+individual pixels to account for charge lost during the transfer.  When the
+detected events are transferred for readout, some amount of charge is
+trapped by defects in the CCD chips, which are mainly caused by radiation
+damage.  Some of the trapped charge is released immediately after a
+one-pixel transfer, resulting in a 'trail' into the following pixel.
+Long-timescale charge traps release the charge in pixels outside of the
+event island, effectively losing this information.  Charge injection was
+developed as a way to mitigate CTI by periodically filling traps with rows
+of 'sacrificial' charge.  As a result, the CTI strongly depends on the
+configuration of charge injection, and the task reads that configuration
+information from the event file header keywords.  Step 2 can be turned on
+and off with the 'chtrailcor' parameter, and Step 3 with the 'cticor'
+parameter.
+</p>
+
+<p>
+The CTI calibration for SXI depends on the event GRADE, however this
+information is not calculated until Step 4.  If the parameter
+'ctigrade=yes', the GRADE column of the input event list is used in the CTI
+correction.  If 'ctigrade=no', the GRADE column is ignored.  Proper CTI
+correction requires an initial run of sxipi with 'ctigrade=no' to populate
+the GRADE column, and then a second run of sxipi with 'ctigrade=yes' on the
+output file of the first run.  The parameter 'copygrade' can be used to
+copy the original GRADE and PHA columns to GRADE_COPY and PHA_COPY columns
+before they are overwritten, to compare results with and without
+grade-dependent CTI correction.
+</p>
+
+<p>
+In Step 4, a GRADE is assigned to each event based on the number and
+position of surrounding pixels whose pulse height exceeds the split
+threshold.  These pulse heights are recorded for individual 3x3 pixels in
+the PHAS column, and the hit pattern of the outer 5x5 (16 pixel) ring is
+also used by way of the P_OUTER_MOST column.  The total event pulse height
+amplitude (PHA) is calculated by summing up the PHAS in the pattern.  Step
+4 is always performed and cannot be turned off.
+</p>
+
+<p>
+In the default usage, the split threshold is energy-dependent, optimized
+depending on the tentative PHA value.  A split threshold is optimized for
+each event in the following way: (1) a tentative GRADE is assigned using an
+initial fixed split threshold; (2) a tentative summed PHA is calculated;
+(3) the optimum split threshold is determined; and (4) the final GRADE
+assignment and PHA value are determined.  There are 4 parameters related to
+this optimization process, 'spthiter', 'spthcaldb', 'spthoffset', and
+'spthslope'.  The default values of the first two parameters are both
+'yes'.  In this case, the values in the last two parameters are ignored,
+and the split threshold optimization proceeds normally.  In the case of
+'spthcaldb=no', the values of 'spthoffset' and 'spthslope' are read and
+used, instead of the CALDB values, for the optimization.  If 'spthiter=no',
+the iteration described above is not performed, and a constant split
+threshold from CALDB (if 'spthcaldb=yes') or 'spthoffset' (if 'spthcaldb =
+no') is used for the grade assignment.  The 'spthslope' parameter is
+ignored in both cases with 'spthiter=no'.
+</p>
+
+<p>
+In Step 5, PHA is converted to PI using the gain correction table.  PI is
+directly proportional to the X-ray energy, with 1 PI channel = 6 eV for
+SXI.  Step 5 can be turned on and off with the 'gaincor' parameter.
+If turned off, PHA is simply copied to PI.
+</p>
+
+<p>
+Bad pixels in the surrounding 3x3 ring can alter the grade and final PI of
+an event, possibly causing bad (e.g. particle) events to migrate to good
+events, thus losing information about the true event pulse height.  The
+'badpixopt' parameter, along with the PHAS_MASK column (see the sxiflagpix
+help) can be used to mitigate this by specifying how events with bad pixels
+should be graded and summed.  There are three options, which are listed in
+the parameter description below.
+</p>
+
+<p>
+For debugging and calibration purposes, the corrections in Steps 1-3 and 5
+can be turned on or off independently using the 'evnoddcor', 'chtrailcor',
+'cticor', and 'gaincor' parameters.  Event grades and summed PHA values are
+always calculated.  Furthermore, the intermediate results from each
+correction can be included in the output by specifying 'debugcol=yes'.  Any
+of these debugging columns or the PHAS or PHA column can then be used as
+the starting point for another run of sxipi with the 'startcol' parameter.
+It is important to note that any corrections turned on with 'evnoddcor',
+'chtrailcor', 'cticor', and 'gaincor' are performed regardless of the
+'startcol', and so it is possible to perform the same correction twice.  If
+'startcol=PHA', then all corrections that are enabled are applied to the
+PHAS column, but the gain correction in Step 5 is applied to the PHA column
+in the input file.  For processing of normal science data, these features
+should not be used, and these parameters should be kept at their default
+values of 'yes'.
+</p>
+
+<p>
+This task sets the following STATUS flags if an event satisfies certain
+conditions, shown in the table below.  See the 'sxiflagpix' help file for a
+full list of STATUS flags.  
+</p>
+
+<pre>
+===========================================================================
+flag   description
+===========================================================================
+26     (sxipi - general) PHAS[0] < event threshold
+27     (sxipi - vtevnodd) Video temperature is out of range
+28     (sxipi - vtevnodd) Lack of video temp HK at time close to the event
+29     (sxipi - chtrail/CTI) Correction value is negative
+30     (sxipi - general) Null value by correction process
+---------------------------------------------------------------------------
+</pre>
+
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<p>
+<dt>infile [filename]</dt>
+<dd>Name of input SXI FITS event list.</dd>
+</p>
+
+<p>
+<dt>outfile [filename]</dt>
+<dd>Name of output SXI FITS event list.</dd>
+</p>
+
+<p>
+<dt>hkfile [filename]</dt>
+<dd>Name of input SXI housekeeping (HK) file. If set to NONE, then this
+file is not used for the even-odd correction, and results in an error
+unless 'evnoddcor=no'.</dd>
+</p>
+
+<p>
+<dt>(hkext = HK_SXI_USR_USER_HK1) [string]</dt>
+<dd>HK extension name from which video temperature is read.</dd>
+</p>
+
+<p>
+<dt>(hkcolstem = SXI_USR_HKTBL) [string]</dt>
+<dd>Column name stem where the video temperature is recorded in the HK
+file.</dd>
+</p>
+
+<p>
+<dt>(hkvideoid = A,B,B,B) [string]</dt>
+<dd>Video card IDs used for the even-odd correction for CCD1, CCD2, CCD3,
+and CCD4. This parameter must consist of 4 characters of A or B separated
+with commas.</dd>
+</p>
+
+<p>
+<dt>(vtevnoddfile = CALDB) [filename]</dt></dd>
+<dd>Name of even-odd video temperature correction file.
+If set to CALDB, the file is read from the calibration database.
+If set to NONE, the task does not use this calibration information, and results
+ in an error unless 'evnoddcor=no'.</dd>
+</p>
+
+<p>
+<dt>(chtrailfile = CALDB) [filename]</dt>
+<dd>Name of charge trail correction file.
+If set to CALDB, the file is read from the calibration database.
+If set to NONE, the task does not use this calibration information, and 
+results in an error unless 'chtrailcor=no'.</dd>
+</p>
+
+<p>
+<dt>(ctifile = CALDB) [filename]</dt>
+<dd>Name of CTI correction file.
+If set to CALDB, the file is read from the calibration database.
+If set to NONE, the task does not use this calibration information, and results
+ in an error unless 'cticor=no'.</dd>
+</p>
+
+<p>
+<dt>(spthfile = CALDB) [filename]</dt>
+<dd>Name of split threshold values file.
+If set to CALDB, the file is read from the calibration database.
+If set to NONE, the task does not use this calibration information, 
+and results in an error unless 'spthcaldb=no'.</dd>
+</p>
+
+<p>
+<dt>(gainfile = CALDB) [filename]</dt>
+<dd>Name of gain file for PHA to PI conversion.
+If set to CALDB, the file is read from the calibration database.
+If set to NONE, the task does not use this calibration information, and results
+ in an error unless 'gaincor=no'.</dd>
+</p>
+
+<p>
+<dt>(patternfile = CALDB) [filename]</dt>
+<dd>Name of file for grade hit pattern. 
+If set to CALDB, the file is read from the calibration database.</dd>
+</p>
+
+<p>
+<dt>(startcol = PHAS) [string]</dt>
+<dd>The column name with which to start the corrections. 
+The allowed values are PHAS, PHAS_EVENODD, PHAS_TRAILCORR, PHAS_CTICORR, or
+PHA.  All but PHAS and PHA are only present if the event file has already
+been processed with sxipi with 'debugcol=yes'.</dd>
+</p>
+
+<p>
+<dt>(evnoddcor = yes) [boolean]</dt></dd>
+<dd>If set to yes, the even-odd correction is enabled ([yes]/no). </dd>
+</p>
+
+<p>
+<dt>(chtrailcor = yes) [boolean]</dt>
+<dd>If set to yes, the charge trail correction is enabled ([yes]/no). </dd>
+</p>
+
+<p>
+<dt>(cticor = yes) [boolean]</dt>
+<dd>If set to yes, the CTI correction is enabled ([yes]/no). </dd>
+</p>
+
+<p>
+<dt>(gaincor = yes) [boolean]</dt>
+<dd>If set to yes, the gain correction is enabled ([yes]/no). </dd>
+</p>
+
+<p>
+<dt>(ctigrade = yes) [boolean]</dt>
+<dd>If set to yes, use of grade information in the CTI correction is
+enabled ([yes]/no). </dd>
+</p>
+
+<p>
+<dt>(copygrade = no) [boolean]</dt>
+<dd>If set to yes, the existing GRADE and PHA columns to are copied to
+GRADE_COPY and PHA_COPY (respectively) before overwriting them with
+newly-calculated values (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(phcut = CALDB) [string]</dt>
+<dd>Pulse-height cut for the CTI correction (in ADU).  If set to CALDB,
+value from the header of the CTI CALDB file 'ctifile' is used.</dd>
+</p>
+
+<p>
+<dt>(badpixopt = 2) [integer]</dt>
+<dd>Option specifying how to process events that contain bad pixels.  Must
+be an integer in the range 1-3.  If set to 1, bad pixels are not flagged in
+the 3x3 and all PHAS values are used to grade and calculate the summed PHA.
+This is the method used by the Suzaku XIS.  If set to 2, the task applies
+PHAS_MASK to mask out bad pixels in the 3x3 and set them to NULL.  Grading
+and PHA summation are then done normally, effectively ignoring these
+pixels.  If set to 3, the task applies PHAS_MASK to mask out bad pixels in
+the 3x3 and set them to NULL.  The GRADE, PHA, and PI values are also set
+to NULL and these are considered bad events.  This is the most conservative
+option, ensuring better fidelity at the expense of fewer counts.</dd>
+</p>
+
+<p>
+<dt>(spthiter = yes) [boolean]</dt>
+<dd>If set to yes, the grade assignment is iterated to optimize the split
+threshold ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(spthcaldb = yes) [boolean]</dt>
+<dd>If set to yes, the split threshold values found in the 'spthfile' file
+are used ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(spthoffset = 15.) [float]</dt>
+<dd>Split threshold offset value, used when 'spthcaldb=no'.</dd>
+</p>
+
+<p>
+<dt>(spthslope = 0.) [float]</dt>
+<dd>Split threshold slope value, used when 'spthcaldb=no'.</dd>
+</p>
+
+<p>
+<dt>(evtthre = DEFAULT) [string]</dt>
+<dd>Event threshold value.  If set to DEFAULT, the task uses the values in
+the infile header keyword 'EVENTTHR', which contains a comma-separated list
+of values for each CCD_ID and SEGMENT combination.  Otherwise, a single
+numerical floating-point value can be specified, and is used for all
+CCD_IDs and SEGMENTs.
+</dd>
+</p>
+
+<p>
+<dt>(negthre = -5000) [integer]</dt>
+<dd>Minimum value of any PHAS array element allowed for a normal event.</dd>
+</p>
+
+<p>
+<dt>(deltatime = 8) [integer]</dt>
+<dd>Acceptable time gap to search for video temperature in HK file.  If a
+time entry is not found within this 'deltatime' of the event, then an error
+flag is assigned in the STATUS.</dd>
+</p>
+
+<p>
+<dt>(debugcol = no) [boolean]</dt>
+<dd>If set to yes, the intermediate values after each correction step is 
+output (yes/[no]). This option can be used for debugging and
+calibration.  The columns written are PHAS_EVENODD, PHAS_TRAILCORR,
+PHAS_CTICORR, PHA_SPTH, and GRADE_SPTH.</dd>
+</p>
+
+<p>
+<dt>(randomize = yes) [boolean]</dt>
+<dd>If set to yes, randomization is used to convert the input integer PHAS
+or PHA column to floating point ([yes]/no).  If 'startcol' is
+'PHAS_EVENODD', 'PHAS_TRAILCORR', or 'PHAS_CTICORR', this parameter is
+ignored, since those columns are floating point values.</dd>
+</p>
+
+<p>
+<dt>(seed = 0) [integer]</dt>
+<dd>Random number generator seed; uses system time for seed=0.</dd>
+</p>
+
+<p>
+<dt>(buffer = -1) [integer] </dt>
+<dd>Rows to buffer (-1=auto, 0=none, >0=numrows). </dd>
+</p>
+
+<p>
+<dt>(clobber = no) [boolean]</dt>
+<dd>Overwrites the existing output file if set to yes (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(chatter = 1) [integer] </dt>
+<dd>Chatter level for output. Set to 0 to suppress output,
+or to 1, 2, or 3 for increasing the chatter of the output.</dd>
+</p>
+
+<p>
+<dt>(logfile = !DEFAULT) [string]</dt>
+<dd>Log filename. If set to DEFAULT uses the name of the task and, if
+preceded by '!', overwrite the file if it exists. If set to NONE no
+log file is created.</dd>
+</p>
+
+<p>
+<dt>(debug = no) [boolean]</dt>
+<dd>Diagnostic output is printed out on the screen if set to yes
+(yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(history = yes) [boolean]</dt>
+<dd>Records tool parameters in HISTORY if set to yes ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(mode = ql) [string ql|hl|q]</dt>
+<dd>Mode to query the parameter file.
+Acceptable values include: "ql" (query and learn/remember), "hl" (hidden and learn/remember), "q" (query but don't remember), "h" (hidden).</dd>
+</p>
+
+</dl>
+
+
+<h2>EXAMPLES</h2>
+
+<ol>
+
+<li>  Run sxipi with default parameters
+<pre>
+sxipi infile=ah_sxi_input.evt outfile=ah_sxi_output.evt hkfile=ah123456789sxi.hk
+</pre>
+</li>
+
+<li> Run sxipi disabling the CTI correction
+<pre>
+sxipi infile=ah_sxi_input.evt outfile=ah_sxi_output.evt hkfile=ah123456789sxi.hk \
+     cticor=no
+</pre>
+</li>
+
+<li> Run sxipi using a constant split threshold of 20.
+<pre>
+sxipi infile=ah_sxi_input.evt outfile=ah_sxi_output.evt hkfile=ah123456789sxi.hk \
+     spthiter=no spthcaldb=no spthoffset=20
+</pre>
+</li>
+
+<li> Run sxipi with debugging columns output.
+<pre>
+sxipi infile=ah_sxi_input.evt outfile=ah_sxi_output.evt hkfile=ah123456789sxi.hk \
+     debugcol=yes
+</pre>
+
+<li> Run sxipi on the previous output, starting with the charge trail
+correction and only applying that.  This requires that the debugging
+columns are present in the input file, so sxipi must have been run
+previously.
+<pre>
+sxipi infile=ah_sxi_sxipi1_debug.evt outfile=ah_sxi_sxipi2_debug_onlychtrail.evt \
+     hkfile=ah123456789sxi.hk startcol=PHAS_EVENODD evnoddcor=no chtrailcor=yes  \
+     cticor=no debugcol=yes 
+</pre>
+
+<li> Run sxipi, skipping the even odd, charge trail, and CTI corrections.
+This would be useful for verifying the gain (PHA to PI conversion)
+calibration quality alone.  Debug columns are also output to verify the
+proper corrections were made (or not).
+<pre>
+sxipi infile=ah_sxi_input.evt outfile=ah_sxi_output_onlygain.evt \
+     hkfile=ah123456789sxi.hk evnoddcor=no chtrailcor=no cticor=no \
+     debugcol=yes 
+</pre>
+
+</ol>
+
+<h2>SEE ALSO</h2>
+
+sxiphas, sxiflagpix, sxirmf
+
+<h2>LAST MODIFIED</h2>
+
+<p>
+November 2016
+</p>
+
+</body>
+</html>
+
+

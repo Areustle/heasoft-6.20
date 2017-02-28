@@ -1,0 +1,873 @@
+#! /usr/bin/perl
+
+# code:   uvotcentroid
+# author: Martin Still (NASA/GSFC/SAAO)
+# date:   2007-04-23
+
+use POSIX;
+use Scalar::Util qw(looks_like_number);
+
+my $task = __PACKAGE__->new(version => 1.0);
+$task->run;
+exit($task->{code});
+
+sub execute {
+
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Astro::FITS::CFITSIO qw( :shortnames :constants );
+  use PGPLOT;
+  use Task qw(:codes);
+  use Fcntl qw(:flock);
+
+  my ($self) = @_;
+
+  $self->validateEnvironment
+    if $self->isValid;
+
+# define task parameters
+
+  $self->uvotcentroid_parameters
+    if $self->isValid;
+
+# open and read region file
+
+  $self->uvotcentroid_readregion
+    if $self->isValid;
+
+# open and read image
+
+  $self->uvotcentroid_readimage
+    if $self->isValid;
+
+# iterate over number of trials
+
+  for ($itrials = 0; $itrials < $self->args->{niter}; $itrials++) {
+
+# create subimage FITS file
+
+    $self->uvotcentroid_makeimage
+      if $self->isValid;
+
+# run uvotdetect on subimage file
+
+    $self->uvotcentroid_detect
+      if $self->isValid;
+  }
+
+# sort and report data
+
+  $self->uvotcentroid_report
+    if $self->isValid;
+
+# plot trial results
+
+  if ($self->args->{plot} eq 'yes' and $ncoord > 99) {
+    $self->uvotcentroid_plot
+      if $self->isValid;
+  }
+}
+
+#------------------------------------------------------------------
+# Define task parameters
+
+sub uvotcentroid_parameters {
+  my $args;
+  my ($self) = @_;
+  
+# software environment ok?
+
+  if (not defined($ENV{LHEASOFT})) {die("LHEASOFT environment not present")}
+
+# define task arguments 
+  
+  $self->pilOptions(options => [ qw(image=string 
+				    srcreg=string 
+				    confidence=float
+				    niter=integer
+				    threshold=float
+				    subdimsiz=float
+				    plot=bool
+				    plotdev=string
+				    cleanup=bool
+				    chatter=integer) ], get => 1,);
+  return if not $self->isValid;
+
+# report arguments to stdout
+
+  $args = $self->args;
+  if ($self->chatter(3)) {
+    $self->report(join("\n\t", "Got parameters:",
+		       "     image = $args->{image}",
+		       "    srcreg = $args->{srcreg}",
+		       "confidence = $args->{confidence}",
+		       "     niter = $args->{niter}",
+		       " threshold = $args->{threshold}",
+		       " subdimsiz = $args->{subdimsiz}",
+		       "      plot = $args->{plot}",
+		       "   plotdev = $args->{plotdev}",
+		       "   cleanup = $args->{cleanup}",
+		       "   chatter = $args->{chatter}"));
+  }
+}
+
+#------------------------------------------------------------------
+# open and read source region file
+
+sub uvotcentroid_readregion {
+
+  my ($self) = @_;
+  my $args = $self->args;
+
+# remove any blank space from the srcreg argument
+
+  $args->{srcreg} =~ s/\s+$//;
+
+# does file exist?
+
+  if (not -f $args->{srcreg}) {
+    $self->error(BAD_INPUT,"File $args->{srcreg} does not exist");
+  }
+
+# is file readable?
+
+  if (not -r $args->{srcreg}) {
+    $self->error(BAD_INPUT,"File $args->{srcreg} does not not have read access");
+  }
+
+# read region file
+
+  my $fh = FileHandle->new($args->{srcreg});
+  my @lines = <$fh>;
+  $fh->close;
+  my $regcheck = grep { /\;.*\(.*\)/ } @lines;
+  if (not $regcheck) {
+    $self->error(BAD_INPUT, "$args->{srcreg} is not a compatible region file")
+  } else {
+    $self->report("Read region file $args->{srcreg}") if $self->chatter(3);
+  }
+
+# find center of source region
+
+  my ($ra, $dec);
+  foreach my $line (@lines) {
+    $line =~ s/\s+//g;
+    if ($line =~ /^fk5;(\w+)\(([^,]+),([^,]+)/) { # ) match open round
+      my ($shape, $ra0, $dec0) = ($1, $2, $3);
+      $self->report("shape=$shape ra=$ra0 dec=$dec0");
+      if ($shape !~ /circle|point|ellipse|annulus|elliptannulus|box|rotbox|diamond|rhombus/i) {
+        $self->warning("unexpected shape '$shape'");
+      }
+      if (looks_like_number($ra0)) {
+        $ra = $ra0;
+      }
+      elsif ($ra0 =~ /^(\d+):(\d+):(\d+(?:\.\d+)?)/) {
+        my ($h, $m, $s) = ($1, $2, $3);
+        $ra = 15 * ($h + $m / 60 + $s / 3600);
+      }
+      else {
+        $self->error(BAD_INPUT, "bad RA '$ra0'");
+      }
+      if (looks_like_number($dec0)) {
+        $dec = $dec0;
+      }
+      elsif ($dec0 =~ /^(-?)(\d+)[:d](\d+)[:m](\d+(?:\.\d+)?)/) {
+        my ($sign, $d, $m, $s) = ($1, $2, $3, $4);
+        $dec = ($sign eq '-' ? -1 : 1) * ($d + $m / 60 + $s / 3600);
+      }
+      else {
+        $self->error(BAD_INPUT, "bad Dec '$dec0'");
+      }
+      last;
+    }
+  }
+
+  if (defined($ra) and defined($dec)) {
+    $self->report("determined RA=$ra Dec=$dec");
+  }
+  else {
+    $self->error(BAD_INPUT, "RA/Dec not available");
+  }
+
+  if ($self->isValid) {
+    $coord[0] = $ra;
+    $coord[1] = $dec;
+  }
+}
+
+
+#------------------------------------------------------------------
+# open and read input image
+
+sub uvotcentroid_readimage{
+
+  use HEACORE::HEAUTILS;
+  use base qw(Task::HEAdas);
+  use Task qw(:codes);
+  use Astro::FITS::CFITSIO qw(:constants);
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my $infptr, $outfptr, $status, $extname, $extnum, $anynull, $hdunum, $hdutype;
+  my $ihdu = 1;
+  my $comment, $naxes, $inc;
+  my $pi = 4. * atan2(1.,1.);
+
+  $inc[0] = 1;
+  $inc[1] = 1;
+
+# check for existing image file
+
+  @_ = split(/\+/, $args->{image});
+  @path = split(/\[/,@_[0]);
+  if (! -s @path[0]) {
+    &bailout("Cannot find image file @path[0]")
+  }
+  $extnum = @_[1];
+  $extname = @path[1];
+  chop($extname);
+
+# check input image file is readable
+
+  if (! -r @path[0]) {
+    &bailout("File $args->{image} does not have read priviledge")
+  }
+
+# open input image
+
+  ffopen($infptr,$args->{image},READONLY,$status);
+  $status == 0 or &bailout("Cannot open $args->{image}");
+  $self->report("Opened file @path[0]") if ($args->{chatter} > 3);
+
+# move to input image extension
+
+  if ($extname =~ /\S+/) {
+    ffmnhd($infptr,'ANY_HDU',$extname,0,$status);
+    $status == 0 or &bailout("$status Cannot move to HDU named $extname");
+    $self->report("Moved to HDU $extname") if ($args->{chatter} > 3);
+  } elsif ($extnum =~ /\S+/) {
+    ffmahd($infptr,$extnum+1,$anynull,$status);
+    $status == 0 or &bailout("Cannot move to HDU $extnum");
+    $self->report("Moved to HDU $extnum") if ($args->{chatter} > 3);
+  } else {
+    $self->report("No FITS extension provided") if ($args->{chatter} > 3);
+    ffmahd($infptr,1,$anynull,$status);
+    $status == 0 or &bailout("Cannot open HDU 0");
+    ffgkys($infptr,'XTENSION',$hdutype,$comment,$status);
+    if ($status ne 0) {
+      $status = 0;
+      $self->report("No image found in the primary extension, trying HDU 1") 
+	if ($args->{chatter} > 3);
+      ffmahd($infptr,2,$anynull,$status);
+      $status == 0 or &bailout("Cannot open HDU 1");
+      ffgkys($infptr,'XTENSION',$hdutype,$comment,$status);
+      ($status == 0 and $hdutype =~ /IMAGE/)
+	or &bailout("No images found in HDU 0 or 1 of @path[0]");
+    $self->report("image found in HDU 1") if ($args->{chatter} > 3);
+    } else {
+      $self->report("image found in primary HDU") if ($args->{chatter} > 3);
+    }
+  }
+
+# read WCS keywords of input image
+
+  ffgkyd($infptr,'CRPIX1',$crpix1,$comment,$status);
+  $status == 0 or &bailout("Cannot read CRPIX1 keyword in $args->{image}");
+  ffgkyd($infptr,'CRPIX2',$crpix2,$comment,$status);
+  $status == 0 or &bailout("Cannot read CRPIX2 keyword in $args->{image}");
+  ffgkyd($infptr,'CRVAL1',$crval1,$comment,$status);
+  $status == 0 or &bailout("Cannot read CRVAL1 keyword in $args->{image}");
+  ffgkyd($infptr,'CRVAL2',$crval2,$comment,$status);
+  $status == 0 or &bailout("Cannot read CRVAL2 keyword in $args->{image}");
+  ffgkyd($infptr,'CDELT1',$cdelt1,$comment,$status);
+  $status == 0 or &bailout("Cannot read CDELT1 keyword in $args->{image}");
+  ffgkyd($infptr,'CDELT2',$cdelt2,$comment,$status);
+  $status == 0 or &bailout("Cannot read CDELT2 keyword in $args->{image}");
+  $self->report("Read WCS keywords from $args->{image}") if ($args->{chatter} > 3);
+
+# read time keywords
+  ffgkyd($infptr,'EXPOSURE',$exposure,$comment,$status);
+  $status == 0 or &bailout("Cannot read EXPOSURE keyword in $args->{image}");
+  ffgkys($infptr,'DATE-OBS',$date_obs,$comment,$status);
+  $status == 0 or &bailout("Cannot read DATE_OBS keyword in $args->{image}");
+  $date_obs =~ s/T/ /;
+  $date_obs .= ' UT';
+
+# determine center and limits of subimage in pixel units
+
+  $subdim[0] = int($args->{subdimsiz} / (abs($cdelt1) * 3600));
+  $subdim[1] = int($args->{subdimsiz} / (abs($cdelt2) * 3600));
+
+  $cpixel[0] = ($coord[0] - $crval1) / $cdelt1 * (cos($coord[1] * $pi / 180)) + $crpix1;
+  $cpixel[1] = ($coord[1] - $crval2) / $cdelt2 + $crpix2;
+  $fpixel[0] = int($cpixel[0] - $subdim[0] / 2 + 0.5);
+  $fpixel[1] = int($cpixel[1] - $subdim[1] / 2 + 0.5);
+  $lpixel[0] = int($cpixel[0] + $subdim[0] / 2 + 0.5);
+  $lpixel[1] = int($cpixel[1] + $subdim[1] / 2 + 0.5);
+
+# read square subsection of input image
+
+  ffgkys($infptr,'NAXIS1',$naxes[0],$comment,$status);
+  $status == 0 or &bailout("Cannot read NAXIS1 keyword in $args->{image}");
+  ffgkys($infptr,'NAXIS2',$naxes[1],$comment,$status);
+  $status == 0 or &bailout("Cannot read NAXIS2 keyword in $args->{image}");
+  ffgsve($infptr,0,2,\@naxes,\@fpixel,\@lpixel,\@inc,-999.,\@subimg,$anynull,$status);
+  $status == 0 or &bailout("Cannot extract subimage from $args->{image}");
+
+# close input image
+
+  ffclos($infptr,$status);
+  $status == 0 or &bailout("Cannot close $args->{image}");
+  $self->report("Read image $args->{image}") if ($args->{chatter} > 3);
+
+# recalculate WCS keywords for subimage
+
+  $subdim[0] += 1;
+  $subdim[1] += 1;
+  $crval2 += $cdelt2 * ($fpixel[1] - $crpix2);
+  $crval1 += $cdelt1 * ($fpixel[0] - $crpix1) / cos($coord[1] * $pi / 180);
+  $crpix1 = 1;
+  $crpix2 = 1;
+
+}
+
+#------------------------------------------------------------------
+# create temporary image file containing subimage
+
+sub uvotcentroid_makeimage {
+
+  use HEACORE::HEAUTILS;
+  use base qw(Task::HEAdas);
+  use Task qw(:codes);
+  use Astro::FITS::CFITSIO qw(:constants);
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my @array;
+  my $pi = 4. * atan2(1.,1.);
+  $nfpixel[0] = $nfpixel[1] = 1;
+
+# create new random image array based on 1-sigma errors
+
+  foreach (@subimg) {
+    my $sigma = sqrt($_);
+    $random = rand();
+    my $sigjump = &uvotcentroid_cummulative($random);
+    push (@array,$_ + $sigjump * $sigma);
+  }
+
+# create temporary image file
+
+  $tmpimg = $self->temporary('image', ext => '.fits');
+  ffinit($outfptr,$tmpimg,$status);
+  $status == 0 or &bailout("Cannot create new file $tmpimg");
+  ffcrim($outfptr,8,0,0,$status);
+  $status == 0 or &bailout("Cannot create primary HDU in $tmpimg");
+  ffcrim($outfptr,-32,2,\@subdim,$status);
+  $status == 0 or &bailout("Cannot create image HDU in $tmpimg");
+  ffpss($outfptr,TFLOAT,\@nfpixel,\@subdim,scalar(@array),\@array,$status);
+  $status == 0 or &bailout("Cannot write subimage to $tmpimg");
+
+# add required keywords for uvotdetect tool
+
+  ffpkyd($outfptr,'EXPOSURE',$exposure,10,'',$status);
+  $status == 0 or &bailout("Cannot write EXPOSURE keyword to $tmpimg");
+  ffpkyd($outfptr,'CDELT1',$cdelt1,10,'',$status);
+  $status == 0 or &bailout("Cannot write CDELT1 keyword to $tmpimg");
+  ffpkyd($outfptr,'CDELT2',$cdelt2,10,'',$status);
+  $status == 0 or &bailout("Cannot write CDELT2 keyword to $tmpimg");
+  ffpkyd($outfptr,'CRPIX1',$crpix1,10,'',$status);
+  $status == 0 or &bailout("Cannot write CRPIX1 keyword to $tmpimg");
+  ffpkyd($outfptr,'CRPIX2',$crpix2,10,'',$status);
+  $status == 0 or &bailout("Cannot write CRPIX2 keyword to $tmpimg");
+  ffpkyd($outfptr,'CRVAL1',$crval1,10,'',$status);
+  $status == 0 or &bailout("Cannot write CRVAL1 keyword to $tmpimg");
+  ffpkyd($outfptr,'CRVAL2',$crval2,10,'',$status);
+  $status == 0 or &bailout("Cannot write CRVAL2 keyword to $tmpimg");
+  ffpkys($outfptr,'CTYPE1','RA---TAN','',$status);
+  $status == 0 or &bailout("Cannot write CTYPE1 keyword to $tmpimg");
+  ffpkys($outfptr,'CTYPE2','DEC--TAN','',$status);
+  $status == 0 or &bailout("Cannot write CTYPE2 keyword to $tmpimg");
+  ffpkys($outfptr,'CUNIT1','deg','',$status);
+  $status == 0 or &bailout("Cannot write CUNIT1 keyword to $tmpimg");
+  ffpkys($outfptr,'CUNIT2','deg','',$status);
+  $status == 0 or &bailout("Cannot write CUNIT2 keyword to $tmpimg");
+
+# close temporary image file
+
+  ffclos($outfptr,$status);
+  $status == 0 or &bailout("Cannot close $tmpimg");
+  $self->report("Created image $tmpimg") if ($args->{chatter} > 4);
+
+}
+
+#------------------------------------------------------------------
+# run uvotdetect on image
+
+sub uvotcentroid_detect {
+
+  use HEACORE::HEAUTILS;
+  use base qw(Task::HEAdas);
+  use Task qw(:codes);
+  use Astro::FITS::CFITSIO qw(:constants);
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my $nearest_deldeg = 1.e10;
+  my $isrc = 0;
+
+# generate temporary name for output table
+
+  $tmptab = $self->temporary('table', ext => '.fits');
+
+# execute uvotdetect
+
+  my $command = $self->buildCommand('uvotdetect',
+				    infile => $tmpimg,
+				    outfile => $tmptab,
+				    expfile => 'NONE',
+				    threshold => $args->{threshold},
+				    sexfile => 'DEFAULT',
+				    plotsrc => 'n',
+				    zerobkg => -1,
+				    expopt => 'FULL',
+				    calibrate => 'n',
+				    clobber => 'y',
+				    history => 'n',
+				    cleanup => 'y',
+				    chatter => 0,);
+  $self->shell($command . ' > /dev/null 2>&1'); #use Bourne shell syntax here
+
+# grab RA and Dec of all detections from uvotdetect output table
+
+  $tmptab .= '+1';
+  ffopen($infptr,$tmptab,READONLY,$status);
+  $status == 0 or &bailout("Cannot open $tmptab");
+  ffgnrw($infptr,$nrows,$status);
+  $status == 0 or &bailout("Cannot determine no of rows in $tmptab");
+  if ($nrows eq 0) {
+    $nnull++;
+    $self->report("iter $itrials - No sources found above a threshold of $args->{threshold}-sigma")
+      if ($args->{chatter} > 1)
+  }
+  ffgcno($infptr,0,'RA',$colnum,$status);
+  $status == 0 or &bailout("Cannot find column RA in $tmptab");
+  ffgcvd($infptr,$colnum,1,1,$nrows,-999.,\@trialra,$anynull,$status);
+  $status == 0 or &bailout("Cannot read column RA in $tmptab");
+  ffgcno($infptr,0,'DEC',$colnum,$status);
+  $status == 0 or &bailout("Cannot find column DEC in $tmptab");
+  ffgcvd($infptr,$colnum,1,1,$nrows,-999.,\@trialdec,$anynull,$status);
+  $status == 0 or &bailout("Cannot read column DEC in $tmptab");
+  ffgcno($infptr,0,'PROF_MAJOR',$colnum,$status);
+  $status == 0 or &bailout("Cannot find column PROF_MAJOR in $tmptab");
+  ffgcvd($infptr,$colnum,1,1,$nrows,-999.,\@trialmajor,$anynull,$status);
+  $status == 0 or &bailout("Cannot read column PROF_MAJOR in $tmptab");
+  ffgcno($infptr,0,'PROF_MINOR',$colnum,$status);
+  $status == 0 or &bailout("Cannot find column PROF_MINOR in $tmptab");
+  ffgcvd($infptr,$colnum,1,1,$nrows,-999.,\@trialminor,$anynull,$status);
+  $status == 0 or &bailout("Cannot read column PROF_MINOR in $tmptab");
+  ffclos($infptr,$status);
+  $status == 0 or &bailout("Cannot close $tmptab");
+
+# choose detected source closest to center of user-provided region
+
+  while ($isrc < $nrows) {
+    my $deldeg = sqrt(($trialra[$isrc] - $coord[0])**2 + 
+		      ($trialdec[$isrc] - $coord[1])**2);
+    $nearest_deldeg = &uvotcentroid_min($nearest_deldeg,$deldeg);
+    if ($nearest_deldeg eq $deldeg) {
+      $bestra = $trialra[$isrc];
+      $bestdec = $trialdec[$isrc];
+      $bestmajor = $trialmajor[$isrc];
+      $bestminor = $trialminor[$isrc];
+      $bestecc = sqrt(1. - $bestminor**2 / $bestmajor**2);
+    }
+    $isrc++;
+  }
+
+# add coordinates to array of trial results
+
+  if ($nrows > 0) {
+    push(@unsorted_ra,$bestra);
+    push(@unsorted_dec,$bestdec);
+    push(@unsorted_ecc,$bestecc);
+  }
+
+# delete temporary files
+
+  if ($args->{cleanup} eq 'y') {
+    unlink $tmpimg or &bailout("Cannot delete trial image $tmpimg");
+    unlink $tmptab or &bailout("Cannot delete trial image $tmptab");
+  }
+}
+
+#------------------------------------------------------------------
+# sort and extract coordinates
+
+sub uvotcentroid_report {
+
+  require HEACORE::PIL;
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my $pi = 4. * atan2(1.,1.);
+
+# sort data
+
+  $ncoord = scalar(@unsorted_ra);
+  @ra = sort {$a <=> $b} @unsorted_ra;
+  @dec = sort {$a <=> $b} @unsorted_dec;
+  @ecc = sort {$a <=> $b} @unsorted_ecc;
+
+# mean coordinates
+
+  foreach (@ra) {
+    $mean_ra += $_ / $ncoord;
+  }
+  foreach (@dec) {
+    $mean_dec += $_ / $ncoord;
+  }
+  foreach (@ecc) {
+    $mean_ecc += $_ / $ncoord;
+  }
+
+# median coordinates
+
+  $median_ra = $ra[int($ncoord/2)];
+  $median_dec = $dec[int($ncoord/2)];
+  $median_ecc = $ecc[int($ncoord/2)];
+
+# choose median for now, mean seems to skew position slightly
+
+  $av_ra = $median_ra;
+  $av_dec = $median_dec;
+  $av_ecc = $median_dec;
+
+# convert from decimal to sexagesimal and report
+
+  &uvotcentroid_dec2sex($av_ra,$av_dec);
+  $nnull = int((1. - $nnull / $args->{niter}) * 100 + 0.5);
+  print "a source was detected in $nnull\% of the trials\n";
+  if ($median_dec < 0.) {
+    $self->report("  RA(J2000) =  $ra_sex");
+  } else {
+    $self->report("  RA(J2000) = $ra_sex");
+  }
+  $self->report(" Dec(J2000) = $dec_sex");
+
+# 90% confidence ranges
+
+  if ($ncoord < 100) {
+    $self->report("more iterations required before $args->{confidence}\% confidence can be determined");
+    $av_ra = -999;
+    $av_dec = -999;
+    $posconf = -999;
+  } else {
+    for ($i = 0; $i < $ncoord; $i++) {
+      $dist = ((@unsorted_dec[$i] - $av_dec) * 3600.)**2;
+      $dist += ((@unsorted_ra[$i] - $av_ra) * 3600. * 
+		cos(@unsorted_dec[$i] * $pi / 180))**2;
+      $dist = sqrt($dist);
+      push(@darcsec,$dist);
+    }
+    $range = int($args->{confidence} / 100 * $ncoord);
+    @darcsec = sort(@darcsec);
+    $posconf = $darcsec[$range];
+    $eccconf = $ecc[$range];
+    $text = sprintf("Uncertainty =  +/- %.2f\" ($args->{confidence}%% confidence)",$posconf);
+    $self->report($text);
+    $av_ra = sprintf('%.8f', $av_ra);
+    $av_dec = sprintf('%.8f', $av_dec);
+    $posconf = sprintf('%.6f', $posconf);
+  }
+
+# write results to parameter file
+
+  HEACORE::PIL::PILPutReal(ra => $av_ra); # MS
+  HEACORE::PIL::PILPutReal(dec => $av_dec);
+  HEACORE::PIL::PILPutReal(conflimit => $posconf);
+}
+
+#------------------------------------------------------------------
+# plot trial coordinates
+
+sub uvotcentroid_plot {
+
+  use PGPLOT;
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my $pi = 4. * atan2(1.,1.);
+
+# plot style
+
+  pgbeg(0,$args->{plotdev},1,1);
+  pgslw(1);
+  pgscf(1);
+  pgsch(0.8);
+  pgsvp(0.4,0.6,0.3,0.7);
+  pglabel(' ',' ',"uvotcentroid: @path[0] $date_obs");
+  pgsch(1.2);
+  pgsvp(0.6,1.,0.3,0.7);
+
+# make data array
+
+  foreach (@unsorted_ra){
+    push(@plot_ra,($av_ra - $_) * 3600. * cos($av_dec / 180 * $pi));
+  }
+  foreach (@unsorted_dec){
+    push(@plot_dec,($av_dec - $_) * 3600.);
+  }
+
+# plot ranges
+
+  my $plim = 0.;
+  foreach (@plot_ra) {
+    $plim = uvotcentroid_max($plim,abs($_));
+  }
+  foreach (@plot_dec) {
+    $plim = uvotcentroid_max($plim,abs($_));
+  }
+  $plim = uvotcentroid_max($plim,$posconf);
+  pgwnad(-$plim * 1.05,$plim * 1.05,-$plim * 1.05,$plim * 1.05);
+
+# plot error cirlce
+
+  pgsci(7);
+  pgsfs(1);
+  pgcirc(0.,0.,$posconf);
+  pgsci(1);
+  pgsfs(2);
+  pgcirc(0.,0.,$posconf);
+  pgsfs(1);
+
+# plot coordinate array
+
+  pgsci(4);
+  pgpt($ncoord,\@plot_ra,\@plot_dec,2);
+
+# draw box and labels
+
+  pgsci(1);
+  pgbox('bcnst',0.0,0,'bcnst',0.0,0);
+  pglabel('\\gDRA (arcsec)','\\gDDec (arcsec)',' ');
+
+# max of histogram
+
+  my $bin = sqrt(2. * $plim**2) / 20;
+  for (my $i=0; $i < 20; $i++) {
+    my $count = 0;
+    foreach (@darcsec) {
+      if ($_ >= $i * $bin and $_ < ($i + 1.) * $bin) {
+	$count++;
+      }
+    }
+    $hmax = &uvotcentroid_max($hmax,$count);
+  }
+
+# RA histogram
+
+  pgsvp(0.1,0.5,0.3,0.7);
+  pgwindow(0.,sqrt(2. * $plim**2) * 1.05,1.e-3,$hmax * 1.05);
+  pgsci(7);
+  pgsfs(1);
+  pgrect(0.,$posconf,0.,$hmax * 1.05);
+  pgsci(1);
+  pgsfs(2);
+  pgrect(0.,$posconf,0.,$hmax * 1.05);
+  pgsci(4);
+  pgsfs(1);
+  pghist($ncoord,\@darcsec,0.,sqrt(2. * $plim**2),20,3);
+  pgsci(1);
+  pghist($ncoord,\@darcsec,0.,sqrt(2. * $plim**2),20,1);
+  pgbox('bcnst',0.0,0,'bcnst',0.0,0);
+  pglabel('arcsec','N',' ');
+  pgsch(0.7);
+  pgsci(0);
+  pgsfs(1);
+  pgrect(sqrt(2. * $plim**2) * 0.36,sqrt(2. * $plim**2) * 1.,
+	 $hmax * 0.55,$hmax * 0.99);
+  pgsci(1);
+  pgsfs(2);
+  pgrect(sqrt(2. * $plim**2) * 0.36,sqrt(2. * $plim**2) * 1.,
+	 $hmax * 0.55,$hmax * 0.99);
+  pgsfs(1);
+  if ($dec_sex =~ /\-/) {
+    $pos = ' RA(J2000) =  ' . $ra_sex;
+  } else {
+    $pos = ' RA(J2000) = ' . $ra_sex;
+  }
+  $pos =~ s/h/\\uh\\d/;
+  $pos =~ s/m/\\um\\d/;
+  $pos =~ s/s/\\us\\d/;
+  pgtext(sqrt(2. * $plim**2) * 0.38,$hmax * 0.9,$pos);
+  $pos = 'Dec(J2000) = ' . $dec_sex;
+  $pos =~ s/d/\\uo\\d/;
+  pgtext(sqrt(2. * $plim**2) * 0.38,$hmax * 0.8,$pos);
+  $pos = sprintf("             \\(2233) %.2f\" (90%% conf)",$posconf);
+  pgtext(sqrt(2. * $plim**2) * 0.38,$hmax * 0.7,$pos);
+  $pos = " detections: $nnull\% of $args->{niter} trials";
+  pgtext(sqrt(2. * $plim**2) * 0.38,$hmax * 0.6,$pos);
+
+# end plot
+
+  pgend;
+
+}
+
+#------------------------------------------------------------------
+# convert decimal coordinates to sexagesimal
+
+sub uvotcentroid_dec2sex {
+
+# convert decimal RA and Dec to sexagesimal
+
+  ($_[0] >= 0. && $_[0] < 360. && $_[1] >= -90. && $_[1] <= 90.) 
+    or die "Error: badly defined RA and Dec provided.\n";
+
+# convert RA
+
+  my $tmp = $_[0] / 15;
+  $ra_h = int($tmp);
+  $tmp = ($tmp - $ra_h) * 60;
+  $ra_m = int($tmp);
+  $tmp = ($tmp - $ra_m) * 60000;
+  $ra_s = int($tmp + 0.5) / 1000;
+
+# convert Dec
+
+  if ($_[1] < 0) {
+    $tmp = -$_[1];
+  } else {
+    $tmp = $_[1];
+  }
+  $dec_h = int($tmp);
+  $tmp = ($tmp - $dec_h) * 60;
+  $dec_m = int($tmp);
+  $tmp = ($tmp - $dec_m) * 6000;
+  $dec_s = int($tmp + 0.5) / 100;
+
+# format RA hours
+
+  if ($ra_h < 1) {
+    $rh = '00';
+  } elsif ($ra_h < 10) {
+    $rh = '0' . $ra_h;
+  } else {
+    $rh = $ra_h;
+  }
+
+# format RA minutes
+
+  if ($ra_m < 1) {
+    $rm = '00';
+  } elsif ($ra_m < 10) {
+    $rm = '0' . $ra_m;
+  } else {
+    $rm = $ra_m;
+  }
+
+# format RA seconds
+
+  if ($ra_s < 10) {
+    $rs = sprintf("0%.3f",$ra_s);
+  } else {
+    $rs = sprintf("%.3f",$ra_s);
+  }
+
+# format Dec deg
+
+  if ($dec_h < 1) {
+    $dh = '00';
+  } elsif ($dec_h < 10) {
+    $dh = '0' . $dec_h;
+  } else {
+    $dh = $dec_h;
+  }
+  if ($_[1] < 0) {
+    $dh = '-' . $dh;
+  }
+
+# format Dec minutes
+
+  if ($dec_m < 1) {
+    $dm = '00';
+  } elsif ($dec_m < 10) {
+    $dm = '0' . $dec_m;
+  } else {
+    $dm = $dec_m;
+  }
+
+# format RA seconds
+
+  if ($dec_s < 10) {
+    $ds = sprintf("0%.2f",$dec_s);
+  } else {
+    $ds = sprintf("%.2f",$dec_s);
+  }
+
+  $ra_sex = "${rh}h ${rm}m ${rs}s";
+  $dec_sex = "${dh}d ${dm}\' ${ds}\"";
+}
+
+#------------------------------------------------------------------
+# find n-sigma from normal cummulative function
+
+sub uvotcentroid_cummulative {
+
+  my @c = (2.515517, 0.802853, 0.010328);
+  my @d = (1., 1.432788, 0.189269, 0.001308);
+
+  if ($_[0] <= 0.5) {
+    $t = sqrt(log(1. / $_[0]**2) );
+  } else {
+    $t = sqrt(log(1. / (1. - $_[0])**2) );
+  }
+  $X = $t - ($c[0]+ $c[1] * $t + $c[2] * $t**2) / 
+    (1. + $d[1] * $t + $d[2] * $t**2 + $d[3] * $t**3);
+
+  if ($_[0] > 0.5) {
+    $X = -$X;
+  }
+
+  return $X;
+}
+
+#------------------------------------------------------------------
+# find minimum of distribution
+
+sub uvotcentroid_min {
+
+  my ($min_so_far) = shift @_;
+  foreach (@_) {
+    if ($_ < $min_so_far) {
+      $min_so_far = $_;
+    }
+  }
+  $min_so_far;
+}
+
+#------------------------------------------------------------------
+# find maximum of distribution
+
+sub uvotcentroid_max {
+
+  my ($max_so_far) = shift @_;
+  foreach (@_) {
+    if ($_ > $max_so_far) {
+      $max_so_far = $_;
+    }
+  }
+  $max_so_far;
+}
+
+#------------------------------------------------------------------
+# bail out of task if there's trouble
+
+sub bailout{
+
+  my $errmsg = @_[0];
+  die "$errmsg\nSTOP";
+
+}
+

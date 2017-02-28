@@ -1,0 +1,485 @@
+#!/usr1/local/bin/perl5
+#
+# This script is designed to take an input light curve file and a
+# a series or relative time ranges and convert that to a range of 
+# absolute time ranges. This script can be run silently by inputting
+# a series of flags/switches or run interactively and it will prompt you 
+# for the information that is needed. 
+#
+# Brian K. Elza 10/31/95
+# XTE GSFC/NASA
+#
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('i:f:t:h');	
+		
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+NAME
+    timetrans -- a script that queries the user for a series of relative 
+time values (beginning at 0) and translates them into their absolute 
+time values and store that into a file ready for input into SA(E)EXTRCT. 
+    
+    
+USAGE
+    timetrans -i "infile" -f "outfile" -t "Relative time ranges or \@filename" -h (help)
+or  timetrans
+    
+    
+DESCRIPTION
+    This script file is meant to allow the user to specify an input file,
+and output file, and a series of relative time ranges (i.e., 0-250.0,
+350.0-500.0, 750.0-1000.0) and the script will read the TIMEZERO, and 
+TSTART keywords from the input file and translate the specified relative time 
+ranges to their absolute times ranges and these values would be input 
+into SA(E)EXTRCT as the "timeint" value, via the \@filename option. The 
+time ranges MUST have a DASH (-) between start and stop times, and a
+comma separating each range from the next range, as well as a decimal
+point followed by a 0 or some other value if given on the input line. If 
+they are supplied via the \@filename option each time-range must be on 
+its own line with dashes separating the start and stop times. (See below 
+for more information.)
+    
+PARAMETERS (SWITCHES/FLAGS)
+
+    -i {file} - provide name of the spectral file input to FPLOT.
+
+    -f {file} - provide the name of an output file to contain the absolute
+                time range.
+
+    -t {Relative time range} - Give a relative time range in the form of
+		"0.0-250.0,350.0-500.0, 750.0-1000.0" (Note that 
+                these values can be read off of an FPLOT image of the 
+	        light-curve.) The timerange can also accept an input file
+		via \@filename, but the input MUST have the form:
+		    0.0-250.0
+		    350.0-500.0
+		    750.0-1000.0
+		i.e., each range must be on a separate line, with a "-"
+		separating them, and the last line MUST be a blank line.
+
+EXAMPLES
+    1. timetrans -i "sac.pha" -f "timeint.tint" -t "0-250.0,
+            350.0-500.0, 750.0-1000.0"
+    2. timetrans -i "sac.pha" -f "timeint.tint" -t "\@filename"
+    3. timetrans  
+    
+NOTES:
+    
+    
+BUGS
+    
+        Please report problems to xtehelp\@athena.gsfc.nasa.gov. Provide a
+        detailed  description  of  the  problem and an e-mail address at
+        which you can be reached if  further  information  is  required.
+        Before  reporting  a  bug  please  check  your .PAR file.
+    
+    
+SEE ALSO
+    SAEXTRCT and SEEXTRCT for more information
+
+EOHELP1
+exit;
+    }
+
+# now onto the program ...
+
+require "utils.pl";
+
+print "\n";
+print "Running TIMETRANS v4.0 \n";
+print "#######################################\n\n";
+
+$timedel=0.000000000000;
+$timepixr=0.0000000000000;
+
+if(defined $opt_i) {
+    print "Input filename provided was: $opt_i \n";
+    $infile = $opt_i;
+} else {
+    @infile2=&runcom('pget fplot infile');
+    chop($infile2[0]);
+    print "Input file name or \@file-of-filenames:[$infile2[0]]";
+    ($infile = <STDIN>);
+    if($infile =~ /^./ ){
+	chop($infile);
+    }
+    else{
+	$infile = $infile2[0];
+    }
+}
+
+# Now we will test to see if the input file is a LIST of files. If it is
+# then we will copy all of the files contained within this file to a
+# unique filename
+if($infile =~ /^@/ ){
+    $infile =~ s/^@//;	# Remove the @ symbol
+    open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+    $tmpfile = <INPUT_FILE>; # Copy files from INFILE to OUTPUT
+    chop($tmpfile);
+    -e $tmpfile || die "Cannot find the file $tmpfile !\n";
+    print "Input file used is $tmpfile\n";
+    close(INPUT_FILE);	# We are finished with the input file.
+} else {
+
+    $tmpfile = $infile;
+
+    if ($infile =~ /\+[0-9]/ ) {
+	$infile =~ s/\+[0-9]//;
+    } elsif ($infile =~ /\[[0-9]\]/ ) {
+	$infile =~ s/\[[0-9]\]//;
+    } else {
+    }
+
+    -e $infile || die "Cannot find $infile !\n";
+}
+
+$infile = $tmpfile;
+
+if(defined $opt_f) {
+    print "Output filename provided was: $opt_f \n";
+    $outfile = $opt_f;
+} else {
+    print "Output filename:[outfile_${$}]";
+    ($outfile = <STDIN>);
+    if($outfile =~ /^./ ){
+	chop($outfile);
+    } else{			
+	$outfile = "outfile_${$}";
+    }
+	
+}
+    open(OUTPUT_FILE,">$outfile") || die "Sorry can't open $outfile\n"; # open a unique output file
+
+if(defined $opt_t) {
+    print "Relative time ranges are: $opt_t \n";
+    $intime = $opt_t;
+} else {
+    print "Input relative time range:[0-250.0, 350.0-500.0, 750.0-1000.0]";
+    ($intime = <STDIN>);
+    if($intime =~ /^./ ){
+	chop($intime);
+    }
+    else{
+	print "ERROR!!!! No time range specified!!!\n";
+	print "Nothing to do!... Aborting....\n";
+	exit;
+    }
+}
+
+
+# Now we will test to see if the time-range is a LIST of files. If it is
+# then we will reconstruct the type of input expected.
+# This is a "shoe-horn" job which has to be inserted in this weird
+# manner to avoid screwing up pre-written sections of this script... 
+if($intime =~ /^@/ ){
+
+    $intime =~ s/^@//;	# Remove the @ symbol
+    open(INPUT_FILE,"$intime") || die "Sorry can't find $intime\n"; # Open the input file
+    $i=0;
+
+    while(<INPUT_FILE>) {
+	$testtime = $_; # Copy time-ranges from INTIME to TESTTIME
+	chop($testtime);
+
+	if ( $i == 0 ) {
+	    $tmptime = "$testtime";
+	    $i++;
+	} else {
+	    $tmptime .= ",$testtime";
+	    $i++;
+	}
+
+    }
+
+    close(INPUT_FILE);	# We are finished with the input file.
+
+    print "\nThe time-ranges from the input file are $tmptime\n";
+
+} else {
+
+    $tmptime = $intime;
+}
+
+
+print "\n##########################################\n";
+
+# Ok now that we have a filename input lets parse it and see if there are
+# any ['s or +'s in the filename. If there are, then I will NOT add an 
+# extension, but if there are then I will tack on a +1 to go to the proper
+# data entension
+
+print "\n";
+
+if ($infile =~ /\+[0-9]/ ) {
+    print "We will use the extension specified by +n.\n";
+
+} elsif ($infile =~ /\[[0-9]\]/ ) {
+    print "We will use the extension specified by [n]\n";
+
+} else {
+    print "We will use the first data extension\n";
+    $infile .= "+1";
+}
+
+
+$fkeyprint_stringi = "fkeyprint infile=$infile ";
+$fkeyprint_stringi .= "keynam='TIMEZERI' outfile=STDOUT ";
+$fkeyprint_stringi .= "exact=no clobber=no mode=ql ";
+
+@resulti=&runcom($fkeyprint_stringi);
+
+$length_of_array = @resulti;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resulti[$i_count] =~ /^TIMEZERI=/) {
+	@temp_array = split(/=/,$resulti[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timei = $temp[0];
+    }
+}
+
+$fkeyprint_stringf = "fkeyprint infile=$infile ";
+$fkeyprint_stringf .= "keynam='TIMEZERF' outfile=STDOUT ";
+$fkeyprint_stringf .= "exact=no clobber=no mode=ql ";
+
+@resultf=&runcom($fkeyprint_stringf);
+
+$length_of_array = @resultf;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultf[$i_count] =~ /^TIMEZERF=/) {
+	@temp_array = split(/=/,$resultf[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timef = $temp[0];
+    }
+}
+
+$timezero = $timei + $timef;
+#---------------------------------------------------------------------
+if($timezero == 0.0) {
+
+    $fkeyprint_stringa = "fkeyprint infile=$infile ";
+    $fkeyprint_stringa .= "keynam='TIMEZERO' outfile=STDOUT ";
+    $fkeyprint_stringa .= "exact=no clobber=no mode=ql ";
+
+    @resulta=&runcom($fkeyprint_stringa);
+
+    $length_of_array = @resulta;
+
+    for($i_count=0; $i_count <= $length_of_array; $i_count++){
+	if($resulta[$i_count] =~ /^TIMEZERO=/) {
+	    @temp_array = split(/=/,$resulta[$i_count]);
+	    @temp = split(/ \/ /,$temp_array[1]);
+	    $timea = $temp[0];
+	}
+    }
+    $timezero = $timea;
+
+}
+
+#----------------------------------------------------------------------
+print "TIMEZERI from $infile is $timei \nTIMEZERF from $infile is $timef \n";
+print "TIMEZERO from $infile is $timea \n\n";
+
+#print "\nUnfortunately double precision only has 15 significant figures.\n";
+#print "So anything after the 15th digit is meaningless.\n";
+printf "Offset value TIMEZERO is %17.8f\n\n", $timezero;
+
+#----------------------------------------------------------------------
+
+$fkeyprint_stringb = "fkeyprint infile=$infile ";
+$fkeyprint_stringb .= "keynam='TSTARTI' outfile=STDOUT ";
+$fkeyprint_stringb .= "exact=no clobber=no mode=ql ";
+
+@resultb=&runcom($fkeyprint_stringb);
+
+$length_of_array = @resultb;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultb[$i_count] =~ /^TSTARTI/) {
+	@temp_array = split(/=/,$resultb[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timei = $temp[0];
+    }
+}
+
+$fkeyprint_stringc = "fkeyprint infile=$infile ";
+$fkeyprint_stringc .= "keynam='TSTARTF' outfile=STDOUT ";
+$fkeyprint_stringc .= "exact=no clobber=no mode=ql ";
+
+@resultc=&runcom($fkeyprint_stringc);
+
+$length_of_array = @resultc;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultc[$i_count] =~ /^TSTARTF/) {
+	@temp_array = split(/=/,$resultc[$i_count]);
+	@temp = split(/ \/ /,$temp_array[1]);
+	$timef = $temp[0];
+    }
+}
+
+$timestart = $timei + $timef;
+
+#---------------------------------------------------------------------
+
+if($timestart == 0.0) {
+
+    $fkeyprint_stringd = "fkeyprint infile=$infile ";
+    $fkeyprint_stringd .= "keynam='TSTART' outfile=STDOUT ";
+    $fkeyprint_stringd .= "exact=no clobber=no mode=ql ";
+
+    @resultd=&runcom($fkeyprint_stringd);
+    $length_of_array = @resultd;
+
+    for($i_count=0; $i_count <= $length_of_array; $i_count++){
+	if($resultd[$i_count] =~ /^TSTART/) {
+	    @temp_array = split(/=/,$resultd[$i_count]);
+	    @temp = split(/ \/ /,$temp_array[1]);
+	    $timea = $temp[0];
+	}
+    }
+    $timestart = $timea;
+
+}	    
+
+#----------------------------------------------------------------------
+
+print "TSTARTI from $infile is $timei \nTSTARTF from $infile is $timef \n";
+print "TSTART from $infile is $timea \n\n";
+
+#print "\nUnfortunately double precision only has 15 significant figures.\n";
+#print "So anything after the 15th digit is meaningless.\n";
+
+$fkeyprint_stringj = "fkeyprint infile=$infile ";
+$fkeyprint_stringj .= "keynam='HDUCLAS1' outfile=STDOUT ";
+$fkeyprint_stringj .= "exact=no clobber=no mode=ql ";
+
+@resultj=&runcom($fkeyprint_stringj);
+$length_of_array = @resultj;
+
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($resultj[$i_count] =~ /^HDUCLAS1/) {
+	if($resultj[$i_count] =~ /LIGHTCURVE/){
+	    print "--------------------------------------------------------\n";
+	    print "Since LIGHTCURVE time values may be different in how we have to \nhandle the starting and trailing edge of each light bin we have to do some extra work.";
+
+	    print "Note that the TSTARTI and TSTARTF values account for this shift when \nadded to TIMEZERI and TIMEZERF, but the end times must be corrected.\n";
+	    $fkeyprint_stringk = "fkeyprint infile=$infile ";
+	    $fkeyprint_stringk .= "keynam='TIMEDEL' outfile=STDOUT ";
+	    $fkeyprint_stringk .= "exact=no clobber=no mode=ql ";
+
+	    @resultk=&runcom($fkeyprint_stringk);
+	    $length_of_array2 = @resultk;
+
+	    for($i_count2=0; $i_count2 <= $length_of_array2; $i_count2++){
+		if($resultk[$i_count2] =~ /^TIMEDEL/) {
+		    @temp_array2 = split(/=/,$resultk[$i_count2]);
+		    @temp2 = split(/ \/ /,$temp_array2[1]);
+		    $timedel = $temp2[0];
+
+		    print "\nThe bin-size for this light-curve was $timedel\n";
+		    print "--------------------------------------------------------\n\n";
+		    }
+	    }
+
+	    $fkeyprint_stringl = "fkeyprint infile=$infile ";
+	    $fkeyprint_stringl .= "keynam='TIMEPIXR' outfile=STDOUT ";
+	    $fkeyprint_stringl .= "exact=no clobber=no mode=ql ";
+
+	    @resultl=&runcom($fkeyprint_stringl);
+	    $length_of_array3 = @resultl;
+
+	    for($i_count3=0; $i_count3 <= $length_of_array3; $i_count3++){
+		if($resultl[$i_count3] =~ /^TIMEPIXR/) {
+		    @temp_array3 = split(/=/,$resultl[$i_count3]);
+		    @temp3 = split(/ \/ /,$temp_array3[1]);
+		    $timepixr = $temp3[0];
+
+		    print "\nThe TIMEPIXR value for this light-curve was $timepixr\n";
+
+		    if($timepixr == 0.0) {
+			print "Timestamps align with leading edge of the time-bin.\n\n";
+		    }
+		    if($timepixr == 0.5) {
+			print "Timestamps align with mid-point of the time-bin.\n\n";
+		    }
+		    if($timepixr == 1.0) {
+			print "Timestamps align with trailing edge of the time-bin.\n\n";
+		    }
+
+#		    $timedel = $timepixr * $timedel;
+
+		    print "--------------------------------------------------------\n\n";
+			
+		    }
+	    }
+
+	    $timestart = $timestart;
+
+	}
+    }
+}
+
+$timezero = $timezero + $timestart;
+
+printf "Total offset value for input time is %17.8f\n\n", $timezero;
+
+@time = split(/,/,$tmptime);
+$itmpt = @time;
+print "Number of time ranges specified: $itmpt \n";
+$itmpt--;
+
+for($icount = 0; $icount <= $itmpt; $icount++) {
+    @k = split(/-/,$time[$icount]);
+
+    $ik = @k;
+    if($ik == 1) {
+	print "\nOnly 1 time value specified in this range!\n";
+	print "This is not valid for input into TIMEINT, but could be used for TIMEMIN or TIMEMAX.\n";
+	print "Not writing value to output file!\n";
+	$timeprint0 = 0.00000000000;
+	$timeprint0 = $timezero + $k[0];
+	printf "Absolute time for $k[0] is %17.8f\n", $timeprint0;
+	printf OUTPUT_FILE "  %17.8f",$timeprint0;
+
+    } elsif($ik == 2) {
+
+	$timeprint0 = 0.000000000000;
+	$timeprint1 = 0.000000000000;
+	$timeprint0 = $timezero + $k[0];
+	$timeprint1 = $timezero + $k[1] + $timedel;
+	printf OUTPUT_FILE "  %19.8f   %19.8f",$timeprint0,$timeprint1;
+
+    } else {
+
+	print "\n\nERROR! Your time range input is invalid!\nPlease check it and try again.\n\n";
+    }
+
+    if($icount++ < $itmpt--){
+	print OUTPUT_FILE "\n";
+	$icount--;
+	$itmpt++;
+    }
+
+}
+
+print OUTPUT_FILE "\n";
+
+close (OUTPUT_FILE);
+print "\nAbsolute time ranges are:\n";
+open(OUTPUT_FILE,"$outfile");
+while(<OUTPUT_FILE>) {
+    print $_; # Print the results stored in OUTPUT_FILE
+}
+close(OUTPUT_FILE);	# We are finished with the input file.
+
+print "\nFinished.\n The results stored in $outfile can be input \ninto the extractors at the TIMEINT parameter.\n\n";

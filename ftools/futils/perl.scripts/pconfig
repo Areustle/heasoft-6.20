@@ -1,0 +1,256 @@
+#!/usr/local/bin/perl 
+
+#-----------------------------------------------------------------------
+# This perl script modifies the ftools par files according to the user's
+# parameter files configuration file.  Executing this script with a "-h"
+# command line option will produce it's help page as in
+#
+# pconfig -h
+#
+#-----------------------------------------------------------------------
+# Authors/Modification History:
+# Ron Zellar Aug 1, 1994 -- Original Version
+#-----------------------------------------------------------------------
+
+
+#Use the perl command line option routine
+use Getopt::Std;
+
+#Get the command line options
+getopts('hf:d:');
+
+if ($opt_h eq 1) {
+  $cap0 = $0;
+  $cap0 =~ tr/a-z/A-Z/;
+  print <<"END OF HELP";
+
+$cap0                     ftools.scripts                       $cap0
+
+
+NAME 
+     $0 - configure parameter files to user defaults
+
+USAGE
+     $0 [-h] [-f config file] [-d pfiles dir]
+
+DESCRIPTION
+     $0 configures one or more parameter files as described by the
+     entries in the $0 configuration file (described below).  If no
+     command line options are specified, $0 assumes that the 
+     configuration file is in the current directory and named 
+     "param.config", and that the parameter files to be modified are
+     also in the current directory.  
+
+     The configuration file stores the parameter file values in a 
+     format that is very similar to the parameter files themselves.
+     In fact, in constructing a configuration file, you may want to
+     simply append a parameter file to the end of your configuration
+     file and edit it's values appropriately.  Only those tasks which
+     need modification should be included in the configuration file.
+
+     The format of the configuration file is as follows:
+
+          taskname:
+          param1,[val1],[val2],[val3],[val4],[val5],[val6],[val7]
+          param2,[val1],[val2],[val3],[val4],[val5],[val6],[val7]
+          param3,[val1],[val2],[val3],[val4],[val5],[val6],[val7]
+          ...
+          <blank line>
+          taskname:
+          param1,[val1],[val2],[val3],[val4],[val5],[val6],[val7]
+          param2,[val1],[val2],[val3],[val4],[val5],[val6],[val7]
+          param3,[val1],[val2],[val3],[val4],[val5],[val6],[val7]
+          ...
+          <blank line>
+          ...
+          <EOF>
+
+     Each taskname token causes the file <taskname>.par to be opened
+     and modified.  The param# tokens, following the taskname token,
+     indicate the names of the parameters in the <taskname>.par file
+     which need to be modified.  Finally, the optional val# tokens
+     specify the values which should appear in the corresponding field
+     of the <taskname>.par file.  
+
+     For example, the following configuration file entries would cause
+     the "outfile", "columns" and "rows" parameters of the fdump 
+     parameter file to be hidden:
+
+          fdump:
+          outfile,,h,,,,
+          columns,,h,,,,
+          rows,,h,,,,
+
+     If no value is present for a particular field then no modification
+     is made to the corresponding field in the parameter file.
+
+     Each taskname/parameter group must be followed by an empty line,
+     except the last which should be followed by an end-of-file marker.
+     Note that no blank lines should appear before the first
+     "taskname:" token.
+
+     Lines beginning with a "#" character will be ignored.
+
+OPTIONS
+
+     -h     Print this info to the screen
+
+     -f     The argument following this option will be used as the name
+            of the configuration file.
+
+     -d     The argument following this option will be used as the name
+            of the directory where the parameter files are stored.
+
+EXAMPLES
+     The following example runs the $0 script with the default
+     arguments -- param.config is in the current directory along with
+     all the parameter files to be modified.
+
+     example%cd \$LOCPFILES
+     example%$0
+     fdump:
+     fhelp:
+
+     This example modifies the parameter files stored in \$FTOOLS/bin
+     without having to be in the same directory as the parameter files,
+     nor the same directory as the configuration file.
+
+     example%$0 -f ~/pfiles.config -d \$FTOOLS/bin
+     fdump:
+     fhelp:
+
+NOTES
+     This script creates temporary files of the name <taskname>.tmp in
+     the parameter file directory.
+
+AUTHOR
+     This script was written by Ron Zellar, NASA/GSFC, Hughes STX.  
+     If you use this script, or have suggestions for it's improvement,
+     please let us know at ftoolshelp\@athena.gsfc.nasa.gov.
+
+END OF HELP
+exit(1);
+}
+
+#If the -f option was specified use it's value as the name of the
+#parameter configuration file, otherwise use "param.config"
+if ($opt_f ne "") {
+  $dbfile = $opt_f;
+} else {
+  $dbfile = "param.config";
+}
+
+#If the -d option was specified use it's value as the directory
+#where the parameter files live, otherwise use the current dir.
+if ($opt_d ne "") {
+  $pdir = $opt_d;
+} else {
+  $pdir = ".";
+}
+
+#Open the parameter configuration file
+open(DB,"$dbfile") || die "$0: can't open $dbfile\n";
+
+#Move through DB file one line at a time
+while ($dbline = <DB>) {
+
+  chop($dbline);
+
+  #Ignore lines beginning with '#'
+  if ($dbline =~ /^\#/) { next; }
+
+  #When a blank line is encountered, write the modified parameter
+  #values to a temporary file
+  if (($dbline eq "") || ($dbline =~ /^\s\s+\s$/)) {
+
+    #Open the temporary file
+    open(TMPPF,">$pdir/$task.tmp") || die "$0: can't open $pdir/$task.tmp";
+
+    #Write each modified par file line, one at a time to the
+    #temporary file.
+    $k = 0;
+    while ($k <= $#pflines) {
+      print TMPPF "$pflines[$k]\n";
+      ++$k;
+    }
+
+    #Move the temporary file ontop of the par file
+    system("mv $pdir/$task.tmp $pdir/$task.par") && die "$0: can't move $pdir/$task.tmp to $pdir/$task.par\n";
+
+    #Read the next line of the DB file
+    next;
+  }
+
+  #If the DB line ends in ':', remove the ':' and this is the 
+  #beginning of a section describing modifications to the par file
+  if ($dbline =~ s/:$//) {
+
+    #Get the taskname
+    $task = $dbline;
+
+    #Give reassuring message to user
+    print "$task:\n";
+
+    #Open the task's par file and read in data
+    #This causes an already open PF file to be closed and
+    #the filehandle reused.
+    open(PF,"<$pdir/$task.par") || die "$0: can't open $pdir/$task.par\n";
+    @pflines = <PF>;
+    chop(@pflines);
+
+  }
+
+  #Split up DB data into component values
+  @dbfields = split(/,/,"$dbline");
+
+  #Compare values in each PF line to values from DB file
+  $j = 0;
+  while ($j < $#pflines) {
+
+    #Split PF line into component values
+    @pffields = split(/,/,"$pflines[$j]");
+
+    #If the first value from the DB file equals the first value
+    #from the PF file, then parameters match so modify values
+    if ($pffields[0] eq $dbfields[0]) {
+
+      #For each value after the first value substitute the DB
+      #value if it is defined
+      $i = 1;
+      while ($i < 7) {
+
+        if ($dbfields[$i] ne "") {
+          $pffields[$i] = $dbfields[$i];
+          $pflines[$j] = "$pffields[0],$pffields[1],$pffields[2],$pffields[3],$pffields[4],$pffields[5],$pffields[6]";
+        }
+
+        ++$i;
+      }
+
+      #Since we found a match, there's no reason to continue
+      #search the PF lines. Read the next DB line and begin again.
+      last;
+    }
+
+    ++$j;
+    #End of while loop over PF lines
+  }
+
+  #End of while loop over DB lines
+}
+
+#Since the last line in the file is not blank, no par file will
+#be written unless its done here
+
+#Open temporary file
+open(TMPPF,">$pdir/$task.tmp") || die "$0: can't open $pdir/$task.tmp";
+
+#Write each modified PF line, one at a time, to the temp file
+$k = 0;
+while ($k <= $#pflines) {
+  print TMPPF "$pflines[$k]\n";
+  ++$k;
+}
+
+#Move the temp file ontop of the task's par file
+system("mv $pdir/$task.tmp $pdir/$task.par") && die "$0: can't move $pdir/$task.tmp to $pdir/$task.par\n";

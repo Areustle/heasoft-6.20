@@ -1,0 +1,577 @@
+#! perl
+# $Revision: 1.27 $
+# $Source: /headas/headas/swift/uvot/tasks/uvotgcn/uvotgcn,v $
+# $Date: 2011/03/31 21:33:22 $
+#
+# $Log: uvotgcn,v $
+# Revision 1.27  2011/03/31 21:33:22  rwiegand
+# Added threshold parameter.
+#
+# Revision 1.26  2007/03/16 15:53:01  rwiegand
+# Take trigger number/TARG_ID from packetfile input and load corresponding
+# notices instead of the other way around.
+#
+# Revision 1.25  2005/11/17 19:59:09  rwiegand
+# Removed the (obsolete) uvotgcn1 parameters distfile and logfile.
+#
+# Revision 1.24  2005/11/15 15:37:48  rwiegand
+# Append to transfer log instead of overwriting.
+#
+# Revision 1.23  2005/10/31 16:16:21  rwiegand
+# Streamlined parameter list.
+#
+# Revision 1.22  2005/10/31 14:05:04  rwiegand
+# Split into a front-end and back-end to facilitate remote processing.
+#
+# Revision 1.21  2005/10/12 13:33:17  rwiegand
+# Updated the tristarid invocation to increase the number of objects that
+# are used when searching for a match.  Write a message when a product is
+# not created.
+#
+# Revision 1.20  2005/10/06 13:51:52  rwiegand
+# Only invoke uvotdetect once (with the lowest threshold).  tristarid now
+# has separate parameters for magnitude of position correction and error
+# associated with corrected positions.  Set radius for reporting unmatched
+# sources based on FOV.
+#
+# Revision 1.19  2005/09/21 08:55:53  rwiegand
+# Only apply aspect correction to sky image if one exists.
+#
+# Revision 1.18  2005/09/16 12:17:09  rwiegand
+# Allow user to qualify CALDB query.
+#
+# Revision 1.17  2005/09/07 18:31:39  rwiegand
+# Updated invocation of tristarid for new parameter list.  Apply aspect
+# correction if available to sky images.
+#
+# Revision 1.16  2005/08/29 12:04:39  rwiegand
+# Compress output files with names ending in .gz.  Updated default parameter
+# values.  Produce field image whether or not star identification succeeds.
+# Use tristarid for star identification.
+#
+# Revision 1.15  2005/06/20 15:21:44  rwiegand
+# Corrected string identifying GRB position error.
+#
+# Revision 1.14  2005/04/25 18:16:19  rwiegand
+# Delete pre-existing output files which may be created during this run.
+# Write the names of created output files to the signal file.
+#
+# Revision 1.13  2005/03/11 22:09:57  rwiegand
+# Added parameter for passing parameters to uvotstarid.  Parse units of
+# GRB_ERROR in notices.
+#
+# Revision 1.12  2005/03/04 19:14:07  rwiegand
+# Added alignment file parameter that is passed to swiftxform (to convert
+# RA/DEC/ROLL to quaternions).  Compress TDRSS finding chart sparse image.
+#
+# Revision 1.11  2005/02/09 18:49:12  rwiegand
+# Was failing to pass target to uvotpict sub-process.  Pass uvotdetect
+# threshold of 3.
+#
+# Revision 1.10  2005/02/02 22:59:28  rwiegand
+# Failed to wrap an error in an else.
+#
+# Revision 1.9  2005/02/02 22:39:28  rwiegand
+# Modified to generate products if there is no GRB position notice.
+#
+# Revision 1.8  2005/02/01 16:11:44  rwiegand
+# Changed some parameters to PIL file type to avoid trouble with trailing
+# spaces.  Ignore case when checking for special value CALDB.
+#
+# Revision 1.7  2004/12/10 16:58:46  rwiegand
+# Resolve telescope definition file here instead of in each child.
+#
+# Revision 1.6  2004/10/15 21:57:00  rwiegand
+# Use UVOT::Convert to build attitude file.
+#
+# Revision 1.5  2004/08/31 19:08:41  rwiegand
+# Updated from swifttrans to swiftxform.
+#
+# Revision 1.4  2004/08/05 19:55:23  rwiegand
+# Proceed with either BAT or XRT notice instead of requiring both.  Compare
+# notice TRIGGER_NUM to keyword TARG_ID instead of OBS_ID.  Only create
+# signal file if mode correctly set.
+#
+# Revision 1.3  2004/07/09 16:17:43  rwiegand
+# No longer necessary to catch ALRM signal since the signal is now sent to
+# the correct children instead of the process group.
+#
+# Revision 1.2  2004/06/25 15:40:23  rwiegand
+# Separated out the parameters being passed to buildCommand.
+#
+# Revision 1.1  2004/06/17 21:44:48  rwiegand
+# UVOT GRB Coordinates Network (GCN) tools.
+#
+
+use strict;
+
+package UVOT::GCN0;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use UVOT::GCN;
+use FileHandle;
+use File::Basename;
+use File::Copy;
+use Fcntl qw(:flock);
+
+use SimpleFITS;
+use DataIO;
+
+
+use constant PACKET_SRCLIST => 'SRCLIST';
+use constant PACKET_IMAGE => 'IMAGE';
+
+use constant NULL_TRIGGER => -1;
+
+
+
+
+# main
+{
+print '-' x 72, "\n";
+print '=' x 30, ' UVOTGCN STARTING AT ', scalar(gmtime()), "\n";
+
+	my $task = __PACKAGE__->new(
+			version => '2.1',
+			);
+
+	$task->run;
+
+print '=' x 30, ' UVOTGCN COMPLETE AT ', scalar(gmtime()), "\n";
+print '-' x 72, "\n";
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->handleInputs
+		if $self->isValid;
+
+	$self->transferJob
+		if $self->isValid;
+
+	$self->runUvotgcn1
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->{packetType} = 'NONE';
+
+	$self->pilOptions(
+			options => [ qw(batfile=file xrtfile=file blcfile=file
+				packetfile=file catspec=file lockfile=file signalfile=file
+				skyfile=file sourcesfile=file catalogfile=file fieldfile=file
+				starid=string stale=int timeout=int threshold=real
+				posture=string archive=file remote=boolean
+				clobber=bool cleanup=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not -d $args->{archive}) {
+		$self->error(BAD_INPUT, "invalid archive $args->{archive}");
+		return;
+	}
+
+	foreach my $tag (qw(sky sources catalog field signal)) {
+		my $path = $args->{$tag . 'file'} || '';
+		next if $path eq /^|DEFAULT|NONE$/i;
+		if ($path and -e $path) {
+			if ($args->{clobberFlag}) {
+				if ($self->isValid) {
+					unlink($path)
+						or $self->warning("unable to unlink $path [$!]");
+				}
+			}
+			else {
+				$self->error(BAD_INPUT,
+						"$path exists and clobber not set");
+			}
+		}
+	}
+}
+
+
+sub handleInputs
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	open(LOCK, ">$args->{lockfile}")
+		or die("can't lock $args->{lockfile} [$!]");
+	flock(LOCK, LOCK_EX);
+
+	$self->identifyInputs
+		if $self->isValid;
+
+	$self->collectInputs
+		if $self->isValid;
+
+	flock(LOCK, LOCK_UN);
+}
+
+
+sub getKeywords
+{
+	my ($self, $path) = @_;
+
+	my %info = (
+		TARG_ID => NULL_TRIGGER,
+		PATH => $path,
+	);
+
+	my @keywords = qw(TARG_ID RA_PNT DEC_PNT PA_PNT EXPID FILTER);
+
+	if (-f $path) {
+
+		my $header = '';
+		my $status = SimpleFITS->readonly($path)
+				->move(2)
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to load $path header [$status]");
+			 return \%info;
+		}
+
+		if ($header->{XTENSION} eq 'IMAGE') {
+			$info{TYPE} = 'IMAGE';
+			push(@keywords, 'EXPOSURE');
+		}
+		elsif ($header->{EXTNAME} eq 'TDRSS_FC') {
+			$info{TYPE} = 'SRCLIST';
+		}
+		else {
+			$self->error(BAD_INPUT,
+					"unable to determine packet type from XTENSION $header->{XTENSION}");
+		}
+
+		$self->storeHeaderKeywords($header,
+				keys => \@keywords,
+				hash => \%info,
+				);
+
+		$self->{header} = $header if not $self->{header};
+	}
+	else {
+		$self->report("getKeywords: no file at $path");
+	}
+
+	if (not $self->isValid) {
+		$self->error(BAD_INPUT, "unable to load packet file $path");
+	}
+
+	return \%info;
+}
+
+
+
+sub loadNotice
+{
+	my ($self, $tag, $path) = @_;
+
+	my %notice;
+	$notice{PATH} = $path;
+
+	my $fh = FileHandle->new($path);
+	my @lines = <$fh>;
+	undef($fh);
+	my $body = undef;
+	foreach my $line (@lines) {
+		if ($line =~ /^(\w+):\s+(\S.*\S)\s*$/) {
+			my $key = $1;
+			my $value = $2;
+			if ($key eq 'TITLE') {
+				$body = 1;
+			}
+			elsif ($key eq 'TRIGGER_NUM') {
+				if ($value =~ /(\d+)/) {
+					$value = $1;
+					# $notice{SEGMENT_NUM} = $2;
+				}
+			}
+			elsif ($key =~ /GRB_(RA|DEC|ERROR)/) {
+				# get degrees for RA, DEC, ERROR
+				if ($value =~ /^([-+]?\d+(?:\.\d*)?)\s*(.+)/) {
+					$value = $1;
+					my $units = $2;
+					if ($key eq 'GRB_ERROR') {
+						if ($units =~ /arcsec/) {
+							$value /= 3600;
+						}
+						elsif ($units =~ /arcmin/) {
+							$value /= 60;
+						}
+						elsif ($units =~ /deg/) {
+						}
+						else {
+							$self->warning("unable to determine $key units [from $units], assuming arcsec");
+							$value /= 3600;
+						}
+						$value = sprintf('%.6f', $value);
+					}
+					$notice{GRB_UNITS} = '[deg]';
+				}
+			}
+			elsif ($key eq 'BAT_TRIG_TIME') {
+				if ($value =~ /^(\d+(?:\.\d*)?)\s*(.+)/) {
+					$value = $1;
+					$notice{BAT_TRIG_UNITS} = $2;
+				}
+			}
+			if ($body) {
+				$notice{$key} = $value;
+			}
+		}
+	}
+
+	$self->{$tag . '_NOTICE'} = \%notice;
+
+	foreach my $key (qw(TRIGGER_NUM GRB_RA GRB_DEC GRB_ERROR BAT_TRIG_TIME)) {
+		if (not exists($notice{$key})) {
+			$self->warning("missing $tag notice $key");
+		}
+	}
+
+}
+
+
+sub assimilateNotices
+{
+	my ($self) = @_;
+
+	# only keep those notices for the correct trigger (as seen in packetfile)
+	my $chosen = $self->{TARG_ID};
+
+	foreach my $tag (qw(BAT XRT BLC)) {
+		my $notice = $self->{$tag . '_NOTICE'};
+		if ($notice) {
+			my $x = $notice->{TRIGGER_NUM} || NULL_TRIGGER;
+			if ($x != $self->{TARG_ID}) {
+				$self->{$tag . '_NOTICE'} = undef;
+				$self->warning("ignoring $tag notice since $x != $chosen");
+			}
+			else {
+				$self->report("$tag notice contains TRIGGER_NUM $chosen");
+			}
+		}
+	}
+}
+
+
+sub selectPacket
+{
+	my ($self, $info) = @_;
+
+	my $packetType = $self->{packetType} = $info->{TYPE};
+	$self->{'have' . $packetType} = 1;
+	$self->{packetInfo} = $info;
+	$self->{EXPOSURE} = $info->{EXPOSURE};
+
+	$self->{TARG_ID} = $info->{TARG_ID};
+	$self->report("selecting $packetType packet $info->{TARG_ID} [before notice(s)]");
+}
+
+
+
+sub identifyInputs
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $packet = $self->getKeywords($args->{packetfile});
+
+	if ($packet->{TARG_ID} != NULL_TRIGGER) {
+		$self->selectPacket($packet);
+	}
+	else {
+		$self->error(BAD_INPUT, "no packet available");
+	}
+
+	# load factoids
+	foreach my $base (qw(BAT XRT BLC)) {
+		my $par = lc($base . 'file');
+		if (-f $args->{$par}) {
+			if (86400 * -M $self->{$par} > $args->{stale}) {
+				$self->warning("ignoring stale $base notice $self->{$par}");
+			}
+			else {
+				$self->{$par} = $args->{$par};
+				$self->report("loading $base notice $self->{$par}");
+				$self->loadNotice($base, $self->{$par});
+			}
+		}
+		else {
+			$self->warning("no $base notice at $args->{$par}");
+		}
+	}
+
+	$self->assimilateNotices
+		if $self->isValid;
+}
+
+
+
+sub collectInputs
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# find a unique job directory
+	#	jobdir		the name of the job directory
+	#	jobfull		the fully qualified job directory
+	#	jobname		the name of the job file
+	for (my $tag = 1; 1; ++$tag) {
+		my $name = "$self->{TARG_ID}.$tag.job";
+		my $probe = "$args->{archive}/$name";
+		if (not -e $probe) {
+			$self->{jobdir} = $name;
+			$self->{jobfull} = $probe;
+			last;
+		}
+	}
+
+	if (not mkdir($self->{jobfull})) {
+		$self->error(BAD_OUTPUT,
+				"unable to create directory $self->{jobfull} [$!]");
+	}
+	else {
+		# write job information
+		my $packet = $self->{packetInfo};
+
+		{
+			my $path = $packet->{PATH};
+			my ($name, $dir) = File::Basename::fileparse($path);
+			$packet->{NAME} = $name;
+			if (not File::Copy::copy($path, "$self->{jobfull}/$name")) {
+				$self->warning("unable to copy $path to $self->{jobfull} [$!]");
+			}
+		}
+
+		my @job = (
+			POSTURE => $args->{posture},
+			JOB => {
+				CREATE => scalar(gmtime) . ' GMT',
+			},
+			TARG_ID => $self->{TARG_ID},
+			PACKET => {
+				TYPE => $packet->{TYPE},
+				FILE => $packet->{NAME},
+				RA_PNT => $packet->{RA_PNT},
+				DEC_PNT => $packet->{DEC_PNT},
+				PA_PNT => $packet->{PA_PNT},
+				EXPID => $packet->{EXPID},
+				FILTER => $packet->{FILTER},
+				($self->{EXPOSURE} ? (EXPOSURE => $self->{EXPOSURE}) : ()),
+			},
+		);
+
+		# store the pseudo-notice fields
+		foreach my $tag (qw(BAT XRT BLC)) {
+			my $key = $tag . '_NOTICE';
+			if (my $notice = $self->{$key}) {
+				push(@job, $key => $notice);
+			}
+		}
+
+		my %job = @job;
+		my $jobname = "$self->{TARG_ID}.job";
+
+		eval {
+			my $path = "$self->{jobfull}/$jobname";
+			my $io = DataIO->new;
+			$io->putPath($path, \%job);
+		};
+
+		if ($@) {
+			$self->error(BAD_OUTPUT, "unable to save job: $@");
+		}
+		else {
+			$self->{jobname} = $jobname;
+		}
+	}
+}
+
+
+sub transferJob
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $args->{remoteFlag}) {
+		$self->report('not transferring job since remote disabled');
+		return;
+	}
+
+	$self->timestamp('transferJob start');
+
+	my $command = "toswuvot posture=$args->{posture} what=uvotgcn"
+			. " dir=$self->{jobfull} jobfile=$self->{jobdir}/$self->{jobname}";
+			
+	$self->timestamp('starting toswuvot in background');
+	$self->shell($command . ' >> uvot_transfer.log 2>&1 &');
+
+	if (not $self->isValid) {
+		$self->error(BAD_OUTPUT, "unable to transfer job to swuvot");
+		# cover up error so local processing will continue
+		$self->{code} = 0;
+		return;
+	}
+	else {
+		$self->timestamp('toswuvot running');
+	}
+}
+
+
+sub runUvotgcn1
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @input = (
+		map { ($_ => $args->{$_}) }
+				qw(packetfile catspec starid threshold),
+	);
+
+	my @output = (
+		map { ($_ => $args->{$_}) }
+				qw(skyfile sourcesfile catalogfile fieldfile signalfile),
+	);
+
+	my $command = $self->buildCommand('uvotgcn1',
+			posture => $args->{posture},
+			jobfile => "$self->{jobfull}/$self->{jobname}",
+			archive => $args->{archive},
+			@input,
+			@output,
+			history => $args->{history},
+			cleanup => $args->{cleanup},
+			clobber => $args->{clobber},
+			chatter => $args->{chatter},
+			);
+
+	$self->shell($command);
+}
+
+

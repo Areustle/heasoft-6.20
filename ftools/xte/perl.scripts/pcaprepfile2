@@ -1,0 +1,353 @@
+#!/usr/bin/perl
+#
+# File: pcaprepfile2
+#
+# Description:  Prepare one PCA Standard2 file for analysis
+#
+# Author: C. B. Markwardt
+#
+
+use Getopt::Std;
+
+getopts(':h');
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    pcaprepfile2 - Estimate background and dead-time values for Standard2 file
+
+USAGE
+    pcaprepfile2 infile filterfile hkfiles bkgfile dtfile dtbkgfile ...
+
+DESCRIPTION
+
+    pcaprepfile2 does standard preparation activities for one 
+    PCA Standard2 data file.  It represents the best practices
+    recommended by the RXTE PCA team for preparing Standard2
+    for scientific analysis.
+
+    The prerequisites for this tool are:
+      * one Standard2 file ('infile')
+      * an RXTE filterfile for the observation ('filterfile')
+      * list of RXTE housekeeping files ('hkfiles')
+
+    When complete, pcaprepfile2 will produce:
+      * raw estimated Standard2 background file ('bkgfile')
+      * Standard2 file with dead-time quantities ('dtfile')
+      * estimated background with dead-time quantities ('dtbkgfile')
+
+    There are several settings that the user can alter, but the user
+    is recommended to use the defaults except with good reason.  The
+    defaults will compute dead-time related quantities for each PCU
+    and filter out known times of bad data (see pcadeadcalc2).  It
+    will also estimate the PCA background for the same interval.
+
+    After running this tool, the 'dtfile' and 'dtbkgfile' files are
+    suitable for use with pcaextspect2 (recommended) or saextrct.
+
+    Calculating dead-time quantities is optional.  If dtfile='NONE'
+    and dtbkgfile='NONE', then they are not computed.  However, the
+    PCA team recommends to produce the dead-time calculations, and to
+    use the dead-time quantity files for all subsequent analysis.
+    (i.e. ignore the original Standard2 file and background, and use
+    the dtfile and dtbkgfile instead).
+
+PARAMETERS
+
+    infile [filename]
+        Name of single input Standard2 file.
+
+    filterfile [filename]
+        Name of single input RXTE filter file, which has been created
+        by xtefilt.
+
+    hkfiles [string]
+        Specify a list of PCA housekeeping files, i.e. the FH5* files
+        in the pca subdirectory.  This can either be a comma-separated
+        list, or a \@filename.txt where filename.txt contains a list
+        of files.  There must be exactly five files specified because
+        there are five PCUs.
+
+    bkgfile [filename]
+        Upon successful completion, the name of the output file
+        containing estimated background.
+
+    dtfile [string]
+        Upon sucessful completion, the name of the output file
+        containing Standard2 data with dead-time quantities.  The
+        PCA team recommends to use this file for subsequent analysis.
+        A value of 'NONE' indicates to not create this file.
+
+    dtbkgfile [string] 
+        Upon sucessful completion, the name of the output file
+        containing background estimates with dead-time quantities.
+        The PCA team recommends to use this file for subsequent
+        analysis of background.  A value of 'NONE' indicates to not
+        create this file.
+
+    (modelfile = 'CALDB') [string]
+        Comma-separated list of RXTE PCA background model files, or an
+        \@files.lis listing of files.  See the help file for pcabackest
+        for more information.  A setting of 'CALDB' instructs the task
+        to query the Calibration Database (CALDB) for the correct model.
+
+    (bkginterval = 16.0) [real]
+        The interval between successive background estimates.  See the
+        help file for pcabackest ('interval' parameter) for more
+        information.
+
+    (bkglayers = 'YES') [boolean]
+        If set, then compute background estimates for each PCU layer.
+        See the help file for pcabackest ('layers' parameter) for
+        more information.
+
+    (bkgfullspec = 'NO') [bookean]
+        If set, then compute a full 256-channel background estimate
+        instead of Standard2's 129 bins.  See the help file for
+        pcabackest ('fullspec' parameter) for more information.
+
+    (saahfile = 'CALDB') [string]
+        Name of SAA History file used for background estimates.  See
+        the help file for pcabackest for more information.
+
+    (breakfile = 'CALDB') [string]
+        Set to a file name which contains PCU breakdown GTI
+        information.  If set to 'CALDB', then the task will query
+        CALDB for the appropriate file.  If set to 'NONE', then no PCU
+        breakdown processing will be done (not recommended).
+
+    (zero_bad = YES) [boolean]
+        If set, then the task will set the Xenon counts to zero any
+        PCU which is considered to be in a "bad" science state at the
+        given time, as described above.  If not set, then Xenon counts
+        are not changed.
+
+    (transition_bad = YES) [boolean]
+        If set, then PCU high voltage transitions are considered "bad"
+        science times (+/- 16 sec).  If not set, then only PCU high
+        voltage "off" is considered bad.
+
+    (propane_bad = YES) [boolean]
+        If set, then PCUs are considered "bad" if their propane layers
+        are gone.  If not set, then the propane layer status is not
+        considered.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 1) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+
+    # Create list of PCA housekeeping files    
+    ls FH5* > hkfiles_file3.lis
+
+    # Run on FS4a_file.gz
+    pcaprepfile2 infile=FS4a_file3.gz filterfile=filt_file3.xfl.gz \
+      hkfiles=\@hkfiles_file3.lis \
+      bkgfile=FS4a_file3_bkg dtfile=FS4a_file3_DT dtbkgfile=FS4a_file3_DTbkg \
+
+    # Outputs are FS4a_file3{_bkg,_DT,_DTbkg}
+
+CAVEATS
+
+    The user is strongly recommended to use an updated RXTE
+    Calibration database (CALDB), and to set breakfile=CALDB,
+    modelfile=CALDB, saahfile=CALDB.
+
+    The user is strongly recommended to compute the files with
+    dead-time quantities and use those for downstream processing.
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    pcadeadcalc2, pcabackest
+
+EOHELP
+exit;
+    }
+
+use HEACORE::HEAINIT;
+
+
+
+# ==================================================================
+# Call the main task subroutine with an exception handler
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+@scratchfiles_badonly = ();
+eval {
+    $status = headas_main(\&pcaprepfile2);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub pcaprepfile2 {
+
+    $taskname = "pcaprepfile2";
+    $taskvers = "1.0";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &pcaprepfile2_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+
+	# Delete some product files only if we exited with an error
+	if ($@) { 
+	  foreach $scratchfile (@scratchfiles_badonly) {
+	    unlink "$scratchfile";
+	  }
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Working subroutine
+sub pcaprepfile2_work {
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants :longnames);
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter);
+    my ($fits1, $fits2, $handle1, $handle2);
+    my ($mode, $tddes5);
+
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('bkgfile', $bkgfile)) == 0 || die "error getting bkgfile parameter";
+    ($status = PILGetFname('dtfile', $dtfile)) == 0 || die "error getting dtfile parameter";
+    ($status = PILGetFname('dtbkgfile', $dtbkgfile)) == 0 || die "error getting dtbkgfile parameter";
+    ($status = PILGetString('hkfiles', $hkfile)) == 0 || die "error getting hkfile parameter";
+    ($status = PILGetString('filterfile', $filterfile)) == 0 || die "error getting filterfile parameter";
+    ($status = PILGetString('modelfile', $modelfile)) == 0 || die "error getting modelfile parameter";
+    ($status = PILGetString('breakfile', $breakfile)) == 0 || die "error getting breakfile parameter";
+    ($status = PILGetString('saahfile', $saahfile)) == 0 || die "error getting saahfile parameter";
+    ($status = PILGetReal('bkginterval', $bkginterval)) == 0 || die "error getting bkginterval parameter";
+    ($status = PILGetString('bkglayers', $layers)) == 0 || die "error getting bkglayers parameter";
+    ($status = PILGetString('bkgfullspec', $fullspec)) == 0 || die "error getting bkgfullspec parameter";
+    ($status = PILGetString('zero_bad', $zero_bad)) == 0 || die "error getting zero_bad parameter";
+    ($status = PILGetString('transition_bad', $transition_bad)) == 0 || die "error getting transition_bad parameter";
+    ($status = PILGetString('propane_bad', $propane_bad)) == 0 || die "error getting propane_bad parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting cleanup parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    print "Running $taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------\n" if ($chatter >= 2);
+
+    undef $dtfile if ($dtfile =~ m/^none$/i);
+    undef $dtbkgfile if ($dtbkgfile =~ m/^none$/i);
+    undef $breakfile if ($breakfile =~ m/^none$/i);
+    $clobstr = $clobber ? "YES" : "NO";
+    $cleanstr = $cleanup ? "YES" : "NO";
+
+    if (defined($dtbkgfile) && ! defined($dtfile)) {
+      die "ERROR: you must specify dtfile together with dtbkgfile";
+    }
+
+    # ===================================================
+    # Create background file
+    &headas_clobberfile($bkgfile);
+    $cmd = "pcabackest infile='$infile' outfile='$bkgfile' ".
+      "modelfile='$modelfile' filterfile='$filterfile' ".
+      "saahfile='$saahfile' ".
+      "modeltype=both interval=$bkginterval propane=NO ".
+      "layers=$layers gaincorr=NO gcorrfile=CALDB ".
+      "fullspec=$fullspec interp=YES syserr=NO maxmodels=2000 timeslop=128 ";
+
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    @cmdlog = `$cmd`;
+    if ($? || ! -f "$bkgfile") {
+      print "@cmdlog";
+      die "ERROR: could not create '$bkgfile'";
+    }
+    push @scratchfiles_badonly, "$bkgfile";
+
+    # Double-check that pcabackest produced something viable, since
+    # it can crash in mid-stream and leave a malformed turd.
+    $bkgfitsfile = SimpleFITS->open("$bkgfile",ext=>3,access=>"readonly");
+    die "ERROR: background file was corrupt" if (! $bkgfitsfile );
+    $bkgfitsfile->setstatus(0)->close();
+
+    
+    # ===================================================
+    # Create deadtime correction file
+    if ($dtfile) {
+      headas_clobberfile($dtfile);
+      $cmd = "pcadeadcalc2 infile='$infile' outfile='$dtfile' std2file=NONE ".
+	"hkfiles='$hkfile' breakfile='$breakfile' ".
+	"transition_bad=$transition_bad zero_bad=$zero_bad propane_bad=$propane_bad ".
+	"cleanup='$cleanstr' ";
+      
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      @cmdlog = `$cmd`;
+      if ($? || ! -f "$dtfile") {
+	print "@cmdlog";
+	die "ERROR: could not create '$dtfile'";
+      }
+      push @scratchfiles_badonly, "$dtfile";
+    }
+    
+    # ===================================================
+    # Create deadtime-corrected background file
+    if ($dtbkgfile) {
+      headas_clobberfile($dtbkgfile);
+      $cmd = "pcadeadcalc2 infile='$bkgfile' outfile='$dtbkgfile' std2file='$dtfile' ".
+	"hkfiles='$hkfile' breakfile='$breakfile' ".
+	"transition_bad=$transition_bad zero_bad=$zero_bad propane_bad=$propane_bad ".
+	"cleanup='$cleanstr'";
+      
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      @cmdlog = `$cmd`;
+      if ($? || ! -f "$dtbkgfile") {
+	print "@cmdlog";
+	die "ERROR: could not create '$dtbkgfile'";
+      }
+      push @scratchfiles_badonly, "$dtbkgfile";
+    }
+
+    return $status;
+}

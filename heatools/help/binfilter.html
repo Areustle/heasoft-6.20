@@ -1,0 +1,208 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!doctype html public "-//w3c//dtd html 4.0 transitional//en">
+<html>
+<head>
+   <title>HEADAS help file</title>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+</head>
+<body>
+
+<h1>Binning or Histogramming Specification</h1>
+
+One of the powerful features of CFITSIO's virtual file syntax is the
+ability to create a 2-dimensional image (or 'histogram') on the fly by
+binning the values in a pair of columns in a FITS table.  This is
+frequently used with 'event list' tables to bin the columns that
+contain the X and Y coordinate of each event to create a FITS primary
+array image of all the events.  Each pixel in the 2-dimensional
+histogram records the number of events that occur within the spatial
+coordinates defined by of that pixel.  The virtual FITS file that is
+opened by the application program consists only of the primary array
+image and not the FITS table from which it was constructed.
+<p>
+This technique is not limited to just creating 2 dimensional images.
+It can also be used to create a 1-dimensional array (e.g., a spectrum
+or light curve) by binning a single table column, or a 3 or 4
+dimensional data cube by binning over 3 or 4 columns.
+
+<h2>Binning Syntax</h2>
+
+The binning filter begins with the string 'bin' enclosed in square
+brackets, and is appended to the root file name and optional extension
+specifier.  There are several forms of binning filter, and the general
+syntax is:
+<pre>
+
+  [bin{bijrd} Xcol=min:max:binsize, Ycol= ..., Zcol=...; weight]
+
+  or
+
+  [bin{bijrd} (Xcol, Ycol, ...) = min:max:binsize; weight]
+
+  or
+
+  [bin{bijrd} @file.txt]
+
+</pre>
+
+By default the created primary array image will have a 32-bit signed
+integer datatype  except if the weighting option  is also specified in
+which case the image will have  a 32-bit floating point data type.  The
+default datatype may be overridden by appending a code letter to the
+'bin' keyword as follows:
+<pre>
+   binb -  8-bit unsigned byte
+   bini - 16-bit signed integers
+   binj - 32-bit signed integers
+   binr - 32-bit floating points
+   bind - 64-bit double precision
+</pre>
+
+For example, 
+<pre>
+   file.fits[events][bini detx = 1:500:10, dety = 1:500:10]
+</pre>
+means "bin the DETX and DETY columns in the EVENTS extension over the
+range from 1 to 500 using a bin size of 10 in both dimensions.  This
+will create a 50 by 50 pixel 16-bit integer image.  Since these are
+integer data type columns, the min and max range limits are both
+inclusive.  If the columns have a floating point data type then the
+binning range includes the lower limit value but excludes the upper
+limit value.
+<p>
+In the general case, as shown in the above example, the column name 
+is  followed by  an  equals sign and then  the
+lower and   upper range  of the   histogram,  and  the size  of  the
+histogram bins, separated by colons.   Spaces are allowed before and
+after the  equals sign but not  within the 'min:max:binsize' string.
+The min, max and  binsize values may  be  integer or floating  point
+numbers, or they may be  the names of keywords in  the header of the
+table.  If the latter, then the value of that keyword is substituted
+into the expression.
+<p>
+If the binning ranges or size are not specified, CFITSIO will use
+default values as given by the TLMINn, TLMAXn, and TDBINn  keywords
+(where 'n' represents the column number) if they exist in table
+header.  If the keywords do  not exist then the  actual minimum and
+maximum values in the column will be used for the histogram min  and
+max values and the default binsize will be set to 1, or (max - min) /
+20., whichever is smaller.
+<p>
+The column names  are case  insensitive, and the
+column number may be given instead of  the name, preceded by a pound
+sign  (e.g., [bin #4=1:512]).  If the column  name is not specified,
+then CFITSIO  will first try to use  the  'preferred columns' as
+specified by the CPREF keyword (e.g., 'CPREF = 'DETX,DETY') if it 
+exists, otherwise column names 'X', 'Y', 'Z', and 'T' will  be 
+assumed for each of the 4 axes, respectively.
+<p>
+The following example illustrated the possible variations in syntax:
+<pre>
+       [bin x = :512:2]  - use default minimum value
+       [bin x = 1::2]    - use default maximum value
+       [bin x = 1:512]   - use default bin size
+       [bin x = 1:]      - use default maximum value and bin size
+       [bin x = :512]    - use default minimum value and bin size
+       [bin x = 2]       - use default minimum and maximum values
+       [bin x]           - use default minimum, maximum and bin size
+
+       [bin 4]           - default 2-D image, bin size = 4 in both axes
+       [bin]             - default 2-D image
+</pre>
+
+<p>
+A shortcut notation is allowed if all the columns/axes have the same
+binning specification.  In  this case all   the column names may  be
+listed   within parentheses,     followed by  the  (single)  binning
+specification, as in:
+<pre>
+   [bin (X,Y)=1:512:2]
+   [bin (X,Y) = 5]      - use bin size = 5
+
+</pre>
+
+The  optional  weighting  factor is  the  last  item in  the binning
+specifier and, if present, is separated  from the list of columns by
+a semi-colon.  As the histogram is accumulated,  this weight is used
+to incremented the value of  the appropriated bin in the  histogram.
+If the weighting factor is not specified,  then the default weight =
+1 is assumed.   The weighting factor  may be  a constant integer  or
+floating point number,  or  the name of   a  keyword containing  the
+weighting value.  Or the weighting factor may be the name of a table
+column  in  which case the   value in that column,  on  a row by row
+basis, will be used.
+<p>
+In some cases, the column or keyword  may give the reciprocal of the
+actual   weight  value that is  needed.   In  this case, precede the
+weight keyword or column name by a slash  '/' to tell CFITSIO to use
+the reciprocal of the value when constructing the histogram.
+<p>
+For complex or   commonly used histograms,  one can   also place its
+description  into  a  text  file and  import   it  into the  binning
+specification using  the syntax  '[bin{bijrd} @filename.txt]'.   The
+file's  contents can extend  over multiple  lines,  although it must
+still  conform to the no-spaces  rule for the min:max:binsize syntax
+and each axis specification must still be comma-separated. Any lines
+in the external text file that begin with 2 slash characters ('//')
+will be ignored and may be used to add comments into the file.
+
+<h2>Combined Filtering</h2>
+
+The binning specifier can be combined with other filters to make
+an image of only selected rows in the table.  For example:
+<pre>
+  file.fits[events][pi < 100][bin (X,Y) = 1:500:10]
+</pre>
+will first create a virtual table containing only the rows that have a
+PI column value less than 100, which will be used to create a virtual
+image by binning the X and Y columns.  Similarly,
+<pre>
+  file.fits[events][regfilter("stars.reg")][bin (X,Y) = 1:500:10]
+</pre>
+will first filter the table to keep only those rows with X and Y
+column values that are within the spatial region defined
+by the 'stars.reg' region file.  All the pixels in the binned image
+that lie outside the defined region will be equal to zero.
+
+<h2>EXAMPLES</h2>
+<pre>
+
+    [bini detx, dety]                - 2-D, 16-bit integer histogram
+                                       of DETX and DETY columns, using
+                                       default values for the histogram
+                                       range and binsize.
+
+    [bin (detx, dety)=16; /exposure] - 2-D, 32-bit real histogram of DETX
+                                       and DETY columns with a bin size=16
+                                       in both axes. The histogram values
+                                       are divided by the EXPOSURE keyword
+                                       value.
+
+    [bin time=TSTART:TSTOP:0.1]      - 1-D lightcurve, range determined by
+                                       the TSTART and TSTOP keywords, 
+                                       with 0.1 unit size bins.  
+ 
+    [bin pha, time=8000.:8100.:0.1]  - 2-D image using default binning
+                                       of the PHA column for the X axis,
+                                       and 1000 bins in the range 
+                                       8000. to 8100. for the Y axis.
+    
+    [bin @binFilter.txt]             - Use the contents of the text file
+                                       binFilter.txt for the binning
+                                       specifications.
+
+</pre>
+<h2>SEE ALSO</h2>
+<a href="filenames.html">filenames</a>,
+<a href="colfilter.html">colfilter</a>,
+<a href="rowfilter.html">rowfilter</a>,
+<a href="imfilter.html">imfilter</a>.
+<a href="pixfilter.html">pixfilter</a>.
+<a href="calc_express.html">calc_express</a>.
+</body>
+</html>

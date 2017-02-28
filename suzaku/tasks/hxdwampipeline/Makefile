@@ -1,0 +1,16 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	= 
+
+HD_INSTALL_PERL_SCRIPTS	= hxdwampipeline
+
+HD_INSTALL_HELP		= hxdwampipeline.html
+
+HD_INSTALL_PFILES	= hxdwampipeline.par
+
+HD_INSTALL_REFDATA      =
+
+#HD_TEST_PERL_SCRIPTS    = ut_${HD_INSTALL_PERL_SCRIPTS}
+HD_TEST_PERL_SCRIPTS    =
+
+include ${HD_STD_MAKEFILE}

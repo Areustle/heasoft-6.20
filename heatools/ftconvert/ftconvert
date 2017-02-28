@@ -1,0 +1,225 @@
+#! /usr/bin/perl
+
+#
+# Convert fits table into a rdb file format
+#
+# Author: Ziqin Pan
+# September 22,2004
+#
+
+
+use HEACORE::HEAINIT;
+exit headas_main(\&ftconvert);
+
+sub ftconvert {
+  use Astro::FITS::CFITSIO qw( :shortnames :constants );
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+
+  my $tname = "ftconvert";
+  my $tvers = "1.0";
+
+  my $status = 0;
+  my $fptr;
+  my @colnames;
+  my @colnums;
+  my @rowranges;
+  my $ncols;
+  my @lows;
+  my @highs;
+  my $nrows;
+  my $i;
+  my $j;
+  my $k;
+  my $m;
+
+
+  ($status = PILGetString('infile', $infile)) == 0 || die "error getting file parameter";
+  ($status = PILGetString('outfile', $outfile)) == 0 || die "error getting file parameter";
+  ($status = PILGetString('colname', $colname)) == 0 || die "error getting columns' name parameter";
+  ($status = PILGetString('rowrange', $rowrange)) == 0 || die "error getting rowrange parameter";
+  ($status = PILGetString('format', $format)) == 0 || die "error getting format parameter";
+
+  ($status=fftopn($fptr,$infile,READONLY,$status)) == 0 || die "error opening fits file";
+
+
+   @colnames = split (/,/,$colname);
+
+   if ( !$colnames[0] || $colnames[0] =~ /^-$/) {
+         ($status=ffgncl($fptr,$ncols,$status)) == 0 || die "error reading number of columns";
+          for ($i=0; $i<$ncols; $i++) {
+               push (@colnums,$i+1);
+          }
+
+   } else {
+
+   	 foreach $colname (@colnames) {
+         	($status=ffgcno($fptr,CASESEN,$colname,$colnum,$status)) == 0 || die "error reading table column number";
+         	push (@colnums,$colnum);
+   	}
+   	@colnums = sort {$a <=> $b} @colnums;
+   }
+      
+
+
+  ($status=ffgnrw($fptr,$nrows,$status)) == 0 || die "error reading table row number";
+   @rowranges = split (/,/,$rowrange);
+
+   if (!$rowranges[0] || $rowranges[0] =~/^-$/) {
+           $highs[0]=$nrows;
+           $lows[0]=1;
+   } else {
+   	for ($i=0; $i<= $#rowranges; $i++) {
+       	    ($lows[$i],$highs[$i]) = split (/-/,$rowranges[$i]);
+       	    if ( !$highs[$i] ) {
+       	          $highs[$i] = $lows[$i];
+       	    }
+   	}
+   }
+
+   @lows = sort {$a <=> $b } @lows;
+   @highs = sort {$a <=> $b } @highs;
+
+   for ($i=0; $i<$#lows ; $i++) {
+      if ( $highs[$i] > $lows[$i+1] ) {
+           $highs[$i] = $lows[$i+1];
+      }
+   }
+
+   for ($j=0; $j<=$#colnums; $j++) {
+       	($status=ffgcnn($fptr,CASESEN,$colnums[$j],$colname,$colnums[$j],$status)) == 0 || die "error reading table column name";
+       	($status=ffgtcl($fptr,$colnums[$j],$coltype,$colrepeat,$colwidth,$status)) == 0 || die "error reading table data type name";
+       	($status=ffgcdw($fptr,$colnums[$j],$dispwidth,$status)) == 0 || die "error reading dispwidth";
+        $k=$j+1;
+       	if (($status=ffgkey($fptr,"TNULL$k",$tnull[$j],$tcom,$status)) == 0) {
+            $tnullflg[$j]=1;
+        } else {
+            $status =0;
+            $tnullflg[$j]=0;
+        }
+          
+        $colnames[$j] = $colname;
+        $coltypes[$j] = $coltype;
+        $colrepeats[$j] = $colrepeat;
+        $coldwidth[$j] = $dispwidth;
+   }          
+
+   if ($outfile =~/-/ ) {
+        $outfptr = *STDOUT;
+   } else {
+        open (FH,">$outfile");
+        $outfptr =FH;
+   }
+
+   if ($format =~/^rdb$/) {
+
+   for ($j=0; $j<=$#colnums; $j++) {
+        if ( $j == $#colnums ) {
+              printf $outfptr ("%s\n",$colnames[$j]); 
+        } else {
+              printf $outfptr ("%s\t",$colnames[$j]);
+        }
+   }
+
+
+   for ($j=0; $j<=$#colnums; $j++) {
+        if ($coltypes[$j] ==TSTRING) {
+           if ($j == $#colnums ) {
+               printf $outfptr ("%d%s\n",$coldwidth[$j],"S");
+           } else {
+               printf $outfptr ("%d%s\t",$coldwidth[$j],"S");
+           }
+              
+        } else {
+           if ($j == $#colnums ) {
+               printf $outfptr ("%d%s\n",$coldwidth[$j],"N");
+           } else  {
+               printf $outfptr ("%d%s\t",$coldwidth[$j],"N");
+           }
+        }
+        # Read all data as TSTRING to avoid truncation problems with
+        # e.g. exponential values.
+        $coltypes[$j] = TSTRING;
+   }
+
+
+
+
+   for ($m=0; $m<=$#lows; $m++) {
+   $first = $lows[$m];
+   $nrows = $highs[$m]-$lows[$m]+1;
+   $nloop =int($nrows/1000);
+   $nlast =$nrows%1000;
+
+
+
+   for ($i=0; $i<=$nloop; $i++) {
+       @data = ();
+       for ($j=0; $j<=$#colnums; $j++) {
+              $k=$i*1000+$first;
+              if ($i < $nloop ) {
+              ffgcv($fptr,$coltypes[$j],$colnums[$j],$k,1,1000,'',\@array,$anynul,$status);
+              push @data, [ @array ];
+              } elsif ($i == $nloop && $nlast > 0 ) {
+                 ffgcv($fptr,$coltypes[$j],$colnums[$j],$k,1,$nlast,'',\@array,$anynul,$status);
+                 push @data, [ @array ];
+              }
+       } 
+       if ($i < $nloop ) {
+       	for ($k=0; $k<1000; $k++) {
+       	       for ($j=0; $j<=$#colnums; $j++) {
+                # Remove leading whitespace:
+                $data[$j][$k] =~ s/^\s+//;
+                if (($tnullflg[$j] ==1 && $data[$j][$k]==$tnull[$j]) || $data[$j][$k] =~/^nan$/i ) {
+                        if ($j != 0) {
+       	       		   printf $outfptr ("\t");
+                        }
+                } else {
+                        if ($j ==0) {
+                           $tmp = sprintf("%s",$data[$j][$k]);
+                           $tmp = substr($tmp,0,$coldwidth[$j]);
+       	       		   printf $outfptr ("%s",$tmp);
+                        } else {
+                           $tmp = sprintf("%s",$data[$j][$k]);
+                           $tmp = substr($tmp,0,$coldwidth[$j]);
+       	       		   printf $outfptr ("\t%s",$tmp);
+                        }
+                }
+
+       	       }
+       	       printf $outfptr ("\n");
+       	}
+       } elsif ($i == $nloop && $nlast > 0 )  {
+       	for ($k=0; $k<$nlast; $k++) {
+       	       for ($j=0; $j<=$#colnums; $j++) {
+                # Remove leading whitespace:
+                $data[$j][$k] =~ s/^\s+//;
+                if (($tnullflg[$j] ==1 && $data[$j][$k]==$tnull[$j]) || $data[$j][$k] =~/^nan$/i) {
+                        if ($j != 0) {
+       	       		   printf $outfptr ("\t");
+                        }
+                } else {
+                        if ($j == 0) {
+                           $tmp = sprintf("%s",$data[$j][$k]);
+                           $tmp = substr($tmp,0,$coldwidth[$j]);
+       	       		   printf $outfptr ("%s",$tmp);
+                        } else {
+                           $tmp = sprintf("%s",$data[$j][$k]);
+                           $tmp = substr($tmp,0,$coldwidth[$j]);
+       	       		   printf $outfptr ("\t%s",$tmp);
+                        }
+                }
+       	       }
+       	       printf $outfptr ("\n");
+       	}
+      }
+      
+   }
+   }
+
+   }
+   close ($outfptr);
+
+
+   return $status;
+}

@@ -1,0 +1,1145 @@
+#!/usr1/local/bin/perl5 
+use Getopt::Std;
+require "interface.pl";
+require "utils.pl";
+
+# Transformation matrix from J2000 to Galactic
+@eqgal_rmat = ( -0.054875539726,
+             -0.873437108010,
+             -0.483834985808,
+              0.494109453312,   
+             -0.444829589425,
+	      0.746982251810,
+       	     -0.867666135858,
+	     -0.198076386122,
+	      0.455983795705);
+	      
+# pi/(180*3600):  arcseconds to radians */
+$DAS2R = 4.8481368110953599358991410235794797595635330237270e-6;
+$DPI = 3.1415926535897932384626433832795028841971693993751;
+$D2PI = 6.2831853071795864769252867665590057683943387987502;
+
+#
+# Script quickly finds the 'good' observing days
+# for a selected X-ray source. This script is intended
+# strictly for OSO-8.
+
+# Dave Dawson (Nov 97 ) Original version
+#
+# Lorraine Breedon (Aug 98)  Included precession option for any equinox\
+#                            Precession output check\
+#                            Added -h help flag (+info)\
+#                            Added switch option for input params\
+#
+# 
+# Lorraine Breedon (Feb 99)  Included new table containing spin
+#                            axis pointings for which there is
+#                            difference of > 1 degree \
+#                            Added switch to print orbit file lists \
+
+
+#================================================================#
+#
+# See if there are any flags
+#
+
+
+getopts('e:r:d:c:o:h');
+#** Note for using Getopts **
+# all arguments in Getopts that are followed by a colon require an argument
+# Example:
+# h as written above therefore doesn't require an argument
+#
+# Example 2:
+# &Getopts('cde:hmqvw:x:');
+# e and w and x require arguments
+# c,d,e,h,m,q,and v do not
+#****************************
+
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+USAGE
+
+  osofindfast -e equinox -r ra -d dec -c -o root 
+
+ DESCRIPTION 
+
+      For a given input sky position, this script finds the appropriate OSO8 
+      raw rate file which include data for that input position. The filenames 
+      of the selected OSO8 raw rate data are listed in output files.
+      The script is intended to work only for the OSO raw rate data files 
+      as stored in the HEASARC archive. Each file in the OSO8 rate archive 
+      contains data for one day observation, obtained with the Cosmic X-ray 
+      Spectroscopy experiments (A, B and C detectors).
+  
+      To determine the appropriate OSO8 raw data file, this script tests if 
+      the input position is within the FOV of any of the detectors (A, B or C) 
+      by computing the angle between the spin axis and that position.
+      The spin axis values for which there is a difference of >=
+      1 degree within each observing day are read from a file (oso8spin.txt), 
+      distributed with this script.
+      The output files of this script list the filenames of the OSO8 raw rate 
+      data that contain the input sky position. Since the A, B and C detectors
+      viewed at any time different parts of the sky, there is an output file 
+      for each detector. These are named  
+       {root}_a  for detector A
+       {root}_b  for detector B
+       {root}_c  for detector C
+      where root is an input parameter. If requested
+      there is also an output file for each detector listing the filenames
+      of the OSO8 orbit data . These are named
+       {root}_orb_a  for detector A
+       {root}_orb_b  for detector B
+       {root}_orb_c  for detector C
+      where root is an input parameter.
+
+      These output files are the input to
+      'osorat' which extract a background subtracted and collimator corrected 
+      lightcurve. The OSO8 raw rate data file are located in the HEASARC 
+      OSO8 FTP area in the /oso8/data/gcxse/osorates directory.
+      The sky position should be entered as right ascention and declination
+      in decimal degrees, together with the corresponding equinox.
+
+            
+    FLAGS
+       -h - Prints this help file
+
+       the following flags require arguments
+       -e - equinox [input any year i.e. 1950]
+       -r - source R.A. [decimal degrees]
+       -d - source Dec. [decimal degrees]
+       -o - root of the output filename
+       -c - require output orbit file lists ? [y/n]
+
+
+    EXAMPLES 
+
+        Find all the OSO8 raw rates data file for HD 193793 (coordinates 
+        R.A.(1950)=304.6946, Dec (1950)= 43.6953) and list the filenames 
+        in the outfiles with root name HD193793.  
+        Also list the orbit files in outfiles with root name HD193793.
+
+        > osofindfast -e 1950 -r 304.6946 -d 43.6953  -o HD193793 -c y
+
+EOHELP1
+&exit_wish;
+    }
+
+# initialise variables
+$pi = 3.141592653589793;
+$counter = 0;
+$version="1.0.0";
+
+# open the file containing the spin axis pointing variation for each
+# observing day
+$dir = $ENV{LHEA_DATA};
+$summary_file = "$dir/oso8spin.txt";
+#$summary_file="summary.txt";
+
+open (SUMMARY,$summary_file) || die "cannot open file: $summary_file\n
+  Probably the environment variable LHEA_DATA (refdata) \n 
+  is not set properly or the file oso8spin.txt is missing \n
+  from the refdata area \n
+  ** program OSOFINDFAST.PL $version terminated **\n";
+
+
+
+
+# Read Command Line Arguments or Prompt User
+
+# Equinox
+if(defined $opt_e){
+    $inp_EQU=$opt_e;
+}else{
+    $inp_EQU=&getScalar("Equinox",1950,"inp_EQU"," ");
+    if($in_EQU == -9999){
+       &exit_wish;
+    }
+}
+
+$equi=sprintf("%4d",$inp_EQU);
+
+# Source R.A.
+if(defined $opt_r){
+    $ra=$opt_r;
+}else{
+    $ra=&getScalar("Source RA",0,"ra"," ");
+    if($ra == -9999){
+       &exit_wish;
+    }
+}
+$notra=1;
+while($notra){
+    if($ra !~ /^([+-]?)(?=\d|\.\d)\d*(\.\d*)?([DdEe]([+-]?\d+))?$/ ){
+        print("The source RA is not valid. Enter source RA.\n");
+        $ra=&getScalar("Source RA, -9999 to quit",0.0,"ra"," ");
+        if($ra == -9999){
+            &exit_wish;
+        }
+    }else{
+        $notra=0;
+    }
+}
+
+# Source Dec.
+if(defined $opt_d){
+    $dec=$opt_d;
+}else{
+    $dec=&getScalar("Source Dec.",0,"dec"," ");
+    if($dec == -9999){
+       &exit_wish;
+    }
+}
+$notdec=1;
+while($notdec){
+    if($dec !~ /^([+-]?)(?=\d|\.\d)\d*(\.\d*)?([DdEe]([+-]?\d+))?$/ ){
+        print("The source dec. is not valid. Enter source dec.\n");
+        $dec=&getScalar("Source dec, -9999 to quit",0.0,"dec"," ");
+        if($dec == -9999){
+            &exit_wish;
+        }
+    }else{
+        $notdec=0;
+    }
+}
+
+
+# Output listing file
+if(defined $opt_o){
+    $outfile=$opt_o;
+}else{
+    $outfile=&getScalar("Output listing filename");
+    if($outfile == -999){
+       &exit_wish;
+    }
+}
+
+# Output orbit file lists ?
+if(defined $opt_c){
+    $orbl=$opt_c;
+}else{
+    $orbl=&getScalar("Output orbit file lists ? (y/n)");
+    if($orbl == -999){
+       &exit_wish;
+    }
+}
+$obl=~ tr/A-Z/a-z/;
+$el=substr($orbl,0,1);
+$orbl_length=length($orbl);
+
+
+$notorbl=1;
+while($notorbl){
+      if (($el ne "y" && $el ne "n") || $orbl_length != 1) {
+             print("The response to whether want orbit file lists is not valid . Enter y/n \n");
+        $orbl=&getScalar("y/n for orbit file lists, -9999 to quit",n,"orbl"," ");
+        if($orbl == -9999){
+            &exit_wish;
+        }
+      }else{
+        $notorbl=0;
+      }
+     
+}
+
+
+
+# must precess coords to 1975 epoch if equinox NOT 1975 !
+$raRad = $ra / 360.0 * $pi * 2;
+$decRad = $dec / 360.0 * $pi *2;
+
+if ($equi == 1975) {
+   $ra75Rad = $raRad;
+   $dec75Rad = $decRad;
+}else{
+     $requ_epoch=1975.0;
+
+     @output = &slaPreces ( 'FK4', $equi, $requ_epoch , $raRad, $decRad);
+
+     $ra75Rad = $output[0];
+     $dec75Rad = $output[1];
+     $ra75 = $output[0] / 2 / $pi * 360.0;
+     if ($ra75 < 0.0) {
+        $ra75 = $ra75 + 360.0;
+        $ra75Rad = $ra75Rad + (2.0 * $pi);
+     }
+     $dec75 = $output[1] / 2 / $pi * 360.0;
+     print "Precessed RA and DEC values to 1975 epoch : $ra75 $dec75 \n";
+}
+
+
+# set-up file output variables
+$aOpen=0;
+$bOpen=0;
+$cOpen=0;
+$aOpen_orb=0;
+$bOpen_orb=0;
+$cOpen_orb=0;
+
+
+# Read spin positions for each day
+$i=0;
+while(<SUMMARY>) {
+           $summaryLine=substr($_,0,100);
+           @temp = split(' ', $summaryLine);
+           $i=$i+1;
+           @dday[$i] = $temp[0];
+           $Ra1[$i] = $temp[1];
+           $Dec1[$i] = $temp[2];
+           $Ra2[$i] = $temp[3];
+           $Dec2[$i] = $temp[4];
+   
+}
+
+$counter=$i;
+
+# A detector
+$infov_a[176]=0;
+
+LABEL1:    for ($i=1; $i<=$counter; $i++) {
+             
+               $angle1= calc_ang($ra75Rad, $dec75Rad, $Ra1[$i], $Dec1[$i]);
+               $angleDeg1 = $angle1 / 2 / $pi * 360.0;
+               $angle2= calc_ang($ra75Rad, $dec75Rad, $Ra2[$i], $Dec2[$i]);
+               $angleDeg2 = $angle2 / 2 / $pi * 360.0;
+
+              $day=$dday[$i];
+              if (($dday[$i] > $dday[$i-1])) {
+                 $infov_a[$day] = 0;
+              }
+
+              if ( $angleDeg1 > 170 || $angleDeg2 > 170 ) {
+                 $infov_a[$day]=$infov_a[$day]+1;
+   
+                  
+                 if (($dday[$i] == $dday[$i-1]) && ($infov_a[$day]> 1)) {
+                    next LABEL1;
+                 }
+
+                 if ( $aOpen == 0 ) { 
+                    $afile=$outfile."_a";
+                    print "Opening output list for A detector : $afile \n";
+                    open (AFILE, "+>$afile") || die "Couldn't open $afile\n";
+                    print AFILE "oso8_csxabc_$day.fits\n";
+                    $aOpen = 1;
+                 } else {
+                    print AFILE "oso8_csxabc_$day.fits\n";
+                 }
+                 if ($el eq "y") {
+                    if ( $aOpen_orb == 0 ) {
+ 
+                       $afile_orb=$outfile."_orb_a";
+                       print "Opening output list for A detector : $afile_orb \n";
+                       open (AORB, "+>$afile_orb") || die "Couldn't open $afile_orb\n";
+                       print AORB "oso8_orbit_$day.fits\n";
+                       $aOpen_orb = 1;
+                    } else {
+                       print AORB "oso8_orbit_$day.fits\n";
+                    } 
+                 }
+              }
+  
+                
+          }
+
+# B detector
+$infov_b[176]=0;
+
+LABEL2:    for ($i=1; $i<=$counter; $i++) {
+             
+               $angle1= calc_ang($ra75Rad, $dec75Rad, $Ra1[$i], $Dec1[$i]);
+               $angleDeg1 = $angle1 / 2 / $pi * 360.0;
+               $angle2= calc_ang($ra75Rad, $dec75Rad, $Ra2[$i], $Dec2[$i]);
+               $angleDeg2 = $angle2 / 2 / $pi * 360.0;
+
+              $day=$dday[$i];
+              if (($dday[$i] > $dday[$i-1])) {
+                 $infov_b[$day] = 0;
+              }
+
+
+              if ( $angleDeg1 > 177 || $angleDeg2 > 177) {
+                 $infov_b[$day]=$infov_b[$day]+1;
+                 if (($dday[$i] == $dday[$i-1]) && ($infov_b[$day] > 1)) {
+                     next LABEL2;
+                 }
+
+                 if ( $bOpen == 0 ) { 
+                    $bfile=$outfile."_b";
+                    print "Opening output list for B detector : $bfile \n";
+                    open (BFILE, "+>$bfile") || die "Couldn't open $bfile\n";
+                    print BFILE "oso8_csxabc_$day.fits\n";
+                    $bOpen = 1;
+                 } else {
+                    print BFILE "oso8_csxabc_$day.fits\n";
+                 }
+                 if ($el eq "y") {
+
+                    if ( $bOpen_orb == 0 ) {
+ 
+                        $bfile_orb=$outfile."_orb_b";
+                        print "Opening output list for B detector : $bfile_orb \n";
+                        open (BORB, "+>$bfile_orb") || die "Couldn't open $bfile_orb\n";
+                        print BORB "oso8_orbit_$day.fits\n";
+                        $bOpen_orb = 1;
+                    } else {
+                        print BORB "oso8_orbit_$day.fits\n";
+                    } 
+                 }
+              }
+          }
+
+# C detector
+$infov_c[176]=0;
+
+LABEL3:    for ($i=1; $i<=$counter; $i++) {
+             
+               $angle1= calc_ang($ra75Rad, $dec75Rad, $Ra1[$i], $Dec1[$i]);
+               $angleDeg1 = $angle1 / 2 / $pi * 360.0;
+               $angle2= calc_ang($ra75Rad, $dec75Rad, $Ra2[$i], $Dec2[$i]);
+               $angleDeg2 = $angle2 / 2 / $pi * 360.0;
+
+              $day=$dday[$i];
+                
+              if (($dday[$i] > $dday[$i-1])) {
+                 $infov_c[$day] = 0;
+              }
+
+
+              if ( $angleDeg1 < 5 || $angleDeg2 < 5 ) {
+                 $infov_c[$day]=$infov_c[$day]+1;
+                 if (($dday[$i] == $dday[$i-1]) && ($infov_c[$day] > 1)) {
+                     next LABEL3;
+                 }
+
+                 if ( $cOpen == 0 ) { 
+                    $cfile=$outfile."_c";
+                    print "Opening output list for C detector : $cfile \n";
+                    open (CFILE, "+>$cfile") || die "Couldn't open $cfile\n";
+                    print CFILE "oso8_csxabc_$day.fits\n";
+                    $cOpen = 1;
+                 } else {
+                    print CFILE "oso8_csxabc_$day.fits\n";
+                 }
+                 if ($el eq "y") {
+                    if ( $cOpen_orb == 0 ) {
+ 
+                       $cfile_orb=$outfile."_orb_c";
+                       print "Opening output list for C detector : $cfile_orb \n";
+                       open (CORB, "+>$cfile_orb") || die "Couldn't open $cfile_orb\n";
+                       print CORB "oso8_orbit_$day.fits\n";
+                       $cOpen_orb = 1;
+                    } else {
+                       print CORB "oso8_orbit_$day.fits\n";
+                    } 
+                 }
+              }
+
+     }
+          
+
+
+    if ($aOpen==0 && $bOpen==0 && $cOpen==0 && $aOpen_orb==0 && $bOpen_orb==0 && $cOpen_orb==0) {
+        print " \n";
+        print " WARNING: \n";
+        print " The source was not found in the FOV of any detector\n";
+        print " ...therefore no output files have been created \n";
+    }
+
+
+    if ( $aOpen ) { close AFILE; }
+    if ( $bOpen ) { close BFILE; }
+    if ( $cOpen ) { close CFILE; }
+    if ( $aOpen_orb ) { close AORB; }
+    if ( $bOpen_orb ) { close BORB; }
+    if ( $cOpen_orb ) { close CORB; }
+
+
+
+
+
+
+
+print " \n";
+print " ** OSOFINDFAST.PL $version finished **\n";
+
+close(OUTFILE);
+close(SUMMARY);
+
+sub calc_ang {
+    my($ra1, $dec1, $ra2, $dec2) = @_;
+    my(@v1,@v2,$dot,$angle);
+    
+    $v1[0] = cos( $ra1 ) * cos ( $dec1 );
+    $v1[1] = sin( $ra1 ) * cos ( $dec1 );
+    $v1[2] = sin( $dec1 );
+    
+    $v2[0] = cos( $ra2 ) * cos ( $dec2 );
+    $v2[1] = sin( $ra2 ) * cos ( $dec2 );
+    $v2[2] = sin( $dec2 );
+
+    $dot = $v1[0] * $v2[0] + $v1[1] * $v2[1] + $v1[2] * $v2[2];
+     $angle = ($dot<-1 or $dot>1) ? undef : atan2(sqrt(1-$dot*$dot),$dot);
+}
+
+
+############################################################################
+#package SLA;
+
+# Derived from C SLALib routines.  The C source for the SLALIB
+# routines should be consulted to understand the range
+# of validity of these results (e.g., with regard to
+# the precssion calculations).
+
+# Included routines:
+
+#  Basic conversion utilities.
+#  &slaEqgal		Convert from J2000 to Galactic
+#  &slaGaleq		Convert from Galactic to J2000
+#  &slaEqecl		Convert from J2000 to Ecliptic 2000
+#  &slaEcleq		Convert from Ecliptic 2000 to J2000
+#  &slaFk45z		Simple conversion from B1950 to J2000.
+#  &slaFk54z             Simple conversion from J2000 to B1950.
+#  &slaFk524             Full conversion from J2000 to B1950.
+#  &slaPreces		Precess Equatorial coordinates.
+
+#  Transformation matrices.
+#  &slaPrebn		Calculate Besselian precession matrix
+#  &slaPrec              Calculate Eulerian precession matrix
+#  &slaEcmat		Calculate transformation matrix from Equatorial to Ecliptic
+
+#  The following two time conversions are approximate and to be used
+#  only for the purposes of calculating tranformation matrices.
+#  &slaEpj               Calculate epoch (year) corresponding to MJD.
+#  &slaEpb2d             Calculate MJD corresponding to epoch (year).
+
+#  Math utilities.
+#  &slaDcs2c             Convert coordinates to unit vector
+#  &slaDcc2s             Convert unit vector to coordinates
+#  &slaDmxv              Multiply vector by matrix
+#  &slaDimxv             Multiply vector by inverse matrix
+#  &slaPm		Add proper motion to a coordinate.
+#  &slaDeuler		Calculate transformation matrix given Euler angles
+
+
+
+# Convert from J2000 to Galactic coordinates
+sub slaEqgal {    
+    my ($dr, $dd) = @_;
+    
+    my @v1;
+    my @v2;
+ 
+ 
+    @v1 = &slaDcs2c ( $dr, $dd);
+    @v2 = &slaDmxv ( \@eqgal_rmat, \@v1);
+    return  &slaDcc2s (@v2);
+}
+    
+# Convert from Galactic to J2000 coordinates
+sub slaGaleq {
+
+    my ($dr, $dd) = @_;
+    my @v1;
+    my @v2;
+ 
+ 
+    @v1 = &slaDcs2c ( $dr, $dd);
+    @v2 = &slaDimxv ( \@eqgal_rmat, \@v1);
+    return  &slaDcc2s (@v2);
+}
+
+# Convert from ecliptic to J2000
+sub slaEcleq {
+
+   my ($dl, $db, $date) = @_;
+   if (!defined($date)) {
+       $date = 51544;      # MJD of 2000/1/1
+   }
+ 
+   @v1 = &slaDcs2c ( $dl, $db);
+ 
+   @rmat =  &slaEcmat ($date);
+   @v2 = &slaDimxv ( \@rmat, \@v1);
+ 
+   @rmat = &slaPrec (2000, &slaEpj($date));
+   @v3 = &slaDimxv (\@rmat, \@v2);
+ 
+   return slaDcc2s (@v3);
+ 
+}
+
+# Convert from J2000 to Ecliptic
+sub slaEqecl {
+
+   my ($dl, $db, $date) = @_;
+   if (!defined($date)) {
+       $date = 51544;      # MJD of 2000/1/1
+   }
+ 
+   @v1 = &slaDcs2c ( $dl, $db);
+ 
+   @rmat = &slaPrec (2000, &slaEpj($date));
+   @v2 = &slaDmxv (\@rmat, \@v1);
+
+   @rmat =  &slaEcmat($date);
+   @v3 = &slaDmxv (\@rmat, \@v2);
+ 
+   return slaDcc2s (@v3);
+ 
+}
+
+sub slaPreces { 
+
+		 
+   my ($sys, $ep0, $ep1, $ra, $dc) = @_;
+   my (@pm, @v1, @v2);
+ 
+#  Validate sys */
+
+   if (! $sys=~/^FK[45]$/i) {
+      return (-99, -99);
+   } else {
+ 
+   #  Generate appropriate precession matrix */
+      if ( substr($sys, 2, 1) == '4' ) {
+         @pm = &slaPrebn ( $ep0, $ep1);
+       } else {
+         @pm = &slaPrec ( $ep0, $ep1);
+      }
+      
+
+      @v1 = &slaDcs2c ($ra, $dc);
+ 
+   #  Precess */
+      @v2 = &slaDmxv ( \@pm, \@v1);
+ 
+   #  Back to RA,Dec */
+      return slaDcc2s ( @v2);
+   }
+}
+
+# Besselian precession matrix.
+sub  slaPrebn {
+   my ($bep0, $bep1) = @_;
+   my ($bigt, $t, $tas2r, $w, $zeta, $z, $theta);
+ 
+#  Interval between basic epoch B1850.0 and beginning epoch in TC */
+   $bigt  = ( $bep0 - 1850.0 ) / 100.0;
+ 
+# Interval over which precession required, in tropical centuries */
+   $t = ( $bep1 - $bep0 ) / 100.0;
+ 
+#  Euler angles */
+   $tas2r = $t * $DAS2R;
+   $w = 2303.5548 + ( 1.39720 + 0.000059 * $bigt ) * $bigt;
+   $zeta = ($w + ( 0.30242 - 0.000269 * $bigt + 0.017996 * $t ) * $t ) * $tas2r;
+   $z = ($w + ( 1.09478 + 0.000387 * $bigt + 0.018324 * $t ) * $t ) * $tas2r;
+   $theta = ( 2005.1125 + ( - 0.85294 - 0.000365* $bigt ) * $bigt +
+           ( - 0.42647 - 0.000365 * $bigt - 0.041802 * $t ) * $t ) * $tas2r;
+ 
+#  Rotation matrix */
+   return slaDeuler ( "ZYZ", -$zeta, $theta, -$z);
+}
+
+# Convert coordinates to unit vector.
+sub slaDcs2c {
+
+   my ($a, $b) = @_;
+   my ($cosb);
+   my ($v0, $v1, $v2);
+ 
+   $cosb = cos ( $b );
+    
+   $v0 = cos ( $a ) * $cosb;
+   $v1 = sin ( $a ) * $cosb;
+   $v2 = sin ( $b );
+   return ($v0, $v1, $v2);
+}
+
+# Convert unit vector to coordinates.
+sub  slaDcc2s {
+    
+   my ($x, $y, $z) = @_;
+   my $r;
+   my ($a, $b);
+ 
+   $r = sqrt ( $x * $x + $y * $y );
+ 
+   $a = ( $r != 0.0 ) ? atan2 ( $y, $x ) : 0.0;
+   $b = ( $z != 0.0 ) ? atan2 ( $z, $r ) : 0.0;
+   return ($a, $b);
+}
+
+# Multiply vector by rotation matrix.
+sub slaDmxv {
+
+    my ($dm, $va) = @_;
+    my ($i, $j);
+    my $w;
+    my @vw;
+ 
+   for ( $j = 0; $j < 3; $j++ ) {
+      $w = 0.0;
+      for ( $i = 0; $i < 3; $i++ ) {
+         $w += $$dm[3*$j+$i] * $$va[$i];
+      }
+      $vw[$j] = $w;
+   }
+ 
+   return @vw;
+}
+
+# Multiply vector by inverse rotation matrix.
+sub slaDimxv {
+
+    my ($dm, $va) = @_;
+    my ($i, $j);
+    my $w;
+    my @vw;
+ 
+   for ( $j = 0; $j < 3; $j++ ) {
+      $w = 0.0;
+      for ( $i = 0; $i < 3; $i++ ) {
+         $w += $$dm[3*$i+$j] * $$va[$i];
+      }
+      $vw[$j] = $w;
+   }
+ 
+   return @vw;
+}
+
+
+sub slaPrec {
+
+   my ($ep0, $ep1) = @_;
+   my ($t0, $t, $tas2r, $w, $zeta, $z, $theta);
+ 
+#  Interval between basic epoch J2000.0 and beginning epoch (JC) */
+   $t0 = ( $ep0 - 2000.0 ) / 100.0;
+ 
+#  Interval over which precession required (JC) */
+   $t =  ( $ep1 - $ep0 ) / 100.0;
+ 
+#  Euler angles */
+   $tas2r = $t * $DAS2R;
+   $w = 2306.2181 + ( ( 1.39656 - ( 0.000139 * $t0 ) ) * $t0 );
+   $zeta = ($w + ( ( 0.30188 - 0.000344 * $t0 ) + 0.017998 * $t ) * $t ) * $tas2r;
+   $z = ($w + ( ( 1.09468 + 0.000066 * $t0 ) + 0.018203 * $t ) * $t ) * $tas2r;
+   $theta = ( ( 2004.3109 + ( - 0.85330 - 0.000217 * $t0 ) * $t0 )
+          + ( ( -0.42665 - 0.000217 * $t0 ) - 0.041833 * $t ) * $t ) * $tas2r;
+ 
+#  Rotation matrix
+   return slaDeuler ( "ZYZ", -$zeta, $theta, -$z);
+}
+
+# Convert MJD to year. (I'm a little concerned about the .5 in the 51544.5
+# since it seems to me that at 2000.0 the MJD should be integral -- but
+# maybe epoch 2000.0 is defined at the beginning of a Julian day.
+
+sub slaEpj  {
+  return 2000.0 + ( $_[0] - 51544.5 ) / 365.25;
+}
+
+sub slaEcmat {
+
+   my ($date) = @_;
+
+   my ($t, $eps0);
+ 
+#  Interval between basic epoch J2000.0 and current epoch (JC) */
+   $t = ( $date - 51544.5 ) / 36525.0;
+ 
+#  Mean obliquity */
+   $eps0 = $DAS2R *
+        ( 84381.448 + ( -46.8150 + ( -0.00059 + 0.001813 * $t ) * $t ) * $t );
+ 
+#  Matrix */
+   return slaDeuler ( "X", $eps0, 0.0, 0.0);
+}
+
+sub slaDeuler {
+   my ($order, $phi, $theta, $psi) = @_;
+   my ($j, $i, $l, $n, $k);
+   my (@result, @rotn, $angle, $s, $c , $w, @wm);
+   my ($axis);
+ 
+#  Initialize result matrix */
+
+   for ( $j = 0; $j < 3; $j++ ) {
+      for ( $i = 0; $i < 3; $i++ ) {
+         $result[3*$i+$j] = ( $i == $j ) ? 1.0 : 0.0;
+      }
+   }
+ 
+#  Establish length of axis string */
+   $l = length ( $order );
+ 
+#  Look at each character of axis string until finished */
+   for ( $n = 0; $n < 3; $n++ ) {
+      if ( $n <= $l ) {
+ 
+      #  Initialize rotation matrix for the current rotation */
+         for ( $j = 0; $j < 3; $j++ ) {
+            for ( $i = 0; $i < 3; $i++ ) {
+               $rotn[3*$i+$j] = ( $i == $j ) ? 1.0 : 0.0;
+            }
+         }
+ 
+      # Pick up the appropriate Euler angle and take sine & cosine */
+         if ($n == 0) {
+            $angle = $phi;
+         } elsif ($n == 1) {
+            $angle = $theta;
+         } elsif ($n == 2) {
+            $angle = $psi;
+         }
+         $s = sin ( $angle );
+         $c = cos ( $angle );
+ 
+         # Identify the axis */
+         $axis =  substr($order, $n, 1);
+	 
+         if ( ( $axis eq 'X' ) || ( $axis eq 'x' ) || ( $axis eq '1' ) ) {
+ 
+         # Matrix for x-rotation */
+	 #   Perl note: we don't do the index computation so that
+	 #              the user understands what's happening in the
+	 #              rotation matrix
+            $rotn[3*1+1] = $c;
+            $rotn[3*1+2] = $s;
+            $rotn[3*2+1] = -$s;
+            $rotn[3*2+2] = $c;
+         }
+         elsif ( ( $axis eq 'Y' ) || ( $axis eq 'y' ) || ( $axis eq '2' ) ) {
+ 
+         # Matrix for y-rotation */
+            $rotn[3*0+0] = $c;
+            $rotn[3*0+2] = -$s;
+            $rotn[3*2+0] = $s;
+            $rotn[3*2+2] = $c;
+         }
+         elsif ( ( $axis eq 'Z' ) || ( $axis eq 'z' ) || ( $axis eq '3' ) ) {
+ 
+         #  Matrix for z-rotation */
+            $rotn[3*0+0] = $c;
+            $rotn[3*0+1] = $s;
+            $rotn[3*1+0] = -$s;
+            $rotn[3*1+1] = $c;
+         } else {
+ 
+         #  Unrecognized character - fake end of string */
+            $l = 0;
+         }
+ 
+      #  Apply the current rotation (matrix rotn x matrix result) */
+         for ( $i = 0; $i < 3; $i++ ) {
+            for ( $j = 0; $j < 3; $j++ ) {
+               $w = 0.0;
+               for ( $k = 0; $k < 3; $k++ ) {
+                  $w += $rotn[3*$i+$k] * $result[3*$k+$j];
+               }
+               $wm[3*$i+$j] = $w;
+            }
+         }
+         for ( $j = 0; $j < 3; $j++ ) {
+            for ( $i= 0; $i < 3; $i++ ) {
+               $result[3*$i+$j] = $wm[3*$i+$j];
+            }
+         }
+      }
+   }
+   
+   return @result;
+}
+
+# Convert from B1950 to J2000 for a given observational epoch.
+sub slaFk45z {
+   my ($r1950, $d1950, $bepoch) = @_;
+   my ($w);
+   my ($i, $j);
+ 
+   if (!defined($bepoch) ) {
+      $bepoch = 1950;
+   }
+   
+#  Position and position+velocity vectors */
+   my (@r0, @a1, @v1, @v2);
+ 
+#  Radians per year to arcsec per century */
+   my($pmf) = 100.0 * 60.0 * 60.0 * 360.0 / $D2PI;
+ 
+#  Canonical constants
+ 
+#  vectors a and adot, and matrix m (only half of which is needed here) */
+   my (@a)  = ( -1.62557e-6,  -0.31919e-6, -0.13843e-6 );
+   my (@ad) = (  1.245e-3,    -1.580e-3,   -0.659e-3 );
+   my (@em) =
+   (
+       0.9999256782, -0.0111820611, -0.0048579477 ,
+       0.0111820610,  0.9999374784, -0.0000271765 ,
+       0.0048579479, -0.0000271474,  0.9999881997 ,
+      -0.000551,     -0.238565,      0.435739     ,
+       0.238514,     -0.002667,     -0.008541     ,
+      -0.435623,      0.012254,      0.002117     
+   );
+
+#  Spherical to Cartesian */
+
+   @r0 = &slaDcs2c ( $r1950, $d1950);
+ 
+#  Adjust vector a to give zero proper motion in FK5 */
+   $w = ( $bepoch - 1950.0 ) / $pmf;
+   for ( $i = 0; $i < 3; $i++ ) {
+      $a1[$i] = $a[$i] + $w * $ad[$i];
+   }
+ 
+#  Remove e-terms */
+   $w = $r0[0] * $a1[0] + $r0[1] * $a1[1] + $r0[2] * $a1[2];
+   for ( $i = 0; $i < 3; $i++ ) {
+      $v1[$i] = $r0[$i] - $a1[$i] + $w * $r0[$i];
+   }
+ 
+#  Convert position vector to Fricke system */
+   for ( $i = 0; $i < 6; $i++ ) {
+      $w = 0.0;
+      for ( $j = 0; $j < 3; $j++ ) {
+         $w += $em[3*$i+$j] * $v1[$j];
+      }
+      $v2[$i] = $w;
+   }
+ 
+#  Allow for fictitious proper motion in FK4 */
+   $w = ( &slaEpj ( &slaEpb2d ( $bepoch ) ) - 2000.0 ) / $pmf;
+   for ( $i = 0; $i < 3; $i++ ) {
+      $v2[$i] += $w * $v2[$i+3];
+   }
+ 
+#  Revert to spherical coordinates */
+   return slaDcc2s (@v2);
+}
+
+# Convert J2000 to B1950 for a given epoch.  Note that
+# a proper motion is also returned.
+sub slaFk54z {
+    my ($r2000, $d2000, $bepoch) = @_;
+    my ($r1950, $d1950, $dr1950, $dd1950);
+    my ($zero) = 0;
+    my ($r, $d, $px, $pv);
+    
+    if (!defined($bepoch) ) {
+       $bepoch = 1950;
+    }
+ 
+#  FK5 equinox J2000 (any epoch) to FK4 equinox B1950 epoch B1950 */
+   ($r, $d, $dr1950, $dd1950, $px, $pv) =
+     &slaFk524 ( $r2000, $d2000, $zero, $zero, $zero, $zero);
+ 
+#  Fictitious proper motion to epoch bepoch */
+   ($r1950, $d1950) = 
+      &slaPm ( $r, $d, $dr1950, $dd1950, $zero, $zero, 1950.0, $bepoch);
+   return ($r1950, $d1950, $dr1950, $dd1950);
+}
+
+sub slaFk524 {
+    my ($r2000, $d2000, $dr2000, $dd2000, $p2000, $v2000) = @_;
+
+#  Miscellaneous */
+   my ($r, $d, $ur, $ud, $px, $rv);
+   my ($sr, $cr, $sd, $cd, $x, $y, $z, $w);
+   my (@v1, @v2);
+   my ($xd, $yd, $zd);
+   my ($rxyz, $wd, $rxysq, $rxy);
+   my ($i,$j);
+ 
+#  Radians per year to arcsec per century */
+   my ($pmf) = 100.0 * 60.0 * 60.0 * 360.0 / $D2PI;
+ 
+# Small number to avoid arithmetic problems */
+   my ($tiny) = 1.0e-30;
+ 
+#  Canonical constants
+ 
+#  km per sec to AU per tropical century
+#    = 86400 * 36524.2198782 / 1.49597870e8
+
+   my ($vf) = 21.095;
+ 
+#  Constant vector and matrix (by rows) */
+   my (@a) = ( -1.62557e-6,   -0.31919e-6, -0.13843e-6,
+                           1.245e-3,     -1.580e-3,   -0.659e-3 );
+ 
+   my (@emi) = 
+   (
+        0.9999256795,              # emi[0][0] */
+        0.0111814828,              # emi[0][1] */
+        0.0048590039,              # emi[0][2] */
+       -0.00000242389840,          # emi[0][3] */
+       -0.00000002710544,          # emi[0][4] */
+       -0.00000001177742,          # emi[0][5] */
+ 
+       -0.0111814828,              # emi[1][0] */
+        0.9999374849,              # emi[1][1] */
+       -0.0000271771,              # emi[1][2] */
+        0.00000002710544,          # emi[1][3] */
+       -0.00000242392702,          # emi[1][4] */
+        0.00000000006585,          # emi[1][5] */
+ 
+       -0.0048590040,              # emi[2][0] */
+       -0.0000271557,              # emi[2][1] */
+        0.9999881946,              # emi[2][2] */
+        0.00000001177742,          # emi[2][3] */
+        0.00000000006585,          # emi[2][4] */
+       -0.00000242404995,          # emi[2][5] */
+ 
+       -0.000551,                  # emi[3][0] */
+        0.238509,                  # emi[3][1] */
+       -0.435614,                  # emi[3][2] */
+        0.99990432,                # emi[3][3] */
+        0.01118145,                # emi[3][4] */
+        0.00485852,                # emi[3][5] */
+ 
+       -0.238560,                  # emi[4][0] */
+       -0.002667,                  # emi[4][1] */
+        0.012254,                  # emi[4][2] */
+       -0.01118145,                # emi[4][3] */
+        0.99991613,                # emi[4][4] */
+       -0.00002717,                # emi[4][5] */
+ 
+        0.435730,                  # emi[5][0] */
+       -0.008541,                  # emi[5][1] */
+        0.002117,                  # emi[5][2] */
+       -0.00485852,                # emi[5][3] */
+       -0.00002716,                # emi[5][4] */
+        0.99996684                 # emi[5][5] */
+   );
+ 
+#  Pick up J2000 data (units radians and arcsec/JC) */
+   $r = $r2000;
+   $d = $d2000;
+   $ur = $dr2000 * $pmf;
+   $ud = $dd2000 * $pmf;
+   $px = $p2000;
+   $rv = $v2000;
+ 
+#  Spherical to Cartesian */
+   $sr = sin ( $r );
+   $cr = cos ( $r );
+   $sd = sin ( $d );
+   $cd = cos ( $d );
+ 
+   $x = $cr * $cd;
+   $y = $sr * $cd;
+   $z = $sd;
+ 
+   $w = $vf * $rv * $px;
+ 
+   $v1[0] = $x;
+   $v1[1] = $y;
+   $v1[2] = $z;
+ 
+   $v1[3] =  - $ur * $y - $cr * $sd * $ud + $w * $x;
+   $v1[4] = $ur * $x - $sr * $sd * $ud + $w * $y;
+   $v1[5] = $cd * $ud + $w * $z;
+ 
+#  Convert position+velocity vector to BN system */
+   for ( $i = 0; $i < 6; $i++ ) {
+      $w = 0.0;
+      for ( $j = 0; $j < 6; $j++ ) {
+         $w += $emi[6*$i+$j] * $v1[$j];
+      }
+      $v2[$i] = $w;
+   }
+
+#  Position vector components and magnitude */
+   $x = $v2[0];
+   $y = $v2[1];
+   $z = $v2[2];
+   $rxyz = sqrt ( $x * $x + $y * $y + $z * $z );
+
+#  Include e-terms */
+   $w = $x * $a[0] + $y * $a[1] + $z * $a[2];
+   $x += $a[0] * $rxyz - $w * $x;
+   $y += $a[1] * $rxyz - $w * $y;
+   $z += $a[2] * $rxyz - $w * $z;
+
+#  Recompute magnitude */
+   $rxyz = sqrt ( $x * $x + $y * $y + $z * $z );
+
+#  Apply E-terms to both position and velocity */
+   $x = $v2[0];
+   $y = $v2[1];
+   $z = $v2[2];
+   $w = $x * $a[0] + $y * $a[1] + $z * $a[2];
+   $wd = $x * $a[3] + $y * $a[4] + $z * $a[5];
+   $x += $a[0] * $rxyz - $w * $x;
+   $y += $a[1] * $rxyz - $w * $y;
+   $z += $a[2] * $rxyz - $w * $z;
+   $xd = $v2[3] + $a[3] * $rxyz - $wd * $x;
+   $yd = $v2[4] + $a[4] * $rxyz - $wd * $y;
+   $zd = $v2[5] + $a[5] * $rxyz - $wd * $z;
+
+#  Convert to spherical */
+   $rxysq = $x * $x + $y * $y;
+   $rxy = sqrt ( $rxysq );
+ 
+   if ( ( $x == 0.0 ) && ( $y == 0.0 ) ) {
+      $r = 0.0;
+   } else {
+      $r = atan2 ( $y, $x );
+      if ( $r < 0.0 ) {
+          $r += $D2PI;
+      }
+   }
+   $d = atan2 ( $z, $rxy );
+ 
+   if ($rxy > $tiny) {
+      $ur = ( $x * $yd - $y * $xd ) / $rxysq;
+      $ud = ( $zd * $rxysq - $z * ( $x * $xd + $y * $yd ) ) /
+           ( ( $rxysq + $z * $z ) * $rxy );
+   }
+
+#  Radial velocity and parallax */
+   if ( $px > $tiny )
+   {
+      $rv = ( $x * $xd + $y * $yd + $z * $zd ) / ( $px * $vf * $rxyz );
+      $px = $px / $rxyz;
+   }
+
+#  Return results */
+   return ($r, $d, $ur/$pmf, $ud/$pmf, $rv, $px);
+}
+
+sub slaPm {
+   my ($r0, $d0, $pr, $pd, $px, $rv, $ep0, $ep1) = @_;
+   my ($r1, $d1 );
+#  Km/s to AU/year multiplied by arc seconds to radians */
+   my ($vfr) = 0.21094502 * $DAS2R;
+ 
+   my $i;
+   my ($w, @em, $t, @p);
+ 
+#  Spherical to Cartesian */
+   @p = &slaDcs2c ( $r0, $d0);
+ 
+#  Space motion (radians per year) */
+   $w = $vfr * $rv * $px;
+   $em[0] = - $pr * $p[1] - $pd * cos ( $r0 ) * sin ( $d0 ) + $w * $p[0];
+   $em[1] =   $pr * $p[0] - $pd * sin ( $r0 ) * sin ( $d0 ) + $w * $p[1];
+   $em[2] =                 $pd * cos ( $d0 )               + $w * $p[2];
+ 
+#  Apply the motion */
+   $t = $ep1 - $ep0;
+   for ( $i = 0; $i < 3; $i++ ) {
+      $p[$i] = $p[$i] + ($t * $em[$i]);
+   }
+ 
+#  Cartesian to spherical */
+   return slaDcc2s ( @p);
+}
+
+sub slaEpb2d {
+   return 15019.81352 + ( $_[0] - 1900.0 ) * 365.242198781;
+}
+

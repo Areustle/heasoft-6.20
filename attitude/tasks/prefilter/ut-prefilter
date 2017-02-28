@@ -1,0 +1,312 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/prefilter/ut-prefilter,v $
+# $Revision: 1.7 $
+# $Date: 2016/10/25 18:35:18 $
+#
+#	ut-prefilter
+#		validate prefilter operation
+#
+#
+# $Log: ut-prefilter,v $
+# Revision 1.7  2016/10/25 18:35:18  rwiegand
+# For unit test, only require TIME consistency at the micro-second level.
+#
+# Revision 1.6  2005/01/21 15:58:06  rwiegand
+# Removed PNT_ prefix from boresight RA, DEC, ROLL columns.  Added checks
+# of sun, moon, earth positions.
+#
+# Revision 1.5  2004/09/24 20:54:26  miket
+# Merge of Swift Build 9 back onto main trunk
+#
+# Revision 1.4.4.1  2004/08/17 14:47:46  miket
+# Raised tolerance on COR_ASCA to 1e-5
+#
+# Revision 1.4  2004/05/11 19:12:10  rwiegand
+# Made names of pointing axis columns more generic since they might not
+# correspond to +Z.
+#
+# Revision 1.3  2004/05/11 18:45:48  rwiegand
+# Indicate interval between records in DELTAT keyword.  Indicate that
+# POSITION/VELOCITY vectors hold X,Y,Z.
+#
+# Revision 1.2  2004/02/02 15:53:57  rwiegand
+# Now there is a single vector defining the current pointing derived from
+# the alignment file parameter.
+# There used to be fields defined in terms of the primary spacecraft axis
+# and others in terms of the instrument boresight.
+#
+# Revision 1.1  2003/02/10 18:35:00  rwiegand
+# Build 4 unit tests updated from previous versions to use PIL.
+#
+# Revision 1.5  2003/01/22 18:43:53  rwiegand
+# Added history parameter to unit tests
+#
+# Revision 1.4  2003/01/22 16:08:47  rwiegand
+# Check ftdiff output.
+#
+# Revision 1.3  2002/12/18 01:28:28  rwiegand
+# Capture standard error of ftverify
+#
+# Revision 1.2  2002/12/18 01:15:17  rwiegand
+# Corrected usage notes
+#
+# Revision 1.1  2002/12/06 21:00:59  rwiegand
+# Updated prefilter unit test with new parameters.  No update to test data
+# required.
+#
+# Revision 1.1  2002/12/02 15:56:51  rwiegand
+# Test script updated for build 3 to use ftdiff tolerance parameter and
+# new perl Task modules.
+#
+# Revision 1.2  2002/09/05 18:40:02  rwiegand
+# Display success/failure message at end of run
+#
+# Revision 1.1  2002/08/16 16:40:53  miket
+# rationalizing swift unit-tests
+#
+# Revision 1.1  2002/05/14 15:42:34  rwiegand
+# Test driver for prefilter v2 interface
+#
+# Revision 1.3  2002/05/03 13:39:24  miket
+# fixed typo in fparkey command
+#
+# Revision 1.2  2002/05/02 20:03:54  rwiegand
+# Added arguments for input and output directories.  Perform additional
+# validation on environment and inputs.  Assign TDISPn keywords to output
+# file to avoid floating point precision differences between platforms.
+#
+# Revision 1.1  2002/05/01 19:37:25  miket
+# script changes; moved test data out of tree and into dedicated area
+#
+# Revision 1.1  2002/04/29 14:07:02  rwiegand
+# Test set for prefilter 1.0.1
+#
+
+use strict;
+
+package Test::Prefilter;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => 'ut-prefilter',
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(chatter input output) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runPrefilter
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	$self->report("validating set up")
+		if $self->chatter;
+
+	my $args = $self->args;
+
+	# validate environment
+	$ENV{HEADASNOQUERY} = 1;
+	foreach my $var (qw(HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->error(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->error(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runPrefilter
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $headas = $ENV{HEADAS};
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{prefilterOutput} = "$output/prefilter.fits";
+	$self->{prefilterTemplate} = "$input/template.fits";
+
+	my @args = (
+		outname       => "!$self->{prefilterOutput}",
+		columns       => 'ALL',
+		leapname      => "$headas/refdata/leapsec.fits",
+		rigname       => "$headas/refdata/rigidity.data",
+		attname       => "$input/ATTITUDE.fits",
+		alignfile     => 'NONE',
+		orbmode       => "atSetElement2",
+		orbname       => "$input/frf.orbit.250",
+		start         => 39974170.6,
+		end           => 39979770.6,
+		interval      => 30.0,
+		attextrap     => 32.0,
+		origin        => 'NASA/GSFC',
+		ranom         => 278.459,
+		decnom        => -8.16,
+		missepoch     => '1993-01-01T00:00:00',
+		compcols      => 'TIME PX PY PZ VX VY VZ Q1 Q2 Q3 Q4',
+		compapplyquat => 'no',
+		chatter       => 3,
+		clobber       => 'yes',
+		history       => 'yes',
+	);
+
+	my %task = @args;
+
+	# validate input files
+	foreach my $key (qw(orbname attname leapname rigname)) {
+		my $input = $task{$key};
+		if (not defined($input)) {
+			$self->error(BAD_TASK, "missing input key: $key");
+		}
+		elsif (not -f $input) {
+			$self->error(BAD_INPUT, "invalid $key file: $input");
+		}
+	}
+
+	# build command line
+	my $command = $self->buildCommand('prefilter', @args);
+
+	my $result = $self->doCommand($command);
+	if ($result->{error}) {
+		$self->error(BAD_EXECUTE, $result->{output});
+	}
+	else {
+		$self->report($result->{output})
+			if $self->chatter(4);
+	}
+}
+
+
+sub checkFtdiffOutput
+{
+	my ($self, $lines) = @_;
+
+	my $matches = 0;
+	foreach my $l (@$lines) {
+		if ($l =~ /End of file comparison:\s+(\d+) differences were found/) {
+			my $diff = $1;
+			++$matches;
+			if ($diff) {
+				$self->error(BAD_EXECUTE,
+					"$diff differences\n");
+			}
+		}
+	}
+
+	if ($matches != 1) {
+		$self->error(BAD_EXECUTE,
+			'did not find exactly one differences line');
+	}
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $output = $self->{prefilterOutput};
+	my $template = $self->{prefilterTemplate};
+
+	my $command = qq(ftverify infile=$output outfile=STDOUT 2>&1);
+	my $result = $self->doCommand($command);
+	if ($result->{error}
+			or (grep / [^0] error(s)/i, @{ $result->{lines} })) {
+		$self->error(BAD_EXECUTE, $result->{output});
+	}
+
+	# compare headers
+	$command = qq(ftdiff infile1=$template infile2=$output)
+			. qq( exclude='TFORM*,TUNITS*,CREATOR,DATE,DATASUM')
+			. qq( cmpdata=no caldsum=no 2>&1);
+	$result = $self->doCommand($command);
+	if ($result->{error}
+			or (grep /FITSIO status/i, @{ $result->{lines} })) {
+		$self->error(BAD_EXECUTE, $result->{output});
+	}
+	else {
+		$self->report($result->{output})
+			if $self->chatter(5);
+		$self->checkFtdiffOutput($result->{lines});
+	}
+
+	# classes of derived parameter by accuracy
+	my %derived = (
+		1e-6	=> [ qw(TIME RA DEC ROLL SAT_LAT SAT_LON SAT_ALT
+							ELV SUN_ANGLE MOON_ANGLE RAM_ANGLE
+							COR_SAX MCILWAIN_L) ],
+		1e-5	=> [ qw(COR_ASCA) ],
+		1e-4	=> [ qw(ANG_DIST) ],
+		1e-3	=> [ qw(SUN_RA SUN_DEC MOON_RA MOON_DEC EARTH_RA EARTH_DEC) ],
+		1e-1	=> [ qw(BR_EARTH) ],
+	);
+
+	my $ext = '[PREFILTER]';
+	foreach my $tolerance (keys(%derived)) {
+
+		# run ftdiff for parameters in the accuracy class
+
+		my $col = '[col ' . join(';', @{ $derived{$tolerance} }) . ']';
+		$command = qq(ftdiff 'infile1=$template$ext$col')
+			. qq( 'infile2=$output$ext$col')
+			. qq( tolerance=$tolerance exclude='*' 2>&1);
+			# . qq( tolerance=$tolerance exclude='*' cmpdata=yes 2>&1);
+
+		$result = $self->doCommand($command);
+		if ($result->{error} or (grep /FITSIO status/i, @{ $result->{lines} })) {
+			$self->error(BAD_EXECUTE, $result->{output});
+		}
+		else {
+			$self->report($result->{output})
+				if $self->chatter(5);
+		}
+	}
+
+}
+

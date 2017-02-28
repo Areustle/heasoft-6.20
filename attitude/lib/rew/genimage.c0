@@ -1,0 +1,574 @@
+/* genimage.{c,h,h0} #includes this with the appropriate macros defined */
+
+
+int
+_i_func(allocate) (_i_type * i, int width, int height)
+{
+	int code = 0;
+
+	int count = width * height;
+
+	_c_type * pixels = (_c_type *) malloc(count * sizeof(_c_type));
+
+	if (!pixels)
+		code = IMAGE_ERROR;
+	else
+		{
+			i->width = width;
+			i->height = height;
+			code = _i_func(set_data_oned)(i, pixels, 1);
+		}
+
+	return code;
+}
+
+
+void
+_i_func(release) (_i_type * i)
+{
+	if (i->owned)
+		free(i->oned);
+}
+
+
+/* make this image point to a 1 dimensional array */
+int
+_i_func(set_data_oned) (_i_type * i, _c_type * d, int transfer)
+{
+	int code = 0;
+
+	i->oned = d;
+	i->owned = transfer;
+
+	return code;
+}
+
+
+
+static _c_type *
+_i_func(pixel_pointer) (const _i_type * i, int xo, int yo, int warn,
+		int * code)
+{
+	_c_type * p = 0;
+	warn = warn && --((_i_type *)i)->warnings >= 0;
+
+	if (xo < 0)
+		{
+			*code = IMAGE_X_LOW;
+			if (warn)
+				report_warning("pixel_lookup failed [X_LOW]: offset=%d, zero=%d\n",
+							xo, i->x0);
+		}
+	else if (xo >= i->width)
+		{
+			*code = IMAGE_X_HIGH;
+			if (warn)
+				report_warning("pixel_lookup failed [X_HIGH]: offset=%d, width=%d\n",
+							xo, i->width);
+		}
+	else if (yo < 0)
+		{
+			*code = IMAGE_Y_LOW;
+			if (warn)
+				report_warning("pixel_lookup failed [Y_LOW]: offset=%d, zero=%d\n",
+							yo, i->y0);
+		}
+	else if (yo >= i->height)
+		{
+			*code = IMAGE_Y_HIGH;
+			if (warn)
+				report_warning("pixel_lookup failed [Y_HIGH]: offset=%d, height=%d\n",
+							yo, i->height);
+		}
+	else
+		{
+			int offset = yo * i->width + xo;
+			p = &i->oned[offset];
+		}
+
+	return p;
+}
+
+
+int
+_i_func(get) (const _i_type * i, int xi, int yi, _c_type * z)
+{
+	int code = 0;
+	_c_type * p;
+	int xo = i->offset ? xi - i->x0 : xi;
+	int yo = i->offset ? yi - i->y0 : yi;
+
+	p = _i_func(pixel_pointer)(i, xo, yo, 0, &code);
+
+	if (!code)
+		*z = *p;
+	else
+		*z = i->null;
+
+	return code;
+}
+
+
+_c_type
+_i_func(get_absolute) (const _i_type * i, int x, int y)
+{
+	int code = 0;
+	_c_type * p;
+	_c_type z;
+
+	int xo = x - i->x0;
+	int yo = y - i->y0;
+
+	p = _i_func(pixel_pointer)(i, xo, yo, 1, &code);
+	if (!code)
+		z = *p;
+	else
+		z = i->null;
+
+	return z;
+}
+
+
+_c_type
+_i_func(get_relative) (const _i_type * i, int xo, int yo)
+{
+	int code = 0;
+	_c_type * p;
+	_c_type z;
+
+	p = _i_func(pixel_pointer)(i, xo, yo, 1, &code);
+	if (!code)
+		z = *p;
+	else
+		z = i->null;
+
+	return z;
+}
+
+
+int
+_i_func(set) (_i_type * i, int xi, int yi, _c_type z)
+{
+	int code = 0;
+	_c_type * p;
+	int xo = i->offset ? xi - i->x0 : xi;
+	int yo = i->offset ? yi - i->y0 : yi;
+
+	p = _i_func(pixel_pointer)(i, xo, yo, 0, &code);
+
+	if (!code)
+		*p = z;
+
+	return code;
+}
+
+
+int
+_i_func(set_absolute) (_i_type * i, int x, int y, _c_type z)
+{
+	int code = 0;
+	_c_type * p;
+
+	int xo = x - i->x0;
+	int yo = y - i->y0;
+
+	p = _i_func(pixel_pointer)(i, xo, yo, 1, &code);
+	if (!code)
+		*p = z;
+
+	return code;
+}
+
+
+int
+_i_func(set_relative) (_i_type * i, int xo, int yo, _c_type z)
+{
+	int code = 0;
+	_c_type * p;
+
+	p = _i_func(pixel_pointer)(i, xo, yo, 1, &code);
+	if (!code)
+		*p = z;
+
+	return code;
+}
+
+
+void
+_i_func(print) (const _i_type * i, const char *prefix)
+{
+	report_status("%s\n\twidth %d\n\theight %d\n\tx0 %d\n\ty0 %d\n",
+			prefix, i->width, i->height, i->x0, i->y0);
+}
+
+
+int
+_i_func(iterate) (_i_type * image, _i_iterator f, IIState * state)
+{
+	int code = 0;
+	int i, j;
+
+	if (!state->delta)
+		{
+			/* iterate over every pixel */
+			state->dx = 1;
+			state->dy = 1;
+		}
+
+	if (!state->region)
+		{
+			/* iterate over entire image */
+			state->xmin = 0;
+			state->xmax = image->width - 1;
+			state->ymin = 0;
+			state->ymax = image->height - 1;
+		}
+
+	for (i = state->ymin; i <= state->ymax; i += state->dy)
+		{
+			state->y0 = i;
+			state->y = i + image->y0;
+
+			for (j = state->xmin; j <= state->xmax; j += state->dx)
+				{
+					state->x0 = j;
+					state->x = j + image->x0;
+
+					code = f(image, state);
+					if (code)
+						goto BREAK_BREAK;
+				}
+		}
+
+BREAK_BREAK:
+
+	return code;
+}
+
+
+int
+_i_func(read) (_i_type * image, const char * path, ImageIO * io)
+{
+	int code = 0;
+	fitsfile * fptr = 0;
+	int status = 0;
+	ImageIO autoIO = { 0 };
+
+	if (!io)
+		io = &autoIO;
+
+	if (!code)
+		{
+			fits_open_file(&fptr, path, READONLY, &status);
+			if (status)
+				{
+					code = status;
+					report_error("unable to open image %s [%d]\n", path, status);
+				}
+			else
+				report_status("opened image %s\n", path);
+		}
+
+	if (!code)
+		{
+			io->path = path;
+			code = _i_func(read_chdu)(image, fptr, io);
+		}
+
+	if (fptr)
+		{
+			int tmp = 0;
+			fits_close_file(fptr, &tmp);
+			if (tmp)
+				{
+					code = tmp;
+					report_error("unable to close image [%d]\n", tmp);
+				}
+		}
+
+	return code;
+}
+
+
+int
+_i_func(read_chdu) (_i_type * image, fitsfile * fptr, ImageIO * io)
+{
+	int code = 0;
+	int status = 0;
+	ImageIO autoIO = { 0 };
+	const char * path;
+
+	if (!io)
+		io = &autoIO;
+
+	path = io->path;
+
+	if (!path)
+		path = "unknown";
+
+	if (!code)
+		{
+			int bitpix;
+			int naxis;
+#define GENIMAGEDIM 2
+			long naxes[GENIMAGEDIM];
+
+			fits_get_img_param(fptr, GENIMAGEDIM, &bitpix, &naxis, naxes, &status);
+
+			if (status)
+				{
+					code = status;
+					report_error("unable to get image parameters [%d]\n", status);
+				}
+			else if (naxis != 2)
+				{
+					code = IMAGE_INPUT_ERROR;
+					report_error("image %s is not 2 dimensional\n", path);
+				}
+			else
+				{
+					image->width = naxes[0];
+					image->height = naxes[1];
+				}
+		}
+
+	if (!code && io->header)
+		{
+			code = fetch_header_records_fits(io->header, fptr);
+			if (code)
+				report_error("unable to fetch header records\n");
+		}
+
+	if (!code && image->wcs)
+		{
+			ImageWCS * wcs = image->wcs;
+
+			fits_read_img_coord(fptr, &wcs->xval, &wcs->yval,
+					&wcs->xpix, &wcs->ypix, &wcs->xinc, &wcs->yinc, &wcs->rot,
+					wcs->type, &status);
+			if (status == APPROX_WCS_KEY)
+				{
+					status = 0;
+					report_warning("approximate WCS keywords were calculated\n");
+				}
+
+			if (status)
+				{
+					code = status;
+					report_error("unable to read image WCS keywords [%d]\n", status);
+				}
+		}
+
+	if (!code)
+		{
+			long count;
+			_c_type * space;
+
+			count = image->width * image->height;
+			space = (_c_type *) malloc(count * sizeof(_c_type));
+
+			if (!space)
+				{
+					code = IMAGE_INPUT_ERROR;
+					report_error("unable to allocate space for image\n");
+				}
+			else
+				_i_func(set_data_oned)(image, space, 1);
+		}
+
+	if (!code)
+		{
+			long count;
+			long fpixel[2] = { 1, 1 };
+			int datatype;
+			int nulls = 0;
+
+			count = image->width * image->height;
+			datatype = image_fits_datatype(_I_STRINGIFY(_i_type));
+
+			fits_read_pix(fptr, datatype, fpixel, count, &image->null,
+							image->oned, &nulls, &status);
+			if (status)
+				{
+					code = status;
+					report_error("unable to read image pixels [%d]\n", status);
+				}
+		}
+
+	return code;
+}
+
+
+int
+_i_func(write) (_i_type * image, const char * path, ImageIO * io)
+{
+	int code = 0;
+	fitsfile * fptr = 0;
+	int status = 0;
+	ImageIO autoIO = { 0 };
+
+	if (!io)
+		io = &autoIO;
+
+	if (!code)
+		{
+			fits_create_file(&fptr, path, &status);
+			if (status)
+				{
+					code = status;
+					report_error("unable to create image %s [%d]\n", path, status);
+				}
+			else
+				report_status("created file %s\n", path);
+		}
+
+	if (!code)
+			code = _i_func(append)(image, fptr, io);
+
+	if (fptr)
+		{
+			int tmp = 0;
+			fits_close_file(fptr, &tmp);
+			if (tmp)
+				{
+					code = status;
+					report_error("unable to close %s [%d]\n", path, tmp);
+				}
+		}
+
+	return code;
+}
+
+
+int
+_i_func(append) (_i_type * image, fitsfile * fptr, ImageIO * io)
+{
+	int code = 0;
+
+	int status = 0;
+	int datatype = 0;
+	ImageIO autoIO = { 0 };
+	FITSHeader autoHeader = { 0 };
+	FITSHeader * header = &autoHeader;
+
+	if (!io)
+		io = &autoIO;
+
+	if (io->header)
+		header = io->header;
+
+	if (!code)
+		{
+			/*
+			 * create image extension
+			 */
+
+			long naxes[2];
+			int bitpix;
+
+			naxes[0] = image->width;
+			naxes[1] = image->height;
+
+			bitpix = image_fits_bitpix(_I_STRINGIFY(_i_type));
+			fits_create_img(fptr, bitpix, 2, naxes, &status);
+
+			if (status)
+				{
+					code = status;
+					report_error("unable to create image extension [%d]\n", status);
+				}
+			else
+				report_status("created output image\n");
+		}
+
+
+	if (!code)
+		{
+			datatype = image_fits_datatype(_I_STRINGIFY(_i_type));
+			if (datatype == TBYTE || datatype == TSHORT
+					|| datatype == TINT || datatype == TLONG)
+				{
+					fits_set_imgnull(fptr, image->null, &status);
+					set_header_key_long(header, "BLANK", image->null);
+				}
+		}
+
+	if (!code)
+		{
+			code = update_header_records_fits(header, fptr);
+			if (code)
+				report_error("unable to update header records\n");
+		}
+
+	if (!code)
+		{
+			/*
+			 * write output image 
+			 */
+			long count;
+			long fpixel[2] = { 1, 1 };
+
+			/*
+			 * do we need to create an empty primary array 
+			 */
+
+			count = image->width * image->height;
+			fits_write_pixnull(fptr, datatype, fpixel, count,
+								image->oned, &image->null, &status);
+
+			if (status)
+				{
+					code = status;
+					report_error("unable to write pixels [%d]\n", status);
+				}
+			else
+				report_verbose("wrote output pixels width %d, height %d\n",
+										image->width, image->height);
+		}
+
+	if (!code && image->wcs)
+		{
+			/*
+			 * write WCS keywords
+			 */
+			FITSHeader header = { 0 };
+			code = image_set_wcs_simple(&header, image->wcs);
+			if (!code)
+				code = update_header_records_fits(&header, fptr);
+		}
+
+	if (!code && io->history)
+		{
+			HDpar_stamp(fptr, 0, &status);
+		}
+
+	if (!code && io->checksum)
+		{
+			fits_write_chksum(fptr, &status);
+			if (status)
+				{
+					code = status;
+					report_error("unable to write checksum\n", status);
+				}
+		}
+
+	return code;
+}
+
+
+int
+_i_func(iterate_set_constant) (_i_type * image, IIState * state)
+{
+	_c_type * p = (_c_type *) state->user;
+	return _i_func(set_relative)(image, state->x0, state->y0, *p);
+}
+
+
+int
+_i_func(set_constant) (_i_type * image, _c_type x)
+{
+	IIState state = { 0 };
+	state.user = &x;
+	return _i_func(iterate)(image, _i_func(iterate_set_constant), &state);
+}
+

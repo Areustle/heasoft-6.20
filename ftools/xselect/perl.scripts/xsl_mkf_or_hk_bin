@@ -1,0 +1,115 @@
+#! /usr/bin/perl 
+$version ="1.00";
+$date  ="2006-05-16";
+$author = "kaa";
+
+# This script runs fcurve to make a lightcurve of the housekeeping parameter
+# data on the same time binning as the supplied lightcurve of the events. The
+# events lightcurve is appended to the output file.
+
+# Check that we were given the right number of arguments
+
+if(@ARGV < 1 || @ARGV > 7)
+{
+    print "\n usage : xsl_mkf_or_hk_bin mkffile lcfile outfile columns mkfgti timedel echo?\n";
+    exit(0);
+}
+
+$mkffile = $ARGV[0];
+$lcfile = $ARGV[1];
+$outfile = $ARGV[2];
+$columns = $ARGV[3];
+$mkfgti = $ARGV[4];
+$timedel = $ARGV[5];
+$echo = "no";
+if ( @ARGV == 7 && $ARGV[6] eq "yes" ) { $echo = "yes"; }
+
+
+# If a lightcurve file has been given then read it to get the binsize, start 
+# and stop times and FRACEXP cut-off to use.
+
+if ( $lcfile ne "none" ) {
+
+   $command = "fkeypar fitsfile=$lcfile\[RATE\] keyword=TIMEDEL";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+   ($timedel = `pget fkeypar value`) =~ tr/\n//d;
+
+   $command = "fkeypar fitsfile=$lcfile\[RATE\] keyword=TSTART";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+   ($starttime = `pget fkeypar value`) =~ tr/\n//d;
+
+   $command = "fkeypar fitsfile=$lcfile\[RATE\] keyword=TSTOP";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+   ($stoptime = `pget fkeypar value`) =~ tr/\n//d;
+
+   $command = "fkeypar fitsfile=$lcfile\[RATE\] keyword=MINFREXP";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+   ($minfrexp = `pget fkeypar value`) =~ tr/\n//d;
+
+# if no lightcurve file has been given then use the time binning input
+# and set the start and stop times to INDEF
+
+} else {
+
+   $starttime = "INDEF";
+   $stoptime = "INDEF";
+   $minfrexp = 0.0;
+
+}
+
+# If a lightcurve file has been input then get the gti from it
+
+if ( $lcfile ne "none" ) {
+
+   $gtifile = $lcfile . "-gti";
+   $command = "fextract infile='$lcfile\[GTI\]' outfile=$gtifile";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+
+# otherwise set the gti to the input mkf gti if one was specified
+
+} else {
+
+   $gtifile = " ";
+   if ( $mkfgti ne "none" ) { $gtifile = $mkfgti; }
+
+}
+
+# Build the housekeeping parameters lightcurve
+
+unlink $outfile;
+$command = "fcurve infile='$mkffile' gtifile='$gtifile' outfile='$outfile' timecol=TIME columns='$columns' binsz=$timedel lowval=$starttime highval=$stoptime gticols='START,STOP' extname=ffcurve binmode=Mean outlive=FRACEXP obsdate=' ' obstime=' ' gtidate=' ' gtitime=' ' outtimecol='-' outcol=' ' outerr='-' copyprime=yes copyall=no sensecase=no";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+# Clean up the temporary file
+
+unlink $gtifile;
+
+# chop out the bins with FRACEXP below the threshold
+
+$command = "ftselect infile='$outfile' outfile='$outfile' expression='FRACEXP >= $minfrexp && FRACEXP > 0.0' clobber=yes";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+# if there is an input lightcurve file copy the RATE and ERROR columns from 
+# the events lightcurve to the housekeeping lightcurve then add the GTI
+# extension
+
+if ( $lcfile ne "none" ) {
+   $command = "faddcol infile='$outfile' colfile='$lcfile' colname='RATE ERROR'";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+
+   $command = "ftappend infile='$lcfile\[GTI\]' outfile='$outfile'";
+   if ( $echo eq "yes" ) { print $command,"\n"; }
+   system($command);
+
+}
+
+
+

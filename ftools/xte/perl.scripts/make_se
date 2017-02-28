@@ -1,0 +1,510 @@
+#! /usr1/local/bin/perl
+#
+# MAKE_SE
+#
+# XTE Data Analysis script, to take a list of GoodXenon files or
+# Transparent Mode files, check them, and divide them into appropriate
+# groupings to apply the XENON2FITS or TRANS2FITS, as necessary, and
+# create a series of output XTE/SE files.
+#
+# Alan P. Smale Nov/Dec 1995
+# XTE GOF, NASA/GSFC
+#
+# Version history:
+#     0.20  (12/1/95):
+#
+
+$Version_number = "0.20";
+
+require "utils.pl";
+use Getopt::Std;
+
+#
+#==============================================================#
+# Startup banner.
+#
+
+print "Starting up MAKE_SE v.".$Version_number." \n\n";
+
+#
+#==============================================================#
+# Flag check; read in the options, and provide feedback to user
+#   about each. 'Help' comes first, then the others grouped by
+#   function.
+#
+
+getopts('dhi:lp:');
+
+if (defined $opt_h) { 
+   print <<EOHELP1;
+
+NAME 
+    make_se v.0.20 -- a script to allow the user to create XTE/SE
+    (Event) data files from a list of input files which may contain
+    Good_Xenon Mode data files and/or Transparent Mode data files. As
+    with all XTE Perl scripts, will work from either a single
+    command-line entry, or a simplified Q/A session.
+
+USAGE
+    make_se -[dilp]
+
+DESCRIPTION 
+
+    MAKE_SE is a Perl script which allows the user to create sensible
+    Event Files from a list of Good_Xenon or Transparent Mode files.
+    The script checks the list to ensure that it contains a consistent
+    set of data, reading the DATAMODE and TSTART keywords from the FITS
+    files themselves, ignores files that do not contain Good_Xenon or
+    Transparent data, subgroups the rest of the list, checks the times, 
+    then enters each subgroup as input to the relevant FTOOL (XENON2FITS 
+    or TRANS2FITS).
+
+    The output is a set of N FITS Event files, where N is the number of
+    subgroups. All necessary information can be supplied by the 
+    user as switches on the command line, and the script can/will
+    take sensible defaults in the absence of overriding user input. 
+    Alternatively, the script can be run interactively, in which case
+    the user will be prompted for important parameters not supplied
+    as switches.
+
+    As it preserves the paths of all the individual files, the tool can
+    accept an arbitrary large file list from XDF and churn through it,
+    processing all the Good_Xenon and Transparent mode data and ignoring
+    everything else - although some user cunning (and use of the Logfile)
+    may be necessary to keep track of which data is in which output file.
+
+
+PARAMETERS  (actually SWITCHES/FLAGS) (grouped by function):
+
+     -i {file} - provide name of ASCII file containing list of data
+            files                (assumed default: 'fits_files.txt').
+
+     -p {file} - provide root filename for product files - i.e., 
+	    'make_se -p paris' will create files paris_X0, paris_X1 
+             ...paris_X(N-1), where X=t/gx, for Transparent/GoodXenon 
+            data respectively, and N is the number of groups of data 
+            files in the input file       (assumed default: 'event').
+
+     -d   - Take default values for all parameters not set on the command
+            line.
+     -l   - logfile switch. Currently, logging is the default (in a
+            file make_se.log), and  -l will disable this logging.
+     -h   - Print this help information.
+
+
+EXAMPLES
+
+     make_se -i dax -p sisko
+            take as input the ASCII file 'dax' and process it to create
+            a bunch of N Event Data files called sisko_X0, sisko_X1 ...
+            where X=t/gx, for Transparent/GoodXenon data respectively,
+            and N is the number of groups of data files in the original
+            'dax' file.
+     make_se -d
+            will take the file 'fits_files.txt' and create Event Data
+            files event_X0, event_X1, etc, where X=t/gx for Transparent/
+            GoodXenon data respectively.
+     make_se
+            will prompt the user for the input file and output root 
+            filename.
+
+NOTES
+
+    MAKE_SE is intended as a 'fast' tool to minimize the amount of
+    FTOOLing around for the user with straightforward data analysis
+    requirements. It is not intended to replace or reproduce the full
+    functionality available from the individual FTOOLS. However, I am
+    open to suggestions about how to improve the script to meet
+    commonly-occuring data analysis needs. 
+
+    The XENON2FITS and TRANS2FITS tools themselves display a lot of 
+    debugging information when they run. This output is suppressed in
+    MAKE_SE. If you want to see it, take the Perl code and change the
+    'runcom' command to a 'yakker' command.
+
+BUGS
+
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+
+    TRANS2FITS, XENON2FITS for further information on the core tools
+    invoked by this script.
+
+EOHELP1
+exit;
+}
+
+# If parameter is entered on command line, use it. If not, and the
+# -d option is set, use a sensible default. Otherwise, prompt the user
+# for the parameter value. If the user enters a carriage return, 
+# take the default anyway.
+
+# Logical flags have initial capitals.
+
+$Defaults= 0;
+$Logging= 1;
+
+$inname= "fits_files.txt";
+$outroot= "event";
+
+if( defined $opt_l ) {
+    $Logging = 0;
+    print " ** Logging disabled.\n";
+}	
+
+$Logging && ( open(LOGFILE,">make_se.log") || die "Can't create logfile");
+$Logging && print LOGFILE  "Starting up MAKE_SE v.".$Version_number." \n\n";
+
+if( defined $opt_d ) {
+    $Defaults = 1;
+    $string= " ** Going with preset defaults where applicable.\n";
+#            &announce($string);
+    print "$string";
+    $Logging && print LOGFILE $string;
+}			# Go with all defaults except where
+                        # overriden by command line. no Q/A
+
+if( defined $opt_i ){
+   print " ** Input filename provided for FITS filelist: $opt_i \n";
+   -e $opt_i || die " !! Exiting: file $opt_i does not exist.\n";
+   $inname = $opt_i;
+} else {
+   unless ( $Defaults ) {
+      print " > Give name of file containing FITS filelist [".$inname."] > ";
+      chop($dummy=<STDIN>);
+      until ($dummy eq '' || -e $dummy) {
+         print " > File not found. Please try again. > ";
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {
+         $inname = $dummy;
+      }
+   }
+}
+       
+if( defined $opt_p ){
+   print " ** Product (output) filename root supplied: ".$opt_p."\n";
+   $outroot = $opt_p;
+} else {
+   unless ( $Defaults ) {
+      print " > Give root for product (output) filenames [$outroot] > ";
+      chop($dummy=<STDIN>);
+      unless ($dummy eq '') {$outroot = $dummy;}
+   }
+}
+	
+#==============================================================#
+# Sanity check section, may be either commented out or enhanced
+# in delivered version.
+# Creates a string containing the relevant status variables and
+# prints it to STDOUT,  and also to LOGFILE if $Logging is True.
+
+# (no ;;;; - extended string)
+
+$string = 
+"\n-----------------------------------------------------
+     Input file name: $inname
+     Output file root: $outroot
+-----------------------------------------------------\n\n";
+
+print $string;
+$Logging && print LOGFILE $string;
+
+
+#==============================================================#
+# OK, now we're ready to read in the complete contents of the input
+# filename list and check and subgroup it.
+#
+# We chop the data into $head (i.e. path) and $tail (i.e. filename)
+# pairs and store them in an associative arrays called $files.
+# The tails also live in an array called @tail.
+#
+# GoodXenon data can come in the following varieties, and should be
+# combined as noted:
+#
+#      GoodXenon1_2s  + GoodXenon2_2s.
+#      GoodXenon1_16s + GoodXenon2_16s.
+#
+# Transparent mode can come in the following varieties, and should be
+# combined as noted:
+#
+#      Transparent1_4s  + Transparent2_4s  + Transparent3_4s
+#      Transparent1_16s + Transparent2_16s  + Transparent3_16s
+#      Transparent1_128s  + Transparent2_128s  + Transparent3_128s
+#      Transparent1_1024s + Transparent2_1024s + Transparent3_1024s
+#
+# These data are generally found in files FS37, FS3b, FS3f, FS4f.
+# However, we need to read the DATAMODE keyword for each file to 
+# tell what type of data we're dealing with. So we do that. If a
+# datafile is GoodXenon1, we add it to the gx_1 array. GoodXenon2
+# goes to the gx_2 array. Likewise for the Transparent mode data
+# t_1, t_2, t_3.
+# 
+# We keep all the paths to the individual files in the %files
+# associative array for later use. We keep the start times of the
+# individual files in the %times array.
+
+open(INFILE,$inname) || die "!! Can't open $inname. \n";
+while ( <INFILE> ) {
+   chomp;
+   $longname = $_;
+
+   $keyword= "DATAMODE";
+   $word = &GTKEYWORDS($longname, $keyword);
+
+   $keyword= "TSTART";
+   $starttime = &GTKEYWORDR($longname, $keyword);
+
+   $slash = rindex($longname, "/");
+
+   if($slash != -1) {
+       $head = substr($longname, 0, $slash);  
+   }
+   else {
+       $head = '';
+   }
+
+   $tail = substr($longname, $slash+1);
+   @tail = (@tail, $tail);
+   $files{$tail} = $head;
+   $times{$tail} = $starttime;
+
+   print "$tail   $starttime  $word \n";
+   $Logging && print LOGFILE "$tail   $starttime  $word \n";
+
+#-----------------------------------------------------------
+
+   if ($word =~ /Transparent1/ ) {
+
+      @t_1 = ( @t_1, $tail );
+      $t_1{$tail} = $starttime;
+
+   } elsif ($word =~ /Transparent2/ ) {
+
+      @t_2 = ( @t_2, $tail );
+      $t_2{$tail} = $starttime;
+
+   } elsif ($word =~ /Transparent3/ ) {
+
+      @t_3 = ( @t_3, $tail );
+      $t_3{$tail} = $starttime;
+
+   } elsif ($word =~ /GoodXenon1/ ) {
+
+      @gx_1 = ( @gx_1, $tail );
+      $gx_1{$tail} = $starttime;
+
+   } elsif ($word =~ /GoodXenon2/ ) {
+
+      @gx_2 = ( @gx_2, $tail );
+      $gx_2{$tail} = $starttime;
+
+   } else {
+      print "! This is neither GX nor T - we won't be processing it\n";
+   }
+
+#-----------------------------------------------------------
+
+}
+
+# How long are these arrays?
+
+$gx1 = @gx_1;
+$gx2 = @gx_2;
+$t1 = @t_1;
+$t2 = @t_2;
+$t3 = @t_3;
+$tail = @tail;
+
+$command_string="\nThere are $tail files in total.
+  GoodXenon1   :  $gx1  
+  GoodXenon2   :  $gx2  
+  Transparent1 :  $t1   
+  Transparent2 :  $t2   
+  Transparent3 :  $t3   \n\n";
+print "$command_string";
+$Logging && print LOGFILE "$command_string";
+
+
+if (  ($gx1 ne $gx2) ||  ($t1 ne $t2) || ($t1 ne $t3) ) {
+   $command_string="!! Inconsistent dataset - unequal number of input files
+!! of each type. Please fix this and run me again.      \n";
+   print "$command_string";
+   $Logging && print LOGFILE "$command_string";
+   
+   exit;
+}
+
+close(INFILE);
+
+#
+# For each type of data, we make an associative array of 
+# filenames and start times, sort the filenames by start times,
+# and end up with an array of time-sorted filenames. Got that?
+#
+
+# Sort using the legendary "spacecraft operator" from the Llama Book!
+
+@sorted_gx_1 = sort { $gx_1{$a} <=> $gx_1{$b} } keys(%gx_1);
+@sorted_gx_2 = sort { $gx_2{$a} <=> $gx_2{$b} } keys(%gx_2);
+
+@sorted_t_1 = sort { $t_1{$a} <=> $t_1{$b} } keys(%t_1);
+@sorted_t_2 = sort { $t_2{$a} <=> $t_2{$b} } keys(%t_2);
+@sorted_t_3 = sort { $t_3{$a} <=> $t_3{$b} } keys(%t_3);
+
+
+#==============================================================#
+# Optional break point for debugging purposes.
+
+# print "Exiting before calling FTOOLS (parameter entry checking only)\n";
+# exit;
+
+# 
+#==============================================================#
+# We're now good to go. Let's call some FTOOLS.
+#
+# Transparent datamode files first.
+
+$nloop = @sorted_t_1;
+
+if ($nloop gt 0) {
+
+  for ($i = 0; $i <= $nloop-1; $i++) {
+
+# Stick the little heads on the tails again now. But only if we have
+# specfied a path along with the file being input. If we haven't
+# then we just insert the filename read out of the input file. 
+# Rindex returns -1 if / was not found in the input parameter - meaning
+# that a path wasn't specified - if there wasn't a path specified with the
+# filename, then it is not necessary to attempt to reconstruct the path
+# when creating the input files for Xenon2fits or Trans2fits. 
+    if($slash != -1) {
+	$in1 = $files{$sorted_t_1[$i]}."/".$sorted_t_1[$i];
+	$in2 = $files{$sorted_t_2[$i]}."/".$sorted_t_2[$i];
+	$in3 = $files{$sorted_t_3[$i]}."/".$sorted_t_3[$i];
+    }
+    else {
+	$in1 = $sorted_t_1[$i];
+	$in2 = $sorted_t_2[$i];
+	$in3 = $sorted_t_3[$i];
+    }
+
+    $outfile = $outroot."_t".$i;
+    $ip1 = $i + 1;
+
+    $command_string="\n Calling TRANS2FITS ($ip1) with \n$in1 \n$in2 \n$in3 \n$outfile";
+    print "\n$command_string\n\n";
+    $Logging && print LOGFILE "$command_string\n\n";
+
+    $command_string='trans2fits trans1="'.$in1.'" trans2="'.$in2.'" trans3="'.$in3.'" outfile="'.$outfile.'" wrtparm=x clobber=Yes mode=h';
+
+    print "$command_string\n";
+    $Logging && print LOGFILE "$command_string\n\n";
+
+    @result=&runcom($command_string, "1");
+  }
+}
+
+# Now GoodXenon datamode files.
+
+$nloop = @sorted_gx_1;
+
+if ($nloop gt 0) {
+
+  for ($i = 0; $i <= $nloop-1; $i++) {
+
+# Stick the little heads on the tails again now.
+
+    if($slash != -1){
+        $in1 = $files{$sorted_gx_1[$i]}."/".$sorted_gx_1[$i];
+        $in2 = $files{$sorted_gx_2[$i]}."/".$sorted_gx_2[$i];
+    }
+    else {
+        $in1 = $sorted_gx_1[$i];
+        $in2 = $sorted_gx_2[$i];
+    }
+    $outfile = $outroot."_gx".$i;
+    $ip1 = $i + 1;
+
+    $command_string="Calling XENON2FITS ($ip1) with \n$in1 \n$in2 \n$outfile";
+    print "\n$command_string\n";
+    $Logging && print LOGFILE "\n$command_string\n\n";
+
+    $command_string='xenon2fits xenon1="'.$in1.'" xenon2="'.$in2.'" outfile="'.$outfile.'" wrtparm=x clobber=Yes mode=h';
+
+    print "$command_string\n";
+    $Logging && print LOGFILE "$command_string\n\n";
+
+    @result=&runcom($command_string, "1");
+  }
+}
+
+
+# ====================================================================
+# Quit tidily. If LOGFILE is open, close it.
+
+ print "MAKE_SE successfully completed.\n";
+ $Logging && print LOGFILE "MAKE_SE successfully completed.\n";
+
+$Logging && close(LOGFILE);
+exit;
+
+# End.
+
+#==============================================================#
+# sub GTKEYWORDR   (real number keyword)
+#==============================================================#
+
+sub GTKEYWORDR { 
+
+   local($filename, $keyword) = @_;
+   local($starttime) = 0;
+
+   $command_string='fkeyprint infile="'.$filename.'" keynam="'.$keyword.'" mode=h';
+   @result=&runcom($command_string);
+
+# Now search @result for the string within quotes.
+
+   foreach $line (@result) {
+      $start = index($line,"=");
+      if ($start gt 0) {
+         $starttime = substr($line, $start+1,30);         
+         $end = index($starttime,"/",1);
+	 $starttime = substr($starttime, 0, $end);
+      }
+      $start = 0;
+   }
+   $starttime;
+}
+
+# End.
+
+#==============================================================#
+# sub GTKEYWORDS   (string keyword)
+#==============================================================#
+
+sub GTKEYWORDS { 
+
+   local($filename, $keyword) = @_;
+   local($word) = 0;
+
+   $command_string='fkeyprint infile="'.$filename.'" keynam="'.$keyword.'" mode=h';
+   @result=&runcom($command_string);
+
+# Now search @result for the string in quotes.
+
+   foreach $line (@result) {
+      $start = index($line,"'");
+      if ($start gt 0) {
+         $word = substr($line, $start+1,20);         
+         $end = index($word,"'",1);
+	 $word = substr($word, 0, $end);
+      }
+      $start = 0;
+   }
+   $word;
+}
+
+# End.
+

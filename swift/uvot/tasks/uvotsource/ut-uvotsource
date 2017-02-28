@@ -1,0 +1,119 @@
+#!/usr/bin/perl
+
+use strict;
+
+package Test::Source;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+# main
+{
+	my $tool = Test::Source->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file chatter=int) ],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotsource
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment;
+
+
+# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT, "invalid $key directory: $arg");
+		}
+	}
+}
+
+
+
+sub runUvotsource
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		image   => "$input/input.img",
+		srcreg  => "$input/src.reg",
+		bkgreg  => "$input/bkg.reg",
+
+		sigma   => 3,
+		apercorr=> 'NONE',
+		output  => 'ALL',
+		outfile => "$output/a.fits",
+
+		cleanup => 'yes',
+		clobber => 'yes',
+		chatter => 1,
+	);
+
+
+
+# validate required files
+	my %args = @args;
+	foreach my $key (qw(image)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT, "invalid $key file: $args{$key}");
+		}
+	}
+
+
+	$self->{template} = "$args->{input}/template.fits";
+	$self->{output} = "$args->{output}/a.fits";
+	unlink($self->{output});
+
+	{
+		my $command = $self->buildCommand('uvotsource', @args);
+		$self->shell($command);
+	}
+
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('ftdiff',
+			infile1 => $self->{template},
+			infile2 => $self->{output},
+			reltol => 0.01,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+	$self->shell($command);
+}
+

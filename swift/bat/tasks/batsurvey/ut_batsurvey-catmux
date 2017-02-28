@@ -1,0 +1,180 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batsurvey/ut_batsurvey-catmux,v $
+# $Revision: 1.1 $
+# $Date: 2010/05/11 07:26:03 $
+#
+#	ut_batsurve-catmux
+#		validate batsurvey-catmux operation
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "batsurvey-catmux";
+$ut_taskname   = "ut_batsurvey-catmux";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS CALDB)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+	my $reltol = $self->args->{reltol};
+
+	my $indir  = "$input/batsurvey-catmux_setup";
+	my $outdir = "$output/batsurvey-catmux_out";
+	my $tempdir = "$input/batsurvey-catmux_template";
+	# ******************* FILL IN PARAMETERS HERE ********
+	my %task = (
+		    infile        => "$input/batsurvey-catmux_in.cat",
+		    outfile       => "$outdir/test%06d.cat",
+		    keycolumn     => "CATNUM",
+		    exclude       => "-1",
+		    translate_map => "7->5",
+		    clobber       => "NO",
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("infile");
+	
+	# If output directory already exists then clear it out, otherwise create it
+	if ( -d "$outdir" ) {
+	  $self->doCommand("rm '$outdir'/test*.cat");
+	} else {
+	  mkdir("$outdir");
+	}
+	
+	# Copy setup files to output
+	$self->doCommand("cp -p '$indir'/test*.cat '$outdir'/");
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p='$task{$p}'";
+	}
+
+	my $result = $self->doCommand($command);
+	die "ERROR: task failed with status $result->{status}" if ($result->{status});
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	@outfiles = <$outdir/test*.cat>;    # List of output files
+	@tempfiles = <$tempdir/test*.cat>;  # List of vetted template files
+
+	if ($#outfiles != $#tempfiles) {
+	  $self->fatal(BAD_OUTPUT, "Number of output files does not match");
+	}
+
+	foreach $tempfile (@tempfiles) {
+	  $outfile = "$outdir/$tempfile";
+	  if ($outfile =~ m|/([^/]*)$|) { $outfile = "$outdir/$1"; }
+
+	  if ( ! -f "$outfile" ) { 
+	    $self->fatal(BAD_OUTPUT, "Could not find '$outfile'");
+	  }
+	  
+	  $command = "ftverify infile='$outfile' outfile=STDOUT heasarc=yes";
+	  $result = $self->doCommand($command);
+	  if ($result->{output} =~ m/Fatal Error/i ||
+	      $result->{output} !~ m/ 0 error/i) {
+	    $self->fatal(BAD_OUTPUT, "Verification of '$outfile' failed");
+	  }
+
+	  $command = "ftdiff '$tempfile' '$outfile' tolerance=0 reltol=0 exclude='CREATOR,DATASUM' ";
+	  $result = $self->doCommand($command);
+	  if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	    $ndiffs = $1;
+	    print "   -->  FTDIFF reports $ndiffs differences\n";
+	    if ($ndiffs ne 0) {
+	      $lines = $result->{output};
+	      print "$lines\n" if $self->chatter(5);
+	      $self->error(BAD_OUTPUT, "error because of bad compare");
+	    }
+	    
+	  }
+
+	}
+
+      }
+
+

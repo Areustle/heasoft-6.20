@@ -1,0 +1,372 @@
+#!/usr/bin/perl
+#
+#  ut_nupipeline_fpma
+#
+#
+#
+# Changes:
+#      0.1.0 : NS 07/07/2011 - First Release
+#      0.1.1 : NS 22/07/2011 - Added 'runcalcpha' input parameter
+#      0.1.2 : NS 02/08/2011 - Added 'inpsdfilecor' input parameter
+#      0.1.3 - NS 06/10/2011 - Added 'alignfile' and 'mastaspectfile' input parameters
+#      0.1.4 - NS 10/10/2011 - Added 'runcalcpi' input parameter
+#                            - Added input parameters for nucoord task
+#                            - Added input parameters for nuhotpix task
+#      0.1.5 - NS 24/10/2011 - Added input parameters for nufilter task
+#      0.1.6 - NS 02/11/2011 - Added input parameters for nuscreen task
+#      0.1.7 - NS 23/11/2011 - Modified to handle default input and output file naming
+#      0.1.8 - NS 02/12/2011 - Added input parameters for numetrology task
+#                            - Added 'fpma_optaxisfile' input parameter
+#      0.1.9 - NS 22/12/2011 - Added input parameters for nuproducts task
+#      0.2.0 - NS 25/01/2012 - Updated nucoord task call
+#      0.2.1 - NS 16/02/2012 - Added 'fpma_clcfile' and 'clcfilterfile' input parameters
+#      0.2.2 - NS 28/02/2012 - Added input parameters for nuexpomap task
+#      0.2.3 - NS 13/07/2012 - Added 'fpma_evtcutfile', 'fpmb_evtcutfile' and 'runflagevt' input parameters
+#                            - Removed 'runflagdepth' input parameter
+#                            - Added "fpm[a|b]_hkrangefile[01|02|03|04|05]" and "gtiexpr[01|02|03|04|05]" input parameters
+#      0.2.4 - NS 27/07/2012 - Added 'copyattitude' input parameter
+#                            - Dataset changed
+#      0.2.5 - NS 04/10/2012 - Added input parameters for nucalcsaa task
+#      0.2.6 - NS 19/10/2012 - Added imput parameters needed by new version of nufilter task
+#                            - Added input parameters needed by new version of nuproducts task
+#                            - Added input parameters needed by new version of nuscreen task
+#                            - Added input parameters needed by nuattcorr task
+#                            - Removed 'copyattitude' input parameter
+#      0.2.7 - NS 06/11/2012 - Added 'ftdiff2' call
+#      0.2.8 - NS 11/12/2012 - Added input parameters needed by new version of nuexpomap task
+#                            - Added input parameters needed by new version of nuproducts task
+#      0.2.9 - NS 10/06/2013 - Added input parameters needed by 'nubackscale' task
+#      0.3.0 - NS 10/07/2013 - Added input parameters needed by new version of 'nuproducts' and 'nuexpomap' task
+#      0.3.1 - NS 28/11/2013 - Added input parameters needed by new version of nuproducts task
+#      0.3.2 - NS 21/05/2015 - Added input parameters needed by new version of nuproducts task
+#      0.3.3 - RF 07/04/2016 - Added input parameters needed by new nusplitsc task
+#                            - Added input parameters needed by new version of nucalcsaa task
+#      0.3.4 - RF 06/10/2016 - Bug corrected for the case runmetrology=no: searching mast aspect and psdcor files in the ‘event_cl’ directory (was in the ‘auxil’ one)
+#                            
+#
+#
+
+use strict;
+use ut_nustar;
+
+
+
+# main
+{
+# Object Istances
+    my $ut = ut_nustar->new(
+			    name    => "nupipeline",
+			    utname  => "ut_nupipeline_fpma",
+			    version => "0.3.4",
+			    );
+    
+# Set Parameter
+    my $input = $ut->getParam("input_dir");
+    my $output = $ut->getParam("output_dir") . "/" . $ut->getParam("utname");
+    $ut->setParam("output_dir",$output);
+    my $chat = $ut->getParam("chatter");
+    my $clobber = $ut->getParam("clobber");
+    
+# I/O Directory Check
+    $ut->checkIODirectory()
+        if $ut->isValid;
+
+# Environment check
+    my @chk_env = ("LHEASOFT", "HEADAS", "CALDB");
+
+    $ut->checkEnvironment(@chk_env)
+        if $ut->isValid;
+    
+    my $headas =$ENV{'HEADAS'};
+    my $ArchDir="ut_nupipeline/nu00015011001_fpma";  
+    
+# Input Files Check
+    my @chk_inp = ("$input/$ArchDir/event_uf/nu00015011001A_uf.evt.gz",
+                   "$input/$ArchDir/hk/nu00015011001A_fpm.hk.gz",
+                   "$input/$ArchDir/hk/nu00015011001_ceb.hk.gz",
+                   "$input/$ArchDir/hk/nu00015011001_chu123.fits",
+                   "$input/$ArchDir/hk/nu00015011001A_dspx.fits.gz",
+                   "$input/$ArchDir/event_cl/nu00015011001_psdcorr.fits.gz",
+                   "$input/$ArchDir/event_cl/nu00015011001_mast.fits.gz",
+		   "$input/$ArchDir/auxil/nu00015011001_orb.fits.gz",
+		   "$input/$ArchDir/auxil/nu00015011001_att.fits.gz",
+		   "$input/$ArchDir/auxil/NUSTAR_TLE_ARCHIVE.txt.000.00000000",
+		   );
+
+    $ut->checkExist("Input", @chk_inp)
+	if $ut->isValid;
+    
+# Prototype Check
+   my @chk_proto = ("$input/$ArchDir/prototypes/ut_nupipeline_fpma.evt",
+                    "$input/$ArchDir/prototypes/ut_nupipeline_fpmabp.fits",
+                    "$input/$ArchDir/prototypes/ut_nupipeline_fpmahp.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma.mkf",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma01_cl.evt",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma01_gti.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_mast.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_oa.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_det1.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_ex.img",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_sr.lc",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_sr.pha",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_bk.lc",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_bk.pha",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_sk.img",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma.attorb",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_att.fits",
+		    );
+    $ut->checkExist("Prototype", @chk_proto)
+        if $ut->isValid;
+
+# Executables Files Check
+    my @chk_exe = ("nupipeline","ftdiff","fverify", "pquery2");
+    $ut->checkExecutable(@chk_exe)
+        if $ut->isValid;
+
+# Task Files Check
+    my %par_task = (
+		    instrument  =>  "FPMA",
+		    obsmode     =>  "SCIENCE",
+		    indir       =>  "$input/$ArchDir",
+		    steminputs  =>  "nu00015011001",
+		    stemoutputs =>  "DEFAULT",
+		    outdir      =>  $output,
+		    fpma_infile =>  "DEFAULT",
+		    fpma_hkfile =>  "DEFAULT",
+		    cebhkfile   =>  "DEFAULT",
+		    chu123hkfile =>  "DEFAULT",
+ 		    alignfile   =>  "CALDB",
+		    entrystage  =>  1,
+		    exitstage   =>  3,
+		    initseed    =>  "yes",
+		    cleancols   =>  "no",
+		    cleanup     =>  "yes",
+		    chatter     =>  $chat,
+		    clobber     =>  "$clobber",
+		    history     =>  "yes",
+		    pntra       =>  "POINT",
+		    pntdec      =>  "POINT",
+		    attfile     =>  "DEFAULT",
+		    fpma_teldef =>  "CALDB",
+		    runmetrology    => "yes",
+		    metflag         => "no",
+		    metrologyfile   => "DEFAULT",
+		    metgridfile     => "CALDB",
+		    outpsdfile      => "DEFAULT",
+		    outpsdfilecor   => "DEFAULT",    
+		    inpsdfilecor    => "DEFAULT",
+		    mastaspectfile  => "DEFAULT",
+		    outattfile      => "DEFAULT",
+		    chuoffsetfile   => "CALDB",
+		    fpma_bpfile     => "CALDB",
+		    fpma_dispixfile => "DEFAULT",
+		    fpma_userbpfile => "NONE",
+		    fpma_outbpfile  => "DEFAULT",
+		    fpma_outhpfile  => "DEFAULT",
+		    hpbinsize       => 600,
+		    hpcellsize      => 5,
+		    impfac          => 1.0,
+		    logpos          => -5.3,
+		    bthresh         => 6,
+		    cleanflick      => "yes",
+		    hpiterate       => "yes",
+		    runcalcpha      =>  "yes",
+		    fpma_capoffsetfile=>"CALDB",
+		    gradefile       =>  "CALDB",
+		    fpma_phaparfile =>  "CALDB",		    
+		    fpma_evtthr     =>  55,
+		    fpma_timerise   =>  0.0016,
+		    runcalcpi       => "yes",
+		    fpma_gainfile   => "CALDB", 
+		    fpma_clcfile    => "CALDB", 
+		    clcfilterfile   => "CALDB",
+		    runflagevt      => "yes",
+		    fpma_depthcutfile=> "CALDB",
+		    fpma_evtcutfile  => "CALDB",
+		    fpma_pixposfile => "CALDB",
+		    inmastaspectfile=> "DEFAULT",
+		    aberration      => "no",
+		    follow_sun      => "no",
+		    randomizecoordinator => "no",
+		    seedcoordinator      => -1956,
+		    timemargin           => 32,
+		    attinterpol          => "CONSTANT",
+		    fpma_optaxisfile     => "DEFAULT",
+		    fpma_det1reffile     => "DEFAULT",
+		    fpma_det1xref        => 350,
+		    fpma_det1yref        => 350,
+		    fpma_outhkfile       => "DEFAULT",
+		    saaparfile           => "CALDB",
+		    saamode              => "NONE",
+		    tentacle             => "no",
+		    hkevtexpr            => "\"STATUS==b000000000x0xx000&&SHIELD==0&&GRADE.LE.26\"",
+		    saacalc              => 2,
+		    optimizedrms         => 4.5,
+		    tentaclerms          => 4.5,
+		    eliminatesource      => "yes",
+		    sourcethr            => 4.0,
+		    tentacleregcut       => "yes",
+		    orbitfile            => "DEFAULT",
+		    fpma_attorbfile      => "DEFAULT",
+		    preconfigfile        => "CALDB",
+		    tlemode              => "TLE_TEXT2",
+		    tlefile              => "DEFAULT",
+		    leapfile             => "$headas/refdata/leapsec.fits",
+		    rigfile              => "$headas/refdata/rigidity.data",
+		    origin               => "NASA/GSFC",
+		    interval             => 1,
+		    mkfconfigfile        => "CALDB",
+		    fpma_mkffile         => "DEFAULT",
+		    nonulls              => "no",
+		    mkfgtiexpr           => "NONE",
+		    gtiscreen            =>  "yes",
+		    evtscreen            =>  "yes",
+		    gtiexpr01            =>  "DEFAULT",
+		    gtiexpr02            =>  "DEFAULT",
+		    gtiexpr03            =>  "DEFAULT",
+		    gtiexpr04            =>  "DEFAULT",
+		    gtiexpr05            =>  "DEFAULT",
+		    gradeexpr            =>  "DEFAULT",
+		    statusexpr           =>  "DEFAULT",
+		    createattgti         =>  "yes",
+		    createinstrgti       =>  "yes",
+		    usrgtifile           =>  "NONE",
+		    fpma_hkrangefile01   =>  "CALDB",
+		    fpma_hkrangefile02   =>  "CALDB",
+		    fpma_hkrangefile03   =>  "CALDB",
+		    fpma_hkrangefile04   =>  "CALDB",
+		    fpma_hkrangefile05   =>  "CALDB",
+		    fpma_evtrangefile    =>  "CALDB",
+		    depthcut             =>  "NOMINAL",
+		    timecol              =>  "TIME",
+		    gtiext               =>  "GTI", 
+		    createexpomap        =>  "yes",
+		    fpma_instrprobmapfile=>  "CALDB",
+		    fpma_vignfile        =>  "CALDB",
+		    expovignflag         =>  "no",
+		    energy               =>  10, 
+		    pixbin               =>  60,
+		    skyx                 =>  500.5,
+		    skyy                 =>  500.5,
+		    skysize              =>  1000,
+		    fpma_det1offsetfile  =>  "NONE",
+		    fpma_aspecthistofile =>  "NONE",
+		    fpma_det1instrfile   =>  "NONE",
+		    fpma_det2instrfile   =>  "NONE",
+		    fpma_skyinstrfile    =>  "NONE",
+		    fpma_expomapfile     =>  "DEFAULT",
+		    srcregionfile        => "DEFAULT",
+		    bkgextract           => "yes",
+		    bkgregionfile        => "DEFAULT",
+		    srcra                => "OBJECT",
+		    srcdec               => "OBJECT",
+		    srcradius            => 20,
+		    bkgra                => "OBJECT",
+		    bkgdec               => "OBJECT",		    
+		    bkgradius1           => 50,		    
+		    bkgradius2           => 80,
+		    lcbinsize            => 100,
+		    fpma_lcfile          => "DEFAULT",
+		    fpma_phafile         => "DEFAULT",
+		    fpma_bkglcfile       => "DEFAULT",
+		    fpma_bkgphafile      => "DEFAULT",		    
+		    fpma_imagefile       => "DEFAULT",
+		    productsgtifile      => "NONE",
+		    plotdevice           => "gif",
+		    pilow                => 0,
+		    pihigh               => 819,
+		    extended             => "no",
+		    boxsize              => 20,
+		    pilowarf             => 35,
+		    pihigharf            => 1909,
+		    flatflagarf          => "no",
+		    correctlc            =>  "no",
+		    runmkarf             =>  "no",
+		    barycorr             =>  "no",
+		    runmkrmf             =>  "no",
+		    runbackscale         =>  "yes",
+		    percent              => 0.02,
+		    runsplitsc           =>  "no",
+		    chu123rangefile      => "CALDB",
+		    splitmode            => "NORMAL",
+		    timecut              => "no",
+		    );
+
+    $ut->runTask(%par_task)
+	if $ut->isValid;
+    if($ut->isValid)
+    {
+	
+# fverify
+	$ut->fverify("$output/nu00015011001A_uf.evt");
+	$ut->fverify("$output/nu00015011001A_bp.fits");
+	$ut->fverify("$output/nu00015011001A_hp.fits");
+	$ut->fverify("$output/nu00015011001A.mkf");
+	$ut->fverify("$output/nu00015011001A01_cl.evt");
+	$ut->fverify("$output/nu00015011001A01_gti.fits");
+	$ut->fverify("$output/nu00015011001_mast.fits");
+	$ut->fverify("$output/nu00015011001A_oa.fits");
+	$ut->fverify("$output/nu00015011001A01_ex.img");
+	$ut->fverify("$output/nu00015011001A01_sr.lc");
+	$ut->fverify("$output/nu00015011001A01_sr.pha");
+	$ut->fverify("$output/nu00015011001A01_bk.lc");
+	$ut->fverify("$output/nu00015011001A01_bk.pha");
+	$ut->fverify("$output/nu00015011001A01_sk.img");
+	$ut->fverify("$output/nu00015011001A.attorb");
+	
+# ftdiff
+	$ut->ftdiff("$output/nu00015011001A_uf.evt",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma.evt");
+
+	$ut->ftdiff("$output/nu00015011001A_bp.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpmabp.fits");
+
+	$ut->ftdiff("$output/nu00015011001A_hp.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpmahp.fits");
+
+	$ut->ftdiff2("$output/nu00015011001A.mkf",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma.mkf", 0.05);
+
+	$ut->ftdiff("$output/nu00015011001A01_cl.evt",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma01_cl.evt");
+
+	$ut->ftdiff("$output/nu00015011001A01_gti.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma01_gti.fits");
+
+	$ut->ftdiff("$output/nu00015011001_mast.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_mast.fits");
+
+	$ut->ftdiff("$output/nu00015011001A_oa.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_oa.fits");
+
+	$ut->ftdiff("$output/nu00015011001A_det1.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_det1.fits");
+
+	$ut->ftdiff("$output/nu00015011001A01_ex.img",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_ex.img");
+
+	$ut->ftdiff("$output/nu00015011001A01_sr.lc",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_sr.lc");
+
+	$ut->ftdiff("$output/nu00015011001A01_sr.pha",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_sr.pha");
+
+	$ut->ftdiff("$output/nu00015011001A01_bk.lc",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_bk.lc");
+
+	$ut->ftdiff("$output/nu00015011001A01_bk.pha",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_bk.pha");
+
+	$ut->ftdiff("$output/nu00015011001A01_sk.img",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma_sk.img");
+
+	$ut->ftdiff2("$output/nu00015011001A.attorb",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_fpma.attorb", 0.05);
+
+	$ut->ftdiff("$output/nu00015011001_att.fits",
+		    "$input/$ArchDir/prototypes/ut_nupipeline_att.fits");
+    }
+    
+    $ut->delete();
+}
+

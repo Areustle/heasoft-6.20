@@ -1,0 +1,221 @@
+# CCfits version 1.1
+# This makefile works with KCC under aix, it builds a shared
+# library with "gmake shared" and the cookbook executable with "gmake
+# cookbook".  The headers will be installed in cpproot/include and the
+# shared library in $CPPROOT/lib.
+
+
+
+#Patrik Jonsson					
+#Department of Astronomy & Astrophysics
+#University of California, Santa Cruz, CA 95064
+
+
+
+# Miscellaneous shell instructions.
+
+CPPROOT = 
+
+.SUFFIXES: .cxx .inf
+
+RM = rm -f
+LN = ln -s
+MV = mv -f
+CP = cp -p
+ARU     = rvu
+PR      = lp
+AR  = ar cr
+
+MAKE  = make
+MFLAGS =
+SHELL = /bin/sh
+
+VER  = 1
+
+
+CCC	= KCC # <insert your favorite compiler here>
+
+LIBDIR  = $(CPPROOT)/lib
+SRCDIR = $(CPPROOT)/CCfits
+
+
+CCLIB = libCCfits.a
+CCLIBSTEM = libCCfits.so
+CCLIBS = $(CCLIBSTEM) #.$(VER)
+CFITSIOLIB =    -lcfitsio
+SYSLIB =	-ltermcap -ldl  -lsunmath -lm -lcx -lc -lsocket -lnsl
+
+LDFLAGS = -R. -L.  -L$(LIBDIR) -L$(LIBTMP) 
+LDLIBS = $(CFITSIOLIB) $(SYSLIB)
+
+.PRECIOUS: $(CCLIB)
+
+OFLAG= -g 
+
+
+CCFLAGS =   -I. -I${CPPROOT}/include +K3 -O --backend --no-guiding-decls -qmaxmem=4096 
+
+COMPARCH = 
+
+
+SRC = AsciiTable.cxx BinTable.cxx Column.cxx ColumnCreator.cxx ColumnData.cxx ColumnVectorData.cxx \
+        ExtHDU.cxx FITS.cxx FITSBase.cxx FITSUtil.cxx FitsError.cxx HDU.cxx Image.cxx \
+        HDUCreator.cxx KeyData.cxx Keyword.cxx KeywordCreator.cxx PHDU.cxx Table.cxx
+
+HEADER = AsciiTable.h BinTable.h Column.h ColumnT.h ColumnCreator.h ColumnData.h \
+        ColumnVectorData.h ExtHDU.h ExtHDUT.h FITS.h FITSBase.h FITSUtil.h FITSUtilT.h \
+        FitsError.h HDU.h HDUCreator.h ImageExt.h Image.h KeyData.h Keyword.h KeywordT.h \
+        KeywordCreator.h NewKeyword.h PHDU.h PHDUT.h PrimaryHDU.h \
+        Table.h CCfits.h
+
+OBJ = $(SRC:.cxx=.o)
+
+BINDIR   = $(CPPROOT)/bin
+LIBDIR   = $(CPPROOT)/lib
+INCDIR   = $(CPPROOT)/include
+
+
+TAR 	= /usr/bin/tar
+
+SUFFIXES = .cxx .so .inf $(SUFFIXES)
+
+
+OUTPUT_OPTION = -o $@
+
+COMPILE.cxx = $(CCC) $(OFLAG) $(CCFLAGS) $(CPPFLAGS)  -c
+
+LINK.cxx=$(CCC) $(CCFLAGS) $(CPPFLAGS) $(LDFLAGS)  $(LDLIBS)
+
+
+.cxx.o:
+	$(COMPILE.cxx) $<
+
+.cxx:
+	$(LINK.cxx) $(OUTPUT_OPTION) $< $(LDLIBS)
+
+.cxx.inf:
+	$(CCC) -E $(CCFLAGS) $< > $@
+
+
+.f.a:
+	$(COMPILE.f)  $(OFLAG) -o $(LIBDIR)/$% $<
+
+.cxx.so:
+	$(CCC) $(OFLAG) $(CCFLAGS) $(CPPFLAGS) -o $% $<
+	$(CCC) $(OFLAG) -o $@ $<
+
+.cxx.i:
+	$(CCC) -E $(CCFLAGS) $< > $@
+
+.cxx.a:
+	$(CCC) $(OFLAG) -c $(CCFLAGS) $(CPPFLAGS) -o $% $<
+
+
+
+all: shared clean_obj static 
+
+default static: $(CCLIB) $(OBJ)
+
+cookbook:  cookbook.o     cookbook.cxx
+	$(CCC) $(OFLAG) $(CCFLAGS) -o cookbook cookbook.o -L $(LIBDIR) -lCCfits -lcfitsio -lm
+
+$(CCLIBS): $(OBJ)
+	$(CCC) -o $@ $(CCFLAGS) $(OBJ)
+
+$(CCLIB): $(CCLIB)($(OBJ))
+	$(CCC) -xar -o $@ $(OBJ)
+
+
+shared: $(CCLIBS) install_only
+
+print: 
+	-for i in $(SRC) $(HEADER) ;\
+	do (rosex $$i -Plptlr ); done
+
+clean:  FORCE
+	CCadmin -clean
+	$(RM) *.o *.a *.so.* 
+
+veryclean:      clean
+	$(RM) *.h~ *.cx*~ *.bck
+	$(RM) -r $(LIBTMP)/SunWS_cache
+
+install: static install_only
+	-ln -s  $(SRCDIR)/$(CCLIB) $(CPPROOT)/lib/$(CCLIB)
+	-ln -s  $(SRCDIR)/$(CCLIBS) $(CPPROOT)/lib/$(CCLIBS)
+
+install_only:
+	$(CP) $(HEADER) CCfits $(CPPROOT)/include/
+	$(CP) $(CCLIBS) $(LIBDIR)
+
+# Cleanup utilities
+
+clean_obj: FORCE	
+	$(RM) $(OBJ) 
+
+clean_lib:	FORCE
+	-cd $(LIBDIR) ; $(RM) *.a *.so
+
+
+
+#Force target. Call this when the instruction MUST be executed and when
+# you don't want to check if any dependencies are present. Extremely useful
+# for building parts of things.
+
+FORCE: 
+
+# depend targets
+
+AsciiTable.o: AsciiTable.cxx AsciiTable.h
+
+BinTable.o: BinTable.cxx BinTable.h
+
+Column.o: Column.cxx Column.h Table.h HDU.h
+
+ColumnCreator.o: ColumnCreator.cxx ColumnVectorData.h ColumnCreator.h ColumnData.h Column.h
+
+ColumnData.o: ColumnData.cxx ColumnData.h
+
+ExtHDU.o: ExtHDU.cxx ExtHDU.h FITS.h
+
+FITS.o: FITS.cxx FITS.h ExtHDU.h PHDU.h HDUCreator.h 
+
+FITSBase.o: FITSBase.cxx FITSBase.h ExtHDU.h PHDU.h
+
+FITSUtil.o: FITSUtil.cxx FITSUtil.h 
+
+FitsError.o: FitsError.cxx FitsError.h
+
+HDU.o: HDU.cxx HDU.h NewKeyword.h
+
+HDUCreator.o: HDUCreator.cxx HDUCreator.h ImageExt.h PrimaryHDU.h AsciiTable.h BinTable.h HDU.h
+
+KeyData.o: KeyData.cxx KeyData.h
+
+Keyword.o: Keyword.cxx Keyword.h HDU.h
+
+KeywordCreator.o: KeywordCreator.cxx KeywordCreator.h HDU.h 
+
+PHDU.o: PHDU.cxx PHDU.h FITS.h
+
+Table.o: Table.cxx Table.h ColumnCreator.h
+
+AsciiTable.h:   Table.h     
+BinTable.h:     Table.h          
+Column.h:       FitsError.h FITSUtil.h     
+ColumnData.h:   Column.h     
+ExtHDU.h:        HDU.h FitsError.h    
+FITS.h:         HDU.h HDUCreator.h FitsError.h   
+FITSUtil.h:     FitsError.h     
+HDU.h:          KeywordCreator.h Keyword.h ColumnData.h FITSUtil.h
+KeyData.h:      Keyword.h      
+KeywordCreator.h: KeyData.h FitsError.h   
+NewVectorColumn.h: ColumnCreator.h
+PrimaryHDU.h:   PHDU.h FITS.h
+Table.h:        ExtHDU.h Column.h
+NewKeyword.h:   KeywordCreator.h KeyData.h FITSUtil.h     
+ColumnVectorData.h:  Column.h
+HDUCreator.h:    FitsError.h    
+ImageExt.h:      ExtHDU.h FITSUtil.h   
+PHDU.h:         HDU.h FITS.h FITSUtil.h
+

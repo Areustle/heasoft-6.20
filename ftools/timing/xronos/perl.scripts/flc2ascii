@@ -1,0 +1,355 @@
+#!/usr/local/bin/perl5
+$task="flc2ascii1.0";
+$bailout= "bailout";
+use Getopt::Std;
+require 'utils.pl';
+getopt('ixyrof');
+$infile=$opt_i;
+$outfile=$opt_o;
+$xcolstring = $opt_x;
+$ycolstring = $opt_y;
+$rownum = $opt_r;
+$fraccol = $opt_f;
+
+if($opt_h) {
+print<<EOHELP;
+This script dumps a FITS lightcurve or a XRONOS output file into ASCII
+and adds header information suitable for QDP/PLT. The output ASCII file
+contains: (1) the QDP/PLT command 'READ SERR', followed by numbers
+indicating the vectors which have errors, (2) the FITS header and GTI
+extension (if present in the input file) with an '!' prepended to each
+line, and (3) columns of data representing the X-axis and Y-axis (plus
+additional error columns and a fractional exposure column, if selected
+from the input file). The script recognizes two possible formats for the
+FITS lightcurve or XRONOS output: data stored (a) as a single element or
+(b) as an array of elements in column (Note only one dimension e.g.
+TDIMn= '(j)'). For the format (a), all the rows in the table for a given
+column are moved into the ASCII file, for (b), only one row (array type)
+is dumped into an ASCII file. The script creates an X-axis if not present
+in the FITS lightcurve or XRONOS output. For the format (b) the X-axis
+is derived using the auxiliary coordinates column keywords (e.g. 1CTYPn,
+1CVALn, 1CDLTn with n column number). Only if the X-axis is TIME for the
+format (a), the X column in the ASCII file is derived from the timing
+header keyword TIMEDEL.
+
+EOHELP
+
+$~ = "FLAGS";
+$flag_name = "-h";
+$flag_means = 'See this message.';
+write;
+$flag_name = "-i infile[ext]";
+$flag_means = "Name of the input file.  Extension may be specified with +
+or []. Default extension is 1.";
+write;
+$flag_name = "-o outfile";
+$flag_means = 'Output file name.';
+write;
+$flag_name = "-q";
+$flag_means = "Spawn QDP on output file when finished.";
+write;
+$flag_name = "-r #";
+$flag_means = 'For a "one interval per row" type input file, specifies which 
+row number.';
+write;
+$flag_name = "-x column[,error]";
+$flag_means = "Column name for the X axis and (optional) X error column.\n\
+(For no X column enter 0).";
+write;
+$flag_name = "-y column[,error]";
+$flag_means = "Column name for the Y axis and (optional) Y error column.";
+write;
+$flag_name = "-f column";
+$flag_means = "Column name for the fractional exposure (0 for none).";
+write;
+exit;
+}
+
+($infile,$ext) = split(/[^A-Za-z0-9._\/]+/,$infile);
+
+#get legal input file
+until (length($infile) != 0 && -r $infile ){
+    print "***\n";
+    if(length($infile) != 0) 
+	{print "I can't read input file: \"$infile\"\n";}
+    &print_likely_files('*.fits *.lc *.flc *.fef *.fes *.fps *.fcc *.fac *.fls *.fld *.fts *.fds');
+    print "Input Filename(or number) and Extension: "; 
+    chop($infile = <STDIN>); 
+    ($infile,$ext) = split(/[^A-Za-z0-9._\-\/]+/,$infile);
+    if(($infile =~ /^\s*(\d+)\s*$/)&&($infile <= @likely_files)){
+	$infile=$likely_files[$1-1];} 
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}
+
+$ext = 1 unless $ext;
+unless ($outfile) {
+    $outfile_def = $infile;
+    $outfile_def =~ s/\..*$/\.qdp/;
+    print "Output Filename (<return> for default $outfile_def): ";
+    chop ($outfile = <STDIN>);
+    $outfile = $outfile_def unless $outfile;
+}
+open (OFILE,">$outfile");
+
+#get column names and dimensions
+
+@columndata = &runcom("flcol $infile+$ext",$bailout,"Couldn't list columns in $infile+$ext");
+
+#remove unwanted blank and column title lines, keeping the top title
+$title = shift(@columndata); push(@columndata, " ");
+foreach $colnum (1..$#columndata) {
+    $_ = shift(@columndata);
+    if(/\S/ && !/___Column_Names___/) { push(@columndata, $_); }
+}
+
+#attempt to parse x and y column information
+($xcol,$xerr) = split(/\W+/,$xcolstring);
+($ycol,$yerr) = split(/\W+/,$ycolstring);
+
+#parse column info, and hook up column numbers with names if possible
+foreach $colnum (0..$#columndata) {
+    ($colname[$colnum],$coldim[$colnum]) = split(' ',$columndata[$colnum]);
+    if($xcol eq $colname[$colnum]) { $xncol = $colnum; }
+    elsif($xerr eq $colname[$colnum]) { $xnerr = $colnum; }
+    elsif($ycol eq $colname[$colnum]) { $yncol = $colnum; }
+    elsif($yerr eq $colname[$colnum]) { $ynerr = $colnum; }
+    elsif($fraccol eq $colname[$colnum]) { $fncol = $colnum; }
+}
+
+#make sure we have a valid Y column selected
+until($ycol and $yncol) {
+    print $title;
+    foreach $colnum (1..$#columndata) {
+	print "$colnum\t$colname[$colnum]\t$coldim[$colnum]\n";
+    }
+    print "Choose column for the Y-axis and (optionally) the Y-axis error.\n";
+    print "Enter numbers: ";
+    chop($ncol = <STDIN>);
+    ($yncol,$ynerr) = split(/\D/,$ncol);
+    $ycol = $colname[$yncol];
+    $yerr = $colname[$ynerr];
+}
+
+$array_flag = 1 if ($coldim[$yncol]  > 1);
+
+#get xcolumn unless y column is a vector
+unless ($array_flag) { 
+    #don't bother with x column if 0 was entered on the command line
+    if($xcolstring eq "0") {
+        $xcol = $xerr = $xncol = $xnerr = $xcolstring = "";
+    }
+    else {
+        until($xcol and $xncol) {
+            print $title;
+            foreach $colnum (1..$#columndata) {
+                print "$colnum\t$colname[$colnum]\t$coldim[$colnum]\n";
+            }
+            print "Choose column for the X-axis and (optionally) ",
+                  "the X-axis error.\n";
+            print "Enter numbers (enter 0 or <return> for no X column): ";
+            chop($ncol = <STDIN>);
+            ($xncol,$xnerr) = split(/\D/,$ncol);
+            $xcol = $colname[$xncol];
+            $xerr = $colname[$xnerr];
+            last unless $ncol;
+        }
+    }
+} else {
+#check for presence of FREQUENCY column
+    foreach $colnum (1..$#columndata) {
+        if ($colname[$colnum] =~ /FREQUENCY/) {
+            $xcol = $colname[$colnum];
+            $xncol = $colnum;
+            last;
+        }
+    }
+}
+
+#get fractional exposure column unless 0 was entered on command line
+if($fraccol eq "0") { $fraccol = $fncol = ""; }
+else {
+    until($fraccol and $fncol) {
+        print $title;
+        foreach $colnum (1..$#columndata) {
+	    print "$colnum\t$colname[$colnum]\t$coldim[$colnum]\n";
+        }
+        print "Choose column for the Fractional Exposure.\n";
+        print "Enter number (0 or <return> for none): ";
+        chop($fncol = <STDIN>);
+        $fraccol = $colname[$fncol];
+        last unless $fncol;
+    }
+}
+
+@struct = &runcom("fstruct colinfo=no $infile",$bailout,"Couldn't find structure of 
+$infile"); 
+@numrows = &runcom("pget fstruct naxis2",$bailout,"Couldn't read number
+of rows from fstruct par file.");
+@gtirecord = grep(/gti/i , @struct);
+($junk,$gtiextnum,$exttype,$extname) = split(/\s+/,$gtirecord[0]);
+
+#get rownum if necessary
+if ($array_flag and not $rownum) {
+    $numrows = pop(@numrows);
+    chop($numrows);
+    #strip leading zeros (xpi currently returns leading zeros)
+    $numrows =~ s/^0+//;
+    $rownum=1 if($numrows == 1) ;
+}
+
+while($array_flag and not $rownum) {
+    print "$colname[$yncol] is an array column.\n";
+    print "Please choose a row number from 1-$numrows: ";
+    chop($rownum = <STDIN>);
+}
+$rownum = '-' unless ($rownum);
+
+$xflag='1' if ($xerr);
+$yflag='2' if ($yerr);
+
+#waiting message
+print "Creating the ascii file...\n";
+
+print OFILE "READ SERR $xflag $yflag \n" if ($xerr or $yerr);
+
+print OFILE "!This file created by $task from file $infile+$ext.\n";
+
+#snarf in the file
+@dump = &runcom("fdump infile=$infile+$ext outfile=STDOUT columns=\"$xcol $xerr $ycol $yerr $fraccol\" rows=$rownum  fldsep=\"%\" pagewidth=256  prhead=yes prdata=yes showcol=no showunit=no showrow=no showscale=yes align=no skip=1 tdisp=no wrap=no page=no clobber=yes", $bailout,"Couldn't dump file $infile[$ext]");
+
+chop(@dump);
+
+#grab header
+until (@header[$#header] eq "!END") { push(@header,"!".shift(@dump)); }
+
+#throw away "END"
+pop(@header);
+
+#construct X-column info if we don't have one
+unless ($xcol){
+    if($array_flag) {
+        #we have an array file
+        #find column type (Time or not)	
+	@crec = grep(/^!1CTYP$yncol/,@header);
+	$ctyp = pop(@crec);
+	if(($slashpt = index($ctyp,'/')) != -1) {
+	    $ctyp = substr($ctyp,10,$slashpt - 11);
+	} else {
+	    $ctyp = substr($ctyp,10);
+	}
+	$ctyp =~ tr/ '//d;
+        # EMACS PERL MODE
+        #find Delta-T from CDLT keyword
+	@crec = grep(/^!1CDLT$yncol/,@header);
+	$cdlt = pop(@crec);
+	if(($slashpt = index($cdlt,'/')) != -1) {
+	    $cdlt = substr($cdlt,10,$slashpt - 11);
+	} else {
+	    $cdlt = substr($cdlt,10);
+	}
+	$deltat = $cdlt;
+        #find Start value from CRVL keyword
+	@crec = grep(/^!1CRVL$yncol/,@header);
+	$crvl = pop(@crec);
+	if(($slashpt = index($crvl,'/')) != -1) {
+	    $crvl = substr($crvl,10,$slashpt - 11);
+	} else {
+	    $crvl = substr($crvl,10);
+	}
+        if($ctyp =~ /TIME/) {
+	    $time = $crvl + $deltat/2;
+	} else {
+	    $time = $crvl;
+	}
+    } else {
+        #we have a flat file with no x column	
+        #find Delta-T from TIMEDEL keyword
+	@trec = grep(/^!TIMEDEL/,@header);
+	$deltat= substr(pop(@trec),10);
+	if (!$deltat) {
+	    print "Couldn't find a \"Delta-T\". Using 1.\n" ;
+	    $deltat = 1;
+	}
+        #set start time
+	$time = $deltat/2;
+    }
+}
+
+#write out header
+print OFILE join("\n",@header);
+print OFILE "\n";
+
+#write out gtis if present
+if ($gtiextnum) {
+    @gtidump = &runcom("fdump infile=$infile+$gtiextnum outfile=STDOUT columns=\"-\" rows=\"-\"  pagewidth=256  prhead=no prdata=yes showcol=yes showunit=yes showrow=yes showscale=yes align=no skip=1 tdisp=no wrap=no page=no clobber=yes",$bailout,"Couldn't dump file $infile[$ext]");
+
+    foreach $recnum (0..(@gtidump-1)) {
+	$gtidump[$recnum] = "!".$gtidump[$recnum];
+    }
+    print OFILE "! GTI extension $gtiextnum \n";
+    print OFILE "!".$struct[0];
+    print OFILE "!".$gtirecord[0];
+    print OFILE @gtidump;
+}
+
+#get rid of extra line
+shift(@dump);
+
+#write out data
+while ($_ = shift(@dump)){
+    $x = '';
+    if($xcol) {
+	if($xerr){
+	    ($x,$xerr,$y,$yerr) = split(/\s*%\s*/);
+	} else {
+	    ($x,$y,$yerr) = split(/\s*%\s*/);
+	}
+    } else {
+	($y,$yerr) = split(/\s*%\s*/);
+    }
+    if($fraccol) {
+        #it's always last
+	@grot = split(/\s*%\s*/);
+	$fracexp = pop(@grot);
+    }
+    $x = $time unless $x;
+    $time += $deltat;
+    $y = "-1.2e-34" if $y =~ /INDEF/;
+    $yerr = "-1.2e-34" if $yerr =~ /INDEF/;
+    $fracexp = "-1.2e-34" if $fracexp =~ /INDEF/;
+    if ($x) { printf OFILE  "%22.14e" , $x;}
+    if ($xerr) {printf OFILE  "%22.14e" , $xerr;}
+    if ($y) {printf OFILE  "%22.14e" , $y;}
+    if ($yerr){ printf OFILE  "%22.14e" , $yerr;}
+    if ($fracexp){ printf OFILE  "%22.14e" , $fracexp;}
+    print OFILE "\n";
+}
+#finished
+print "Done.\n";
+
+#spawn qdp if asked
+exec("qdp $outfile") if $opt_q;
+
+format FLAGS = 
+
+  @<<<<<<<<<<<<<<<< ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~
+    $flag_name,     $flag_means
+                    ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+                    $flag_means
+.
+
+format TEXT1 =
+@|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+$task
+
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph_string
+
+
+COMMAND LINE PARAMETERS (if any are omitted or confused, you will be prompted):
+.
+
+sub bailout {
+  die("\n$task: $_[0]\n$task: Fatal Error\n");
+}

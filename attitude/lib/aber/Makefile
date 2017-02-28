@@ -1,0 +1,18 @@
+HD_COMPONENT_NAME	= attitude
+
+HD_COMPONENT_VERS	= 
+
+HD_LIBRARY_ROOT		= aber
+
+HD_LIBRARY_SRC_c	= aber.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_SHLIB_LIBS		= ${HD_LFLAGS} -lcoordfits -lcoord -l${ATFUNCTIONS} \
+			  -l${HEAUTILS} -l${PIL} -l${CFITSIO} -l${READLINE} -l${HEAIO}
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+HD_INSTALL_HEADERS	= aber.h
+
+include ${HD_STD_MAKEFILE}

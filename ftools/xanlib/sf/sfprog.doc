@@ -1,0 +1,458 @@
+DOCUMENTATION ON THE SF FILE HANDLING PROGRAMS.
+***********************************************
+
+                 M.A. SWEENEY  17 JULY 1986.
+
+
+ 
+ INTRODUCTION
+ ------------
+The Subroutines listed below are the basic software packages used in handling
+Standard format (SF) files.  There are several types of SF file each being
+divided into a series of packages.  Examples of these are the History, Data
+Response or PHA files.  For further information on there individual structure,
+see the relevant documentation.  Some information on the format of SF files is
+given in order to help clarify how to use the routines below.  For a more
+detailed description please see SF.DOC. 
+
+ SF FILE BREAK-DOWN
+ ------------------
+At the head of every SF file there is a 78 byte ID record which can be used to
+determine the form of the file to follow.  This ID 'header' is automatically
+created by the OPNRSF routine and checked for old files by the OPNRSF routine.
+It starts with a 4 character string (SF01) indicating that the file is indeed
+of SF format. This is followed by a 12 character string which uniquely
+identifies the kind of file which is being addressed.  The header continues
+with information as to whether a template package will follow immediately after
+the ID record and whether a history package exists or not.  A final string is
+included to give the creation time and program ID for the particular file, and
+other additional identifying information. 
+After the ID record, the SF file consists of a series of packages.  Each
+package consists of a header record and an optional set of subsidiary records.
+The length of a record is given in the first four bytes of each record, which
+is also used to distinguish a package header from any subsidiary records that
+follow.  The header of each package contains the following information: 
+
+1. A 12 character package string which identifies the type of package.
+2. A 2 byte 'index' which is used to distinguish packets of the same type.
+    Currently, this index should always be zero.
+3. The number of subsidiary records (NSUBS) which follow the header.
+4. Header data, that is a buffer of information associated with this package.
+A header is processed using the NXPKSF routine for input, or created using the
+WPKHSF.
+If a package has any subsidiary records, (NSUBS is not equal to zero when the
+package header is read/written), these can be read/written by the routine
+RSUBSF or WSUBSF.  (RSTRSF or WSTRSF must be used if the subsidiary record is a
+character string.)  If NSUBS is less than zero, then the actual number of
+subsidiary records is actually not determinable from the header.  When creating
+such a package, the programmer should follow the subsidiary records with a call
+to TERMSF to properly terminate the package.  Subsidiary records MUST have at
+least one byte of information in each record. 
+
+History packages are always the first (second, when a template package exists)
+package after the ID record in an SF file.  The buffer of the package header is
+empty and the subsidiary records consist of a set of character strings. 
+
+Programmers should note that SF files are SEQUENTIAL.  Thus, packages can be
+read/written only in order.  If you have already skipped past a particular
+package, then you can't read it without closing the file and re-opening with
+OPNRSF. 
+
+ The IERRSF argument
+ ___________________
+
+Many of the subroutines use the IERRSF argument to tell the user if an error
+condition occured during the routine.  If an error occurs the value of IERRSF
+is modified to contain a particular error code.  If an error does not occur,
+the value of IERRSF is unmodified.  The user should initially set IERRSF equal
+to zero.  Note that when IERRSF is equal to zero on entry to a routine is a
+necessary condition for the routine to type an error message onto the user
+terminal.  A special case is the end of file error, which is always silent,
+i.e. no message is typed out (although the value of IERRSF is reset).  See the
+routine descriptions for particular values of IERRSF. 
+
+ LISTING OF SF FILE HANDLING ROUTINES AVAILABLE
+ ----------------------------------------------
+
+   BFTOCH      ! This converts a byte buffer array to a character string.
+
+   NXPKSF      ! A routine to go to a given package within a SF file and
+                 decode the package header.This clearly gives a means of
+                 determining what kind of package (e.g. history, response
+                 etc.) is to be read in.
+
+   OPNRSF      ! This routine opens a SF format file for reading.The file
+                 is positioned at the first History Record or at the first
+                 package (when no History Package is present).The number
+                 of History records (NHIST) is also determined by the 
+                 routine.
+
+   OPNWSF      ! With this routine the SF format file is opened for writing.
+                 
+
+   PTXTSF      ! This routine prints out remaining auxillary records of a 
+                 package as text on the standard output device.
+                 
+
+   RSTRSF      ! A subroutine for writing an array of character strings as
+                 auxilary records to the current SF package.
+
+
+   RSUBSF      ! This routine reads a single subsidiary record to the current
+                 package.
+
+   SKPKSF      ! A subroutine to go to a given package and decode the package
+                 header.In so doing it makes use of the NXPKSF routine 
+                 mentioned above.However intermediate packages are skipped 
+                 over with a message being given.
+
+   TERMSF      ! This subroutine terminates a set of subsidiary records for
+                 a package having a record with a 0 value length indicator.
+
+   WPKHSF      ! A routine which writes out a package header record.
+
+   WSTRSF      ! With this routine an array of character strings is written
+                 as auxilary records to the current SF package.
+
+   WSUBSF      ! A routine to write a single subsidiary record to the current
+                 package.
+
+
+
+ DETAILED EXPLANATION OF HOW TO CALL ROUTINES
+ ---------------------------------------------
+
+
+   BFTOCH - convert byte array to character string (an internal routine,
+   ******                not of interest to most users).
+
+The calling syntax for this routine is:
+
+CALL BFTOCH(BUFFER,LENB,STRING)
+
+Where,
+      BUFFER byte(LENB)	I: Input byte array.
+      LENB   I4		I: Length of array to be transferred.
+      STRING C*LENB	R: Character string destination.
+
+
+   NXPKSF - go to a given package and decode the package header.
+   ******
+
+The syntax for calling this routine is :
+
+CALL NXPKSF(IUNIT,PKGTYP,INDEX,NSUBS,INFOAR,BUFFER,LENBUF,QSKIP,IERRSF)
+
+Where,
+      IUNIT  I4         I: Input/output unit.
+      PKGTYP C*         I/R: Package type to be searched for.  If this is
+                           blank, any packet can be used.
+      INDEX  I4         I/R: Package index searched for (currently should 
+                           always be set to 0 before call).
+      NSUBS  I4         R: No. of subseqent records.
+      INFOAR I4(4)      R: An array of information taken from the package ID.
+                           (This is not currently used).
+      BUFFER B*         R: Work array to hold the header buffer.
+      LENBUF I4         I/R: On input the maximum size of the buffer, on output 
+                           the actual size returned in the buffer.
+      QSKIP  L4         I: A logical variable, which if true, allows entire 
+                           packages to be skipped over, until one with the 
+                           given properties is found.
+      IERRSF I4         I/R: Error flag.
+                        6  - Read error.
+                        7  - EOF before the next package.
+                        8  - Wrong type package.
+                        9  - Wrong index package.
+                        10 - Wrong type package, backspace error.
+                        11 - Wrong index package, backspace error.
+
+The values of IUNIT, PKGTYP and LENBUF must be given before calling 
+this routine, while the values of the other variables are  calculated 
+within the program.In practice the value of IUNIT will already be 
+determined from for example the SF file opening routine OPNRSF.
+
+   OPNRSF - open for reading an SF format file 
+   ******
+
+The syntax for calling this routine is as follows:
+
+CALL OPNRSF(FILENM,IUNIT,TYPE,HEADER,TMPLTE,NHIST,IERRSF)
+
+Where, 
+      FILENM C*         I: Name of file to be opened.
+      IUNIT  I4         I: Fortran unit to use.
+      TYPE   C12        I/R: Type of SF file to be opened (if set to blank
+                           before call, any SF file can be opened).
+      HEADER C*         R: The contents of the ID record.
+      TMPLTE C*         R: Template file (this could be empty).
+      NHIST  I4         R: This is the number of history records in 
+                           the initial history package.
+      IERRSF I4         I/R: The SF error.
+                        1  - I/O error in open.
+                        2  - I/O error/ premature end of file in read.
+                        3  - File not an SF file.
+                        4  - File does not match the input type.
+
+The values of the first three variables must be given in the calling program,
+while the last four are determined within the subroutine.  A check is made to
+make sure that the type of file specified at the time of calling is indeed
+equivalent to that being opened.  The variable HEADER will contain the full 78
+byte ID record after the call is complete.  Also the routine determines whether
+or not a template package immediately follows the ID record.  After the initial
+ID record is read in the file is positioned at the first history record and the
+value for NHIST is determined.  In the case of no history package being
+present, NHIST returns with a value of 0. 
+
+
+   OPNWSF - open for writing an SF format file 
+   ******
+
+Calling syntax is:
+
+CALL OPNWSF(FILENM,IUNIT,TYPE,HEADER,TMPLTE,NHIST,IERRSF,SPARE,OLDFIL,
+           OLDID,PGNAME)
+
+Where,
+      FILENM C*         I: Name of file to be opened.
+      IUNIT  I4         I: Fortran unit to be used.
+      TYPE   C12        I: The type of the file (if set to blank before 
+                           call, any SF file can be opened). 
+      HEADER C*         I: An optional string to append to the ID record.
+      TMPLTE C*         I: The template file, if non blank, a template 
+                           package will be produced (currently however it 
+                           should always be blank).
+      NHIST  I4         I: No. of history records in addition to any records
+                           created by OPNWSF (these records must be added by
+                           the programmer using WSUBSF or WSTRSF).
+      IERRSF I4         I/R: SF error flag.
+      SPARE  C*         I: This is a spare flag reserved for expansion.
+      OLDFIL C*         I: The name of a previous version of the file.If it is
+                           non-blank then a new history record is generated 
+                           after the ID record.
+      OLDID  C*         I: The ID record of the previous version of the file.
+      PGNAME C*         I: The name of the program calling this subroutine.
+
+   
+   PTXTSF - to print remaining auxillary records in current package
+   ******
+
+The syntax for calling this subroutine is:
+
+CALL PTXTSF(IUNIT,NREC,BUFFER,LENBUF)
+
+Where, 
+      IUNIT  I4         I: Input unit.
+      NREC   I4         I: The number of remaining records (from NSUBS of
+                           the routine NXPKSF).
+      BUFFER B*         I/R: A buffer used for input/output.
+      LENBUF I4         I: The size of the buffer.
+
+The values of IUNIT, NREC and LENBUF must be pre-determined.
+
+   RSTRSF - to write an array of character strings as subsidiary records
+   ******
+
+Calling syntax is:
+
+CALL RSTRSF(IUNIT,STRAR,NSTR,NSTROT,IERRSF)
+
+Where,
+      IUNIT  I4         I: The reading unit.
+      STRAR  C*(NSTR)   I/R: An array of character strings to be read in.
+      NSTR   I4         I: The dimension of the array.
+      NSTROT I4         I: The number of the string in the array.
+      IERRSF I4         I/R: SF error flag.
+                        17 - I/O read error.
+                        18 - EOF condition before required records read.
+                        19 - too few input records.
+                        20 - unable to reposition after a badly terminated 
+                             indefinite number of auxillary records. 
+                        21 - at least one record has insufficient info.
+
+   RSUBSF - to read a single subsidiary record to the current package.
+   ******
+
+The calling syntax is:
+
+CALL RSUBSF(UNIT,BUFFER,LENGTH,IERRSF)
+
+Where,
+      UNIT   I4         I: Unit number.
+      BUFFER B(LENGTH)  I: The buffer to contain the record.
+      LENGTH I4         I: The length of the buffer, on return the actual 
+                           number of bytes read.
+      IERRSF I4         I/R: The error flag.
+                        7  - EOF (silent).
+                        17 - I/O read error.
+                        20 - unable to reposition after a badly terminated
+                             package.
+                        21 - buffer too small. 
+
+
+   SKPKSF - to go to a given package, skipping over intermediate ones
+   ******
+
+The calling syntax is:
+
+CALL SKPKSF(IUNIT,PKGTYP,INDEX,NSUBS,INFOAR,BUFFER,LEN,IERRSF)
+
+Where,
+      IUNIT  I4         I: I/O unit.
+      PKGTYP C*         I/R: package type to be searched for.
+      INDEX  I4         I/R: package index searched for.
+      NSUBS  I4         R: no. of subsequent records.
+      INFOAR I4(4)      R: an array of information taken from the package 
+                           header.
+      BUFFER B*         R: work array to hold header buffer.
+      LEN    I4         I/R: on input the maximum size of the buffer, on 
+                             output the actual size returned.
+      IERRSF I4         I/R: SF error flag.(The errors are generally passed
+                        from the NXPKSF routine as this is called during the
+                        the subroutine).
+                        6  - Read error.
+                        7  - End of file before next package (N.B. this is a 
+                        silent error.... it will create no message).
+                        8  - Wrong type package.
+                        9  - Wrong index package.
+                        10 - Wrong type package, backspace error.
+                        11 - Wrong index package, backspace error.
+(See routine NXPKSF for further notes).
+
+
+   TERMSF - to terminate a set of subsidiary records for a package
+   ******
+
+The calling syntax is:
+
+CALL TERMSF(UNIT,IERRSF)
+
+Where,
+      UNIT   I4         I: Unit in use.
+      IERRSF I4         I/R: Error flag.
+                        1  - I/O error during write.
+
+This routine must be used when a package was created using WPKHSF with an 
+indeterminate number of subsidiary records (NSUBS < 0).
+
+   WPKHSF - to write a package header record
+   ******
+
+The calling syntax is:
+
+CALL WPKHSF(IUNIT,PKGTYP,INDEX,NSUBS,INFOAR,BUFFER,LEN,IERRSF)
+
+Where,
+      IUNIT  I4         I: Output unit.
+      PKGTYP C*         I: Package type.
+      INDEX  I4         I: Package index.
+      NSUBS  I4         I: No. of subsidiary records.
+      INFOAR I4(4)      I: Spare.
+      BUFFER B*         I: Buffer to hold package header record.
+      LEN    I4         I: Length of buffer.
+      IERRSF I4         I/R: SF error flag.
+                        15 - Write error.
+
+
+
+   WSTRSF - to write an array of character strings as auxillary records
+   ******
+
+The calling syntax for this subroutine is :
+
+CALL WSTRSF(IUNIT,STRAR,NSTR,IERRSF)
+
+Where,
+      IUNIT  I4         I: Unit to be written to.
+      STRAR  C*         I: Array of character strings to be written.
+      NSTR   I4         I: No. of strings in array.
+      IERRSF I4         I/R: Input/output write error.
+                        16 - I/O write error.
+
+
+
+   WSUBSF - to write a single subsidiary record to the current package
+   ******
+
+The calling syntax is:
+
+CALL WSUBSF(UNIT,BUFFER,LENGTH,IERRSF)
+
+Where,
+      UNIT   I4         I: Unit number.
+      BUFFER B(LENGTH)  I: The buffer.
+      LENGTH I4         I: The length of the buffer.
+      IERRSF I4         I/R: The error flag.
+                        1  - Zero length record for subsidiary.
+                        16 - I/O write error. 
+  
+Here before calling this subroutine the values of UNIT and LENGTH must be
+specified.
+
+
+A WORKING EXAMPLE OF THE USE OF SOME OF THE ABOVE SUBROUTINES
+-------------------------------------------------------------
+
+
+For this example a part of the program RDRSP is presented.  This program
+reads complete information from a SF Response file.
+
+
+
+        PROGRAM RDRSP
+c
+c An example to illustrate the use of the 
+c standard SF file handling Subroutines.
+c
+        implicit none
+        include '[xspec.response]responsesf.inc'
+        integer*4 ierrsf,iunit,nhist,index,nsubs,infoar,maxsize
+        character*30 filenm
+        character*80 header,tmplte,lenbuf
+        character*12 pkgtyp,type
+        logical*4 qskip
+        structure/all_struct/
+            union
+                map
+                    byte buffer(maxsize)
+                       .
+                       .
+                       .
+        end structure
+                       .
+                       .
+        ierrsf=0
+c Open the response file for reading.
+c
+        call OPNRSF(filenm,iunit,'XSPEC rspnse',header,tmplte,nhist,ierrsf)
+c Note that the value of the variable TYPE is specified as the 12 character
+c name 'XSPEC rspnse'.
+c N.B. The routine OPNRSF positions the file at the first History record.
+c** Print out the SF History records onto the terminal.
+c
+                       .
+                       .
+        lenbuf=maxsize
+        call PTXTSF(iunit,nhist,xxx.buffer,lenbuf)
+c Here xxx.buffer is the name of the 'Structure Record'.
+c
+                       .
+                       .
+        pkgtyp=' '
+        index=0
+        lenbuf=maxsize
+c We can now go to the next package within the file with:
+        call NXPKSF(iunit,pkgtyp,index,nsubs,infoar,xxx.buffer,lenbuf,
+     &   .false.,ierrsf)
+c
+c Here the value of the logical variable 'qskip' is given the value of
+c .false., so that no packages are skipped over.
+c
+                       .
+                       .
+                       .
+                       .
+        end
+
+
+The subroutines used in this example are OPNRSF, PTXTSF and NXPKSF.
+

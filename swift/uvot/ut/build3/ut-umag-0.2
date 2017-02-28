@@ -1,0 +1,231 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/ut/build3/ut-umag-0.2,v $
+# $Revision: 1.1 $
+# $Date: 2002/08/15 15:42:14 $
+#
+#	umag-0.2
+#		validate umag operation
+#
+#	options
+#		input=<directory>
+#			set the input directory
+#		output=<directory>
+#			set the output directory
+#		verbose
+#			more logging
+#		quiet
+#			less logging
+#
+#
+# $Log: ut-umag-0.2,v $
+# Revision 1.1  2002/08/15 15:42:14  rwiegand
+# Unit tests for SSC build 2 tools udetect and umag.
+#
+
+use strict;
+
+use FileHandle;
+
+
+use constant TOOL => 'umag-0.2';
+
+
+sub report
+{
+	print(TOOL . ': ', @_);
+}
+
+
+sub fatal
+{
+	&report;
+	die(TOOL . ': ' . "aborted\n");
+}
+
+
+sub doCommand
+{
+	my ($command, %args) = @_;
+
+	my ($first) = split(/\s+/, $command);
+
+	if ($args{verbose}) {
+		report("doCommand $command\n");
+	}
+	elsif (not $args{quiet}) {
+		report("running $first\n");
+	}
+
+	my $result = { };
+
+	if ($args{pipeFrom}) {
+		$result->{handle} = FileHandle->new("$command|");
+	}
+	else {
+		$result->{output} = qx($command);
+		$result->{lines} = [ split(/\n/, $result->{output}) ];
+	}
+
+	if ($?) {
+		my $s = $args{verbose} ? $first : $command;
+		fatal("error running $s [$?]: $!\n");
+	}
+
+	return $result;
+}
+
+
+{
+	my $code = 0;
+
+	my %options = (
+		input => '.',
+		output => '.',
+	);
+
+	foreach my $arg (@ARGV) {
+		if ($arg eq 'quiet') {
+			$options{quiet} = 1;
+		}
+		elsif ($arg eq 'verbose') {
+			$options{verbose} = 1;
+		}
+		elsif ($arg =~ /^input=(.+)/) {
+			$options{input} = $1;
+		}
+		elsif ($arg =~ /^output=(.+)/) {
+			$options{output} = $1;
+		}
+		else {
+			fatal("invalid option: $arg\n");
+		}
+	}
+
+	report("validating set up\n") if not $options{quiet};
+
+	# validate environment
+	foreach my $var (qw(HEADAS FTOOLS)) {
+		if (not defined($ENV{$var})) {
+			fatal("environment variable $var not set\n");
+		}
+		elsif (not -d $ENV{$var}) {
+			fatal("invalid $var directory $ENV{$var}\n");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $options{$key}) {
+			fatal("invalid $key directory: $options{$key}\n");
+		}
+	}
+
+        my $headas = $ENV{HEADAS};
+	my $input = $options{input};
+	my $output = $options{output};
+
+	my %task = (
+		imagename     => "$input/UMAG_IMAGE.fits",
+		filter        => 'V',
+		sourcelist    => "$input/UMAG_SOURCE_LIST.txt",
+		zeropoints    => "$input/UMAG_ZERO_POINTS.fits",
+		output        => "$output/UMAG_OUTPUT.fits",
+		chatter       => 5,
+		clobber       => 'yes',
+		template      => "$input/UMAG_OUTPUT.template",
+		dump          => "$output/UMAG_OUTPUT.dump",
+	);
+
+	# validate required files
+	foreach my $key (qw(imagename sourcelist zeropoints template)) {
+		if (not -f $task{$key}) {
+			fatal("invalid $key file: $task{$key}\n");
+		}
+	}
+
+	# build command line
+	my $command = 'umag';
+
+	foreach my $p (qw(imagename filter sourcelist zeropoints
+			output chatter clobber)) {
+		if (not defined($task{$p})) {
+			fatal("missing parameter $p\n");
+		}
+		else {
+			$command .= qq( "$p=$task{$p}");
+		}
+	}
+
+	my $result = doCommand($command, %options);
+
+	$command = qq(fverify infile=$task{output} outfile=STDOUT);
+	doCommand($command, %options);
+
+	$command = qq(fkeyprint $task{output} TTYPE exact=no outfile=STDOUT);
+	$result = doCommand($command, %options);
+
+use constant FORMAT_REAL => 'E13.5';
+
+	my %format = (
+		XPOS => FORMAT_REAL,
+		YPOS => FORMAT_REAL,
+		RATE => FORMAT_REAL,
+		RATE_ERR => FORMAT_REAL,
+		MAG  => FORMAT_REAL,
+	);
+
+	foreach my $line (@{ $result->{lines} }) {
+		if ($line =~ /^TTYPE(\d+)\s+=\s+'(\w+)/) {
+			my $index   = $1;
+			my $field   = $2;
+			if ($format{$field}) {
+				$command = "fparkey $format{$field} "
+					. "$task{output} TDISP$index add=yes";
+				doCommand($command, %options);
+			}
+		}
+	}
+
+	$command = "fdump infile=$task{output} outfile=!$task{dump}"
+		. " tdisp=yes columns=* rows=-";
+	doCommand($command, %options);
+
+	$command = "diff $task{template} $task{dump}";
+	$result = doCommand($command, %options, pipeFrom => 1);
+	my $fh = $result->{handle};
+
+	while (<$fh>) {
+		if (/^(\d+(?:,\d+)?)c(\d+(?:,\d+)?)/) {
+			report("change: $_");
+			$code = 1;
+		}
+		elsif (/^(\d+)a/) {
+			report("addition: $_") if $options{verbose};
+		}
+		elsif (/^(\d+)d/) {
+			report("deletion: $_") if $options{verbose};
+		}
+		elsif (/^[<>]/) {
+			# diff contents
+			report($_) if $options{verbose}
+		}
+		elsif (/^---/) {
+			# mark
+		}
+		else {
+			report("diff?!: $_");
+		}
+	}
+	close($fh);
+
+	if ($code) {
+		report("test failed\n");
+	}
+	else {
+		report("test passed\n");
+	}
+
+	exit($code);
+}
+

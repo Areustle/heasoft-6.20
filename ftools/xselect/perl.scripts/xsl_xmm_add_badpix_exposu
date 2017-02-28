@@ -1,0 +1,121 @@
+#! /usr/bin/perl 
+$version ="1.00";
+$date  ="2006-05-25";
+$author = "kaa";
+
+# This script adds the BADPIX## and EXPOSU## extensions from input event
+# file to the product file. This version assumes only one event file.
+
+# Check that we were given input filenames
+
+if(@ARGV < 1 || @ARGV > 3)
+{
+    print "\n usage : xsl_xmm_add_badpix_exposu prodfile eventfile echo?\n\n";
+    exit(0);
+}
+
+$prodfile  = $ARGV[0];
+$eventfile = $ARGV[1];
+
+$echo = "no";
+if ( @ARGV == 3 && $ARGV[2] eq "yes" ) { $echo = "yes"; }
+
+# Find which instrument we are using and set the chip numbers and total number
+# of event file extensions appropriately
+
+$command = "ftkeypar $eventfile+0 INSTRUME";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+($instrum = `pget ftkeypar value`) =~ tr/'\n\ //d;
+
+#debug
+#print "INSTRUME = ", $instrum, "\n";
+
+if($instrum eq "EMOS1" || $instrum eq "EMOS2" ) {
+    $num_chips = 7;
+} else {
+    $num_chips = 12;
+}
+
+# Loop through the DSTYP keywords finding which one is for CCDNR
+
+$column = 0;
+foreach $i (1..100) {
+
+   $command = "ftkeypar $prodfile\[SPECTRUM\] DSTYP" . $i ." >& /dev/null";
+   system($command);
+   ($exist = `pget ftkeypar exist`) =~ tr/'\n\ //d;
+   if ( $exist eq "yes" ) {
+      ($dstyp = `pget ftkeypar value`) =~ tr/'\n\ //d;
+      if ( $dstyp eq "CCDNR" ) {
+         $column = $i;
+      }
+   }
+
+}
+
+if ( $column eq "0" ) {
+   print "Error: unable to find a CCDNR DSTYP\n";
+}
+
+# Loop through reads of the #DSVAL$column keywords which contain the chip numbers
+
+foreach $i (1..$num_chips) {
+
+# Create the name of the keyword to check
+
+   if ( $i == 1 ) {
+      $keyname = "DSVAL" . $column;
+   } else {
+      $keyname = $i . "DSVAL" . $column;
+   }
+
+# Try to read it
+
+   $command = "ftkeypar $prodfile\[SPECTRUM\] $keyname >& /dev/null";
+   system($command);
+   ($exist = `pget ftkeypar exist`) =~ tr/'\n\ //d;
+
+# If it exists then get the chip number and set the chip name
+
+   if ( $exist eq "yes" ) {
+
+      ($chipno = `pget ftkeypar value`) =~ tr/'\n\ //d;
+
+#debug
+#      print "Chip number = ", $chipno, "\n";
+
+      if ( $chipno < 10 ) {
+         $chipname = "0" . $chipno;
+      } else {
+         $chipname = $chipno;
+      }
+
+#debug
+#      print "Chip name = ", $chipname, "\n";
+
+# set the names of the BADPIX and EXPOSU extensions to add then append them
+
+      $badpixname = 'BADPIX' .$chipname;
+      $exposuname = 'EXPOSU' .$chipname;
+
+# debug
+#	   print "Appending ", $badpixname, " and ", $exposuname, "\n";
+
+      $command = "ftappend '$eventfile\[$badpixname\]' $prodfile";
+      if ( $echo eq "yes" ) { print $command,"\n"; }
+      system($command);
+      $command = "ftappend '$eventfile\[$exposuname\]' $prodfile";
+      if ( $echo eq "yes" ) { print $command,"\n"; }
+      system($command);
+
+   } else {
+
+      $i = $num_chips
+
+   }
+
+# End loop on #DSVAL keywords
+
+}
+

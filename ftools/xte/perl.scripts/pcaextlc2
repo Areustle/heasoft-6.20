@@ -1,0 +1,787 @@
+#!/usr/bin/perl
+#
+# File: pcaextlc2
+#
+# Description:  Extract PCA Standard2 spectrum and background, and optional deadtime correction
+#
+# Author: C. B. Markwardt
+#
+#
+
+use Getopt::Std;
+
+getopts(':h');
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    pcaextlc2 - Extract PCA Standard2 light curve and background, and 
+          optional deadtime correction
+
+USAGE
+    pcaextlc2 src_infile bkg_infile outfile gtiandfile pculist 
+       layerlist binsz
+
+DESCRIPTION
+
+    pcaextlc2 extracts a light curve from PCA data stored in the
+    Standard2 format.  This task performs light curve extraction for
+    both source and background, and optionally performs both
+    background subtraction and/or dead-time correction.
+
+    pcaextlc2 is a "convenience" script which makes it easier and
+    less error-prone to extract a light curve for most users.
+
+    A key benefit is that users do not need special knowledge of when
+    detectors become "dead" for various reasons.  Instead, the user
+    can request *all* of the detectors they are interested in, and
+    'pcaextlc2' will produce a light curve which contains the subset
+    of those detectors which have good live time, and is represents
+    the average rate per detector.  
+
+    For example, users can request all of the detectors all of the
+    time (pculist="0,1,2,3,4"), and pcaextlc2 will automatically
+    de-select the detectors which are disabled, or having a breakdown,
+    etc.  This functionality relies on the "zero_bad" capabilities of
+    the "pcadeadcalc2" task.
+
+    Advanced users can still use the more basic tools for fine-grained
+    control instead of this task.  Because extraction and dead-time
+    correction require the user to perform several careful operations,
+    the use of this tool is recommended to make sure that the
+    operations are done consistently.  Generally, the PCA team and the
+    RXTE GOF recomend to not change the default for the advance
+    parameters of this tool without specific need.
+
+    The input to this tool is a set of PCA Standard2 files.  To gain
+    full benefit of this tool, the user *MUST* provide dead-time
+    calculated version of the Standard2 file.  For beginning users,
+    the output files of the 'pcaprepfile2' task are sufficient.  For
+    advanced users, the equivalent output of 'pcadeadcalc2' is
+    acceptable.
+
+    If background estimates are required, the user must supply
+    background Standard2 files, also with dead-time quantities
+    calculated.
+
+    The output of the task is a light curve file (.lc) file which
+    contains the source count rate.  Using the default settings to
+    this task, the output light curve file has rates that are
+    dead-time corrected, and contain only counts and exposure from
+    live detectors, as described in the help file for the task
+    'pcadeadcalc2'.
+
+    If lcmode=RATE, the output is a RATE column (counts per live
+    detector per unit live time), and the ERROR column represents the
+    Poisson rate error.  If lcmode=COUNTS, the output is a COUNTS
+    column (total counts during each time bin), ERROR is the Poisson
+    counting error.  For lcmode=COUNTS, the FRACEXP value can be
+    greater than 1.0, indicating more than one PCU is enabled.  In
+    this case, the rate per live PCU can be computed as
+    COUNTS/TIMEDEL/FRACEXP.
+
+    For dead-time purposes, if deadcorrtype=LIVE then the
+    live-time-corrected values of the light curve samples is computed,
+    and the live time is reported in the column LiveTime.  Dead-time
+    corrected samples are indicated by the presence of the DEADAPP='T'
+    keyword.  If deadcorrtype=ON, then the light curve samples are
+    corrected for number of PCUs enabled (i.e. "on-time"), but not for
+    dead-time.  The on-time is then reported in the OnTime column.  If
+    only correcting for on-time, then DEADAPP='F'alse.
+
+    For background subtraction purposes, a set of background estimates
+    must be supplied in the bkg_infile parameter.  If bkgsub=NO, then
+    background values are produced and reported in the BACKV and BACKE
+    columns, but they are not subtracted.  If bkgsub=YES, then the
+    background is subtracted, i.e. RATE is recomputed as (RATE-BACKV),
+    and ERROR is recomputed as SQRT(ERROR*ERROR+BACKE*BACKE).  The
+    presence of background subtraction is indicated by the BACKAPP='T'
+    keyword.  
+
+
+PARAMETERS
+
+    src_infile [string - file name or \@filename]
+        Name of an input "source" PCA Standard2 file or \@filename.txt
+        file name list.  These files should have been processed by
+        'pcadeadcalc2', 'pcaprepfile2' or 'pcaprepobs2'.
+
+    bkg_infile [string - file name or \@filename]
+        Name of an input "background" PCA Standard2 file or
+        \@filename.txt file name list.  Note that this file list
+        should match one-for-one with the input files specified by the
+        'src_infile' parameter.  These files should have been
+        processed by 'pcadeadcalc2', 'pcaprepfile2' or 'pcaprepobs2'.
+        A value of "NONE" indicates no background estimates are desired.
+
+    outfile [string - file name]
+        Name of output light curve file.
+
+    gtiandfile = "-" [string]
+        Name of GTI "AND" time filtering, which is identical to the
+        gtiandfile passed to 'saextrct' to produce the input spectrum.
+        See 'saextrct' for more information.
+
+    pculist = "ALL" [string]
+        A comma-separated list of PCU detector numbers, or "ALL".  The
+        list of detectors should be in the range 0-4.  The value of
+        "ALL" means use all detectors, i.e. ("0,1,2,3,4").
+
+    layerlist = "ALL" [string]
+        A comma-separated list of PCU anode layer numbers, or "ALL".
+        The list of layers should be in the range 1-3.  The value of
+        "ALL" means use all layers, i.e. ("1,2,3").  It is also
+        possible to specify an explicit list of anode symbols, for
+        example "X1L,X2L,X3L" for all left anodes or "X1R,X2R,X3R" for
+        all right anodes.
+
+    binsz = 16.0 [real]
+        Time bin size for light curve samples, in seconds.  This value
+        must be an integer multiple of 16 because that is the time
+        sample size of Standard2 data.
+
+    (lcmode = "RATE") [string]
+        String giving the binning mode for accumulating counts, either
+        "RATE" or "SUM".  A setting of lcmode="RATE" produces a rate
+        light curve (counts per on-time or per live-time).  A setting
+        of lcmode="SUM" produces a counts light curve (total counts
+        per bin).
+
+    (deadcorrtype = "LIVE") [string]
+        Name of live-time correction type to use.  Use "LIVE" for the true
+        live-time correction, which results in a true dead-time corrected
+        spectrum.  Use "ON" for the on-time column, which results in a
+        standard non-dead-time corrected spectrum (the basic detector
+        on-time exposure is calculated).
+
+    (bkgsub = YES) [boolean] 
+        Setting that determines whether background is subtracted or
+        not.  If bkgsub=YES, then background is subtracted.  If
+        bkgsub=NO, then background is listed in the output file
+        (columns BACKV and BACKE) but not subtracted.  This setting is
+        ignored if bkg_infile="NONE".
+
+    (gtiorfile = "APPLY") [string]
+        Name of GTI "OR" time filtering, which is identical to the
+        gtiorfile passed to 'saextrct' to produce the input spectrum.
+
+    (gticols = "START STOP") [string]
+        Name of GTI start/stop column names, which is identical to the
+        gticols passed to 'saextrct' to produce the input spectrum.
+
+    (timecol = "TIME") [string]
+        Name of TIME column used for extraction, which is identical to
+        the timecol passed to 'saextrct' to produce the input spectrum.
+
+    (timemin = INDEF) [double precision real]
+        Minimum start time (MET) used for accumulation, which is
+        identical to the timemin passed to 'saextrct' to produce the
+        input spectrum.
+
+    (timemax = INDEF) [double precision real]
+        Maximum start time (MET) used for accumulation, which is
+        identical to the timemax passed to 'saextrct' to produce the
+        input spectrum.
+
+    (timeint = INDEF) [double precision real]
+        Comma-separated list of time intervals (MET), which is
+        identical to the timeint passed to 'saextrct' to produce the
+        input spectrum.
+
+    (lcbinarray = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (gtiarray = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (maxmiss = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (phasefile = INDEF) [string]
+        Setting passed to 'saextrct'.
+
+    (timezero = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chmin = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chmax = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chint = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chbin = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (ephem = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (period = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (phaseint = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (obsdate = "MJDREF") [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (obstime = "TSTART TSTOP") [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (sensecase = NO) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (negative = IGNORE) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (mfracexp = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (tnull = 0.0) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 2) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+
+    1. Calling interactively:
+       
+       pcaextlc2 
+        [ interactive prompts follow ]
+        Input Standard2 file name or \@file-of-filenames: \@93067-01-42-01-result/FP_dtstd2.lis
+        Input background file name or \@file-of-filenames: \@93067-01-42-01-result/FP_dtbkg2.lis
+        Output light curve file: corrected_93067.lc
+        Input GTI file to be AND'd with INFILE:[-] 
+        Comma-separated list of PCU detectors to accmulate (0-4): ALL
+        Comma-separated list of PCU layers to accmulate (1-3): ALL
+        Light curve time bin size (multiple of 16 sec): 16
+
+
+    2. Calling from command line:
+
+      pcaextlc2 src_infile=\@93067-01-42-01-result/FP_dtstd2.lis \
+                bkg_infile=\@93067-01-42-01-result/FP_dtbkg2.lis \
+                outfile=corrected_93067.lc \
+                binsz=32.0 \
+                gtiandfile=my_data_selection.gti \
+                pculist=ALL layerlist=ALL chatter=5 deadcorrtype=LIVE lcmode=RATE
+
+CAVEATS
+
+    Although it is possible to run this task against the "original"
+    raw Standard2 files, the PCA team cannot attest to its
+    correctness.  Also, the running of this task assumes that
+    "zero_bad=YES" has been used when running
+    pcaprepfile2/pcaprepobs2/pcadeadcalc2.  If zerobad=NO, then it is
+    possible for the calculated exposures to be incorrect.
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    saextrct, pcaprepfile2, pcaprepobs2, pcadeadcalc2, pcaextspect2
+
+EOHELP
+exit;
+    }
+
+use HEACORE::HEAINIT;
+
+
+
+# ==================================================================
+# Call the main task subroutine with an exception handler
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+@scratchfiles_badonly = ();
+eval {
+    $status = headas_main(\&pcaextlc2);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub pcaextlc2 {
+
+    $taskname = "pcaextlc2";
+    $taskvers = "2.2";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &pcaextlc2_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+
+	# Delete some product files only if we exited with an error
+	if ($@) { 
+	  foreach $scratchfile (@scratchfiles_badonly) {
+	    unlink "$scratchfile";
+	  }
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Working subroutine
+sub pcaextlc2_work {
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants :longnames);
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter);
+    my ($fits1, $fits2, $handle1, $handle2);
+    my ($mode, $tddes5);
+
+    ($status = PILGetString('src_infile',$src_infile)) == 0 || die "error getting src_infile parameter";
+    ($status = PILGetString('bkg_infile',$bkg_infile)) == 0 || die "error getting bkg_infile parameter";
+    ($status = PILGetString('outfile',$outfile)) == 0 || die "error getting outfile parameter";
+    ($status = PILGetString('gtiandfile',$gtiandfile)) == 0 || die "error getting gtiandfile parameter";
+    ($status = PILGetString('pculist',$pculist)) == 0 || die "error getting pculist parameter";
+    ($status = PILGetString('layerlist',$layerlist)) == 0 || die "error getting layerlist parameter";
+    ($status = PILGetReal('binsz',$binsz)) == 0 || die "error getting binsz paramter";
+    ($status = PILGetString('lcmode',$lcmode)) == 0 || die "error getting lcmode parameter";
+    ($status = PILGetString('deadcorrtype', $deadcorrtype)) == 0 || die "error getting deadcorrtype parameter";
+    ($status = PILGetBool('bkgsub', $bkgsub)) == 0 || die "error getting bkgsub parameter";
+    ($status = PILGetString('gtiorfile',$gtiorfile)) == 0 || die "error getting gtiorfile parameter";
+    ($status = PILGetString('gticols',$gticols)) == 0 || die "error getting gticols parameter";
+    ($status = PILGetString('filtfile',$filtfile)) == 0 || die "error getting filtfile parameter";
+    ($status = PILGetString('timecol',$timecol)) == 0 || die "error getting timecol parameter";
+    ($status = PILGetString('timemin',$timemin)) == 0 || die "error getting timemin parameter";
+    ($status = PILGetString('timemax',$timemax)) == 0 || die "error getting timemax parameter";
+    ($status = PILGetString('timeint',$timeint)) == 0 || die "error getting timeint parameter";
+    ($status = PILGetString('lcbinarray',$lcbinarray)) == 0 || die "error getting lcbinarray parameter";
+    ($status = PILGetString('gtiarray',$gtiarray)) == 0 || die "error getting gtiarray parameter";
+    ($status = PILGetString('maxmiss',$maxmiss)) == 0 || die "error getting maxmiss parameter";
+    ($status = PILGetString('phasefile',$phasefile)) == 0 || die "error getting phasefile parameter";
+    ($status = PILGetString('timezero',$timezero)) == 0 || die "error getting timezero parameter";
+    ($status = PILGetString('chmin',$chmin)) == 0 || die "error getting chmin parameter";
+    ($status = PILGetString('chmax',$chmax)) == 0 || die "error getting chmax parameter";
+    ($status = PILGetString('chint',$chint)) == 0 || die "error getting chint parameter";
+    ($status = PILGetString('chbin',$chbin)) == 0 || die "error getting chbin parameter";
+    ($status = PILGetString('ephem',$ephem)) == 0 || die "error getting ephem parameter";
+    ($status = PILGetString('period',$period)) == 0 || die "error getting period parameter";
+    ($status = PILGetString('phaseint',$phaseint)) == 0 || die "error getting phaseint parameter";
+    ($status = PILGetString('obsdate',$obsdate)) == 0 || die "error getting obsdate parameter";
+    ($status = PILGetString('obstime',$obstime)) == 0 || die "error getting obstime parameter";
+    ($status = PILGetBool('sensecase',$sensecase)) == 0 || die "error getting sensecase parameter";
+    ($status = PILGetString('negative',$negative)) == 0 || die "error getting negative parameter";
+    ($status = PILGetString('mfracexp',$mfracexp)) == 0 || die "error getting mfracexp parameter";
+    ($status = PILGetReal('tnull',$tnull)) == 0 || die "error getting tnull parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting cleanup parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    
+    print "Running $taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------\n" if ($chatter >= 2);
+
+    $accumulate = "ONE"; # Only support one light curve at a time
+
+    # Parameter validation
+    $clobstr = $clobber ? "YES" : "NO";
+    $cleanstr = $cleanup ? "YES" : "NO";
+    undef $filtfile if ($filtfile =~ m/^none$/i);
+    undef $bkg_infile if ($bkg_infile =~ m/^none$/i);
+
+    if ($lcmode =~ m/^SUM$/i) {
+      $lcmode = "SUM";
+    } elsif ($lcmode =~ m/^RATE$/i) {
+      $lcmode = "RATE";
+    } else {
+      die "ERROR: lcmode must be either SUM or RATE";
+    }
+    die "ERROR: binsz must be greater than zero" if ($binsz <= 0);
+    die "ERROR: binsz must be a multiple of 16" 
+      if (int($binsz/16.0) != ($binsz/16.0));
+
+    if ($deadcorrtype =~ m/^LIVE$/i) { 
+      $deadcorrtype = "LIVE";
+      print "  Using LIVE-time correction\n" if ($chatter >= 5);
+    } elsif ($deadcorrtype =~ m/^ON$/i) {
+      $deadcorrtype = "ON";
+      print "  Using ON-time correction\n" if ($chatter >= 5);
+    } elsif ($deadcorrtype =~ m/^NONE$/i) {
+      $deadcorrtype = "NONE";
+    } else {
+      die "ERROR: $deadcorrtype must be either 'LIVE', 'ON' or 'NONE'";
+    }
+
+    # Check for input files because saextrct gives very misleading
+    # error messages.
+    if ($src_infile =~ m/^@(.*)$/) {
+      die "ERROR: Input file $1 does not exist" if ( ! -r "$1" );
+    }
+    if ($bkg_infile =~ m/^@(.*)$/) {
+      die "ERROR: Input file $1 does not exist" if ( ! -r "$1" );
+    }
+
+    print "   PCUs:   $pculist\n" if ($chatter >= 2);
+    print "   Layers: $layerlist\n" if ($chatter >= 2);
+    @columns = &parse_pcus_columns($pculist,$layerlist);
+    print "     (normalized PCU list: $pculist)\n" if ($chatter >= 5);
+    print "     (normalized layer list: $layerlist)\n" if ($chatter >= 5);
+    $ncols = $#columns + 1;
+    print "   Standard2 Columns Requested: $ncols\n" if ($chatter >= 2);
+    print "      (".join(", ",@columns).")\n" if ($chatter >= 5);
+    if (! defined($columns[0]) ) {
+      die "ERROR: invalid PCU list '$pculist' or layer list '$layerlist' (PCUs must be in range 0-4 and layer list in range 1-3)";
+    }
+
+    # Create column list file
+    $colfile = "$outfile"."_cols.lis";
+    $atcolfile = "@"."$colfile";
+
+    open(COLUMNFILE,">$colfile") || die "ERROR: could not open '$colfile' for writing";
+    push @scratchfiles, $colfile;
+    foreach $col (@columns) { print COLUMNFILE "$col\n"; }
+    close(COLUMNFILE);
+    print "   (Column file $colfile ".((-f $colfile)?"found":"not found").")\n"
+      if ($chatter >= 5);
+
+    undef $ltcolums; undef $ltprefix;
+    if ($deadcorrtype eq "LIVE") {
+      $ltprefix = "LiveTimePcu";
+    } elsif ($deadcorrtype eq "ON") {
+      $ltprefix = "OnTimePcu";
+    }
+    if ($ltprefix) {
+      $ltcolumns = join(",", map { "$ltprefix"."$_" } split(/,/,$pculist));
+    }    
+
+    &extract_lc($src_infile,$outfile,$binsz,$deadcorrtype,"Source",$pculist,$layerlist,
+		$accumulate, $lcmode, $atcolfile, $ltcolumns, $gtiorfile, $gtiandfile, 
+		$timemin, $timemax, $timeint, $chmin, $chmax, $chbin, $chint, 
+		$lcbinarray, $gtiarray, $maxmiss, $gticols, $timecol, $obsdate, $obstime,
+		$phasefile, $ephem, $period, $phaseint, $mfracexp, $mlcinten, 
+		$tnull, $timezero, $chatter);
+
+    if ($bkg_infile) {
+      
+      my $bkgoutfile = "$outfile"."_bkg.lc";
+      push @scratchfiles, $bkgoutfile;
+
+      &extract_lc($bkg_infile,$bkgoutfile,$binsz,$deadcorrtype,"Background",$pculist,$layerlist,
+		$accumulate, $lcmode, $atcolfile, $ltcolumns, $gtiorfile, $gtiandfile, 
+		$timemin, $timemax, $timeint, $chmin, $chmax, $chbin, $chint, 
+		$lcbinarray, $gtiarray, $maxmiss, $gticols, $timecol, $obsdate, $obstime,
+		$phasefile, $ephem, $period, $phaseint, $mfracexp, $mlcinten, 
+		$tnull, $timezero, $chatter);
+
+
+      # OK, now we have a background file, paste the background values
+      # to the main output file.
+      $tmpfile = "$outfile"."_tmpbkg.lc";
+      $lccol = ($lcmode eq 'RATE')?'RATE':'COUNTS';
+      $colexpr = "BACKV = $lccol; ".
+	"BACKE = ERROR; ";
+      $cmd = "ftpaste ".
+	"infile='$outfile' ".
+	"pastefile='$bkgoutfile"."[col $colexpr]' ".
+	"outfile='$tmpfile' ".
+	"copyall=YES clobber=YES chatter=1 ";
+      unlink($tmpfile);
+      print "   Attaching background to source light curve\n" if ($chatter >= 2);
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      @results = `$cmd`;
+      push @scratchfiles, "$tmpfile";
+      if ($? || ! -f "$tmpfile") {
+	warn "Error reported by 'ftpaste'";
+	print "\nError Log\n========================================\n";
+	print @results;
+	print "\n========================================\n";
+	die "ERROR: could not create '$tmpfile' (via ftpaste background to source)";
+      }
+
+      if ($bkgsub) {
+	$colexpr = "*;".
+	  "$lccol = $lccol - BACKV; ".
+	  "#TTYPE#(Background subtracted $lccol) = \"$lccol\"; ".
+	  "ERROR = SQRT(ERROR*ERROR + BACKE*BACKE); ".
+	  "#TTYPE#(Source & Bkg error in quadrature) = \"ERROR\"; ".
+	  "#BACKAPP(background is subtracted) = T; ";
+	$cmd = "ftcopy ".
+	  "infile='$tmpfile"."[col $colexpr]' ".
+	  "outfile='$outfile' ".
+	  "copyall=YES clobber=YES chatter=1 ";
+	unlink($outfile);
+	print "   Performing background subtraction\n" if ($chatter >= 2);
+	print "COMMAND: $cmd\n" if ($chatter >= 5);
+	@results = `$cmd`;
+	if ($? || ! -f "$outfile") {
+	  warn "Error reported by 'ftcopy'";
+	  print "\nError Log\n========================================\n";
+	  print @results;
+	  print "\n========================================\n";
+	  die "ERROR: could not create '$outfile' (via ftcopy background sub)";
+	}
+
+      } else {
+	# Not doing any background subtraction, so just rename output
+	rename($tmpfile,$outfile);
+      }
+      
+      
+    }
+
+    print "   Done\n" if ($chatter >= 2);
+    return $status;
+}
+
+sub extract_lc {
+  my ($infile,$outfile,$binsz,$deadcorrtype,$srctype,$pculist,$layerlist,
+      $accumulate, $lcmode, $columns, $ltcolumns, $gtiorfile, $gtiandfile, 
+      $timemin, $timemax, $timeint, $chmin, $chmax, $chbin, $chint, 
+      $lcbinarray, $gtiarray, $maxmiss, $gticols, $timecol, $obsdate, $obstime,
+      $phasefile, $ephem, $period, $phaseint, $mfracexp, $mlcinten, 
+      $tnull, $timezero, $chatter) = (@_);
+  my ($cmd, $tmpfile);
+  my ($outroot, $extenlc);
+  
+  $outroot = "$outfile";
+  $extenlc = "_tmp.lc";  # Because saextrct stupidly can't take an outfile
+
+  # Full name of dummy output file created by saextrct (will be renamed)
+  $tmpfile = "$outroot"."$extenlc";
+
+  # Run SAEXTRCT and obtain spectrum without deadtime correction
+  $cmd = "saextrct binsz='$binsz' ".
+	"infile='$infile' ".
+	"outroot='$outroot' extenlc='$extenlc' clobber='YES' ".
+	"accumulate='$accumulate' printmode='LC' lcmode='$lcmode' ".
+	"columns='$columns'  ".
+	"gtiorfile='$gtiorfile' gtiandfile='$gtiandfile' ".
+	"timemin='$timemin' timemax='$timemax' timeint='$timeint' ".
+	"chmin='$chmin' chmax='$chmax' chbin='$chbin' chint='$chint' ".
+	"lcbinarray='$lcbinarray' gtiarray='$gtiarray' maxmiss='$maxmiss' ".
+	"gticols='$gticols' timecol='$timecol' obsdate='$obsdate' obstime='$obstime' ".
+	"phasefile='$phasefile' ephem='$ephem' period='$period' phaseint='$phaseint'  ".
+	"mfracexp='$mfracexp' mlcinten='INDEF' writesum='-' writemean='-' ".
+	"tnull='$tnull' timezero='$timezero'  ".
+	"extenpha='.pha' multiple='NO' spmode='SUM' mspinten=INDEF ".
+	"sensecase='NO' chkit='NO' negative='IGNORE' dryrun='NO' bailout='NO' ";
+
+  print "   Extracting raw $srctype light curve\n" if ($chatter >= 2);
+  print "COMMAND: $cmd\n" if ($chatter >= 5);
+  unlink($tmpfile);
+  @results = `$cmd`;
+  if ($? || ! -f "$tmpfile") {
+    warn "Error reported by 'saextrct'";
+    print "\nError Log\n========================================\n";
+    print @results;
+    print "\n========================================\n";
+    die "ERROR: could not create '$tmpfile'";
+  }
+  # Rename to final output name
+  push @scratchfiles, "$tmpfile";
+
+  rename($tmpfile, $outfile);
+
+  if (($deadcorrtype eq "LIVE" || $deadcorrtype eq "ON") && $ltcolumns) {
+
+    $outroot = "$outfile";
+    $extenlc = "_expo.lc";  # Because saextrct stupidly can't take an outfile
+
+    # Full name of dummy output file created by saextrct (will be renamed)
+    $ltfile = "$outroot"."$extenlc";
+
+    # Run SAEXTRCT and calculate live/on time value
+    $cmd = "saextrct binsz='$binsz' ".
+	"infile='$infile' ".
+	"outroot='$outroot' extenlc='$extenlc' clobber='YES' ".
+	"accumulate='ONE' printmode='LC' lcmode='SUM' ".
+	"columns='$ltcolumns'  ".
+	"gtiorfile='$gtiorfile' gtiandfile='$gtiandfile' ".
+	"timemin='$timemin' timemax='$timemax' timeint='$timeint'  ".
+	"chmin='INDEF' chmax='INDEF' chbin='INDEF' chint='INDEF' ".
+	"lcbinarray='$lcbinarray' gtiarray='$gtiarray' maxmiss='$maxmiss' ".
+	"gticols='$gticols' timecol='$timecol' obsdate='$obsdate' obstime='$obstime' ".
+	"phasefile='$phasefile' ephem='$ephem' period='$period' phaseint='$phaseint'  ".
+	"mfracexp='$mfracexp' mlcinten='INDEF' writesum='-' writemean='-' ".
+	"tnull='$tnull' timezero='$timezero'  ".
+	"extenpha='.pha' multiple='NO' spmode='SUM' mspinten=INDEF ".
+	"sensecase='NO' chkit='NO' negative='IGNORE' dryrun='NO' bailout='NO' ";
+
+    print "   Extracting $srctype $deadcorrtype-time series\n" if ($chatter >= 2);
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    &headas_clobberfile($ltfile);
+    @results = `$cmd`;
+    push @scratchfiles, "$ltfile";
+    if ($? || ! -f "$ltfile") {
+      warn "Error reported by 'saextrct'";
+      print "\nError Log\n========================================\n";
+      print @results;
+      print "\n========================================\n";
+      die "ERROR: could not create '$ltfile'";
+    }
+
+    # Attach this column to the output light curve with ftpaste
+    $ltcol = ($deadcorrtype eq "LIVE")? "LiveTime" : "OnTime";
+
+    $colexpr = "$ltcol = COUNTS; ".
+      "#TTYPE#(PCU*seconds exposure) = \"$ltcol\"; ".
+      "#TUNIT#(Physical unit of field) = \"s\"; ".
+      "#TDISP#(Display format of field) = \"F10.3\"; ";
+    $cmd = "ftpaste ".
+      "infile='$outfile' ".
+      "pastefile='$ltfile"."[col $colexpr]' ".
+      "outfile='$tmpfile' ".
+      "copyall=YES clobber=YES chatter=1 ";
+    
+    print "   Attaching $srctype $deadcorrtype-time series\n" if ($chatter >= 2);
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    unlink($tmpfile);
+    @results = `$cmd`;
+    push @scratchfiles, "$tmpfile";
+    if ($? || ! -f "$tmpfile") {
+      warn "Error reported by 'ftpaste'";
+      print "\nError Log\n========================================\n";
+      print @results;
+      print "\n========================================\n";
+      die "ERROR: could not create '$tmpfile' (via ftpaste)";
+    }
+    
+    # Now compute the live-time corrected 
+    $colexpr = "*; ".   # Keep all original columns
+      "TIME; ".
+      "#TDISP# = \"F14.3\"; ".
+      "FRACEXP; ".
+      "#TDISP# = \"F7.5\"; ";
+    $deadapp = ($deadcorrtype eq 'LIVE')?'T':'F';
+    $colexpr .= "#DEADAPP(deadtime correction applied?) = $deadapp;";
+    $colexpr .= "#BACKAPP(background subtracted?) = F;";
+    if ($lcmode eq 'RATE') {
+      # Example:
+      #   If binsz=32 and we have a bin with 16 sec exposure,
+      #      old RATE = 100.0
+      #      old FRACEXP = 0.5
+      #      LiveTime = 15.87
+      #  New rate will be,
+      #      = 100.0 / ( 15.87 / 32.0 / 0.5)
+      #      = 100.819
+      $colexpr .= 
+	"RATE = RATE / ($ltcol / $binsz / FRACEXP); ".
+        "#TDISP# = \"F12.3\"; ".
+        "ERROR = ERROR / ($ltcol / $binsz / FRACEXP); ".
+        "#TDISP# = \"F12.3\"; ";
+    } else {
+      $colexpr .= 
+	"COUNTS; ".   # Note that counts don't change
+        "#TDISP# = \"F12.3\"; ".
+        "ERROR; ".    # Error doesn't change either
+        "#TDISP# = \"F12.3\"; ".
+        "FRACEXP = $ltcol / ($binsz);".
+        "#TTYPE#(NUM_PCU_ON*FRACEXP) = \"FRACEXP\";";
+    }
+	
+    $cmd = "ftcopy ".
+      "infile='$tmpfile"."[col $colexpr]' ".
+      "outfile='$outfile' ".
+      "copyall=YES clobber=YES chatter=1 ";
+    
+    print "   Correcting $srctype for $deadcorrtype-time\n" if ($chatter >= 2);
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    unlink($outfile);
+    @results = `$cmd`;
+    if ($? || ! -f "$outfile") {
+      warn "Error reported by 'ftcopy'";
+      print "\nError Log\n========================================\n";
+      print @results;
+      print "\n========================================\n";
+      die "ERROR: could not create '$outfile' (via ftcopy livetime)";
+    }
+
+    # Whew! done with live time correction
+  }
+
+  return;
+}
+
+#
+# parse_pcus_columns
+#   $pculist - input list of PCUs or "ALL"
+#   $layerlist - input list of layers or "ALL"
+#
+sub parse_pcus_columns {
+  my ($pculist,$layerlist) = (@_);
+  my (@pcus, @layers);
+  my ($pcu, $layer);
+  my (@columnlist);
+
+  if ($pculist =~ m/^all$/i) { $pculist = "0,1,2,3,4"; }
+  if ($pculist =~ m/^(\d+)-(\d+)$/) { 
+    $pculist = join(",",($1 .. $2));
+  }
+  if ($layerlist =~ m/^all$/i) { $layerlist = "1,2,3"; }
+  if ($layerlist =~ m/^(\d+)-(\d+)$/) { 
+    $layerlist = join(",",($1 .. $2));
+  }
+  @pcus   = split(/,/,"$pculist");
+  @layers = split(/,/,"$layerlist");
+
+  foreach $pcu (@pcus) {
+    die "ERROR: PCU list must be in range 0-4" if ($pcu < 0 || $pcu > 4);
+    return undef if ($pcu !~ m/^[0-4]$/);
+    foreach $layer (@layers) {
+      if ($layer =~ m/^[1-3]$/) {
+	die "ERROR: layer list must be in range 1-3" 
+	  if ($layer < 1 || $layer > 3);
+	push @columnlist, "X".$layer."LSpecPcu".$pcu;
+	push @columnlist, "X".$layer."RSpecPcu".$pcu;
+      } elsif ($layer =~ m/^X[1-3][LR]$/) {
+	push @columnlist, $layer."SpecPcu".$pcu;
+      } else {
+	die "ERROR: unrecognized layer $layer";
+      }
+    }
+  }
+
+  # Return normalized pculist and layerlist
+  $_[0] = $pculist;
+  $_[1] = $layerlist;
+  return @columnlist;
+}

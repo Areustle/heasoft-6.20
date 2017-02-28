@@ -1,0 +1,329 @@
+#!/usr/bin/perl
+#
+# File: battsplit
+#
+# Description:  Split a data set into data segments according to a criterium
+#
+# Author: Craig Markwardt
+# Date:   2009-02-12
+#
+#
+#  Algorithm:
+#
+#
+#
+use HEACORE::HEAINIT;
+use strict;
+
+my $taskname = "battsplit";
+my $taskvers = "1.1";
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+my $status = 0;
+my ($difffile,$deldifffile);   # Name of scratch file
+eval {
+    $status = headas_main(\&battsplit);
+};
+# Make sure scratch file is deleted
+unlink($difffile) if (defined($difffile) && -f "$difffile" && $deldifffile);
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub battsplit {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &battsplit_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub battsplit_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my $chatter;
+    $status = PILGetInt("chatter",$chatter);
+    my $verbose = ($chatter >= 5)?(1):(0);
+    # Ordered parameters, usually ask parameters which must come first
+    my @parmlist = ("infile", "outfile");
+    my %parms = (
+		 infile    => \&PILGetString,
+		 outfile   => \&PILGetString,
+		 gtifile   => \&PILGetString,
+		 tolerance => \&PILGetReal,
+		 expr      => \&PILGetString,
+		 diffcol   => \&PILGetString,
+		 cleanup   => \&PILGetBool,
+		 clobber   => \&PILGetBool,
+		 chatter   => \&PILGetString,
+		 history   => \&PILGetString,
+		);
+
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+    print "$taskname v$taskvers\n" if ($chatter >= 1);
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+
+    # Find parameter values (listed above)
+    my ($parm, $func, $val);
+    # ... first read ordered parameters, then anything else
+    foreach $parm ( @parmlist, keys(%parms) ) {
+      my $func = $parms{$parm};
+      next if (ref($func) ne "CODE");  # Skip if we already did this parm
+      undef($val);
+      $status = &$func("$parm", $val);
+      die "ERROR: could not retrieve parameter '$parm'" if ($status);
+      $parms{$parm} = $val;
+      print "$parm=$val\n" if ($verbose);
+    }
+
+    # Print environment
+    if ($verbose) {
+      print "      DATE = ".localtime()." (local)\n";
+      print "      DATE = ".gmtime()." UTC\n";
+      print "  HOSTNAME = $ENV{HOSTNAME}\n";
+      print "       CWD = $ENV{PWD}\n";
+      print "      USER = $ENV{USER}\n";
+      print "    FTOOLS = $ENV{FTOOLS}\n";
+      print "     CALDB = $ENV{CALDB}\n";
+    }
+
+    # ================
+    my ($timezero,$mjdref,$mjdrefi,$mjdreff);
+    my (@time,@diff,@gtistart,@gtistop,$tstop);
+
+    my $infile = $parms{infile};
+    my $outfile = $parms{outfile};
+    my $diffcol = $parms{diffcol};
+    my $expr = $parms{expr};
+    my ($fits);
+    # (global variables)
+    $difffile = $parms{outfile}."-diff";
+    $deldifffile = $parms{cleanup};
+
+    my $cmd;
+    $cmd = "ftcopy infile='$infile"."[1][col *; $diffcol = ACCUM($expr);]' ".
+      "outfile='$difffile' clobber=YES";
+
+    if ($chatter >= 5) { print "$cmd\n"; }
+    $status = system($cmd);
+    if ($status != 0 || ! -f "$difffile") { 
+      die "ERROR: difference calculations failed";
+    }
+
+    $fits = SimpleFITS->open("$difffile", type=>"table", access=>"read");
+    die "ERROR: could not open temporary $difffile for reading" if (! $fits);
+    @time = $fits->readcol("TIME");
+    @diff = $fits->readcol("$diffcol");
+    die "ERROR: could not read temporary $difffile" if ($fits->status());
+    $fits
+      ->readkey("TSTOP",   $tstop)->setstatus(0)
+      ->readkey("TIMEZERO",$timezero)->setstatus(0)
+      ->readkey("MJDREF",  $mjdref)->setstatus(0)
+      ->readkey("MJDREFF", $mjdreff)->setstatus(0)
+      ->readkey("MJDREFI", $mjdrefi)->setstatus(0);
+    $fits->close();
+    undef($fits);
+
+    if ($parms{gtifile} =~ m/^NONE$/i) {
+      # If no GTI was specified 
+      @gtistart = (-1e307);
+      @gtistop  = (+1e307);
+    } else {
+      # Read GTI file
+      my $gtifile="$parms{gtifile}";
+      # ACCCKKKK!!!! can't use type=>"data" since
+      # CFITSIO will skip over GTI extensions!!!
+      $fits = SimpleFITS->open("$gtifile", access => "read");
+      if ($fits->curhdu() == 1) { $fits->move("+1"); }
+      die "ERROR: could not open $parms{gtifile}" if (! $fits);
+      @gtistart = $fits->readcol("START");
+      @gtistop  = $fits->readcol("STOP");
+      die "ERROR: could not read START/STOP columns of $parms{gtifile}" 
+	if ($fits->status());
+      # Read any of the keywords that haven't been read before
+      if (!defined($timezero)) {
+	$fits->readkey("TIMEZERO",$timezero)->setstatus(0);
+      }
+      if (!defined($mjdref)) {
+	$fits->readkey("MJDREF",$mjdref)->setstatus(0);
+      }
+      if (!defined($mjdreff)) {
+	$fits->readkey("MJDREFF",$mjdreff)->setstatus(0);
+      }
+      if (!defined($mjdrefi)) {
+	$fits->readkey("MJDREFF",$mjdrefi)->setstatus(0);
+      }
+      $fits->close();
+      undef($fits);
+    }
+
+    if ($verbose) {
+      print 
+	"TSTOP=$tstop\n".
+	"TIMEZERO=$timezero\n".
+	"MJDREF=$mjdref\n".
+	"MJDREFI=$mjdrefi\n".
+	"MJDREFF=$mjdreff\n";
+    }
+	
+    my $defined_mjdref = (defined($mjdref) || 
+			  (defined($mjdrefi) && defined($mjdreff)));
+    if (!defined($timezero) || ! $defined_mjdref) {
+      die "ERROR: required TIMEZERO and/or MJDREF{IF} keywords were not present in either input file";
+    }
+
+    unlink($outfile) if ($parms{clobber});
+
+    # Output GTI
+    my (@outstart,@outstop);
+
+    # $i - index to input GTI
+    # $j - index to TIME column
+    my $i;
+    foreach $i (0 .. $#gtistart) {
+      my ($diff0,$j);
+      $j = 0;
+      
+      printf " ... processing GTI %d...\n", $i+1 if ($verbose);
+
+      # Throw out any GTIs that have *zero* overlap with the 
+      # input data
+      if ($gtistop[$i] < $time[0]) {
+	print "    (no overlap pre)\n" if ($verbose);
+	next; 
+      }
+
+      while ($j <= $#time && $time[$j] < $gtistart[$i]) { $j++; }
+      if (defined($tstop)) {
+	if ($gtistart[$i] > $tstop) {
+	  print "    (no overlap post1)\n" if ($verbose);
+	  next;
+	}
+      } elsif ($j > $#time) {
+	print "    (no overlap post2)\n" if ($verbose);
+	next;
+      }
+
+      # There is an assumption that the previous value "carries
+      # forward" from the previous sample to the last.  Therefore, the
+      # *previous* sample, which began *before* the current GTI, is
+      # the one we should use.
+      if ($j > 0) { 
+	$diff0 = $diff[$j-1];
+      } else {
+	$diff0 = $diff[0];
+      }
+
+      print "    (diff: $diff0 start: $gtistart[$i])\n" if ($verbose);
+      push @outstart, $gtistart[$i];
+
+      while ($j <= $#time && $time[$j] < $gtistop[$i]) { 
+	my $ddiff = $diff[$j]-$diff0;
+	# print "     (time: $time[$j] ddiff: $ddiff)\n" if ($verbose);
+	if ($ddiff > $parms{tolerance}) {
+	  print "    (split: $time[$j])\n" if ($verbose);
+	  # End the current output GTI and start a new one at the same point
+	  push @outstop, $time[$j];
+	  push @outstart, $time[$j];
+	  $diff0 = $diff[$j];
+	}
+
+	$j ++;
+      }
+
+      print "    (stop: $gtistop[$i])\n" if ($verbose);
+      push @outstop, $gtistop[$i];
+
+      $i ++;
+    }
+
+    $fits = SimpleFITS->open("$outfile", type=>"data", access=>"create");
+    die "ERROR: could not create $outfile" if (! $fits);
+    $fits->createtab("STDGTI");
+    $fits->insertcol({TTYPE => "START", TFORM => "D", TUNIT => "s"});
+    $fits->insertcol({TTYPE => "STOP",  TFORM => "D", TUNIT => "s"});
+    die "ERROR: could not create columns in $outfile" if ($fits->status());
+    $fits
+      ->writekey("HDUCLASS", "OGIP",  "Conforms to OGIP/GSFC standards")
+      ->writekey("HDUCLAS1", "GTI",   "Contains good time intervals")
+      ->writekey("HDUCLAS2", "STANDARD", "Contains standard good time intervals")
+      ->writekey("HDUVERS",  "1.0.0", "Version of GTI header")
+      ->writekey("TIMEZERO", $timezero, "Zero-point offset for TIME column",TDOUBLE);
+    if (defined($mjdref)) {
+      $fits
+      ->writekey("MJDREF", $mjdref, "MJD Epoch of TIME = 0");
+    }
+    if (defined($mjdreff)) {
+      $fits
+      ->writekey("MJDREFI", $mjdrefi, "MJD Epoch of TIME = 0 (integer)")
+      ->writekey("MJDREFF", $mjdreff, "MJD Epoch of TIME = 0 (fractional)");
+    }
+    die "ERROR: could not write required keywords to $outfile" if ($fits->status());
+
+    $fits
+      ->writecol("START",{rows=>[1,$#outstart+1]},\@outstart)
+      ->writecol("STOP", {rows=>[1,$#outstart+1]},\@outstop);
+    die "ERROR: could not write data to $outfile" if ($fits->status());
+    $fits->close();
+    undef($fits);
+
+    printf ("Found %d time intervals\n",$#outstart+1) if ($chatter >= 1);
+
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+    print "DONE\n" if ($chatter >= 1);
+
+    return 0;
+}
+
+
+

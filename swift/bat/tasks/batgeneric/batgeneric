@@ -1,0 +1,146 @@
+#!/usr/bin/perl
+#
+# File: batgeneric
+#
+# Description:  Generic BAT task that does nothing
+#
+# Author: Craig Markwardt
+# Date:   2009-02-12
+#
+#
+#  Algorithm:
+#
+#
+#
+use strict;
+use HEACORE::HEAINIT;
+
+my $taskname = "batgeneric";
+my $taskvers = "1.1";
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+my $status = 0;
+eval {
+    $status = headas_main(\&batgeneric);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub batgeneric {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batgeneric_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batgeneric_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my $chatter;
+    $status = PILGetInt("chatter",$chatter);
+    my $verbose = ($chatter >= 5)?(1):(0);
+    # Ordered parameters, usually ask parameters which must come first
+    my @parmlist = ("infile", "outfile");
+    my %parms = (
+		 infile    => \&PILGetString,
+		 outfile   => \&PILGetString,
+		 clobber   => \&PILGetBool,
+		 chatter   => \&PILGetString,
+		 history   => \&PILGetString,
+		);
+
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+    print "$taskname v$taskvers\n" if ($chatter >= 1);
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+
+    # Find parameter values (listed above)
+    my ($parm, $func, $val);
+    # ... first read ordered parameters, then anything else
+    foreach $parm ( @parmlist, keys(%parms) ) {
+      my $func = $parms{$parm};
+      next if (ref($func) ne "CODE");  # Skip if we already did this parm
+      undef($val);
+      $status = &$func("$parm", $val);
+      die "ERROR: could not retrieve parameter '$parm'" if ($status);
+      $parms{$parm} = $val;
+      print "$parm=$val\n" if ($verbose);
+    }
+
+    # Print environment
+    if ($verbose) {
+      print "      DATE = ".localtime()." (local)\n";
+      print "      DATE = ".gmtime()." UTC\n";
+      print "  HOSTNAME = $ENV{HOSTNAME}\n";
+      print "       CWD = $ENV{PWD}\n";
+      print "      USER = $ENV{USER}\n";
+      print "    FTOOLS = $ENV{FTOOLS}\n";
+      print "     CALDB = $ENV{CALDB}\n";
+    }
+
+    # ================
+    # Begin task here!!!
+    my $cmd = "ftcopy infile='$parms{infile}' ".
+      "outfile='$parms{outfile}' ".
+      "clobber=".($parms{clobber}?"YES":"NO");
+    system($cmd);
+    
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+    print "DONE\n" if ($chatter >= 1);
+
+    return 0;
+}
+
+
+

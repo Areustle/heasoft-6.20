@@ -1,0 +1,100 @@
+#! /usr1/local/bin/perl
+use Cwd;
+use File::Copy;
+
+my $top = cwd();
+my $testdir = "$top/test_tmp";
+my $refdir = "$top/outref";
+my $status = 0;
+
+my $ld_library_path = "$top:$ENV{HD_BLD_EXEC_PFX}/lib:$ENV{HD_EXEC_PFX}/lib";
+if (defined $ENV{"LD_LIBRARY_PATH"}) {
+  $ENV{"LD_LIBRARY_PATH"} = "$ld_library_path:$ENV{LD_LIBRARY_PATH}";
+} else {
+  $ENV{"LD_LIBRARY_PATH"} = $ld_library_path;
+}
+
+$ENV{"PFILES"} = ".";
+
+if (! -d $testdir) {
+  mkdir $testdir, 0755 or die "Unable to mkdir $testdir.\n";
+}
+
+chdir $testdir or die "Unable to chdir $testdir.\n";
+
+# First test uses hoops_par_test
+my $executable = "$top/hoops_par_test";
+my $cmd = join " ", "$executable", qw(test_bool=yes test_int=1
+  test_real=1.  test_string="test_string" test_fname="test_fname" prompt=yes);
+
+my $parfile = "hoops_par_test.par";
+unlink $parfile;
+copy("$top/$parfile", "$parfile") or
+  die "Unable to copy $parfile to $testdir\n";
+
+copy("$top/$parfile", "test_fname") or
+  die "Unable to copy $parfile to $testdir/test_fname\n";
+
+my $testnum = 1;
+&RunTest($executable, $cmd, $testnum);
+
+++$testnum;
+
+$executable = "$top/hoops_prim_test";
+$cmd = $executable;
+&RunTest($executable, $cmd, $testnum);
+
+++$testnum;
+
+$executable = "$top/hoops_lim_test";
+$cmd = $executable;
+&RunTest($executable, $cmd, $testnum);
+
+chdir $top;
+
+if (-f "$testdir/$parfile") {
+  if (-f "$refdir/$parfile") {
+    my @output = `diff $refdir/$parfile $testdir/$parfile`;
+    if (@output) {
+      print STDERR "ERROR: reference copy of $parfile differs from test output.\n";
+      print STDERR "ERROR: output of diff was:\n";
+      print STDERR "********************************************************************************\n";
+      print STDERR @output;
+      print STDERR "********************************************************************************\n";
+      $status = 1;
+    }
+  } else {
+    print STDERR "WARNING: reference copy of file $parfile does not exist in $refdir\n";
+    print STDERR "WARNING: skipping comparison of $testdir/$parfile to reference output.\n";
+  }
+} else {
+  print STDERR "ERROR: parameter file $testdir/$parfile does not exist\n";
+  $status = 1;
+}
+
+exit($status);
+
+sub RunTest {
+  my ($executable, $cmd, $testnum) = @_;
+  if (! -f $executable) {
+    print STDERR "ERROR: file $executable does not exist.\n";
+  } elsif (! -x $executable) {
+    print STDERR "ERROR: file $executable is not executable.\n";
+  } else {
+    $testnum =~ /\S/ and print "Running test $testnum:\n";
+    my @output = `$cmd 2>&1`;
+    my $lastline = pop @output;
+    if ($lastline =~ /Test succeeded/) { print $lastline; }
+    else {
+      print STDERR "\n";
+      print STDERR "ERROR: $cmd failed to execute properly!\n";
+      print STDERR "ERROR: Output of command was:\n";
+      print STDERR "********************************************************************************\n";
+      print STDERR @output;
+      print STDERR $lastline;
+      print STDERR "********************************************************************************\n";
+      print STDERR "\n";
+      $status = 1;
+    }
+  }
+}

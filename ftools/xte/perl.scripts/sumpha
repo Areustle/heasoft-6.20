@@ -1,0 +1,455 @@
+#! /usr/bin/perl
+#
+# Mike Tripicco (RITSS)
+# 04 May 2000
+#
+# sumpha: wrapper for mathpha to add files and preserve GTI info
+#
+# 31 May 2000  * added more keyword copying for primary and GTI extensions
+#              * warn user if input file doesn't seem to be a spectrum
+# 01 Jun 2000  * skip any input file without a valid GTI extension
+#
+# 07 Jun 2000  * (v3.4) tweak handling of 0 or 1 valid files 
+#
+# 08 Jun 2000  * (v3.5) improved removal of misleading mathpha COMMENTs
+#
+# 11 Jan 2007  * (v3.6) always call mathpha with a (relative) temporary
+#                       filename, then 'mv' it to the actual filename.
+#                       This avoids the 80-char limit in mathpha.
+#
+# 28 Dec 2011  * (v3.7) force properr=yes (mathpha defaults changed)
+#
+$SIG{INT} = \&sigtrap;
+$SIG{TERM} = \&sigtrap;
+$SIG{KILL} = \&sigtrap;
+
+$VERS = 3.7;
+
+use Cwd;
+use File::Path;
+require "utils.pl";
+
+$invokedir = cwd();
+$tmpdir = "${invokedir}/sumphadir$$";
+
+$bailroutine = "bailout";
+
+if (grep {$_ eq "-h"} @ARGV) {
+  print <<EOF;
+sumpha (May00)             ftools.xte             sumpha (May00)
+NAME
+  sumpha  -- Add individual .pha files and merge GTI extensions
+
+INPUT PARAMETERS
+
+filelist         - Names of the .pha files to be added (or "\@filename", where "filename" is 
+                   an ascii file containing the names of the .pha files, one per line)
+
+outfile          - Name of the output combined .pha file
+
+(clobber = "no") - Overwrite existing output file?
+
+DESCRIPTION
+
+This script is designed to make it easy to combine a number of individual 
+FITS spectra (.pha files) by calling mathpha to sum them and then appending 
+a merged GTI extension to the final combined spectrum. The list of input
+.pha files can be given on the command line or in response to an interactive
+prompt and can be input in either case as an ascii list by prepending a '\@'
+to the name of the file containing the list of spectra. The script also helps 
+to get around the filename restrictions imposed by mathpha so that using full 
+pathnames or filenames containing '+' or '-' signs is permitted in sumpha.
+
+The following parameters are used in the calls to mathpha:
+       units=COUNTS exposure=CALC properr=yes errmeth=Gauss
+
+The following keywords are copied from the spectrum extension of
+the chronologically first .pha file to the final combined .pha file:
+   'CPIX','OBJECT','ROWID','ORIGIN','RA_OBJ','DEC_OBJ','EQUINOX'
+   'RADECSYS','DATE-OBS','TIME-OBS','TIMESYS','GAINAPP'
+   'TIMEUNIT','MJDREF','TSTART','TIMEDEL','DEADAPP'
+
+and these from the chronologically last .pha file:
+   'DATE-END','TIME-END','TSTOP'
+
+
+EXAMPLES
+
+sumpha
+
+  (the filelist and outfile parameters will be prompted for)
+
+sumpha filelist=\@myfilelist outfile=combined.pha clobber=yes
+
+  (Non-interactive form, where myfilelist contains:
+            file1.pha
+            file2.pha
+            file3.pha
+
+            etc.)
+
+NOTES
+
+This tool does not verify that the input spectra were extracted using 
+identical or consistent arrangements of detectors, layers, etc., or
+even that they correspond to the same object.
+
+It does, however, insist on every input spectrum having a valid GTI
+extension (second extension) which conforms to OGIP standards. Any
+non-conforming file will result in a warning message to the screen
+and will not be included in the combined spectrum.
+
+MATHPHA can be used in cases where this tool proves too restrictive.
+
+EOF
+  exit(0);
+}
+
+
+# get the invoking string, if it exists, to pass to pquery for parsing
+
+# We quote each element since existing quotes have been stripped and we
+# need to pass this on to pquery with quotes intact
+
+if(@ARGV) {
+  foreach $i (0 .. $#ARGV) {
+    $ARGV[$i] = "\"".$ARGV[$i]."\"";
+  }
+  $invokestring = join(' ',@ARGV);
+}
+
+#remove any FTOOLSOUTPUT settings to enable default use of /dev/tty for pquery 
+#if we don't do this, the user won't see prompts from pquery
+delete $ENV{FTOOLSOUTPUT};
+
+#using pquery2 because we don't want hidden parameters
+#to be learned (and apparently passing the whole set
+#of parameters as we do below does *change* them all
+#even though only the specified parameter is *returned*
+$filelist = `pquery2 sumpha filelist $invokestring`;
+chop($filelist);
+$outfile = `pquery2 sumpha outfile $invokestring`;
+chop($outfile);
+$clobber = `pquery2 sumpha clobber $invokestring`;
+chop($clobber);
+
+print "***SUMPHA version $VERS***\n";
+
+if ($outfile !~ /\.pha$/) {$outfile = $outfile.".pha"}
+if ($outfile !~ /^\//) {$outfile = "$invokedir/$outfile"}
+if (-e $outfile){
+  if ($clobber eq 'yes') {
+    unlink($outfile)
+  }else{
+    die "$outfile already exists \nand \"clobber\" parameter not set...exiting";
+  }
+}
+
+#deal with input ascii filelist
+if (grep(/^@/,$filelist)){
+  open(FLH,substr($filelist,1)) || die "Couldn't open \"".substr($filelist,1)."\"";
+  while (<FLH>) {
+    chop;
+    push(@spud,$_);
+  }
+  $filelist=join(' ',@spud);
+}
+
+@filearr = split(' ',$filelist);
+#print "array contains ".eval($#filearr+1)." files\n";
+
+# only one input file
+if ($#filearr == 0) {
+  ! -f $filearr[0] && die "Can't find $filearr[0]";
+  `cp $filearr[0] $outfile`;
+  exit 0;
+}
+$firsttime = 9e99; #hoping these limits apply to all reasonable cases
+$lasttime = -9e99; # 
+%filehash = ();
+$numfiles=100; #initialize to 100 to ease sorting (eg, 1 vs 01)
+open(FMODH,">tmplnkarr$$");
+mkdir($tmpdir,0755);
+foreach $file (@filearr){
+  if (! -e $file) {
+    print "Can't find $file...skipping\n";
+    next;
+  }
+# does it have a valid GTI extension? If not, warn and skip it...
+  $cmdstr = "fstruct infile=$file outfile=STDOUT";
+  @result=&runcom($cmdstr,$bailroutine);
+  if (!grep(/^\s+2\s+BINTABLE/,@result)){ #make sure there's a second BINTABLE extension
+    print "WARNING: $file\n";
+    print "does not appear to contain a GTI extension...skipping this file\n";
+    next;
+  }
+  $cmdstr = "fkeypar fitsfile=$file+2 keyword=HDUCLAS1";
+  &runcom($cmdstr,$bailroutine);
+  chop($exist = `pget fkeypar exist`);
+  if ($exist eq "no"){
+    print "WARNING: No HDUCLAS1 keyword found in second extension of\n$file\n";
+    print "-- without a verified GTI extension this file will be skipped\n";
+    next;
+  }else{
+    chop($value = `pget fkeypar value`);
+    if ($value !~ m/GTI/){
+      print "WARNING: Second extension of \n$file\n";
+      print "does not appear to contain a valid GTI table...skipping this file\n";
+      next;
+    }
+    $cmdstr = "fkeypar fitsfile=$file+2 keyword=NAXIS2";
+    &runcom($cmdstr,$bailroutine); #going to assume this one exists!!
+    chop($value = `pget fkeypar value`);
+    if ($value == 0){
+      print "WARNING: GTI extension of \n$file\n";
+      print "is empty...skipping this file\n";
+      next;
+    }
+  }
+# is it a spectrum?! Warn, but go ahead and use it anyway...
+  $cmdstr = "fkeypar fitsfile=$file+1 keyword=HDUCLAS1";
+  &runcom($cmdstr,$bailroutine);
+  chop($exist = `pget fkeypar exist`);
+  if ($exist eq "yes"){
+    chop($value = `pget fkeypar value`);
+    if ($value !~ m/SPECTRUM/){
+      print "WARNING: HDUCLAS1 keyword in first extension of\n$file\n";
+      print "is not \"SPECTRUM\" -- this file may not contain a spectrum!\n";
+    }
+  }else{
+    print "WARNING: No HDUCLAS1 keyword found in first extension of\n$file\n";
+    print "-- this file may not contain a spectrum!\n";
+  }
+  $numfiles++;
+  @filen = split('/',$file);
+  $filehash{"tmppha_$numfiles"} = $filen[$#filen];
+#need to use temporary filenames since often the pha files
+#are named identically but live in different directories,
+#for example, in rex...
+  if (substr($file,0,1) eq '/') { #absolute pathname
+    symlink($file,"$tmpdir/tmppha_$numfiles");
+  }else{ #relative pathname
+# this assumes that a relative pathname is based on the place where
+# the tool is invoked from, *not* where the ascii filelist is located
+    symlink("$invokedir/$file","$tmpdir/tmppha_$numfiles");
+  }
+  $tstart=&gettime("$tmpdir/tmppha_$numfiles","TSTART",1);
+  if ($tstart < $firsttime){
+    $firstfile = "$tmpdir/tmppha_$numfiles";
+    $firsttime = $tstart;
+  }
+  $tstop=&gettime("$tmpdir/tmppha_$numfiles","TSTOP",1);
+  if ($tstop > $lasttime){
+    $lastfile = "$tmpdir/tmppha_$numfiles";
+    $lasttime = $tstop;
+  }
+  push(@linkarr,"tmppha_$numfiles");
+  if (substr($file,0,1) eq '/') {
+    print FMODH "COMMENT   $file\n";
+  }else{ # turn relative paths absolute for COMMENT block
+    if (substr($file,0,2) eq './') {$file =~ s!^./!!}
+    print FMODH "COMMENT   $invokedir/$file\n";
+  }
+}
+#print "first file is $firstfile\nlast file is $lastfile\n";
+
+# no useful input files left (recall numfiles initialized to 100)
+if ($numfiles == 100) {
+  print "No useful input files left!\n";
+  rmtree($tmpdir);
+  unlink("$invokedir/tmplnkarr$$");
+# don't bailout, this isn't really an error (which upsets runcom)
+  exit 0;
+}
+# only one (useful) input file
+if ($numfiles == 101) {
+  `cp $tmpdir/tmppha_$numfiles $outfile`;
+  rmtree($tmpdir);
+  unlink("$invokedir/tmplnkarr$$");
+  exit 0; #see above
+}
+
+print FMODH "- CREATOR\n";
+@kwds=('CPIX','OBJECT','ROWID','ORIGIN','RA_OBJ','DEC_OBJ','EQUINOX');
+@kwds=(@kwds,'RADECSYS','DATE-OBS','TIME-OBS','TIMESYS','GAINAPP');
+@kwds=(@kwds,'TIMEUNIT','MJDREF','TSTART','TIMEDEL','DEADAPP');
+@kwdslast=('DATE-END','TIME-END','TSTOP');
+foreach $kwd (@kwds) {
+  @result=&runcom("fkeyprint $firstfile+1 $kwd",$bailroutine);
+  @tmp=grep(!/^\#/,@result);
+  @tmp=grep(!/^\s/,@tmp);
+  foreach $i (0..$#tmp) {
+    print FMODH $tmp[$i];
+  }
+}
+foreach $kwd (@kwdslast) {
+  @result=&runcom("fkeyprint $lastfile+1 $kwd",$bailroutine);
+  @tmp=grep(!/^\#/,@result);
+  @tmp=grep(!/^\s/,@tmp);
+  foreach $i (0..$#tmp) {
+    print FMODH $tmp[$i];
+  }
+}
+close(FMODH);
+
+chdir($tmpdir);
+while (@linkarr) {
+  push(@tmparr,shift(@linkarr));
+  if ($#tmparr == 9) {
+    $expr = join('+',@tmparr);
+    $nruns++;
+    $tmpout = "sump".$$."_$nruns.pha";
+    &runmathpha($expr,$tmpout);
+    @tmparr = ($tmpout);
+  }
+}
+if ($#tmparr == 0) { #number of files was multiple of ten
+  `cp $tmparr[0] $outfile`;
+} else {
+  if (@tmparr) {
+    $expr = join('+',@tmparr);
+    &runmathpha($expr,$outfile);
+  }else{die "No .pha files found...exiting!"}
+}
+
+#merge and sort gti extensions and append to pha file
+#(using last gti if multiple extensions exist)
+open(GTILISTH,">tmpgtilst$$");
+foreach $file (sort keys %filehash) {
+    $cmdstr ="fstruct infile=$file";
+    @result = &runcom($cmdstr,$bailroutine);
+    chop(@lines = grep(/GTI/,@result));
+    ($extnum) = split(' ',$lines[$#lines]);
+    print GTILISTH "${file}[$extnum]\n";
+}
+close(GTILISTH);
+
+$cmdstr ="mgtime ingtis=\@tmpgtilst$$ outgti=merged.gti merge=OR";
+&runcom($cmdstr,$bailroutine);
+$cmdstr ="fsort infile=merged.gti columns=START method=heap";
+&runcom($cmdstr,$bailroutine);
+$cmdstr ="fappend infile=merged.gti[1] outfile=$outfile history=no";
+&runcom($cmdstr,$bailroutine);
+
+chdir($invokedir);
+#get rid of history kwds in gti extension
+$cmdstr ="fkeyprint infile=$outfile+2 keynam=HISTORY outfile=STDOUT exact=no";
+@result=&runcom($cmdstr,$bailroutine);
+$numhist=grep(/tmppha_/,@result);
+open(FMODH,">tmpcomm$$");
+print FMODH "- HISTORY\n";
+close(FMODH);
+$cmdstr ="fmodhead infile=$outfile+2 tmpfil=tmpcomm$$";
+for ($i=0;$i<$numhist;$i++){&runcom($cmdstr,$bailroutine)}
+
+#write comment keywords listing summed files and edit other comments
+#  caution: kludge alert (I hope mathpha never changes these comments!)
+$cmdstr ="fkeyprint infile=$outfile+1 keynam=COMMENT outfile=STDOUT exact=yes";
+@result=&runcom($cmdstr,$bailroutine);
+$go = "no";
+foreach $line (@result){
+  if (($line =~ /COMMENT     Expression \(read from terminal\):/) || ($go eq "yes")) {
+    if ($line =~ /COMMENT     Units   :/) {
+      $go = "no";
+       next;
+    }
+    chop $line;
+    $line =~ s/COMMENT     //;
+    $cmdstr ="fmodcomm infile=$outfile+1 template=\"$line\" ";
+    $cmdstr.="newtext=\" \" firstmatch=yes";
+    &runcom($cmdstr,$bailroutine);
+  } else {next}
+  $go = "yes";
+}
+$cmdstr ="fmodcomm infile=$outfile+1 template=\"{none}\" newtext=";
+$cmdstr.="\"MATHPHA called by SUMPHA, files summed:\" firstmatch=yes";
+&runcom($cmdstr,$bailroutine);
+$cmdstr ="fmodhead infile=$outfile+1 tmpfil=tmplnkarr$$";
+&runcom($cmdstr,$bailroutine);
+
+#a little more keyword housekeeping...
+@kwdsfirst=('TSTART','TELESCOP','INSTRUME','OBJECT');
+@kwdslast=('TSTOP');
+@extlist = (0,2);
+foreach $extnum (@extlist){
+  open(FMODH,">tmpcomm$$");
+  foreach $kwd (@kwdsfirst) {
+    @result=&runcom("fkeyprint infile=$firstfile+$extnum keynam=$kwd outfile=STDOUT exact=no",$bailroutine);
+    @tmp=grep(/^$kwd/,@result);
+    foreach $i (0..$#tmp) {
+      print FMODH $tmp[$i];
+    }
+  }
+  foreach $kwd (@kwdslast) {
+    @result=&runcom("fkeyprint infile=$lastfile+$extnum keynam=$kwd outfile=STDOUT exact=no",$bailroutine);
+    @tmp=grep(/^$kwd/,@result);
+    foreach $i (0..$#tmp) {
+      print FMODH $tmp[$i];
+    }
+  }
+  close(FMODH);
+  &runcom("fmodhead infile=$outfile+$extnum tmpfil=tmpcomm$$",$bailroutine);
+}
+
+#update checksum in gti extension
+$cmdstr ="fchecksum infile=$outfile+2 update=yes";
+&runcom($cmdstr,$bailroutine);
+
+rmtree($tmpdir);
+unlink("tmplnkarr$$","tmpcomm$$");
+
+exit;
+
+sub sigtrap{
+  my $signame = shift;
+  print "\n!Trapped a $signame signal!\n";
+  &bailout;
+}
+
+sub bailout{
+  rmtree($tmpdir);
+  unlink("$invokedir/tmplnkarr$$");
+  die "bailing out";
+}
+
+sub runmathpha{
+  local($expr) = @_[0];
+  local($outf) = @_[1];
+  $cmdstr= "mathpha expr=$expr units=COUNTS outfil=tmppha_outf exposure=CALC ";
+  $cmdstr.="ncomments=0 backscal=1.0 corrscal=0.0 areascal=1.0 errmeth=Gauss ";
+  $cmdstr.="properr=yes";
+#  print "about to run $cmdstr\n";
+  @result=&runcom($cmdstr,$bailroutine);
+  local(@args) = ("mv", "tmppha_outf", $outf);
+  if (system(@args) != 0){
+    print "\n!System @args failed\n"; 
+    &bailout;
+  }
+}
+
+sub gettime{
+  local($file) = @_[0];
+  local($kwd) = @_[1];
+  local($ext) = @_[2];
+  $cmdstr = "fkeypar $file+$ext $kwd";
+  &runcom($cmdstr,$bailroutine);
+  chop($exist = `pget fkeypar exist`);
+  if ($exist eq "yes"){
+    chop($value = `pget fkeypar value`);
+    return $value;
+  }else{
+    $cmdstr = "fkeypar $file+$ext ${kwd}I";
+    &runcom($cmdstr,$bailroutine);
+    chop($exist = `pget fkeypar exist`);
+    if ($exist eq "no"){
+      print "No $kwd or ${kwd}I found in $file+$ext\n";
+      return 0;
+    }else{
+      chop($timei = `pget fkeypar value`);
+      $cmdstr = "fkeypar $file+$ext ${kwd}F";
+      &runcom($cmdstr,$bailroutine);
+      chop($timef = `pget fkeypar value`);
+      return ($timei + $timef);
+    }
+  }
+}

@@ -1,0 +1,1103 @@
+\section{PIL F90 Language API}\label{PILRefF90language}
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Introduction}\label{PILRefF90intro}
+
+This  section  describes  the  Fortran 90 language implementation of the
+Parameter Interface Library Application Programming Interfaces (PIL APIs)
+It also gives Fortran 90 languages specific
+information necessary to use those APIs. Users interested only
+in using PIL from C/C++ applications should see section
+\ref{PILRefClanguage}. 
+
+PIL library is standalone and can be compiled independently of other ISDC
+libraries.
+
+Unless stated otherwise all PIL API functions return status code of type
+int. This is either ISDC\_OK which equals PIL\_OK which equals 0, which
+means everything went perfectly or negative value (error code) meaning some
+error occured. List of error codes can be found in pil\_f90\_api.f90 file.
+Functions given below are the "official" ones. Internally PIL library
+calls many more functions. 	
+
+\subsection{PIL Fortran 90 module files}\label{PILRefF90Modules}
+
+Applications calling PIL services from Fortran 90 source code should utilize
+
+\begin{verbatim}
+   USE PIL_F90_API
+\end{verbatim}
+
+statement to include all PIL definitions. Alternatively they can 
+
+\begin{verbatim}
+   USE ISDC_F90_API
+\end{verbatim}
+
+which internally includes PIL\_F90\_API module.
+
+PIL\_F90\_API compiled module contains
+prototypes of all Fortran 90 API functions, definitions of constants,
+declarations of global variables and definitions of data structures.
+
+
+\subsection{Fortran 90 API functions}\label{PILRefF90functions}
+
+%%%%%%%%%%%          PILinit            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILINIT}
+
+\begin{verbatim}
+FUNCTION PILINIT() 
+INTEGER :: PILINIT 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function initializes PIL library. This function has to be called before
+any other PIL function (there are some
+exceptions to this rule).  It does the following : \\
+First it calculates name of parameter file. Usually name of parameter file
+equals GETARG(0)+ ".par" suffix but
+this can be overriden by calling PILSETMODULENAME and/or PILSETMODULEVERSION
+before calling PILINIT.
+After successful termination parameter file is opened and read in, and
+global variable PILRunMode is set to one
+of the following values : 
+
+\begin{verbatim}
+      ISDC_SINGLE_MODE 
+      ISDC_SERVER_MODE 
+\end{verbatim}
+
+ISDC\_SERVER\_MODE is set whenever there is parameter "ServerMode" and its
+value is "yes" or "y". In any other case PILRunMode is set
+to ISDC\_SINGLE\_MODE. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Notes\\}
+{\it
+Only one parameter file can be open at a time. Parameter file remains open
+until PILCLOSE is called.
+When writing applications for ISDC one should not use PILINIT directly.
+Instead, one should call COMMONINIT
+function (from Common library) which calls PILINIT.
+}
+
+
+%%%%%%%%%%%          PILCLOSE            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILCLOSE}
+
+\begin{verbatim}
+FUNCTION PILCLOSE(STATUS) 
+INTEGER*4 :: STATUS 
+INTEGER :: PILCLOSE 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function has to be called before application terminates. It closes open
+files, and writes all learned
+parameters to the disk files (only when status == ISDC\_OK). Once this
+function is called one cannot call any
+other PIL functions. One can however call PILINIT to reinitialize PIL
+library. \\
+Function also clears PILRunMode, PILModuleName and PILModuleVersion global
+variables. Those global variables
+are directly accessible from F90 code. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt INTEGER*4 :: STATUS [In] } \\
+PIL\_OK/ISDC\_OK/0 means normal return, any other value means abnormal
+termination. In this case changes to parameters made during runtime
+are NOT written to parameter files. 
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+this function does not terminate process. It simply shuts down PIL library.
+When writing applications for
+ISDC one should not use PILCLOSE directly. Instead, one should call
+COMMONEXIT function (from Common
+library) which calls PILCLOSE. 
+}
+
+%%%%%%%%%%%          PILRELOADPARAMETERS            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILRELOADPARAMETERS}
+
+\begin{verbatim}
+FUNCTION PILRELOADPARAMETERS() 
+INTEGER :: PILRELOADPARAMETERS 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reloads parameters from parameter file. It is called
+internally by PILINIT. It should be called
+explicitly by applications running in ISDC\_SERVER\_MODE to rescan parameter
+file and reload parameters from
+it. Current parameter list in memory (including any modifications) is
+deleted. PIL library locks whole file for
+exclusive access when reading from parameter file. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Notes\\}
+{\it
+parameter file remains open until PILCLOSE is called. Function internally
+DOES NOT close/reopen parameter file. 
+}
+
+%%%%%%%%%%%          PILFLUSHPARAMETERS            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILFLUSHPARAMETERS}
+
+\begin{verbatim}
+FUNCTION PILFLUSHPARAMETERS() 
+INTEGER :: PILFLUSHPARAMETERS 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function flushes changes made to parameter list (in memory) to disk.
+Current contents of parameter file is
+overwritten. PIL library locks whole file for exclusive access when writing
+to parameter file. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Notes\\}
+{\it
+parameter file remains open until PILCLOSE is called. 
+}
+
+%%%%%%%%%%%          PILSETMODULENAME            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSETMODULENAME}
+
+\begin{verbatim}
+FUNCTION PILSETMODULENAME(NAME) 
+CHARACTER*(*) :: NAME 
+INTEGER :: PILSETMODULENAME 
+\end{verbatim}
+
+\paragraph{Description\\}
+Sets name of the module which uses PIL services. Result is stored in global
+variable PILModuleName. Usually
+name of parameter file equals argv[0] + ".par" suffix but this can be
+overriden by calling PILSETMODULENAME
+and/or PILSETMODULEVERSION before calling PILINIT. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+new module name
+\end{itemize}
+
+
+%%%%%%%%%%%          PILSETMODULEVERSION            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSETMODULEVERSION}
+
+\begin{verbatim}
+FUNCTION PILSETMODULEVERSION(VERSION) 
+CHARACTER*(*) :: VERSION 
+INTEGER :: PILSETMODULEVERSION 
+\end{verbatim}
+
+\paragraph{Description\\}
+Sets version of the module which uses PIL services. Result is stored in
+global variable PILModuleVersion. If
+NULL pointer is passed version is set to "version unspecified"
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: VERSION [In] } \\
+new module version (string)
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETPARFILENAME            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETPARFILENAME}
+
+\begin{verbatim}
+FUNCTION PILGETPARFILENAME(FNAME) 
+CHARACTER*(*) :: FNAME 
+INTEGER :: PILGETPARFILENAME 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function retrieves full path of used parameter file. Absolute path is
+returned only when PFILES
+environment variable contains absolute paths. If parameter file is taken
+from current dir then only filename is
+returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: FNAME [Out] } \\
+name/path of the parameter file in use 
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+FNAME buffer should be at least PIL\_LINESIZE characters long. 
+}
+
+
+%%%%%%%%%%%          PILOVERRIDEQUERYMODE            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILOVERRIDEQUERYMODE}
+
+\begin{verbatim}
+FUNCTION PILOVERRIDEQUERYMODE(NEWMODE) 
+INTEGER*4 :: NEWMODE 
+INTEGER :: PILOVERRIDEQUERYMODE 
+\end{verbatim}
+
+\paragraph{Description\\}
+This functions globally overrides query mode. When newmode passed is
+PIL\_QUERY\_OVERRIDE, prompting for
+new values of parameters is completely disabled. If value is bad or out of
+range PILGETXXX return immediately
+with error without asking user. No i/o in stdin/stdout is done by PIL in
+this mode. When newmode is
+PIL\_QUERY\_DEFAULT PIL reverts to default query mode. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt INTEGER*4 :: NEWMODE [In] } \\
+new value for query override mode 
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETBOOL            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETBOOL}
+
+\begin{verbatim}
+FUNCTION PILGETBOOL(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER*4 :: RESULT 
+INTEGER :: PILGETBOOL 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type boolean. If this is not the
+case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER*4 :: RESULT [Out] } \\
+integer variable which will store result. Boolean value of FALSE is returned
+as a 0. Any other value means TRUE. 
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETINT            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETINT}
+
+\begin{verbatim}
+FUNCTION PILGETINT(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER*4 :: RESULT 
+INTEGER :: PILGETINT
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type integer. If this is not the
+case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER*4 :: RESULT [Out] } \\
+integer variable which will store result.
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETREAL            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETREAL}
+
+\begin{verbatim}
+FUNCTION PILGETREAL(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+REAL*8 :: RESULT 
+INTEGER :: PILGETREAL
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type real. If this is not the
+case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt REAL*8 :: RESULT [Out] } \\
+REAL*8 variable which will store result.
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETREAL4            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETREAL4}
+
+\begin{verbatim}
+FUNCTION PILGETREAL4(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+REAL*4 :: RESULT 
+INTEGER :: PILGETREAL4
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type real. If this is not the
+case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt REAL*4 :: RESULT [Out] } \\
+REAL*4 variable which will store result.
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+Function merely calls PILGETREAL, then converts REAL*8 to REAL*4
+}
+
+
+%%%%%%%%%%%          PILGETSTRING            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETSTRING}
+
+\begin{verbatim}
+FUNCTION PILGETSTRING(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+CHARACTER*(*) :: RESULT 
+INTEGER :: PILGETSTRING
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type string. If this is not the case error code is returned. 
+It is possible to enter empty string (without accepting default value).
+By default entering string "" (two doublequotes) sets value of given string
+parameter to an empty string. If PIL\_EMPTY\_STRING environment variable
+is defined then its value is taken as an empty string equivalent.
+
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt CHARACTER*(*) :: RESULT [Out] } \\
+character array which will store result. The character array should have at
+least PIL\_LINESIZE characters to assure enough storage for the longest possible string. 
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETFNAME            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETFNAME}
+
+\begin{verbatim}
+FUNCTION PILGETFNAME(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+CHARACTER*(*) :: RESULT 
+INTEGER :: PILGETFNAME
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type filename. If this is not the case error code is returned. 
+It is possible to enter empty string (without accepting default value).
+By default entering string "" (two doublequotes) sets value of given string
+parameter to an empty string. If PIL\_EMPTY\_STRING environment variable
+is defined then its value is taken as an empty string equivalent.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt CHARACTER*(*) :: RESULT [Out] } \\
+character array which will store result. The character array should have at
+least PIL\_LINESIZE characters to assure enough storage for the longest possible string. 
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+leading and trailing spaces are trimmed.
+If type of parameter specifies it, access mode checks are done on file. So
+if access mode specifies write
+mode, and file is read-only then PILGETFNAME will not accept this filename
+and will prompt user to enter name of writable file. 
+Before applying any checks the value of the parameter (which may be URL, 
+for instance http://, file://etc/passwd) is converted to the filename
+(if it is possible). Details are given in paragraph \ref{PILSetRootNameFunction}.
+}
+
+
+%%%%%%%%%%%          PILGETDOL            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETDOL}
+
+\begin{verbatim}
+FUNCTION PILGETDOL(NAME, RESULT) 
+CHARACTER*(*) :: NAME 
+CHARACTER*(*) :: RESULT 
+INTEGER :: PILGETDOL
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type string. If this is not the case error code is returned. 
+It is possible to enter empty string (without accepting default value).
+By default entering string "" (two doublequotes) sets value of given string
+parameter to an empty string. If PIL\_EMPTY\_STRING environment variable
+is defined then its value is taken as an empty string equivalent.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt CHARACTER*(*) :: RESULT [Out] } \\
+character array which will store result. The character array should have at
+least PIL\_LINESIZE characters to assure enough storage for the longest possible string. 
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+leading and trailing spaces are trimmed
+}
+
+
+%%%%%%%%%%%          PILGETINTVECTOR            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETINTVECTOR}
+
+\begin{verbatim}
+FUNCTION PILGETINTVECTOR(NAME, NELEM, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER   :: NELEM
+INTEGER*4 :: RESULT 
+INTEGER   :: PILGETINTVECTOR
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly NELEM integer numbers separated with spaces. If there are more
+or less then NELEM then error code is returned.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER   :: NELEM [In] } \\
+number of integers to return
+\item
+{\tt INTEGER*4 :: RESULT [Out] } \\
+pointer to vector of integers to store result. Actually, one should
+pass 1st element of vector say VECNAME(1), and not VECNAME
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETREALVECTOR            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETREALVECTOR}
+
+\begin{verbatim}
+FUNCTION PILGETREALVECTOR(NAME, NELEM, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER   :: NELEM
+REAL*8    :: RESULT 
+INTEGER   :: PILGETREALVECTOR
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly NELEM REAL*8 numbers separated with spaces. If there are more
+or less then NELEM then error code is returned.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER   :: NELEM [In] } \\
+number of integers to return
+\item
+{\tt REAL*8 :: RESULT [Out] } \\
+pointer to vector of REAL*8's to store result. Actually, one should
+pass 1st element of vector say VECNAME(1), and not VECNAME
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETREAL4VECTOR            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETREAL4VECTOR}
+
+\begin{verbatim}
+FUNCTION PILGETREAL4VECTOR(NAME, NELEM, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER   :: NELEM
+REAL*4    :: RESULT 
+INTEGER   :: PILGETREAL4VECTOR
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly NELEM REAL*4 numbers separated with spaces. If there are more
+or less then NELEM then error code is returned.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER   :: NELEM [In] } \\
+number of integers to return
+\item
+{\tt REAL*4 :: RESULT [Out] } \\
+pointer to vector of REAL*4's to store result. Actually, one should
+pass 1st element of vector say VECNAME(1), and not VECNAME
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+Function merely calls PILGETREAL, then converts REAL*8 to REAL*4
+}
+
+
+%%%%%%%%%%%          PILGETINTVARVECTOR            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETINTVARVECTOR}
+
+\begin{verbatim}
+FUNCTION PILGETINTVARVECTOR(NAME, NELEM, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER   :: NELEM
+INTEGER*4 :: RESULT 
+INTEGER   :: PILGETINTVARVECTOR
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly *nelem integer numbers separated with spaces. The actual number
+of items found in parameter is returned in *nelem.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER   :: NELEM [In/Out] } \\
+Maximum expected number of item (on input). Actual number of floats found in
+parameter (on output)
+{\tt INTEGER*4 :: RESULT [Out] } \\
+pointer to vector of integers to store result. Actually, one should
+pass 1st element of vector say VECNAME(1), and not VECNAME
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETREALVARVECTOR            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETREALVARVECTOR}
+
+\begin{verbatim}
+FUNCTION PILGETREALVARVECTOR(NAME, NELEM, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER   :: NELEM
+REAL*8    :: RESULT 
+INTEGER   :: PILGETREALVARVECTOR
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly *nelem integer numbers separated with spaces. The actual number
+of items found in parameter is returned in *nelem.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER   :: NELEM [In/Out] } \\
+Maximum expected number of item (on input). Actual number of floats found in
+parameter (on output)
+{\tt REAL*8 :: RESULT [Out] } \\
+pointer to vector of REAL*8's to store result. Actually, one should
+pass 1st element of vector say VECNAME(1), and not VECNAME
+\end{itemize}
+
+
+%%%%%%%%%%%          PILGETREAL4VARVECTOR            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGETREAL4VARVECTOR}
+
+\begin{verbatim}
+FUNCTION PILGETREAL4VARVECTOR(NAME, NELEM, RESULT) 
+CHARACTER*(*) :: NAME 
+INTEGER   :: NELEM
+REAL*4    :: RESULT 
+INTEGER   :: PILGETREAL4VARVECTOR
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly *nelem integer numbers separated with spaces. The actual number
+of items found in parameter is returned in *nelem.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER   :: NELEM [In/Out] } \\
+Maximum expected number of item (on input). Actual number of floats found in
+parameter (on output)
+{\tt REAL*4 :: RESULT [Out] } \\
+pointer to vector of REAL*4's to store result. Actually, one should
+pass 1st element of vector say VECNAME(1), and not VECNAME
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+Function merely calls PILGETREAL, then converts REAL*8 to REAL*4
+}
+
+
+%%%%%%%%%%%          PILPUTBOOL            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPUTBOOL}
+
+\begin{verbatim}
+FUNCTION PILPUTBOOL(NAME, VALUE) 
+CHARACTER*(*) :: NAME 
+INTEGER*4 :: VALUE 
+INTEGER :: PILPUTBOOL 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+boolean. If this is not the case error code is returned. 
+  
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER*4 :: VALUE [In] } \\
+new value for argument. 0 means FALSE, any other value means TRUE 
+\end{itemize}
+
+%%%%%%%%%%%          PILPUTINT            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPUTINT}
+
+\begin{verbatim}
+FUNCTION PILPUTINT(NAME, VALUE) 
+CHARACTER*(*) :: NAME 
+INTEGER*4 :: VALUE 
+INTEGER :: PILPUTINT 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+integer. If this is not the case error code is returned. The same happens
+when value passed is out of range. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt INTEGER*4 :: VALUE [In] } \\
+new value for argument. 
+\end{itemize}
+
+
+%%%%%%%%%%%          PILPUTREAL            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPUTREAL}
+
+\begin{verbatim}
+FUNCTION PILPUTREAL(NAME, VALUE) 
+CHARACTER*(*) :: NAME 
+REAL*8 :: VALUE 
+INTEGER :: PILPUTREAL 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type real.
+If this is not the case error code is returned. The same happens when value
+passed is out of range
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt REAL*8 :: VALUE [In] } \\
+new value for argument. 
+\end{itemize}
+
+
+%%%%%%%%%%%          PILPUTSTRING            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPUTSTRING}
+
+\begin{verbatim}
+FUNCTION PILPUTSTRING(NAME, VALUE) 
+CHARACTER*(*) :: NAME 
+CHARACTER*(*) :: VALUE 
+INTEGER :: PILPUTSTRING 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+string. If this is not the case error code is returned. 
+  
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt CHARACTER*(*) :: VALUE [In] } \\
+new value for argument. Before assignment value is truncated PIL\_LINESIZE
+characters.
+\end{itemize}
+
+
+%%%%%%%%%%%          PILPUTFNAME            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPUTFNAME}
+
+\begin{verbatim}
+FUNCTION PILPUTFNAME(NAME, VALUE) 
+CHARACTER*(*) :: NAME 
+CHARACTER*(*) :: VALUE 
+INTEGER :: PILPUTFNAME 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+filename. If this is not the case error code is returned. The same happens
+when value passed is out of range. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt CHARACTER*(*) :: NAME [In] } \\
+name of the parameter 
+\item
+{\tt CHARACTER*(*) :: VALUE [In] } \\
+new value for argument. Before assignment value is truncated PIL\_LINESIZE
+characters.
+
+\end{itemize}
+
+
+%%%%%%%%%%%       PILSETREADLINEPROMPTMODE       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSETREADLINEPROMPTMODE}\label{PILSETREADLINEPROMPTMODE}
+
+\begin{verbatim}
+FUNCTION PILSETREADLINEPROMPTMODE(MODE)
+INTEGER :: MODE
+\end{verbatim}
+
+\paragraph{Description\\}
+This function changes PIL's promping mode when compiled
+with READLINE support. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt mode [In] } \\
+The new PIL prompting mode. Allowable values are:
+
+\begin{itemize}
+\item PIL\_RL\_PROMPT\_PIL - standard prompting mode (compatible
+with previous PIL versions). The prompt format is :
+
+\begin{verbatim}
+           some_text  [ default_value ] : X
+\end{verbatim}
+
+: (which is printed) denotes beginning of the edit buffer (which in 
+this mode is always initially empty).
+X denotes cursor position. To enter empty using this mode, one has to
+enter "" (unless redefined by PIL\_EMPTY\_STRING environment variable).
+
+\item PIL\_RL\_PROMPT\_IEB - alternate prompting mode. The prompt
+format is :
+
+\begin{verbatim}
+           some_text : default_value X
+\end{verbatim}
+
+: (which is printed) denotes beginning of the edit buffer which in 
+this mode is initially set to the default value.
+X denotes cursor position. To enter empty in this mode one
+simply has to empty edit buffer using BACKSPACE/DEL keys then 
+press RETURN key.
+\end{itemize}
+\end{itemize}
+
+
+\section{Calling PIL library functions from Fortran 90}\label{PILRefF90calling}
+
+Applications can use PIL services in one of 2 different modes. The first one
+ISDC\_SINGLE\_MODE is the simplest
+one. In this mode application simply includes PIL definitions from compiled
+module file ({\tt USE PIL\_F90\_API } statement),
+calls PILINIT, plays with parameters by calling
+PILGETXXX/PILPUTXXX functions and finally shuts
+down PIL library by calling PILCLOSE. The skeleton code is given below. 
+
+\begin{verbatim}
+
+PROGRAM SKELETON
+
+USE PIL_F90_API
+
+integer :: r
+REAL*8  :: real8vec(5)
+
+r = PILINIT()
+if (ISDC_OK /= r) STOP
+
+r = PILGETBOOL("boolname1", INTVAR)
+r = PILGETREAL("realname3", REALVAR)
+r = PILGETREALVECTOR("real8vecname", 5, real8vec(1))
+
+! now execute application code ...
+r = PILEXIT(ISDC_OK)
+
+END
+
+\end{verbatim}
+
+The second mode, called ISDC\_SERVER\_MODE allows for multiple rereads of
+parameter file. Using this method
+application can exchange data with other processes via parameter file
+(provided other processes use locks to
+assure exclusive access during read/write operation). One example of code is
+as follows : 
+  
+  
+\begin{verbatim}
+
+PROGRAM SKELETON2
+
+USE PIL_F90_API
+
+integer :: r
+
+r = PILINIT()
+if (ISDC_OK /= r) STOP
+
+DO
+  r = PILRELOADPARAMETERS()
+  r = PILGETBOOL("boolname1", INTVAR)
+  r = PILGETREAL("realname3", REALVAR)
+  IF (BREAKCONDITION) BREAK
+
+! now execute loop code ...
+
+  r = PILPUTINT("intname45", INTVAR)
+  r = PILFLUSHPARAMETERS()
+
+  IF  (BREAKCONDITION) BREAK
+
+ENDDO
+
+r = PILEXIT(ISDC_OK)
+END
+
+\end{verbatim}
+
+After initial call to PILINIT application jumps into main loop. In each
+iteration it rereads parameters from file
+(there is no need to call PILRELOADPARAMETERS during first iteration), Based
+on new values of just read-in
+parameters (which might be modified by another process) application may
+decide to exit from loop or continue.
+If it decides to continue then after executing application specific loop
+code it calls PILFLUSHPARAMETERS to
+signal other process that it is done with current iteration. Algorithm
+described above is very simple, and it real
+applications can be much more complicated. 
+
+As mentioned earlier, applications written for ISDC should not use
+PILINIT/PILCLOSE directly. Instead they
+should use COMMONINIT/COMMONEXIT functions from ISDC's Common Library. 
+
+\paragraph{Notes\\}
+{\it
+most applications will not support ISDC\_SERVER\_MODE so one can delete
+those fragments of skeleton code which deal with this mode. 
+}

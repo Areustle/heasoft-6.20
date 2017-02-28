@@ -1,0 +1,130 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotflatfield/ut-uvotflatfield,v $
+# $Revision: 1.6 $
+# $Date: 2005/11/02 15:19:31 $
+#
+#		uvotflatfield test case
+#
+#
+# $Log: ut-uvotflatfield,v $
+# Revision 1.6  2005/11/02 15:19:31  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.5  2005/01/21 16:18:35  rwiegand
+# Actually use caldb parameter.
+#
+# Revision 1.4  2004/10/17 11:34:10  rwiegand
+# Added CALDB test mode.
+#
+# Revision 1.3  2004/06/24 17:34:03  rwiegand
+# Use Task::HEAdas support.
+#
+# Revision 1.2  2004/05/14 17:55:44  rwiegand
+# For a binned image, divide by the *average* binned flatfield.  Propagate
+# any NULL or zero in flatfield to the output as NULL.
+#
+# Revision 1.1  2004/05/13 23:07:44  rwiegand
+# Tool for flat fielding UVOT data.
+#
+
+use strict;
+
+package Test::FlatField;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::FlatField->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runUvotflatfield
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=string output=string caldb=bool chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runUvotflatfield
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	my @task = (
+		infile     => "$input/input.fits",
+		flatfile   => $caldb ? 'CALDB' : "$input/flatcal.fits",
+		outfile    => "$output/output.fits",
+
+		cleanup    => 'yes',
+		clobber    => 'yes',
+		chatter    => 3,
+	);
+
+	my %task = @task;
+
+	$self->{outfile} = $task{outfile};
+	$self->{template} = "$input/template.fits";
+
+	# build command line
+	my $command = $self->buildCommand('uvotflatfield', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{outfile}) {
+		$self->error(BAD_OUTPUT, "missing output file");
+	}
+
+	my $command = "ftdiff $self->{template} $self->{outfile}";
+	$self->shell($command);
+}
+

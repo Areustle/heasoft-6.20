@@ -1,0 +1,86 @@
+#! /usr/bin/perl 
+$version ="1.00";
+$date  ="2002-11-19";
+$author = "kaa";
+
+# This script makes the ROSAT PSPC rmf and arf. It is run by the xselect
+# routine xsl_rspsav.
+
+# Check that we were given an input filename
+
+if(@ARGV != 1)
+{
+    print "\n usage : xsl_rosat_pspc_makeresp infile\n";
+    exit(0);
+}
+
+$infile  = $ARGV[0];
+
+$dot = index($infile,".");
+$rootname = substr($infile, 0, $dot);
+
+$arffile = $rootname . ".arf";
+
+# copy the rmf from the caldb. Need to know whether this spectrum is
+# for PSPCB or PSPCC and if the former whether the data were taken
+# before or after Oct 14 1991.
+
+$command = "fkeypar fitsfile=$infile\[SPECTRUM\] keyword=INSTRUME";
+system($command);
+($instrument = `pget fkeypar value`) =~ tr/'\n//d;
+if ( substr($instrument,0,5) eq "PSPCC" ) {
+   $rmffile = "pspcc_gain1_256.rmf";
+} elsif ( substr($instrument,0,5) eq "PSPCB" ) {
+   $command = "fkeypar $infile DATE-OBS\n";
+   system($command);
+   $obsdate = `pget fkeypar value`;
+   $year  = substr($obsdate,1,4);
+   $month = substr($obsdate,6,2);
+   $day   = substr($obsdate,9,2);
+   if ( $year < 1991 || ($year == 1991 && $month < 10)
+        || ($year == 1991 && $month == 10 && $day < 14) ) {
+      $rmffile = "pspcb_gain1_256.rmf";
+   } else {
+      $rmffile = "pspcb_gain2_256.rmf";
+   }
+} else {
+   print "INSTRUME for the spectum is neither PSPCB or PSPCC\n";
+   exit(1);
+}
+
+# if the rmf file doesn't already exist in this directory then copy it
+# from the caldb.
+
+if ( !-e $rmffile ) {
+
+   $caldb = $ENV{'CALDB'};
+   if($caldb !~/\S/) 
+   {
+      print "The CALDB environment variable is not set.\n";
+      exit(2);
+   }
+
+   $calfile = $caldb . "/data/rosat/pspc/cpf/matrices/" . $rmffile;
+   $command = "cp $calfile $rmffile";
+   print "\n",$command,"\n\n";
+   system($command);
+
+}
+
+# run pcarf to make the arf
+
+$command = "pcarf phafil=$infile rmffil=$rmffile outfil=$arffile crffil=CALDB";
+print "\n",$command,"\n\n";
+system($command);
+
+
+# set the RESPFILE and ANCRFILE keywords in the spectrum to point to the
+# files that have been created
+
+$command = "fparkey value=$rmffile fitsfile=$infile\[SPECTRUM\] keyword=RESPFILE";
+system($command);
+$command = "fparkey value=$arffile fitsfile=$infile\[SPECTRUM\] keyword=ANCRFILE";
+system($command);
+
+
+

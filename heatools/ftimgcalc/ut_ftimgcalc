@@ -1,0 +1,173 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/heatools/ftimgcalc/ut_ftimgcalc,v $
+# $Revision: 1.5 $
+# $Date: 2006/05/31 07:59:13 $
+#
+#	ut_ftimgcalc
+#		validate ftimgcalc task 
+#
+#  The unit test performs complicated region filtering and
+#  computations on a vector of two images.  Multiple coordinate
+#  systems are used, and the replicate option is used.  This is
+#  probably a reasonable test of the advanced features of ftimgcalc.
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "ftimgcalc";
+$ut_taskname   = "ut_ftimgcalc";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance exclude
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+	my $exclude = $self->args->{exclude};
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	my $expr = "regfilter(\"$input/ftimgcalc_1.reg\",A.P1,A.P2)?(ANGSEP(16.0,-58.0,A.RA,A.DEC)**2):(regfilter(\"$input/ftimgcalc_2.reg\",A.IMX,A.IMY) ? (B) : (regfilter(\"$input/ftimgcalc_3.reg\",B.P1,B.P2)?(5.0*COS(B)+2*(#ROW-1)):(10000*A)))";
+
+	my %task = (
+		    outfile       => "$output/ftimgcalc_out.img",
+		    expr          => "'$expr'",
+		    a             => "$input/ftimgcalc_1.img",
+		    b             => "$input/ftimgcalc_2.img",
+		    c             => "NONE",
+		    wcsimage      => "INDEF",
+		    bunit         => ":A",
+		    otherext      => ":B",
+		    bitpix        => "-64",
+		    nvectimages   => 2,
+		    replicate     => "YES",
+		    chatter       => 1,
+		    clobber       => "YES",
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("a","b");
+	
+	my %template = (
+			outfile  => "$input/ftimgcalc_out.img.template",
+			);
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f "$task{$key}") {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	unlink("$task->outfile");
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	# Check template files are present
+	foreach my $key (keys %template) {
+	    if (not -f $template{$key}) {
+		$self->fatal(BAD_INPUT,
+			     "invalid template $key file: $template{$key}");
+		return -1;
+	    }
+
+	    $command = qq(ftverify infile=$task{$key} outfile=STDOUT heasarc=yes);
+	    $self->doCommand($command);
+
+	    $command = "ftdiff $template{$key} $task{$key} tolerance=$tolerance hdumaxdiff=25 exclude='$exclude'";
+	    $result = $self->doCommand($command);
+	    if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+		$ndiffs = $1;
+		print "   -->  FTDIFF reports $ndiffs differences\n";
+		if ($ndiffs ne 0) {
+		    $lines = $result->{output};
+		    print "$lines\n" if $self->chatter(5);
+		    $self->error(BAD_OUTPUT, "error because of bad compare");
+		}
+		
+	    }
+	}
+	
+}
+

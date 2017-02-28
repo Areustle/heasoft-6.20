@@ -1,0 +1,817 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotgrplot/uvotgrplot,v $
+# $Revision: 1.3 $
+# $Date: 2010/03/11 21:35:28 $
+#
+# $Log: uvotgrplot,v $
+# Revision 1.3  2010/03/11 21:35:28  rwiegand
+# Bug fix: background counts were reversed along X-axis.  Save zeroth order
+# position in FITS coordinates for use in plotting.
+#
+# Revision 1.2  2009/07/07 20:31:50  rwiegand
+# Added autoscaling parameter.
+#
+# Revision 1.1  2009/06/29 20:28:30  rwiegand
+# Tool for plotting uvotimgrism results.
+#
+
+use strict;
+
+package UVOT::GrismPlot;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+use PGPLOT;
+
+use constant PAD => $ENV{UVOTGRPLOT_PAD} || 0.1;
+
+
+{
+	my $task = __PACKAGE__->new;
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			loadSourceSpectrum
+			loadBackgroundSpectrum
+			startPlot
+			plotExtractionRegion
+			plotSpectrum
+			endPlot
+			)) {
+		$self->$step;
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file bkgfile=file outfile=file scale=string
+				cleanup=boolean clobber=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile)) {
+			my $path = $args->{$key};
+			if (-e $path) {
+				$self->error(BAD_INPUT,
+					"$path exists and clobber not set");
+			}
+		}
+	}
+
+	my $scale = $args->{scale};
+	my $reReal = qr(-?\d+(?:\.\d*)?|-?\d*\.\d+);
+	if ($scale =~ /^SIGMA:($reReal),($reReal)$/i) {
+		$self->{SCALE_BG} = $1;
+		$self->{SCALE_FG} = $2;
+	}
+	else {
+		$self->{SCALE_BG} = -1;
+		$self->{SCALE_FG} = +5;
+		$self->warning("unrecognized scale=$scale;"
+				. " using bg=$self->{SCALE_BG}, fg=$self->{SCALE_FG}");
+	}
+
+	$self->{LARGE} = $ENV{UVOTGRPLOT_LARGE} || 3.0;
+	$self->{MEDIUM} = $ENV{UVOTGRPLOT_MEDIUM} || 2.0;
+	$self->{SMALL} = $ENV{UVOTGRPLOT_SMALL} || 1.0;
+}
+
+
+sub loadSourceSpectrum
+{
+	my ($self) = @_;
+
+	my $spectrum = $self->args->{infile};
+
+	$self->verbose("loading source from $spectrum");
+
+	my $fits = SimpleFITS->readonly($spectrum);
+	if (not $fits or $fits->status) {
+		$self->error(BAD_INPUT, "unable to open $spectrum");
+		return;
+	}
+
+	$self->loadSourceAux($fits);
+
+	$fits->close;
+}
+
+
+sub loadSourceAux
+{
+	my ($self, $fits) = @_;
+
+	my $status;
+	my $header;
+	$status = $fits->readheader($header, clean => 1)->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read infile header [$status]");
+		return;
+	}
+
+	# capture these parameters from the uvotimgrism invocation
+	my %details;
+	my @keys = qw(infile ra dec srcwid bkgoff1 bkgwid1 bkgoff2 bkgwid2);
+	$self->collectParameters($header, 'uvotimgrism', \@keys, \%details);
+
+	$status = $fits->move('CALSPEC')->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to move to CALSPEC extension [$status]");
+		return;
+	}
+
+	# store keywords from CALSPEC header
+	$status = $fits->readheader($header, clean => 1)->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read infile header [$status]");
+		return;
+	}
+
+	my $details = $self->{DETAILS} = \%details;
+	foreach my $key (qw(OBJECT DATE-OBS)) {
+		if (exists($header->{$key})) {
+			$details->{$key} = $header->{$key};
+		}
+	}
+
+	if (exists($header->{EXPOSURE})) {
+		$details->{EXPOSURE} = sprintf('%.1fs', $header->{EXPOSURE});
+	}
+
+	if (exists($header->{ZEROIMGX})) {
+		$details->{ZEROIMGX} = sprintf('Image X = %.2f', $header->{ZEROIMGX});
+	}
+
+	if (exists($header->{ZEROIMGY})) {
+		$details->{ZEROIMGY} = sprintf('Image Y = %.2f', $header->{ZEROIMGY});
+	}
+
+	if (exists($header->{ZERODETX})) {
+		$details->{DETX} = sprintf('Det X = %.2f', $header->{ZERODETX});
+	}
+
+	if (exists($header->{ZERODETY})) {
+		$details->{DETY} = sprintf('Det Y = %.2f', $header->{ZERODETY});
+	}
+
+	$details->{'DATE-PLOT'} = substr(scalar(gmtime), 4) . ' GMT';
+
+	my @table;
+	$status = $fits->loadtable(\@table)->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load CALSPEC table [$status]");
+		return;
+	}
+	$self->verbose("loaded CALSPEC table");
+
+	my @spectrum;
+	my $offset = 0;
+	foreach my $e (@table) {
+		my %record = (
+			OFFSET => $offset,
+			LAMBDA => $e->{LAMBDA},
+			NET => $e->{NET},
+		);
+		push(@spectrum, \%record);
+		++$offset;
+	}
+
+	$self->{SPECTRUM} = \@spectrum;
+	$self->{SPECTRUM_ROWS} = @spectrum;
+
+	undef(@table);
+
+	$status = $fits->move('IMAGE')->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to move to IMAGE extension [$status]");
+		return;
+	}
+
+	$status = $fits->readheader($header, clean => 1)->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read IMAGE header [$status]");
+		return;
+	}
+
+	@keys = qw(angle);
+	$self->collectParameters($header, 'rectext', \@keys, \%details);
+
+	my $fptr = $fits->handle;
+	my $any = 0;
+	my @naxes;
+	$fptr->get_img_size(\@naxes, $status);
+	if ($status or @naxes != 2) {
+		$self->error(BAD_INPUT,
+				"did not find 2 dimensional IMAGE extension [$status]");
+		return;
+	}
+
+	my $nele = $naxes[0] * $naxes[1];
+	my @imgdata = (0) x $nele;
+	$fptr->read_img(Astro::FITS::CFITSIO::TFLOAT, 1, $nele, undef,
+			\@imgdata, $any, $status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load IMAGE extension [$status]");
+		return;
+	}
+
+	$self->{EXTRACTION_WIDTH} = $naxes[0];
+	$self->{EXTRACTION_HEIGHT} = $naxes[1];
+	$self->{EXTRACTION_IMAGE} = \@imgdata;
+	$self->verbose("loaded IMAGE extension");
+
+	my $i = 0;
+	foreach my $e (@spectrum) {
+		$e->{PIXEL} = $self->{EXTRACTION_WIDTH} - $self->{SPECTRUM_ROWS} + $i;
+		++$i;
+	}
+}
+
+
+sub collectParameters
+{
+	my ($self, $header, $tool, $keys, $hash) = @_;
+
+	my $reOpt = join('|', @$keys);
+	my %parameter;
+
+	if (ref($header->{COMMENTS}{HISTORY}) eq 'ARRAY') {
+		foreach my $record (@{ $header->{COMMENTS}{HISTORY} }) {
+			if ($record =~ /^START PARAMETER list for $tool/) {
+				%parameter = (ACTIVE => 1);
+			}
+			elsif ($record =~ /^END PARAMETER list/) {
+				delete($parameter{ACTIVE});
+			}
+			if ($parameter{ACTIVE}) {
+				if ($record =~ /^P\d+ ($reOpt) = (.+)$/) {
+					$parameter{$1} = $2;
+				}
+			}
+		}
+
+		foreach my $key (@$keys) {
+			if (not exists($parameter{$key})) {
+				$self->warning("unable to determine $tool $key");
+			}
+			else {
+				$hash->{$key} = $parameter{$key};
+			}
+		}
+	}
+	else {
+		$self->warning("missing HISTORY to determine $tool parameters");
+	}
+}
+
+
+sub loadBackgroundSpectrum
+{
+	my ($self) = @_;
+
+	my $background = $self->args->{bkgfile};
+
+	$self->verbose("loading background from $background");
+
+	my $fits = SimpleFITS->readonly($background);
+	if (not $fits or $fits->status) {
+		$self->error(BAD_INPUT, "unable to open $background");
+		return;
+	}
+
+	$self->loadBackgroundAux($fits);
+
+	$fits->close;
+}
+
+
+sub loadBackgroundAux
+{
+	my ($self, $fits) = @_;
+
+	my $status;
+
+	$status = $fits->move('SPECTRUM')->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to move to SPECTRUM extension [$status]");
+		return;
+	}
+
+	my @table;
+	$status = $fits->loadtable(\@table)->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load CALSPEC table [$status]");
+		return;
+	}
+	$self->verbose("loaded CALSPEC table");
+
+	my $spectrum = $self->{SPECTRUM};
+	my $rows = $self->{SPECTRUM_ROWS};
+	if (@table != $rows) {
+		$self->error(BAD_INPUT,
+				"number of rows in source and background do not match");
+		return;
+	}
+
+	for (my $i = 0; $i < $rows; ++$i) {
+		$spectrum->[$rows - 1 - $i]{BKG_COUNTS} = $table[$i]{COUNTS};
+	}
+
+	$self->verbose("updated spectrum with background");
+}
+
+
+sub reportViewSurface
+{
+	my ($tag) = @_;
+	return;
+
+	my ($x1, $x2, $y1, $y2);
+	pgqvsz(0, $x1, $x2, $y1, $y2);
+	print "view surface: $tag\n";
+	printf "\tnormalized: %.2f, %.2f, %.2f, %2f\n",
+			$x1, $x2, $y1, $y2;
+	pgqvsz(1, $x1, $x2, $y1, $y2);
+	printf "\tinches: %.2f, %.2f, %.2f, %2f\n",
+			$x1, $x2, $y1, $y2;
+}
+
+
+sub startPlot
+{
+	my ($self) = @_;
+# start the plot - divide into three vertical plots
+	my $name = $self->args->{outfile};
+	my $status = pgopen("$name/cps");
+reportViewSurface('after pgopen');
+	pgsubp(1, 3);
+reportViewSurface('after pgsubp');
+}
+
+
+sub binarySearch
+{
+	my ($aref, $value) = @_;
+	my $lower = 0;
+	my $upper = @$aref - 1;
+	while ($upper > $lower) {
+		my $middle = int(($upper + $lower) / 2);
+		my $probe = $aref->[$middle];
+		if ($value < $probe) {
+			$upper = $middle - 1;
+		}
+		elsif ($value > $probe) {
+			$lower = $middle + 1;
+		}
+		else {
+			return $middle;
+		}
+	}
+	return $lower;
+}
+
+
+sub plotExtractionRegion
+{
+	my ($self) = @_;
+
+	my $image = $self->{EXTRACTION_IMAGE};
+	my $width = $self->{EXTRACTION_WIDTH};
+	my $height = $self->{EXTRACTION_HEIGHT};
+
+	pgsch($self->{MEDIUM});
+	# anything that changes from MEDIUM is responsible for setting it back
+
+	# next page
+	pgpage();
+
+	# use most of the upper third of the drawing area
+	pgsvp(PAD, 1 - PAD, 0.0, 0.8);
+
+	# axes
+	pgswin(0, $width, 0, $height);
+
+	# transformation matrix (pixel coords)
+	my @tr = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+
+	# gray image - could also use pgimag for color
+	my $pixels = $width * $height;
+	my $sum = 0;
+	my $sum2 = 0;
+	foreach my $value (@$image) {
+		$sum += $value;
+		$sum2 += $value * $value;
+	}
+
+	my $mean = $sum / $pixels;
+	my $sigma = sqrt(($sum2 - $mean * $sum) / $pixels);
+
+	# linear interpolate brightness over BG sigma .. FG sigma
+	my $vbg = $self->{SCALE_BG};
+	my $vfg = $self->{SCALE_FG};
+	my $low = 0;
+	my $high = 0;
+	for (my $i = 0; $i < $pixels; ++$i) {
+		my $nsigma = ($image->[$i] - $mean) / $sigma;
+		my $vhat = $nsigma;
+		if ($nsigma > $vfg) {
+			$vhat = $vfg;
+			++$high;
+		}
+		elsif ($nsigma < $vbg) {
+			$vhat = $vbg;
+			++$low;
+		}
+		$image->[$i] = $vhat;
+	}
+
+	$self->verbose(
+			sprintf('image stats: mean=%.1f sigma=%.1f nlow=%d nhigh=%d',
+					$mean, $sigma, $low, $high));
+
+	pggray($image, $width, $height,
+			1, $width, 1, $height, $vfg, $vbg, \@tr);
+
+	# draw frame after image to overlay
+	pgbox('BCTM', 0.0, 0, 'BCNSTV', 0.0, 0);
+
+	# label top of plot
+	pgsch($self->{LARGE});
+	pgmtxt('T', 1.8, 0.5, 0.5, 'Pixels');
+	pgsch($self->{MEDIUM});
+
+	# plot lines over the image
+	my $plotLines = 1;
+	my $details = $self->{DETAILS};
+	foreach my $key (qw(srcwid bkgwid1 bkgoff1 bkgwid2 bkgoff2)) {
+		if (not exists($details->{$key})) {
+			$self->warning("missing $key");
+			$plotLines = 0;
+		}
+	}
+
+	my @lines;
+	if ($plotLines) {
+
+		# set the uvotimgrism parameter based labels
+
+		$details->{SRCWID} = "Srcwid = $details->{srcwid}";
+		$details->{BKGOFF} = "Bkgoff = $details->{bkgoff1}, $details->{bkgoff2}";
+		$details->{BKGWID} = "Bkgwid = $details->{bkgwid1}, $details->{bkgwid2}";
+
+		push(@lines,
+			{ # 'Lower background region boundary',
+				DASHED => 1,
+				Y => $details->{bkgwid1},
+			},
+			{ # 'Source region lower boundary',
+				Y => $details->{bkgwid1} + $details->{bkgoff1},
+			},
+			{ # 'Source region upper boundary',
+				Y => $details->{bkgwid1} + $details->{bkgoff1}
+						+ $details->{srcwid},
+			},
+			{ # 'Upper background region boundary',
+				DASHED => 1,
+				Y => $details->{bkgwid1} + $details->{bkgoff1}
+						+ $details->{srcwid} + $details->{bkgoff2},
+			},
+		);
+	}
+
+	if (exists($details->{infile})) {
+		$details->{INFILE} = $details->{infile};
+	}
+
+	if (exists($details->{ra})) {
+		$details->{RA} = sprintf('RA = %.6f', $details->{ra});
+	}
+
+	if (exists($details->{dec})) {
+		$details->{DEC} = sprintf('Dec = %.6f', $details->{dec});
+	}
+
+	if (exists($details->{angle})) {
+		$details->{ANGLE} = sprintf('Angle = %.3f', $details->{angle});
+	}
+
+	# make lines green
+	pgsci(3);
+
+	my @x = (1, $width);
+
+	foreach my $line (@lines) {
+		# set the line style
+		my $style = $line->{DASHED} ? 2 : 1;
+		pgsls($style);
+
+		my @y = ($line->{Y}, $line->{Y});
+		pgline(scalar(@x), \@x, \@y);
+	}
+
+	# reset the color
+	pgsci(1);
+
+	# reset the line style
+	pgsls(1);
+
+	reportViewSurface('after extraction region');
+}
+
+
+sub plotSpectrum
+{
+	my ($self) = @_;
+
+	# next page: spectrum / net source counts
+	pgpage();
+
+	# what fraction of the used width (1 - 2 * PAD) does the spectrum take up?
+	my $fraction = $self->{SPECTRUM_ROWS} / $self->{EXTRACTION_WIDTH};
+	my $left = 1 - PAD - $fraction * (1 - 2 * PAD);
+
+	# overflow the plot into the bottom third of the drawing area
+	# $sourceExtra is the fraction of the bottom third to claim for
+	# the net counts plot
+	my $sourceExtra = 0.5;
+	pgsvp($left, 1 - PAD, -$sourceExtra, 1 - PAD);
+
+	# set the axes based on data
+	my $pixFirst = $self->{EXTRACTION_WIDTH} - $self->{SPECTRUM_ROWS};
+	my $pixLast = $self->{EXTRACTION_WIDTH};
+	my $spectrum = $self->{SPECTRUM};
+	my $first = $spectrum->[0];
+	my $last = $spectrum->[-1];
+	my $minNet = $first->{NET};
+	my $maxNet = $first->{NET};
+	my $minBkg = $first->{BKG_COUNTS};
+	my $maxBkg = $first->{BKG_COUNTS};
+
+	foreach my $x (@$spectrum) {
+
+		if ($x->{NET} < $minNet) {
+			$minNet = $x->{NET};
+		}
+		elsif ($x->{NET} > $maxNet) {
+			$maxNet = $x->{NET};
+		}
+
+		if ($x->{BKG_COUNTS} < $minBkg) {
+			$minBkg = $x->{BKG_COUNTS};
+		}
+		elsif ($x->{BKG_COUNTS} > $maxBkg) {
+			$maxBkg = $x->{BKG_COUNTS};
+		}
+	}
+
+	my $extra = $maxNet - $minNet > 3 ? 2 : 1;
+	pgswin($pixFirst, $pixLast, $minNet - $extra, $maxNet + $extra);
+
+	my @x = map { $_->{PIXEL} } @{ $self->{SPECTRUM} };
+	my @net = map { $_->{NET} } @{ $self->{SPECTRUM} };
+	my @background = map { $_->{BKG_COUNTS} } @{ $self->{SPECTRUM} };
+
+	# draw the source spectrum
+	pgline(scalar(@x), \@x, \@net);
+
+	# draw a dashed line at net counts 0
+	{
+		my @x = ($first->{PIXEL}, $last->{PIXEL});
+		my @y = (0, 0);
+		my $dashed = 2;
+		pgsls($dashed);
+		pgline(scalar(@x), \@x, \@y);
+		my $normal = 1;
+		pgsls($normal);
+	}
+
+	# put a frame with only the Y ticks
+	pgbox('BC', 0.0, 0, 'BCNSTV', 0.0, 0);
+
+	# label the Y-axis
+	pgmtxt('L', 3.0, 0.5, 0.5, 'Net Counts');
+
+	# put ticks at top of net plot
+	print "LAMBDA ranges from $first->{LAMBDA} to $last->{LAMBDA}\n";
+	my $dLambda = $last->{LAMBDA} - $first->{LAMBDA};
+	my $minor = 100;
+	my $major = ($dLambda < 2000) ? 500 : 1000;
+	my $lambda = POSIX::ceil($first->{LAMBDA} / $minor) * $minor;
+
+	my $dNet = $maxNet - $minNet;
+	my $topNet = $maxNet + $extra;
+	my $bottomNet = $minNet - $extra;
+
+	for ( ; $lambda < $last->{LAMBDA}; $lambda += $minor) {
+
+		# determine whether this should be a major or minor tick
+		my $isMajor = ($lambda % $major) == 0;
+
+		# interpolate from available $lambda to $pixel
+		my $x = $self->lambdaToOffset($lambda);
+
+		my $tick = $dNet / 40;
+		if ($isMajor) {
+			$tick *= 2;
+		}
+
+		my @x = ($x, $x);
+		my @y = ($topNet - $tick, $topNet);
+		pgline(scalar(@x), \@x, \@y);
+
+		@y = ($bottomNet, $bottomNet + $tick);
+		pgline(scalar(@x), \@x, \@y);
+
+	} # end put ticks at top of net plot
+
+	# plot descriptive labels
+	pgsvp(PAD, $left, -0.8, 1.0);
+
+	# draw frame to see viewport (testing)
+	# pgbox('BC', 0.0, 0, 'BC', 0.0, 0);
+
+	my $inset = -1.0; # -characters in from edge of viewport
+	my $justify = 0.0;
+	my $y = 0.9;
+	my $dy = $ENV{UVOTGRPLOT_DY} || 0.04;
+	my $details = $self->{DETAILS} || { };
+
+	my @label = qw(
+		INFILE
+		OBJECT
+		DATE-OBS
+		EXPOSURE
+		BLANK
+		RA
+		DEC
+	);
+
+	if (defined($details->{ZEROIMGX}) and defined($details->{ZEROIMGY})) {
+		push(@label, qw(ZEROIMGX ZEROIMGY));
+	}
+	else {
+		push(@label, qw(DETX DETY));
+	}
+
+	push(@label, qw(
+		ANGLE
+		SRCWID
+		BKGOFF
+		BKGWID
+		BLANK
+		DATE-PLOT
+	));
+
+	foreach my $label (@label) {
+		if (exists($details->{$label})) {
+			pgmtxt('LV', $inset, $y, $justify, $details->{$label});
+		}
+		$y -= $dy;
+	}
+
+	# next page: background
+	pgpage();
+
+	# overflow the plot into the bottom third of the drawing area
+	pgsvp($left, 1 - PAD, 0.2, $sourceExtra);
+
+	# set world boundaries for background
+	$extra = $maxBkg - $minBkg > 3 ? 2 : 1;
+	my $axisBkg = $minBkg - $extra;
+	pgswin($pixFirst, $pixLast, $axisBkg, $maxBkg + $extra);
+
+	# draw the background counts
+	pgline(scalar(@x), \@x, \@background);
+
+	# frame it- no X tick marks because wavelength is non-trivial function
+	# of pixel offset
+	pgbox('BC', 0.0, 0, 'BCNSTV', 0.0, 0);
+
+	# label the axes
+	pgmtxt('L', 3.0, 0.5, 0.5, 'Bkg');
+	pgmtxt('B', 3.0, 0.5, 0.5, 'Wavelength (\A)');
+
+
+	$lambda = POSIX::ceil($first->{LAMBDA} / $minor) * $minor;
+
+	my $dBkg = $maxBkg - $minBkg;
+
+	for ( ; $lambda < $last->{LAMBDA}; $lambda += $minor) {
+
+		# determine whether this should be a major or minor tick
+		my $isMajor = ($lambda % $major) == 0;
+
+		# interpolate from available $lambda to $pixel
+		my $x = $self->lambdaToOffset($lambda);
+
+		my $tick = $dBkg / 20;
+		if ($isMajor) {
+			$tick *= 2;
+		}
+
+# printf "lambda=$lambda tick=$tick x=%.2f\n", $x;
+
+		my @x = ($x, $x);
+		my @y = ($axisBkg - $tick, $axisBkg + $tick);
+		pgline(scalar(@x), \@x, \@y);
+
+		# label major ticks
+		if ($isMajor) {
+			my $justify = 0.5;
+			my $vx = ($x - $pixFirst) / ($pixLast - $pixFirst);
+			pgmtxt('B', 2.0, $vx, $justify, $lambda);
+		}
+	}
+
+	reportViewSurface('after spectrum');
+}
+
+
+sub lambdaToOffset
+{
+	my ($self, $lambda) = @_;
+
+	my $spectrum = $self->{SPECTRUM};
+
+	my $index = $self->{LAST_LAMBDA_TO_OFFSET} || 0;
+	my $p = $spectrum->[$index];
+	if ($lambda < $p->{LAMBDA}) {
+		$p = $spectrum->[0];
+	}
+
+	my $q = undef;
+
+	while ($index + 1 < $self->{SPECTRUM_ROWS}) {
+		$q = $spectrum->[$index + 1];
+		if ($lambda < $q->{LAMBDA}) {
+			last;
+		}
+		$p = $q;
+		++$index;
+	}
+
+	if ($p->{LAMBDA} > $lambda || $q->{LAMBDA} < $lambda) {
+		$self->error(BAD_TASK,
+				"lambdaToOffset: unable to bound lambda=$lambda");
+		return 0;
+	}
+
+	my $dLambda = $q->{LAMBDA} - $p->{LAMBDA};
+
+	my $offset = $self->{EXTRACTION_WIDTH} - $self->{SPECTRUM_ROWS}
+			+ $p->{OFFSET} + ($lambda - $p->{LAMBDA}) / $dLambda;
+
+	return $offset;
+}
+
+
+sub offsetToViewport
+{
+	my ($self, $offset, $mapping) = @_;
+
+	my $dOffset = $mapping->{PIX_LAST} - $mapping->{PIX_FIRST};
+	my $dViewport = $mapping->{VIEW_RIGHT} - $mapping->{VIEW_LEFT};
+
+	my $v = $mapping->{VIEW_LEFT} + $dViewport * $offset / $dOffset;
+
+	return $v;
+}
+
+
+sub endPlot
+{
+	my ($self) = @_;
+	pgend();
+}
+
+
+__END__
+

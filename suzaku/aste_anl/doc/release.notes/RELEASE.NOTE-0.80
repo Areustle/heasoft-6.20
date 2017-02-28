@@ -1,0 +1,214 @@
+ASCA_ANL version 0.80		リリースのお知らせ
+
+ソースは、ISAS の anonymous ftp ( ftp.astro.isas.ac.jp ) の
+	/asca/software/isas/asca_anl_v0.80.tar.gz
+にあります。
+
+	ISAS xray など:		/titania/s1/ftp/software/isas/
+	東大 tkyosf1 など: 	/utk/lib/archive/
+
+に同じものがありますので、便利な方をお使い下さい。
+
+	ASCA_ANL version 0.80 には、ascatool version 2.0 が、
+
+必要とされますので、インストールがお済みでない方は、こちらを
+先にインストールする必要があります。
+
+インストール方法は、上記の asca_anl_v0.80.tar.gz を展開した時に作成される
+ディレクトリの中に、INSTALL というファイルがありますので、
+そちらを御覧下さい。
+
+以前のバージョンとの違いをまとめます。
+
+ASCA_ANL version 0.70 -> 0.80
+
+	USER_ana のリターンステータスの拡張
+		本 Mail の付録 1.を参照。
+
+	EVS キーワードの追加
+		'GIS:GIS2 Pseudo'    GIS2 の Pseudo イベントの時 SET
+		'GIS:GIS3 Pseudo'    GIS3 の Pseudo イベントの時 SET
+
+		これに伴い、FITSREAD/GISREAD が、上記キーワードを
+		設定するように変更しました。
+
+	高速 BNK/EVS (BNKF/EVSF) 関数の追加
+		本 Mail の付録 2.および付録 3.を参照。
+
+	GISREAD/TUNE, SISREAD/TUNE の BNKF/EVSF 対応
+		GISREAD/TUNE, SISREAD/TUNE のモジュールが BNKF/EVSF
+		に対応し、処理が高速化されました。
+
+	GISREAD のバージョンアップ (0.7 -> 0.8)
+		GIS3 のイベントが出ないことがあるという bug が
+		修正されました。( mailing-list でアナウンス済み )
+
+	SISTUNE のバージョンアップ (1.2 -> 1.3)
+		ascalin と同じく RAWX/Y -> DETX/Y の変換の際に
+		乱数を振るように仕様が変更されました。
+
+ASCA_ANL Working Group 一同
+
+---------------------
+
+付録 1.	USER_ana のリターンステータスの拡張
+
+現在 analysis loop で行なっている処理を分析すると次の３種類があります。
+
+	(1) 今のイベントで analysis loop を終了し、
+	次回からの別のデータセットを扱う
+
+	(2) 今のイベントを捨てて、次のイベントの処理にかかる
+
+	(3) EVSacm ( EVS フラグの集積を行なうルーチン) をコールしない
+
+そこで、(1) (2) (3) にそれぞれフラグを割り当て、それの組合せを
+リターンステータスとして返すことにしました。
+フラグの名前は、それぞれ ANL_ENDLOOP, ANL_DISCARD, ANL_NOCOUNT
+とします。
+
+これらを使えば、
+	ASCA_ANL_SKIP = ANL_DISCARD
+	ASCA_ANL_QUIT = ANL_ENDLOOP + ANL_DISCARD + ANL_NOCOUNT
+と表わされます。
+
+互換性のため、従来からあった
+	ASCA_ANL_SKIP、ASCA_ANL_QUIT
+は、従来通りの意味で使用することができるようになっています。
+
+
+付録 2.	高速 BNK/EVS (BNKF/EVSF) 関数
+
+  新しく追加された関数は、次の 4 つです。
+
+      Subroutine BNKFput(key, index, n, iarray)
+      Character*(*) key		! input
+      Integer index		! input/output
+      Integer n			! input
+      Integer iarray            ! output
+
+      Subroutine BNKFget(key, index, size, used, iarray)
+      Character*(*) key		! input
+      Integer index		! input/output
+      Integer size		! input
+      Integer used		! output
+      Integer iarray            ! output
+
+      Logical Function EVSF(key,index)
+      Character*(*) key		! input
+      Integer index		! input/output
+
+      Subroutine EVSset(key,index)
+      Character*(*) key		! input
+      Integer index		! input/output
+
+それぞれ BNKput BNKget EVS EVSset の引数に index が追加されています。
+index は、最初のコール時に 0 に初期化しておくと、内部ワークエリアの
+ポインタがセットされ、２回目以降はそのポインタを利用してキーワードの
+検索を行なうので、処理が高速になります。
+
+使用例:
+
+FORTRAN:
+      Integer sensor, size
+      Integer index1/0/, index2/0/, index3/0/, index4/0/
+      Save index1, index2, index3, index4
+
+      Call BNKFput('ANL:SENSOR', index1, sizeof(sensor), sensor)
+      Call BNKFget('ANL:SENSOR', index2, sizeof(sensor),
+     &             size, sensor)
+      Call EVSFset('USER:ENTRY', index3)
+      If ( EVSF('ANL:GIS2 Pseudo', index4) )
+     &   Write(*,*) 'GIS2 Pseudo'
+
+C:
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <cfortran.h>
+#include <bnk.h>
+#include <evs.h>
+
+	int sensor, size;
+	static int index1=0, index2=0, index3=0, index4=0;
+	
+	BNKFPUT("ANL:SENSOR", index1, sizeof(sensor), &sensor);
+	BNKFGET("ANL:SENSOR", index2, sizeof(sensor), size, &sensor);
+	EVSFSET("USER:ENTRY", index3);
+	if ( EVSF("ANL:GIS2 Pseudo", index4) ) printf("GIS2 Pseudo");
+
+付録 3.	高速 BNK/EVS の C 言語用サポートマクロ
+
+C から高速 BNK/EVS を使用する場合のサポートマクロが、bnkf.h evsf.h の
+中でそれぞれ次のように設定されています。これを用いると、これまでと同
+様の感覚で、高速 BNK/EVS を使用することができます。
+
+bnkf.h:
+#define BNKFGETM(key,size,used,value)	{\
+	static int index = 0;\
+	int vsize = size;\
+	bnkfget_(key, &index, &vsize, &used, value, sizeof(key)-1);\
+}
+
+#define BNKFPUTM(key,size,value)	{\
+	static int index = 0;\
+	int vsize = size;\
+	bnkfput_(key, &index, &vsize, value, sizeof(key)-1);\
+}
+
+evsf.h:
+#define EVSFM(key,index)	evsf_(key, &(index), sizeof(key)-1)
+#define EVSFSETM(key)	{\
+	static int index = 0;\
+	evsfset_(key, &index, sizeof(key)-1);\
+}
+
+使用例:
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <cfortran.h>
+#include <bnk.h>
+#include <bnkf.h>	/* <--- 追加が必要 */
+#include <evs.h>
+#include <evsf.h>	/* <--- 追加が必要 */
+
+	int sensor, size;
+	static int index = 0;
+	
+	BNKFPUTM("ANL:SENSOR", sizeof(sensor), &sensor);
+	BNKFGETM("ANL:SENSOR", sizeof(sensor), size, &sensor);
+	EVSFSETM("USER:ENTRY");
+	if ( EVSFM("ANL:GIS2 Pseudo", index) ) printf("GIS2 Pseudo");
+
+<使用上の注意>
+キーワードと、index の組合せは1 対 1 になっていないとアルゴリズム上、
+動作がおかしくなってしまいます。そのため、キーワードを配列で持ってい
+たり、文字列の合成で作っていたりする時は注意が必要です。
+
+以下に間違った使い方の例を挙げます。
+      ^^^^^^^^
+(正常に動作しない例)
+           ^^^^^^
+	int i, value[4];
+	static char keyword[4][20] =  
+{"ANL:SENSOR","ANL:DETX","ANL:DETY","ANL:PI"};
+	for (i=0;i<4;i++) {
+		BNKFGETM(keyword[i], sizeof(value[i]), size, &value[i]);
+	}
+
+この例の場合、BNKFGETMがマクロ展開されても、index がキーワードごとには
+用意されません。index はマクロの数だけ(上の例では1個)しか用意されませ
+んから、上の場合、
+	"ANL:SENSOR","ANL:DETX","ANL:DETY","ANL:PI"
+のすべてのキーワードについて同じ index が使用されてしまいます。
+
+(正常に動作する例)
+
+	int value[4];
+	BNKFGETM("ANL:SENSOR", sizeof(value[0]), size, &value[0]);
+	BNKFGETM("ANL:DETX", sizeof(value[1]), size, &value[1]);
+	BNKFGETM("ANL:DETY", sizeof(value[2]), size, &value[2]);
+	BNKFGETM("ANL:PI", sizeof(value[3]), size, &value[3]);

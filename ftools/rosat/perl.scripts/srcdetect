@@ -1,0 +1,485 @@
+#!/usr1/local/bin/perl5 
+#
+# script to run detect.f in steps:
+#    . creates an .xco file for XSELECT to read and run
+#    . runs XSELECT with .xco file to create a .img file
+#      from event file $evt_fil
+#    . input for detect is .img
+#    . outputs from DETECT are mask_bandup_bandlow.fits and 
+#      diag_bandup_bandlow.dat
+#      e.g. if bandup=1 and bandlow=8 then the two files are
+#           mask_1_8.fits and diag_1_8.dat
+#           mask_1_8.fits --> contains the masking image
+#           diag_1_8.dat  --> detected sources with significance limits
+# 
+#
+# Banashree M Seifert    Nov, 1996
+# HEASARC NASA/GSFC
+#
+#SRCDETECT
+#version 1.0.0 Banashree M Seifert Nov 1996
+#detects sources from an event file(.fits)
+#version 1.0.0 first version
+#   . catch ^C
+
+use Getopt::Std;
+require "utils.pl";
+use File::Basename;
+#use Config;
+#print "$Config{'sig_name'}";
+
+$version_number ="1.0.0";
+$task="SRCDETECT";
+
+# ---------- start up -----------------------------------
+
+print " \n";
+print "              *** ".$task." Ver ".$version_number." ***\n";
+
+$yy=localtime (time);
+print "                $yy\n\n";
+# ----------------------------------------------------------
+#
+# Output the help if -h is specified
+#
+getopts('e:p:x:i:l:u:s:c:m:v:h');
+if (defined $opt_h) {
+  print <<EOHELP1;
+
+NAME
+
+
+USAGE
+
+DESCRIPTION
+
+PARAMETERS
+
+     -h         - only help on srcdetect will be shown and exit
+     -e {file}  - Input source events file (*.fits)
+     -p {pixsiz}- Pixel size in arcsec for xselect
+     -x {file}  - Input exposure map  file
+     -i {PSPC/HRI} - detector name 
+     -l {#}     - lower PI Channel if PSPC 
+     -u {#}     - upper PI Channel if PSPC
+     -s {#}     - Input statistical significance
+     -c {#}     - Input threshold count rate
+     -m {y/n}   - Input whether masking file is requested 
+     -v {#}     - chatter no.
+
+
+EXAMPLES
+
+     srcdetect -h
+            will show only the help for this task.
+
+     srcdetect
+            will prompt the user for input parameters (files).
+
+     srcdetect -e filename1 -p pixsz -x filename2 -s 5.0 -c 0.01 
+            will use command line paramters for input 
+                    event file = filename1
+                    size of pixel = pixsz
+                    exposure map = filename2 
+                    significance=5
+                    threshold cnts/sec = 0.01 
+
+
+KNOWN BUGS
+
+     Only PSPC observations are supported.  Working on HRI image
+     mapping needed for this task.
+
+
+EOHELP1
+exit;
+}
+
+#$SIG{'INT'}='handler';
+#$SIG{'INT'}=\&handler;
+#$SIG{'INT'}=&handler;
+#$SIG{'HUP'}='IGNORE';
+
+#*************** CHECK VERBOSE ***********************************
+if(defined $opt_v ){ $verbose=$opt_v; }
+else{ $verbose=9; }
+
+   
+$prog_name='DETECT';
+
+#########################################################################
+#### It is decided that only PSPC support will be released with this FTOOLS4.0
+#### and decide what to do for HRI later regarding pixel size for XSELECT
+#### So, all the HRI questions are removed/commented for this time only.
+#########################################################################
+
+print "Only PSPC is supported for this release (June, 1997)\n\n";
+
+# --------------- GET INPUTS FOR XSELECT ------------------------------
+
+# %%%%%%%%%%%%%%% ENQUIRE FOR INPUT FITS FILE FOR IMAGE MAP
+if(defined $opt_e )
+{
+   if(-e $opt_e){ $evt_fil=$opt_e; }
+   else{ die "file \"$opt_e\" does not exist.  Exiting ... \n"; }
+}
+else 
+{
+   print " Name of input events file (.fits): ";
+   chop($evt_fil=<STDIN>);
+   die " Events filename must be entered. Exiting ... \n" if($evt_fil =~ /^$/);
+   $evt_fil=~ s/(\s)//g ;
+   die "file \"$evt_fil\" does not exist.  Exiting ... \n" if(! -e $evt_fil);
+}
+
+
+# %%%%%%%%%%%%%%% ENQUIRE FOR PIXEL SIZE FOR IMAGE MAP
+
+if(defined $opt_p ){ $pixsz=$opt_p ; }
+else 
+{
+  print " Size of image pixel in arcsec (15, 7.5, or 3.75): ";
+  chop ($pixsz =<STDIN>);
+} 
+
+if ($pixsz == 0)
+{
+    print " Please specify the pixel size you would want for image: ";
+    chop ($pixsz =<STDIN>);
+}
+
+if ($pixsz == 0){ die " You did not enter pixel size.  Exiting ... \n\n"; }
+
+$binsz = $pixsz/0.5 ;
+
+# %%%%%%%%%%%%%%% ENQUIRE FOR INPUT EXPOSURE MAP FILE
+
+if(defined $opt_x )
+{
+   if(-e $opt_x){ $expmap_fil=$opt_x; }
+
+   else{ die "file \"$opt_x\" does not exist.  Exiting ... \n"; }
+}
+else 
+{
+   print " Name of input exposure map file: ";
+   chop($expmap_fil=<STDIN>);
+   die " Exposure map filename must be entered. Exiting ... \n" if($expmap_fil =~ /^$/);
+   $expmap_fil=~ s/(\s)//g ;
+   die "file \"$expmap_fil\" does not exist. Exiting ...\n"if(! -e $expmap_fil);
+}
+
+# %%%%%%%%%%%%%%% ENQUIRE FOR PSPC or HRI 
+####### lines below are commented to make PSPC only as now it seems
+####### we need more modifications for HRI
+#####
+###if(defined $opt_i ){ $instr=$opt_i; }
+###else
+###{
+###   print " Name of instrument [PSPC/HRI]: ";
+###   chop($instr = <STDIN>);
+###}
+
+$instr = 'PSPC';
+
+# %%%%%%%%%%%%%%% ENQUIRE FOR INPUT PI LOWER & UPPER CHANNEL
+
+###$instr=uc($instr);
+
+###if($instr eq 'PSPC')
+###{
+   if(defined $opt_l ){ $chanlo=$opt_l; }
+   else
+   {
+     print " NOTE:\n";
+     print " For PSPC, various possible range of channels are:\n";
+     print "     Lower limit:  8, 11, 20, 42, 52,  70,  91, 132 \n";
+     print "     Upper limit: 19, 41, 51, 69, 90, 131, 201 \n";
+     print "     These are the channels used while extracting exposure map\n";
+     print " \n";
+
+     print " Lower PI/PHA channel no.: ";
+     chop($chanlo=<STDIN>);
+     die " Lower channel no. must be entered. Exiting ...\n"if($chanlo =~ /^$/);
+   }
+
+   if($chanlo eq 8) { $bandlo=1; }
+   elsif($chanlo eq 11) { $bandlo=8; }
+   elsif($chanlo eq 20) { $bandlo=2; }
+   elsif($chanlo eq 42) { $bandlo=3; }
+   elsif($chanlo eq 52) { $bandlo=4; }
+   elsif($chanlo eq 70) { $bandlo=5; }
+   elsif($chanlo eq 91) { $bandlo=6; }
+   elsif($chanlo eq 132){ $bandlo=7; }
+   else { die "Error: channel does not match with above range \n"; } 
+
+   if(defined $opt_u ){ $chanup=$opt_u; }
+   else
+   {
+     print " Upper PI/PHA channel no.: ";
+     chop($chanup=<STDIN>);
+     die " Upper chan no. must be entered. Exiting ...\n"if($chanup =~ /^$/);
+   }
+
+   if($chanlo > $chanup)
+      {die "Lower channel should be < upper channel. Exiting ... \n" ; }
+
+   if($chanup eq 19) { if($chanlo == 8){ $bandup=1; } else{ $bandup=8; } }
+   elsif($chanup eq 41) { $bandup=2; }
+   elsif($chanup eq 51) { $bandup=3; }
+   elsif($chanup eq 69) { $bandup=4; }
+   elsif($chanup eq 90) { $bandup=5; }
+   elsif($chanup eq 131){ $bandup=6; }
+   elsif($chanup eq 201){ $bandup=7; }
+   else { die " Error: channel does not match with above range \n"; } 
+###} end of if for instrument
+ 
+# %%%%%%%%%%%%%%% ENQUIRE FOR INPUT SIGNIFICANCE LEVEL 
+
+if(defined $opt_s ) { $sig_level=$opt_s; }
+else 
+{
+  print " Statistical significance level for source detection: ";
+  chop($sig_level=<STDIN>);
+  die " Significance level must be entered. Exiting ...\n"if($sig_level=~ /^$/);
+}
+ 
+# %%%%%%%%%%%%%%% ENQUIRE FOR INPUT MINIMUM COUNT RATE 
+
+if(defined $opt_c ) { $c_rate=$opt_c; }
+else 
+{
+  print " Threshold count-rate for source detection: ";
+  chop($c_rate=<STDIN>);
+  die " Threshold count-rate must be entered. Exiting ...\n"if($c_rate=~ / ^$/);
+}
+ 
+# %%%%%%%%%%%%%%% ENQUIRE FOR IF OUTPUT MASKING FILE REQUIRED 
+
+if(defined $opt_m ) { $masking=$opt_m; } 
+else 
+{
+   print " Want source masking file as output? [no]: ";
+   chop ($ask=<STDIN>);
+   if($ask =~ /^y/i) { $masking='yes'; }
+   else{ $masking='no'; }
+}  
+
+# ---------------------- DONE ALL INPUTS -----------------------------------
+ 
+# I need to open a file detect.xco to run xselect to create the image 
+# file with same name as event file but with extension .img, 
+# I need to separate the directory name, filename and extension from
+# string of input file # e.g., input file name be /dir/input.fits, then
+# dirname = /dir
+# basename=input
+# extension=fits
+
+# %%%%%%%%%%%%%%% GET FILENAME AND EXTENSION
+
+$dirname=dirname($evt_fil);
+$base=basename($evt_fil,".fits");
+$img_fil=$base.".img";
+
+$n=0;
+while (glob("xsel*"))
+{
+   $n=$n+1;
+   $filname[$n]=$_;
+}
+
+if($n > 0)
+{
+   print "\n\n";
+   print " .... $n file(s) from previous XSELECT run are in the dirctory.\n"; 
+   print " Files are : \n";
+   $i=1;
+   while ($i<=$n) { print " $filname[$i++]\n"; }
+   
+   print " want to delete them?[yes] : ";
+   chop($ask=<STDIN>);
+   if($ask =~ /^n/i)
+   {
+      print "\n Please remove/rename them and then run SRCDETECT\n";
+      print "\n\n";
+      exit;
+   }
+   else
+   {
+      while(glob("xsel*")){ unlink  $_; }
+      print "\n ... files cleaned for XSELECT run\n";
+   }
+}
+
+# %%%%%%%%%%%%%%% CREATE .XCO FILE FOR XSELECT
+
+#delete if there is any detect.xco file
+$xco_fil="detect.xco";
+if(-e $xco_fil) { unlink $xco_fil; }
+
+if(-e $img_fil) 
+{ 
+   print "image file $img_fil exists. Delete it? " ; 
+   chop($ask=<STDIN>);
+   if($ask =~ /n/i )
+   {  
+      print "Name of imagefile to create:";
+      chop($img_fil=<STDIN>);
+   }
+   else
+   { unlink $img_fil; }
+}
+
+open(XCO,">$xco_fil") || die "Could not open new file detect.xco: $!\n";
+print XCO "xsel\n";
+print XCO "read events\n";
+print XCO "$dirname\n";
+print XCO "$base.fits\n";
+print XCO "yes\n";
+########################
+###if($instr eq 'PSPC')
+###{  print XCO "extract image phalcut=$chanlo phahcut=$chanup xybinsize=$binsz\n"; }
+###else
+###{  print XCO "extract image xybinsize=$binsz\n"; }
+#######################
+print XCO "extract image phalcut=$chanlo phahcut=$chanup xybinsize=$binsz\n";
+print XCO "save image\n";
+print XCO "$img_fil\n";
+print XCO "exit\n";
+print XCO "no\n";
+
+close (XCO);
+
+# %%%%%%%%%%%%%%% RUN XSELECT
+
+$command_string='xselect @'.$xco_fil;
+
+print "\n running XSELECT to create image map of the FITS file\n";
+
+@tmp_array=&runcom($command_string,"error","runtime error");
+
+print " ... created image map: $img_fil\n";
+
+
+# %%%%%%%%%%%%%%% INPUTS FOR DETECT
+
+#now ready to go for DETECT 
+#before running DETECT, delete any pre-existing files diag*.dat
+# and mask*.dat
+
+###if($instr eq 'PSPC')
+###{
+   $diag_fil='diag_'.$bandlo.'_'.$bandup.'.dat';
+   $mask_fil='mask_'.$bandlo.'_'.$bandup.'.fits';
+###}else{
+###    $diag_fil='diag.dat';
+###    $mask_fil='mask.fits';
+###}
+
+if (-e $diag_fil) { unlink $diag_fil; }
+
+if (-e $mask_fil){ unlink $mask_fil; }
+
+if (-e 'detect.img'){ unlink 'detect.img'; }
+
+print "\n running DETECT ............\n";
+
+
+if($masking=~ /^y/i) 
+{ $string =
+"-----------------------------------------------------
+  Input event map    file name: $img_fil
+  Input exposure map file name: $expmap_fil
+  Input lower channel no.     : $chanlo
+  Input upper channel no.     : $chanup
+  Input significance level    : $sig_level
+  Input threshold count-rate  : $c_rate
+
+  Output source listing file  : $diag_fil
+  Output source image file    : detect.img
+  Output source masking file  : $mask_fil
+-----------------------------------------------------\n";
+}else{
+   $string =
+"-----------------------------------------------------
+  Input event map    file name: $img_fil
+  Input exposure map file name: $expmap_fil
+  Input lower channel no.     : $chanlo
+  Input upper channel no.     : $chanup
+  Input significance level    : $sig_level
+  Input threshold count-rate  : $c_rate
+
+  Output source listing file  : $diag_fil
+  Output source image file    : detect.img
+-----------------------------------------------------\n";
+}
+
+if($verbose >= 1) { print "$string\n"; }
+
+# %%%%%%%%%%%%%%% RUN DETECT
+
+###if($instr eq 'HRI')
+###{ $command_string='detect evtmapfil='.$img_fil.' expmapfil='.$expmap_fil.' instr='.$instr.' sig='.$sig_level.' count_rate='.$c_rate.' outfil=detect.img qmask='.$masking.' chatter='.$verbose; }
+
+###elsif($instr eq 'PSPC')
+ $command_string='detect evtmapfil='.$img_fil.' expmapfil='.$expmap_fil.' chanmin='.$chanlo.' chanmax='.$chanup.' sig='.$sig_level.' count_rate='.$c_rate.' outfil=detect.img qmask='.$masking.' chatter='.$verbose; 
+
+@tmp_array=("","","");
+########@tmp_array=&runcom($command_string,"error","runtime error");
+########print "@tmp_array\n";
+
+system $command_string;
+
+$yy=localtime (time);
+###print " *** Successfully completed SRCDETECT on $yy\n";
+
+# %%%%%%%%%%%%%%% CLEAN FILES & EXIT
+
+print " Following intermediate files are created :\n";
+print " $img_fil\n";
+print " $xco_fil\n";
+
+print " Do you want to SAVE them ? [no]: ";
+
+chop($ask=<STDIN>);
+
+if($ask =~ /^y/i) { print " Files saved ...Exiting\n"; }
+else
+{ unlink $img_fil, $xco_fil; print " Files cleaned. ...Exiting\n"; }
+
+
+#------------------------------------------------------------------------------
+# end of main routine 
+#------------------------------------------------------------------------------
+
+
+
+
+#------------------------------------------------------------------------------
+# subroutine for erroring out while running runcom
+#------------------------------------------------------------------------------
+# This routine is called when an error occurs in RUNCOM.
+sub error 
+{
+    local ($err_str) = $_[0];
+    print "@tmp_array";
+    die ("\n$prog_name: $err_str\nExiting $task Ver $version_number\n");
+}
+
+#--------------------------------------------------------------------
+# subroutine for terminating when ^C is pressed
+#--------------------------------------------------------------------
+
+sub handler
+{
+     local($sig)=@_;
+     while(glob("/tmp/er*")) { unlink  $_; }
+
+     while(glob("/tmp/E*"))  { unlink  $_; }
+
+     while(glob("/tmp/R*"))  { unlink  $_; }
+
+     print "\n\n..... Terminating $task V$version_number ......\n\n ";
+     exit(1);
+}
+

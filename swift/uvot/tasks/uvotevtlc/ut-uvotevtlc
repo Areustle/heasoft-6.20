@@ -1,0 +1,110 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotevtlc/ut-uvotevtlc,v $
+# $Revision: 1.3 $
+# $Date: 2006/11/30 14:53:51 $
+#
+#
+# $Log: ut-uvotevtlc,v $
+# Revision 1.3  2006/11/30 14:53:51  rwiegand
+# Committing Craig's updates:
+#   * now time bins are reported at the bin center instead of start
+#   * uvotmag is run with deadtimecor=NO
+#   * user can choose frametime and other uvotmag parameters
+#   * fix bug in parsing annulus regions
+#
+# Revision 1.2  2006/11/20 16:59:11  rwiegand
+# Use a relative rather than an absolute tolerance.
+#
+# Revision 1.1  2006/11/20 16:55:57  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::EventLightCurve;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->runUvotevtlc
+		if $self->isValid;
+}
+
+
+sub runUvotevtlc
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		infile    => "$input/input.fits",
+		outfile   => "$output/output.fits",
+		srcreg    => "$input/src.reg",
+		bkgreg    => "$input/bkg.reg",
+		timedel   => 10,
+		timebinalg=> 'u',
+
+		clobber   => 'yes',
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(infile template)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	{
+		my $command = $self->buildCommand('uvotevtlc', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{outfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{outfile},
+			reltol => 0.01,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+}
+

@@ -1,0 +1,769 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>batcelldetect HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+batcelldetect - perform source detection using the sliding cell method
+
+<h2>USAGE</h2>
+
+<tt>batcelldetect infile outfile snrthresh</tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+batcelldetect performs source detection on a sky image.  The sliding
+cell method is used to locate regions of the image which are
+significantly different from the background.
+</p>
+
+<p>
+This tool is more appropriate for coded aperture imaging because: (1)
+it assumes Gaussian fluctuations, not Poissonian; (2) it measures the
+local background; and (3) it measures the local background standard
+deviation.  A source is detected at a pixel if that pixel's value
+exceeds the background by more than "snrthresh" times the background
+standard deviation.  Users can increase the significance of a
+detection and reduce false detections by requiring more than one
+adjacent pixel exceed the threshold, using the "nadjpix" parameter.
+The "nullborder" and "bkgpcodethresh" parameters can also be used to
+exclude false positives near the edge of the image.
+</p>
+
+<p>
+This tool performs analysis in two stages.  In the first stage, new
+sources are detected using a sliding cell method.  In the second
+stage, the fluxes and positions of both new and previously known
+sources are refined by fitting the point spread function.
+</p>
+
+<p>
+In the first stage, the background and pixel significances are
+estimated by using a sliding window region method.  The shape of the
+window is either a circular annulus or "square annulus," depending on
+the 'bkgwindowtype' parameter.  The outer radius of the circle (or
+half-width of the square) is specified by the bkgradius parameter.
+The window region does not include the centermost portion (whose
+radius is the srcradius parameter).  This portion should be the size
+of a typical source, so that the fluxes from sources do not
+contaminate the background estimate.  For source detection, the pixel
+significance is estimated as the raw pixel value divided by the local
+standard deviation calculated using this method.
+</p>
+
+<p>
+In a single iteration, the sliding cell algorithm is less sensitive in
+a region around bright sources, because the background standard
+deviation becomes biased.  To avoid this, the algorithm can be run in
+multiple iterations (controlled by the 'niter' parameter).  After each
+iteration, the detected pixels are removed, and thus the bias can be
+significantly reduced.
+</p>
+
+<p>
+At the second stage, batcelldetect fits a point spread function to
+regions of the image where sources are detected.  For new sources,
+this aids in refining the centroid of the source position, as well as
+in estimating uncertainties.
+</p>
+
+
+<p>
+The default output is a catalog list of detected sources, plus various
+statistics about them.  The output flux column is either COUNTS or
+RATE, depending on the input image units. The tool can optionally
+output the background map, the background fluctuation map, and a
+significance map.
+</p>
+
+<p>
+<b>IMPORTANT NOTE:</b> if the keepbadsources parameter is 'YES', then
+the output catalog may contain some sources which failed processing
+for one reason or another.  Information on the success or failure on a
+source-by-source basis is recorded in the <tt>DETECT_STATUS</tt> column.
+
+<p>
+The user can also supply an input catalog.  Sources in the input
+catalog, which are within the field of view of the image, are assumed
+to be fixed at their known positions, and fitted during the
+PSF-fitting stage for intensity only (unless posfit=NO).  Additional
+detected sources are also written to the output catalog.
+</p>
+
+<p>
+This task can operate on multiple images, as produced by batfftimage.
+If the images vary only in their energy range, and are otherwise
+identical in their coordinate systems and exposures, then the
+'vectorflux' parameter can be set to YES.  When vectorflux=YES, each
+source has only one catalog row, and multiple fluxes are recorded in a
+vector table cell.  When vectorflux=NO, a source will appear multiple
+times in the catalog, with a single flux in each entry.  Note that if
+the input images do not match exactly their coordinate system or
+exposures, then you must specify vectorflux=NO.
+
+<p>
+To avoid spurious detections at the edge of the field of view, a
+partial coding threshold can be specified (see 'pcodefile' and
+'pcodethresh').  If a partial coding map is provided, then by default
+sources must be at least 1% coded.
+</p>
+
+<p>
+This routine uses a relatively straightforward brute-force convolution
+by FFT to compute the sliding-cell averages.  Users should have a
+about a factor of eight more memory than the size of the image.
+</p>
+
+<h3>Fitting For Position and Flux</h3>
+<p>batcelldetect has several options to fit the positions and fluxes
+of sources.  Newly detected and previously known sources are treated
+differently.  By default, the positions of newly detected sources are
+allowed to vary and the those of previously known sources are held
+fixed.  This behavior depends on the input parameters and the input
+catalog.
+
+<p>
+The following behaviors are possible:
+
+<dl>
+<dt>srcfit=NO</dt><dd>  Perform source detection only.  For all
+sources, neither position nor flux are fit.  For new sources, the
+positions are taken from the source detection stage. For previously
+known sources, the values are transferred from the input catalog
+completely unchanged.</dd>
+
+<dt>srcfit=YES; posfit=NO (DEFAULT)</dt><dd> Hold the position of known
+sources fixed, but fit for the positions of new sources.  The fluxes
+of all sources are fitted.</dd>
+
+<dt>srcfit=YES; posfit=YES; posfitwindow=0.0</dt><dd>Fit for the positions
+of all sources.  The positions of known sources are allowed to vary
+within a window which is 3 times the ERR_RAD value from the input
+catalog.  Thus, if ERR_RAD = 0, the position is held fixed.  Special
+cases: if an individual value of ERR_RAD is null, the position of that
+source is allowed to vary.  If the ERR_RAD column is missing entirely,
+the positions are assumed to be fixed.  The fluxes of all sources are
+fitted.</dd>
+
+<dt>srcfit=YES; posfit=YES; posfitwindow &gt; 0</dt><dd>As above,
+except the positions of known sources are allowed to vary by +/-
+3*ERR_RAD or +/- posfitwindow, whichever is larger.</dd>
+</dl>
+
+As of May 2007, the BAT team recommends using the GAUSSIAN point
+spread function (FWHM=0.37413) for all BAT data throughout the
+mission.  The previous recommendation to use the "PYRAMID" shape was
+not correct.
+
+<h2>CATALOG OUTPUT</h2>
+
+<p>
+The output catalog contains the following columns.  Other input
+columns are copied to the output unchanged.  For new sources entries,
+the row is filled with null value before writing batcelldetect-derived
+quantities.
+
+<p>
+Note that while the input catalog is only required to have the NAME,
+RA_OBJ and DEC_OBJ columns, they <b>must</b> have the units and
+dimensions listed below.  Any input catalog columns that match the
+list below, must also have the specified units.
+
+<p>
+The data type should be either "D" (double) or "J" (integer); 
+the <tt>NAME</tt> column can be up to a 30-character string.  The word
+"Vector" indicates which output catalog columns will be a vector if
+vectorflux=YES and multiple images are analyzed.
+
+<dl>
+<dt><tt>TIME</tt></dt><dd>Start time of image (Mission Elapsed Time). Type=D, Unit=s.</dd>
+<dt><tt>TIME_STOP</tt></dt><dd>Stop time of image (Mission Elapsed Time). Type=D, Unit=s.</dd>
+<dt><tt>EXPOSURE</tt></dt><dd>EXPOSURE time of image. Type=D, Unit=s.</dd>
+<dt><tt>CATNUM</tt></dt><dd>Catalog identification number.  For known sources, this number is copied from input catalog.  For new sources, the number is determined by the 'newsrcind' parameter. Type=J.</dd>
+<dt><tt>NAME</tt></dt><dd>Source name.  For known sources, this name is copied from input catalog.  For new sources, the name will be 'UNKNOWN'. Type=30A (string).</dd>
+<dt><tt>IMX</tt></dt><dd>IMX Tangent plane coordinate (instrument X). Type=D.</dd>
+<dt><tt>IMY</tt></dt><dd>IMY Tangent plane coordinate (instrument Y). Type=D.</dd>
+<dt><tt>IMX_ERR</tt></dt><dd>IMX formal uncertainty. Type=D.</dd>
+<dt><tt>IMY_ERR</tt></dt><dd>IMY formal uncertainty. Type=D.</dd>
+<dt><tt>IMXPIX</tt></dt><dd>IMX pixel coordinate (instrument X). FITS coordinate pixels label the center of the first pixel as IMXPIX=1.0. Type=D, Unit=pixel.</dd>
+<dt><tt>IMYPIX</tt></dt><dd>IMY pixel coordinate (instrument Y). FITS coordinate pixels label the center of the first pixel as IMYPIX=1.0. Type=D, Unit=pixel.</dd>
+<dt><tt>RA_OBJ / GLON_OBJ</tt></dt><dd>Source celestial longitude (equatorial or galactic).  The presence of output celestial coordinates depends on the WCS coordinate system embedded in the input image.  Type=D, Unit=deg.</dd>
+<dt><tt>DEC_OBJ / GLAT_OBJ</tt></dt><dd>Source celestial latitude (equatorial or galactic). Type=D, Unit=deg.</dd>
+<dt><tt>RA_OBJ_ERR / GLON_OBJ_ERR</tt></dt><dd>Source celestial longitude formal uncertainty (1 sigma). Type=D, Unit=deg.</dd>
+<dt><tt>DEC_OBJ_ERR / GLAT_OBJ_ERR</tt></dt><dd>Source celestial latitude formal uncertainty (1 sigma). Type=D, Unit=deg.</dd>
+<dt><tt>ERR_RAD</tt></dt><dd>Estimated error radius (formal; 1 sigma). Type=D, Unit=deg.</dd>
+<dt><tt>IMX_FWHM</tt></dt><dd>Instrumental PSF X full width at half-max (tangent plane coords). Type=D.</dd>
+<dt><tt>IMY_FWHM</tt></dt><dd>Instrumental PSF Y full width at half-max (tangent plane coords). Type=D.</dd>
+<dt><tt>IMX_FWHM_ERR</tt></dt><dd>Instrumental PSF X FWHM formal uncertainty (1 sigma). Type=D.</dd>
+<dt><tt>IMY_FWHM_ERR</tt></dt><dd>Instrumental PSF Y FWHM formal uncertainty (1 sigma). Type=D.</dd>
+<dt><tt>THETA</tt></dt><dd>Source angle from instrumental boresight. Type=D, Unit=deg.</dd>
+<dt><tt>PHI</tt></dt><dd>Source instrumental longitude. Type=D, Unit=deg.</dd>
+<dt><tt>GRMCLON</tt></dt><dd>BAT simulator longitude. Type=D, Unit=deg.</dd>
+<dt><tt>GRMCLAT</tt></dt><dd>BAT simulator latitude. Type=D, Unit=deg.</dd>
+<dt><tt>RATE</tt></dt><dd>Background-subtracted source count rate (units from image BUNIT keyword)<br>RATE is used if the image has rate-like units. Type=D,  Vector.</dd>
+<dt><tt>RATE_ERR</tt></dt><dd>Source count rate formal uncertainty (1 sigma; units from image). Type=D,  Vector.</dd>
+<dt><tt>CENT_RATE</tt></dt><dd>Background-subtractd source count rate derived from the pixel nearest to the output catalog position. Type=D, Vector.</dd>
+<dt><tt>CONTAM_RATE</tt></dt><dd>Estimated count rate due to all sources <i>except</i> this source; a measure of contamination due to diffuse background and nearby confusing sources.  Type=D, Vector.</dd>
+<dt><tt>COUNTS</tt></dt><dd>Background-subtracted source counts (units from image BUNIT keyword)<br>COUNTS is used if the image does not have rate-like units. Type=D,  Vector.</dd>
+<dt><tt>COUNTS_ERR</tt></dt><dd>Source counts formal uncertainty (1 sigma; units from image). Type=D,  Vector.</dd>
+<dt><tt>CENT_COUNTS</tt></dt><dd>Background-subtracted source counts derived from the pixel nearest to the output catalog position. Type=D, Vector.</dd>
+<dt><tt>CONTAM_COUNTS</tt></dt><dd>Estimated counts due to all sources <i>except</i> this source; a measure of contamination due to diffuse background and nearby confusing sources.  Type=D, Vector.</dd>
+<dt><tt>BKG</tt></dt><dd>Local diffuse background intensity, ignoring any nearby point sources.  This is the value used for background-subtraction of sources.  The BKG column is filled with data from either the BKG_FIT or the BKG_CELL column. (units from image BUNIT keyword). Type=D,  Vector.</dd>
+<dt><tt>BKG_ERR</tt></dt><dd>Local background intensity formal uncertainty (1 sigma; units from image). Type=D,  Vector.</dd>
+<dt><tt>BKG_VAR</tt></dt><dd>Local background standard deviation (units from image). Type=D,  Vector.</dd>
+<dt><tt>BKG_FIT</tt></dt><dd>Local diffuse background intensity, as estimated using the PSF fitting technique. (units from image BUNIT keyword). Type=D,  Vector.</dd>
+<dt><tt>BKG_CELL</tt></dt><dd>Local diffuse background intensity, as estimated using the sliding cell technique. (units from image BUNIT keyword). Type=D,  Vector.</dd>
+<dt><tt>SNR</tt></dt><dd>Source signal to noise ratio (defined as RATE/BKG_VAR). Type=D,  Vector.</dd>
+<dt><tt>CENT_SNR</tt></dt><dd>Source signal to noise ratio (defined as CENT_RATE/BKG_VAR). Type=D,  Vector.</dd>
+<dt><tt>NPIXSOU</tt></dt><dd>Number of valid pixels in the source window. Type=J, Unit=pixel.</dd>
+<dt><tt>NPIXBKG</tt></dt><dd>Number of valid pixels in the background window. Type=J, Unit=pixel.</dd>
+<dt><tt>DETECT_METHOD</tt></dt><dd>Method used for source detection:<br>1=Cell detection<br>2=PSF fit.<br>4=Position calculated from multiple vector images<br>Type=J.</dd>
+<dt><tt>CHI2</tt></dt><dd>Chi<sup>2</sup> value in PSF fit. Type=D,  Vector.</dd>
+<dt><tt>DOF</tt></dt><dd>Number of degrees of freedom in PSF fit. Type=D,  Vector.</dd>
+<dt><tt>CHI2_NU</tt></dt><dd>Reduced Chi<sup>2</sup> value in PSF fit. Type=D,  Vector.</dd>
+<dt><tt>DETECT_STATUS</tt></dt><dd>Source detection status code; entries with non-zero DETECT_STATUS are deleted when keepbadsources='NO'; One of:<br>0=OK;<br>-1=Too many pixels detected;<br>-2=No pixels detected;<br>-3=Source touches border of image;<br>-4=Source error radius did not fit in source window.<br>-5=PSF fit failed (source was likely out of bounds)<br>Type=J.</dd>
+<dt><tt>CONSTRAINT_FLAG</tt></dt><dd>PSF fitting constraint flag; Describes which parameters of the PSF model were fixed; Sum of:<br>1=IMX fixed;<br>2=IMY fixed;<br>4=COUNTS/RATE fixed;<br>8=PSF width fixed.<br>Type=J.</dd>
+<dt><tt>SRC_WINDOW_RAD</tt></dt><dd>Source window radius . Type=J, Unit=pixel.</dd>
+<dt><tt>BKG_WINDOW_RAD</tt></dt><dd>Background window radius . Type=J, Unit=pixel.</dd>
+<dt><tt>NGOODPIX</tt></dt><dd>Number of good detectors (copied from input image). Type=J, Unit=pixel.</dd>
+<dt><tt>BAT_ZOBJ</tt></dt><dd>Near-field source height (ground testing only; coped from input image). Type=D, Unit=cm.</dd>
+<dt><tt>PCODEFR</tt></dt><dd>Partial coding fraction of source. Type=D.</dd>
+<dt><i>x</i><tt>_PER_IMX</tt></dt><dd>Derivative of <i>x</i> position with respect to IMX. Type=D, Unit=deg.</dd>
+<dt><i>x</i><tt>_PER_IMY</tt></dt><dd>Derivative of <i>x</i> position with respect to IMY. Type=D, Unit=deg.</dd>
+<dt><i>keyword</i></dt><dd>Keywords copied from input image via the 'keepkeywords' parameter.</dd>
+</dl>
+
+<h2>BACKGROUND SUBTRACTION</h2>
+
+<p>
+For the columns which refer to intensity --- namely RATE, COUNTS,
+CENT_RATE and/or CENT_COUNTS --- batcelldetect performs background
+subtraction.  The source of the background estimate depends on the setting of
+the 'bkgfit' parameter.  If 'bkgfit=NO', then the background is
+derived from the nearest pixel of the estimated background map.  If
+'bkgfit=YES', then the background is estimated during the PSF fitting
+process, as an additional constant level.
+
+<p>
+Whichever background method is chosen, the estimated background is
+subtracted from the raw intensity value before it is reported in the
+output catalog.  The background value that was used is reported in the
+output catalog column named BKG.  Hence, this equation holds for
+<tt>RATE</tt>, <tt>RAW_RATE = RATE + BKG</tt>, where RAW_RATE is the
+raw image peak height.  In addition, the values derived from the two
+different methods are reported in the BKG_CELL and BKG_FIT catalog
+columns, corresponding to the background map and fitted PSF techniques
+respectively.
+
+<p>
+The background level is considered to be a contaminating source, and
+thus is <i>added</i> to the reported CONTAM_FLUX value.
+
+
+<h2>DISTORTION CORRECTION</h2>
+
+<p>
+Batcelldetect can correct for systematic non-linear centroid shifts in
+the image.  It is assumed that all catalog celestial positions (input
+and output) are in "true" undistorted coordinates.  All distortion
+corrections occur at the pixel level within batcelldetect.  The
+distortion correction occurs if the 'distfile' parameter points to a
+correction map.
+</p>
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>infile [filename]
+
+<dd>Input file name containing one or more sky maps.  Each sky map
+should be stored as one image extension.  (Avoid using the CFITSIO
+syntax to select image extensions; individual images extensions can be
+selected from the file using the 'rows' parameter).
+<p>
+
+<dt>outfile [filename]
+
+<dd>Output source list.
+<p>
+
+<dt>snrthresh [real]
+
+<dd>Signal to noise threshold for detection of sources.  A value of
+6.0 indicates that an excess must be 6 sigma above the background
+level to be considered a detection.  Here 1 sigma is the standard
+deviation of the background.  Note: for performance reasons users
+should choose snrthresh > 3.5.  Also, if nadjpix > 1, then the
+effective threshold will be higher than snrthresh.
+<p>
+
+<dt>(incatalog=NONE) [string]
+
+<dd>Name of input catalog of known sources.  This catalog must have at
+least the columns RA and DEC, in degrees (J2000).  Additional columns
+are also copied to outfile (however see above about required units). A
+value of "NONE" indicates that no a priori catalog should be used.
+Specifying this incatalog=NONE by itself does not prevent the
+cell-detection based source detection algorithm from being applied.
+<p>
+
+
+<dt>(pcodefile=NONE) [string]
+
+<dd>Name of optional partial coding map file.  This may be any image
+with exactly the same dimensions and coordinate system as infile.  Any
+region where the partial coding map exceeds pcodethresh is searched
+for sources; any region where it is below pcodethresh is ignored.  The
+map need not be an actual partial coding map; any quantity that can be
+thresholded (even a map of 0s and 1s) can be used.  If pcode file is
+"NONE", then the entire image is searched.
+<p>
+
+<dt>(pcodethresh=0.01) [real]
+
+<dd>Partial coding threshold for source detection.  This threshold is
+applied to the map specified in pcodefile.  Any partial coding value
+greater than pcodethresh is considered active for the purposes of
+source detection.
+<p>
+
+
+<dt>(bkgpcodethresh=-1) [real]
+
+<dd>Partial coding threshold for background analysis.  This threshold
+is applied to the map specified in pcodefile.  Any partial coding
+value greater than bkgpcodethresh is considered active for the purposes
+of measuring the backgroud and its variance.  A value of -1 indicates
+that bkgpcodethresh should be set to pcodethresh.  The "source" and
+"background" thresholds are kept separately so that background
+analysis can be done over a wider area than the source acceptance
+region.
+<p>
+
+<dt>(pospeaks=YES) [boolean]
+
+<dd>Constrain newly detected peaks to be positve.  If NO, then
+significant positive <i>or</i> negative deviations will be searched
+for.  Known catalogged sources are permitted to have a negative fitted
+flux regardless of pospeaks.
+<p>
+
+<dt>(posfluxfit=NO) [boolean]
+
+<dd>If YES, constrain the flux to be positive during the PSF fitting
+stage.  If NO, fluxes are allowed to be positive or negative.
+<p>
+
+<dt>(vectorflux=NO) [boolean]
+
+<dd>If YES, then output flux values for a given source as a vector,
+one element for each input image.  If NO, then output one catalog rows
+for each source in each input image.  Note, for vectorflux=YES, the
+input images must all match their coordinate systems, exposure, and
+instrument configuration <b>exactly</b>.
+<p>
+
+<dt>(rows = "-") [string]
+
+<dd>An index list of images to operate on.  This is a standard
+comma-separated list of image ranges, starting with image number 1.
+Image number 1 corresponds to the primary extension of the input FITS
+file, 2 to the next extension, and so on. A range of "-" indicates all
+images should be processed.  Thus, this parameter really selects
+<b>image extension numbers</b> to operate on rather than binary table
+rows.
+<p>
+
+<dt>(niter=2) [integer]
+
+<dd>Number of iterations of source detection to perform.  niter=0 is
+allowed; in that case the sources in the input catalog (if any) which
+are in the field of view are transferred to the output catalog.
+<p>
+
+<dt>(carryover=YES) [boolean]
+
+<dd>For the analysis of multiple images.  If YES, then carry over the
+sources detected in the analysis of earlier images to the analysis of
+later images.  Positions of previously detected new sources are held
+fixed as described above.  If NO, then the analysis of each image
+begins from scratch, excluding any previously detected sources.  Note
+that carryover=NO and vectorflux=YES are contradictory.
+
+<dt>(nadjpix=3) [integer]
+
+<dd>Minimum number of adjacent pixels required for source detection.
+This serves to decrease the number of false detections.  This quantity
+is somewhat dependent on the image oversampling used.
+<p>
+
+<dt>(nullborder=NO) [boolean]
+
+<dd>Allow sources which fall on the border of the image?  If no, then
+sources whose "source window" overlaps with the edge of the image are
+ignored.  The edge of the image is defined by the partial coding
+threshold.  These sources may still appear in the output catalog with
+a DETECT_STATUS value of -3.
+<p>
+
+<dt>(bkgwindowtype="circle") [string]
+
+<dd>Background window type, one of "circle", "smooth_circle" or
+"square".  A "circle" is an annular background region with sharp inner
+and outer edges.  A "smooth_circle" has the same shape but the edges
+are tapered in order to reduce noise fluctuations.  A "square" is a
+square region with sharp inner and outer edges.
+<p>
+
+<dt>(bkgradius=30) [integer]
+
+<dd>Background window radius in pixels. For a window of "circle", the
+bkgradius parameter is the radius of the circle.  For a "square"
+window, the bkgradius is the half-width of the square.  Actual
+diameter of circle or square is 2*bkgradius+1.
+<p>
+
+<dt>(regionfile=NONE) [string]
+
+<dd>Optional name of source detection region file.  Upon output,
+sources listed in the outfile catalog are also written to an ASCII
+"region" file, which can then be read into image display programs such
+as fv/POW or SAO ds9.  Output units are degrees.  The radius of the
+circle is twice the PSF gaussian sigma radius.
+<p>
+
+<dt>(srcradius=6) [integer]
+
+<dd>Source radius in pixels.  If 0, then the full background window is
+used to estimate the background and its standard deviation.  Actual
+diameter of circle or square is 2*srcradius+1.
+<p>
+
+<dt>(srcdetect=YES) [boolean]
+
+<dd>If srcdetect is set to "YES", then batcelldetect will attempt to
+detect new sources.  If "NO", then source detection is disabled, but
+source fitting of previously cataloged sources may still be performed
+(depending on the value of 'srcfit').
+<p>
+
+<dt>(srcfit=YES) [boolean]
+
+<dd>If srcfit is set to "YES", then batcelldetect will fit newly
+detected and previously cataloged sources (if any) as described above.
+If "NO", then previously determined positions and intensities are
+output.  See "Fitting For Position and Flux" above.
+<p>
+
+<dt>(posfit=NO) [boolean]
+
+<dd>Posfit specifies whether batcelldetect fits the position of
+<i>already known sources</i>.  See "Fitting For Position and Flux"
+above.  Also, the parameter 'posfitwindow' may override this parameter.
+<p>
+
+<dt>(bkgfit=YES) [boolean]
+
+<dd>Fit the background for each source individually?  If yes, then
+during the PSF fitting stage, each source has an independent
+background level.  If no, a fixed background is subtracted.
+<p>
+
+<dt>(psfshape="GAUSSIAN") [string]
+
+<dd>Shape of the point spread function to use.  It should be one of
+"GAUSSIAN", "PYRAMID" or "TRUNCONE".  "GAUSSIAN" is a two-dimensional
+gaussian function (which more closely matches the Swift/BAT point
+spread function in a single image); "PYRAMID" is a two-dimensional
+pyramidal frustum with a square base (no longer recommended);
+"TRUNCONE" is a truncated cone (no longer recommended).
+<p>
+
+<dt>(psffwhm="0.37413") [string]
+
+<dd>Full-width at half maximum of the point spread function, in units
+of degrees.  By default, this is held fixed, but if ":FIT" is
+appended, then the width is fitted.  The default value listed above
+applies to the BAT point spread function.
+<p>
+
+<dt>(psftopwidth="0.04584") [string]
+
+<dd>For the pyramidal point spread function, the full width of the top
+of the truncated pyramid, in units of degrees.  By default, this is
+held fixed, but if ":FIT" is appended, then the width is fitted.  The
+default value listed above applies to the BAT point spread function.
+<p>
+
+<dt>(newsrcname="UNKNOWN") [string]
+
+<dd>Name to be used for newly detected sources.  This can be a C
+format string, whose interpretation depends on the value of the
+newsrcind parameter.  If newsrcind is greater than or equal to zero,
+then newsrcname may contain a single "%d"-style C format code.  Each
+new source is given a unique source number, starting with index
+newsrcind.  If newsrcind is -1, then newsrcname may contain two "%f" C
+format codes for the RA and DEC position, in degrees.
+<p>
+
+<dt>(newsrcind=1) [integer]
+
+<dd>Starting index number to be used to label new sources (see
+newsrcname).  If -1, then sources are labeled by their position on the
+sky.
+<p>
+
+<dt>(signifmap=NONE) [string]
+
+<dd>Optional output file name for the significance map.
+<p>
+
+<dt>(bkgmap=NONE) [string]
+
+<dd>Optional output file name for the mean background map.
+<p>
+
+<dt>(bkgvarmap=NONE) [string]
+
+<dd>Optional output file name for the background fluctuation map.
+<p>
+
+<dt>(inbkgmap=NONE) [string]
+
+<dd>Optional background map which overrides the internally-calculated
+background.  The map or maps must have exactly the same structure and
+number of images as the input image file.  If inbkgmap=ZERO, then the
+background is explicitly set to zero in the source detection stage.
+<p>
+
+<dt>(inbkgvarmap=NONE) [string]
+
+<dd>Optional background variation map which overrides the
+internally-calculated variation map.  The map or maps must have
+exactly the same structure and number of images as the input image
+file.
+<p>
+
+
+<dt>(distfile=CALDB) [string]
+
+<dd>
+The 'distfile' parameter should point to a FITS file containing an
+MxNx2 image (or CALDB to use the default instrument correction in the
+calibration database).  The two planes of the image are the non-linear
+distortion of the BAT "plate scale" as a function of position in the
+sky image.  The values are offsets in tangent plane coordinates
+(IMX,IMY), and therefore unitless.  The first plane of the image cube
+is the IMX offset, and the second plane is the IMY offset.  The sense
+of the offset is (TRUE-APPARENT), i.e. for a measured position in
+tangent plane coordinates, the offset values should be *added* to
+arrive at the true position in tangent plane coordinates.  The images
+are low-resolution versions of the BAT field of view in instrumental
+sky coordinates, and are meant to be interpolated to the desired
+sampling.  The WCS keywords must specify the image coordinate systems.
+<p>
+
+<dt>(keepbits = "ALL") [string]
+
+<dd>Integer number of bits of precision to keep in the output images.
+A value of ALL means keep all bits.  A positive value indicates that
+'keepbits' bits of precision should be preserved, and the other bits
+should be set to zero.  Fewer kept bits means the output images are
+more compressible, at the expense of lost precision.  For background
+and variance maps, a straight number of bits are kept (thus preserving
+the same relative precision across the map).  For significance maps,
+'keepbits' prescribes the number of
+<b>noise</b> bits to keep; more bits may be kept if a pixel is
+significantly above the noise (thus preserving the same noise
+quantization error across the map).
+<p>
+
+
+<dt>(npixthresh=20) [integer]
+
+<dd>Minimum number of pixels in the background window to enable source
+detection.  Setting this parameter to a high number will prevent
+detections based on only a few background pixels.
+<p>
+
+<dt>(posfitwindow=0) [real]
+
+<dd>The position 'window' radius, in degrees, used for all position
+fits, including known sources.  The window is the allowed region over
+which the centroid position is allowed to vary during the position
+fit, regardless of the error radius specified for the source.
+Typically, this parameter will only be used if the attitude solution
+is suspected to be incorrect.  A value of zero indicates that the
+window size is determined by the error radius specified in the
+catalog, if any.  WARNING: This parameter is basically an override for
+the ERR_RAD column and the 'posfit' parameter.  See "Fitting For
+Position and Flux" above.
+<p>
+
+<dt>(possyserr=0) [real]
+
+<dd>Systematic position error, in degrees, to be added in quadrature
+to each position error radius reported in the output catalog.  This
+parameter allows one to specify a minimum systematic position error
+for every reported detection (which is separate from posfitwindow,
+which controls the position determination process itself).
+<p>
+
+<dt>(vectorposmeth=AVERAGE) [string]
+
+<dd>Specify which source position is reported when the source position
+is fitted and vectorflux=YES.  The output catalog has only one
+position for each source.  If position fitting is allowed and
+vectorflux=YES, then it is possible for multiple positions to be
+derived.  This parameter describes what to do with multiple positions.
+The allowed values are: "FIRST" or "FIXFIRST" - report the fitted
+position in the first image; "LAST" - report the fitted position in
+the last image; "AVERAGE" - report the weighted average fitted
+position; "MAX_SNR" - report the fitted position for the image with
+highest signal-to-noise ratio.  "FIXFIRST" is different than "FIRST"
+in that once a fitted source position is found, its position is held
+fixed for subsequent images.  If the fitted position does not exceed
+'snrthresh' then it will not be included in these calculations.  When
+positions are combined using one of the above methods, then the
+DETECT_METHOD column will be flagged with a multiple of 4.
+<p>
+
+<dt>(keepkeywords="*APP,CLEANLEV") [string]
+
+<dd>A comma separated list of keywords or keyword wildcard patterns.
+The matching keywords are transferred to the output catalog, under a
+column of the same name.  This is a way to automatically keep track of
+corrections that have been applied to the input image.  The CFITSIO
+wildcard patterns are: '?' will match any single character at that
+position in the keyword name; '*' will match any length (including
+zero) string of characters; and '#' will match any consecutive string
+of decimal digits (0 - 9).
+<p>
+
+<dt>(hduclasses="-VIGNETTING,-BKG_VARIANCE,-BKG_STDDEV,-SIGNIFICANCE") [string]
+
+<dd>List of comma-separated image type filters, used to accept or
+reject images based on their HDUCLASn keywords.  This is useful for
+files that contain different kinds of image extensions.  A minus sign
+"-" indicates exclusion.  Each image is checked for each of the
+HDUCLASn keywords.  If any of the keyword values matches an excluded
+list member, then that image is rejected for analysis.  List members
+without a minus sign <b>must</b> be present.  A value of NONE
+indicates no filtering (i.e. all images are accepted).
+<p>
+
+<dt>(sortcolumns="-KNOWN,-SNR/UNKNOWN,RA_OBJ") [string]
+
+<dd>Controls the sort order of the table displayed on the console.
+Note that this does not affect the FITS table, which can be sorted
+using ftsort or fsort.  The string should be a comma-separated list of
+sort keys, or "NONE" for arbitrary printed order.  The first key
+listed is the primary sort key, the next is the secondary and so on.
+By default, values are printed from lowest to highest, but a preceding
+'-' sign indicates highest to lowest.  The following sort keys are
+available: NAME; RA_OBJ; DEC_OBJ; SNR; RATE; COUNTS; FLUX (all three
+of these keys are synonymous); KNOWN (if the sources appears in the
+input catalog or not); IMX; IMY; PCODEFR; CATNUM; THETA; PHI;
+SNR/UNKNOWN.  Most sort keys are identical to their corresponding
+catalog column, described above.  "SNR/UNKNOWN" is a special sort key,
+indicating to sort only previously unknown columns by SNR.  The
+default sortcolumns indicate to arrange the table by printing the
+known sources first, sorted by RA, and then the unknown sources,
+arranged in descending order by signal to noise ratio.
+<p>
+
+<dt>(keepbadsources = NO) [boolean]
+
+<dd>If yes, then individual sources are kept in the output catalog,
+even if DETECT_STATUS is non-zero, indicating a failure of some kind.
+If no, then any output catalog entry with DETECT_STATUS non-zero is
+removed.
+<p>
+
+<dt>(ptcorrel = "NONE") [string]
+<dd>Account for pixel to pixel correlations during the fit.
+Either NONE (straight PSF fitting); PSF (use PSF for correlations);
+or GAUSSIAN[x] (where x is the FWHM of the correlation function in
+degrees).
+<b>NOTE: This parameter is not tested and may produce unexpected results!</b>
+<p>
+
+<dt>(clobber = NO) [boolean]
+
+<dd>If the output file already exists, then setting "clobber = yes" will cause it to be overwritten.
+<p>
+
+<dt>(chatter = 2) [integer, 0 - 5]
+
+<dd>Controls the amount of informative text written to standard
+output.  Setting chatter = 1 produces a basic summary, including a
+list of detected sources; chatter = 2 (default) additionally prints a
+summary of input parameters; chatter = 5 prints debugging information.
+<p>
+
+<dt>(history = YES) [boolean]
+
+<dd>If history = YES, then a set of HISTORY keywords will be written to
+the header of the specified HDU in the output file to record the value
+of all the task parameters that were used to produce the output
+file.
+
+</dl>
+<h2>EXAMPLES</h2>
+
+<p>
+1. Performs source detection on skyimage.img, finding those sources which
+exceed the background by 6 sigma.  The output is written to srclist.fits.
+The default circular background window is used.
+</p>
+<p>
+<pre>
+        batcelldetect skyimage.img srclist.fits 6.0
+</pre>
+
+<p>
+2. Same as example 1, but use a square background window of half-width
+10 pixels.
+</p>
+<p>
+<pre>
+        batcelldetect skyimage.img srclist.fits 6.0  \
+            bkgwindowtype=square bkgradius=10
+</pre>
+
+<p>
+3. Same as example 1, but outputs the significance image to
+signif.img as well.
+</p>
+<p>
+<pre>
+        batcelldetect skyimage.img srclist.fits 6.0 signifmap=signif.img
+</pre>
+
+<h2>SEE ALSO</h2>
+
+<p><a href="batfftimage.html">batfftimage</a></p>
+
+<h2>REFERENCES</h2>
+
+<p>The fitting library, MPFIT, is based on MINPACK.  This product
+includes software developed by the University of Chicago, as Operator
+of Argonne National Laboratory.  See 'fhelp batcelldetect-mpfit' for
+more information.</p>
+
+<h2>LAST MODIFIED</h2>
+
+Oct 2009
+</body>
+</html>

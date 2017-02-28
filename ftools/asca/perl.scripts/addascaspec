@@ -1,0 +1,422 @@
+#! /usr1/local/bin/perl5 
+$version ="1.30";
+$date  ="2002-06-27";
+
+
+# v1.1 May-14-97 According to the change of addrmf (v1.02-->v1.10),
+# the parameter name 'listfile' is modified to 'list', and "@" is
+# prepended to the list file name.
+
+# v1.2 Cope with the marfrmf problem (for ftools v3 and earlier) that it abort 
+# when the first channel numbers of the ARF EBOUND extension and RMF RESPONSE
+# extension are different. Check ftools version and runs fparkey only for v3 
+# and ealier ftools to update keywords.
+
+# v1.21 Modified the web page reference: 
+#Old     http://heasarc.gsfc.nasa.gov/docs/asca/abc_spectra.html#spectra_combine
+#New     The ABC guide (http://heasarc.gsfc.nasa.gov/docs/asca/abc/) section 8.9.
+
+# v1.22 The first parameter for 'addarf' changed from 'in_ARFs' to 'list'.
+
+# v1.23 use the environmental variable $TMPDIR, if defined, for the
+# temporary directory instead of hardwiring to /tmp.
+# add option '-q' not to execute programs.
+
+# v1.24 To cope with the mathpha bug (in ftools v4.0) that BACKSCAL is not 
+# updated, always call fparkey to update the BACKSCAL.
+#
+# v1.25 Y2k compliance.  Ning Gan
+
+# v1.26 1998-08-21 Ken Ebisawa
+# 1) Altorithm to distinguish the kinds of input response files
+# is modified, so that the input files having the EXTNAME="SPECRESP MATRIX"
+# are recoginized as RMFs.  It was found RMFs created with "sisrmg" have
+# the second extension name "MATRIX" for the response matrix , while those made 
+# with "addrmf" have "SPECRESP MATRIX" in the THIRD extension.
+#
+# 2) Existence of the input files and extensions are checked. If not found,
+# exit immediately.
+#
+# 3) The combined BGD file name and response file name (either ARF or RSP) are
+# written in the combined source spectral file header, explicitly with fparkey.
+# Previous versions expected mathpha to do so by specifying BGD and response file
+# names in the mathpha command-line, but it was found mathpha does not actually
+# write those files names in the output file header.
+#
+# 4) Drop the ftool version check. Users are expected to run v4 or newer ones, but
+# still the program should work with older version.
+
+# v1.27 1998-08-23 Ken Ebisawa
+# TLMIN value test for the RMF file is dropped.
+
+# v1.28 1999-03-07 Ken Ebisawa
+# mathpha option 'proper' is explicitly specified as 'no'.
+# This should be almost always the case when adding ASCA spectra
+# which have Count in units (when created with extractor).
+
+# v1.29 1999-05-25 toliver
+# invoke fstruct with parameter set to suppress its new output format
+
+# v1.30 2002-06-26 Ken Ebisawa
+# add a new optional command line parameter "errmeth" which is passed to
+# mathpha
+
+#Get and parse the command line option 
+    if ($ARGV[0]=~/-(\S+)/){
+	$option=$1;
+	if($option=~/h/){$help =1;}
+	if($option=~/q/){$quiet=1;}
+	shift(@ARGV);
+    }
+
+if($help){
+    print "addascaspec version $version  $date\n\n";
+    print "usage: addascaspec [-qh] list_file out_spec out_response [outbgd] [errmeth]\n\n";
+    print "addascaspec is a perl script used to combine ASCA spectra taken by\n";
+    print "SIS0 and SIS1 or GIS2 and GIS3.  It can also be used to add spectra\n";
+    print "taken at different times.\n";
+    print "The following ftools are invoked; fparkey, fkeypar, mathpha, addarf, \n";
+    print "addrmf, marfrmf, and pget.\n\n";
+    print "Flags:\n";
+    print "-h   Print this help message.\n";
+    print "-q   Display commands to spawn, but does not execute them.\n\n";
+    print "The 'list_file' should have the following format: \n";
+    print "\n";
+    print "g2_source.spec g3_source.spec \n";
+    print "g2_bgd.spec g3_bgd.spec  \n";
+    print "g2.arf g3.arf \n";
+    print "\n";
+    print "On each line, list the spectra, background, arf, and rmf file\n";
+    print "names to combine. You can add two or more spectral files. \n";
+    print "Order of the appearance of lines does not matter, but source\n";
+    print "spectral files should appear prior to the background files.\n";
+    print "You may or may not enter background files and rmf files to combine.\n\n";
+    print "Note that in the case of GIS, you do not have to add RMFs,\n";
+    print "since GIS2 and 3 RMFs are identical. In this case only ARFs\n";
+    print "are averaged.  For SIS, each ARF and RMF are multiplied and\n";
+    print "averaged.\n\n";
+
+    print "The optional \"errmeth\" parameter specifies the error method passed\n";
+    print "to the \"mathpha\" task.  If not specified, the default option used is\n";
+    print "\"Poiss-0\"\n";
+    print "If \"Gauss\" or \"Poiss-0\", poisson error is assumed after counts are summed.\n\n";
+
+    print "The method of calculation is explained in the ASCA ABC guide \n";
+    print "(http://heasarc.gsfc.nasa.gov/docs/asca/abc/) section 8.9.\n";
+    print "The background normalization is calculated with the formula explained at \n";
+    print "http://heasarc.gsfc.nasa.gov/docs/asca/abc_backscal.html.\n\n";
+    exit(0);
+}
+
+if (@ARGV != 3 && @ARGV != 4 && @ARGV != 5 )
+{
+    print "usage: addascaspec [-qh] list_file out_spec out_response [outbgd] [errmeth]\n";
+    print "type \"addascaspec -h\" to get more information\n";
+    exit(0);
+}
+
+# Set temporary directory.  If $TMPDIR is defined, use it; otherwise,
+# use /tmp.
+$tmp =$ENV{'TMPDIR'};
+if($tmp !~/\S/){$tmp="/tmp";}
+else{
+print "TMPDIR is defined. Use $tmp for the temporary dicrectory.\n";
+}
+
+$list   = $ARGV[0]; #list file name
+$outspec= $ARGV[1]; #summed spectral file name
+$outrsp = $ARGV[2]; #summed (averaged) ARF name (for GIS) for RSP name (for SIS)
+
+$outbgd= "NONE";
+$errmeth="NONE";
+
+($test = $ARGV[3]) =~ tr/a-z/A-Z/;
+
+if (@ARGV == 4){
+	if($test eq "GAUSS"|| $test=~/POISS/||$test eq "P0"||$test eq "P1"||$test eq "P2"||test eq "P3"){
+		print "The fourth parameter $ARGV[3] is interpreted as errmeth.\n";
+		$errmeth=$ARGV[3];
+	}
+	else{
+		print "The fourth parameter $ARGV[3] is interpreted as outbgd.\n";
+		$outbgd= $ARGV[3];
+	}
+    }
+if (@ARGV == 5){$outbgd= $ARGV[3];$errmeth=$ARGV[4]}
+
+if(!-e $list){
+    print "Input list file ", "\"",$list,"\""," does not exist.\n";
+    exit(0)
+}
+
+### list file exists ###
+### Read input spectral files, arf files, rmf files and  bgd files 
+### from the list file ###
+
+$spec_appear=0;
+open(LISTFILE,$list);		# 
+while(<LISTFILE>){
+    if($_=~/\S+/){
+#    print $_;	
+	@infile=split(" ",$_);
+	#For each line in the list file, check the kind of the input file
+	#(spectral file, arf file, rmf file).
+	$j=1;
+	$extname="";
+	while(!($extname=~/SPECTRUM/||$extname=~/MATRIX/||$extname=~/SPECRESP/)){
+	    #Checks if this extesion exists or not.
+	    if(-e $infile[0]){
+#		print("$infile[0] found \n");
+		if(`fstruct colinfo=no $infile[0]+$j outfile=STDOUT`!~/BINTABLE/){
+		    die "$infile[0] exists, but this does not seem to be either spectral file or response file.";
+		}
+	    }else{
+		die "$infile[0] is not found.\n";
+	    }
+	    $command = "fkeypar $infile[0]+$j EXTNAME\n";
+	    system($command);
+	    $extname = `pget fkeypar value`;
+	    if($extname=~/SPECTRUM/){
+		for ($i=0;$i<=$#infile;$i++){
+		    if($spec_appear==0){$spec[$i]=$infile[$i];}
+		    if($spec_appear==1){$bgd[$i]=$infile[$i];}
+		}
+		$spec_appear=1;		# Already spectal file appeared.
+	    }
+	    elsif($extname=~/MATRIX/){
+#	Files either have "MATRIX" or "SPECRESP MATRIX" 
+#       are recognized as RMF.
+		for ($i=0;$i<=$#infile;$i++){
+		    $rmf[$i]=$infile[$i];
+#		    print $rmf[$i],"\n";
+		    $matrix_ext=$j;
+		}
+	    }
+	    elsif($extname=~/SPECRESP/){
+#        This is ARF
+		for ($i=0;$i<=$#infile;$i++){
+		    $arf[$i]=$infile[$i];
+		}
+	    }
+	    else{
+		#Go to the next extension untill finding the proper extension
+		$j++;
+	    }
+	} ## end of the while loop
+    } ## end of reading each line in LISTFILE
+}## end of while(<LISTFILE>)
+close(LISTFILE);
+
+## End reading the List file
+# Is RMFs entered?
+if(!($rmf[0]=~/\S+/)){
+    for ($i=0;$i<=$#infile;$i++){
+	$rmf[$i]="NONE";		# 
+    }				# 
+#RMF is not entered, so the outrsp is ARF
+    $outarf=$outrsp;
+    $outrmf="NONE";
+}else
+{
+#RMF is entered, so the outrsp will be RMF(RSP)
+    $outarf="NONE";
+    $outrmf=$outrsp;
+}
+
+# Is ARF entered ?
+if(!($arf[0]=~/\S+/)){
+    for ($i=0;$i<=$#infile;$i++){
+	$arf[$i]="NONE";	
+    }				# 
+}
+
+# Is BGDs entered?
+if(!($bgd[0]=~/\S+/)){
+    for ($i=0;$i<=$#infile;$i++){
+	$bgd[$i]="NONE";	
+    }				# 
+}
+
+## Print out what were read
+
+print "Number of spectral files to add = ", $#spec+1,"\n";
+$expo_sum=0.0;
+$expo_b_sum=0.0;
+for ($i=0;$i<=$#spec;$i++){
+    print  "### Set no ", $i+1, " ###\n";
+    print "Spec:", $spec[$i],"\n";
+
+#### Get exposure ####
+    $command = "fkeypar $spec[$i] EXPOSURE\n";
+#    print $command;
+    system($command);
+    $expo[$i]=`pget fkeypar value`;
+    if (substr($expo[$i],length($expo[$i])-1) eq  "\n") {chop($expo[$i]);}
+    printf("  Exposure time: %10.3e \n", $expo[$i]);
+    $expo_sum=$expo_sum+$expo[$i];
+
+#### Get backscale ####
+    $command = "fkeypar $spec[$i] BACKSCAL\n";
+#    print $command;
+    system($command);
+    $backs[$i]=`pget fkeypar value`;
+    if (substr($backs[$i],length($backs[$i])-1) eq  "\n") {chop($backs[$i]);}
+    printf("  Backscal     : %10.3e \n", $backs[$i]);
+
+    print "Bgd :", $bgd[$i],"\n";
+    if(-e $bgd[$i]){
+#### Get exposure for bgd ####
+    $command = "fkeypar $bgd[$i] EXPOSURE\n";
+#    print $command;
+    system($command);
+    $expo_b[$i]=`pget fkeypar value`;
+    if (substr($expo_b[$i],length($expo_b[$i])-1) eq  "\n") {chop($expo_b[$i]);}
+    printf("  Exposure time: %10.3e \n", $expo_b[$i]);
+    $expo_b_sum=$expo_b_sum+$expo_b[$i];
+
+#### Get backscale for bgd ####
+    $command = "fkeypar $bgd[$i] BACKSCAL\n";
+#    print $command;
+    system($command);
+    $backs_b[$i]=`pget fkeypar value`;
+    if (substr($backs_b[$i],length($backs_b[$i])-1) eq  "\n") {chop($backs_b[$i]);}
+    printf("  Backscal     : %10.3e \n", $backs_b[$i]);
+    }
+    print "ARF :", $arf[$i],"\n";
+    print "RMF :", $rmf[$i],"\n";
+
+    print "\n";			# 
+    if($i==0){$spec_com=$spec[$i];}
+    else{$spec_com=$spec_com."+".$spec[$i]}
+
+    if($i==0){$arf_com=$arf[$i];}
+    else{$arf_com=$arf_com." ".$arf[$i]}
+}
+
+### Calculate the fractional exposure for each source and bgd spectrum###
+$weight="";
+for ($i=0;$i<=$#spec;$i++){
+    $weight_s[$i]=$expo[$i]/$expo_sum;
+#    $weight_b[$i]=$expo_b[$i]/$expo_b_sum;
+    $weight=$weight." ".sprintf("%8.3e",$weight_s[$i]);
+}
+
+#print "source exposure weight", $weight,"\n";
+
+### Add spectral files ###
+$comment="Produced by addascaspec version $version";
+#1998-08-21 bacfile, arfile, rmfile are specified  NONE here,
+#and they are overwritten later with fparkey.
+if($errmeth eq "NONE") {
+	$command = "mathpha expr=\"$spec_com\" units=C outfil=\"$outspec\" exposure=CALC \\
+properr=no areascal=NULL auxfiles=NONE backfile=NONE arfile=NONE rmfile=NONE \\
+backscal=1.0E0 ncomments=1 comment1=\"$comment\"\n";
+}else{
+	$command = "mathpha expr=\"$spec_com\" units=C outfil=\"$outspec\" exposure=CALC \\
+properr=no areascal=NULL auxfiles=NONE backfile=NONE arfile=NONE rmfile=NONE \\
+backscal=1.0E0 ncomments=1 comment1=\"$comment\" errmeth=$errmeth\n";
+}
+
+print $command;
+if(!$quiet){system ($command);}
+
+#Always call fparkey to update the BACKSCAL value
+$command="fparkey value=1.0 fitsfile=$outspec keyword=BACKSCAL add=yes\n";
+print $command;
+if(!$quiet){system($command);}
+
+if(!($bgd[0]=~/NONE/)){
+### write the bgd spectral file name in the combined source spectral file header ###
+    $command="fparkey value=\"$outbgd\" fitsfile=$outspec keyword=BACKFILE add=yes\n";
+    print $command;
+    if(!$quiet){system($command);}
+
+### ADD bgd spectral files ###
+    $denominator=0.0;		# 
+    for ($i=0;$i<=$#spec;$i++){	# 
+	$denominator=$denominator+$expo[$i]*($backs[$i]/$backs_b[$i]);
+    }
+    $spec_com="";
+    for ($i=0;$i<=$#spec;$i++){
+	$c[$i]=$expo_b_sum/$denominator*($expo[$i]/$expo_b[$i])*($backs[$i]/$backs_b[$i]);
+	if($i==0){$spec_com=sprintf("%9.4f",$c[$i])."*".$bgd[$i];}
+	else{$spec_com=$spec_com."+".sprintf("%9.4f",$c[$i])."*".$bgd[$i];}
+    }
+    $backscal_sum=sprintf("%8.3e",$expo_sum/$denominator);
+    
+    $comment="Produced by addascaspec version $version";
+    
+    print "\n";
+    if($errmeth eq "NONE") {	   
+	$command = "mathpha expr=\"$spec_com\" units=C outfil=\"$outbgd\" exposure=CALC \\
+properr=no areascal=NULL auxfiles=NONE backfile=NONE arfile=NONE  rmfile=NONE \\
+backscal=$backscal_sum ncomments=1 comment1=\"$comment\"\n"; # 
+    }else{
+	$command = "mathpha expr=\"$spec_com\" units=C outfil=\"$outbgd\" exposure=CALC \\
+properr=no areascal=NULL auxfiles=NONE backfile=NONE arfile=NONE  rmfile=NONE \\
+backscal=$backscal_sum ncomments=1 comment1=\"$comment\" errmeth=$errmeth\n"; # 
+    }
+    print $command;		# 
+    if(!$quiet){system ($command);}
+    $command="fparkey value=$backscal_sum fitsfile=$outbgd+1 keyword=BACKSCAL add=yes\n";
+    print $command;
+    if(!$quiet){system($command);}
+}
+
+if($rmf[0]=~/NONE/){
+#The ARF name is written in the combined spectral file
+    $command="fparkey value=\"$outrsp\" fitsfile=$outspec keyword=ANCRFILE add=yes\n";
+    print $command;
+    if(!$quiet){system($command);}
+
+### ADD ARF files ###
+    $command = "addarf list=\"$arf_com\" weights=\"$weight\" out_ARF=$outrsp\n";
+    print $command;
+    if(!$quiet){system $command;}
+}else				 
+{				
+#The RSP name is written in the combined spectral file
+    $command="fparkey value=\"$outrsp\" fitsfile=$outspec keyword=RESPFILE add=yes\n";
+    print $command;
+    if(!$quiet){system($command);}
+
+### If necessary multiply ARF and RMF ###
+    $addrmf_list="$tmp/$$.addrmf_list";
+    open(ADDRMF_LIST,">$addrmf_list");
+    for ($i=0;$i<=$#spec;$i++){
+	$outfil[$i]="$tmp/$$".$i.".rsp";
+	if(-e $outfil[$i]){
+	    $command="rm -f $outfil\n";
+	    print $command;
+	    if(!$quiet){system($command);}
+	}
+	if(!($arf[i]=~/NONE/)){
+	    $command="marfrmf rmfil=$rmf[$i] arfil=$arf[$i] outfil=$outfil[$i] qoverride=no \n";
+	} else {
+	    $command="cp $rmf[$i] $outfil[$i] \n";
+	}
+	print $command;
+	if(!$quiet){system($command);}
+	printf ADDRMF_LIST  "%s  %10.3f\n", $outfil[$i], $weight_s[$i];
+    }
+    close(ADDRMF_LIST);
+
+### Average RSP ###
+    print "\n";
+    $command="addrmf \@$addrmf_list rmffile=$outrsp\n"; #
+    print ($command);
+    if(!$quiet){system($command);}
+
+### remove temporary files ###
+    print "\n";
+    $command="rm -f $addrmf_list\n";
+    print $command;
+    if(!$quiet){system($command);}
+    for ($i=0;$i<=$#spec;$i++){
+    $command="rm -f $outfil[$i]\n";
+    print $command;
+    if(!$quiet){system($command);}
+    }
+}
+
+

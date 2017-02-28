@@ -1,0 +1,263 @@
+#!/usr/local/bin/perl5
+#helpful(?) note: in the following /^\s*[+\-]?[0-9.]/ is meant
+#to match any line that starts with a "number" if anyone has a better
+#idea, feel free
+eval {
+
+$task="ascii2flc1.0";
+$bailout= "bailout";
+use Getopt::Std;
+require 'utils.pl';
+getopt('io');
+$infile=$opt_i;
+$outfile=$opt_o;
+
+
+
+
+if($opt_h) {
+print <<EOHELP; 
+This script creates a lightcurve FITS file, suitable for XRONOS, from
+an ASCII format file by calling the FTOOL task fcreate. Different
+types of FITS lightcurve format can be created depending on the number
+of columns available in the ASCII file.
+
+The input file is a free-format ASCII file. Each line of data
+corresponds to one row in the FITS table and should contain values for
+every column. Any line whose first non-whitespace character is not a
+digit will be treated as a comment. The script asks for the column
+number (in the ASCII file) of the following quantities: Time, Rate (or
+Counts), Errors and Fractional Exposure. Not all of them need to be
+present, only the Rate (or Count) with the Error (in the case of Count
+only if different from sqrt(Count)) columns are required. If the time
+column is not present, the input timing header keywords (see later)
+are sufficient for XRONOS to reconstruct the time for each bin. NOTE
+that undefined values in the data file (es. data gap) should be marked
+with  \"INDEF\".
+
+The script also asks for the following parameters: TIMEUNIT, TSTART,
+TSTOP, TIMEDEL and TIMEZERO. Those are the minimum required header
+keywords for the FITS lightcurve output. All the keywords shoud be
+entered in the same unit either days ('d') or seconds ('s'). The unit
+value is the input for TIMEUNIT parameter. TSTART and TSTOP define the
+start and stop of the lightcurve and TIMEDEL the integration time. If
+the TIME column is not present in the ASCII, the script prompts for
+TIMEZERO which is a reference value, used within XRONOS to calculate
+the nth bin time. See also fcreate help.
+
+EOHELP
+
+$~ = "FLAGS";
+$flag_name = "-h";
+$flag_means = 'See this message.';
+write;
+$flag_name = "-i infile[ext]";
+$flag_means = "Name of the input ASCII data file.";
+write;
+$flag_name = "-o outfile";
+$flag_means = 'Output file FITS file name.';
+write;
+$flag_name = "-d";
+$flag_means = "Debug mode.  Doesn't delete temporary files on exit.";
+write;
+exit;
+}
+
+#get legal input file
+until (length($infile) != 0 && -r $infile ){
+    print "***\n";
+    if(length($infile) != 0) 
+	{print "I can't read input file: \"$infile\"\n";}
+    &print_likely_files('*.q*');
+    print "Input Filename(or number): "; 
+    chop($infile = <STDIN>); 
+    if(($infile =~ /^\s*(\d+)\s*$/)&&($infile <= @likely_files)){
+	$infile=$likely_files[$1-1];} 
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}
+
+
+unless ($outfile) {
+    $outfile_def = $infile;
+    $outfile_def =~ s/\..*$/\.fits/;
+    print "Output Filename (<return> for default $outfile_def): ";
+    chop ($outfile = <STDIN>);
+    $outfile = $outfile_def unless $outfile;
+}
+
+#until ($cstring =~ /c/i) {
+#print "Please assign column type numbers to your input file columns:\n";
+#print "A  TIME column\n";
+#print "B  TIME_ERROR column \n";
+#print "C  RATE column \n";
+#print "D  RATE_ERROR column \n";
+#print "E  EXPOSURE column \n";
+#print "Input a list of column letters giving the order of the columns\n";
+#print "in your file (you must specify at least column 'C'): ";
+#chop($cstring = <STDIN>);
+#}
+
+#$ncol = 0;
+#column numbering starts with ONE!
+#foreach $clet (split(/[^ABCDEabcde]/,$cstring)){
+#    $clet =~ tr/a-e/A-E/;
+#    $ncol++;
+#    $column{$clet} = $ncol;
+#}
+
+
+print "Please input the number of the TIME column in your file,\n";
+print "(RETURN or 0 for no time column):  ";
+chop($column{"TIME"} = <STDIN>);
+
+
+$timeunit="NONE" unless $column{"TIME"};
+until ($timeunit =~ /^(s|d|NONE)$/){
+    print "What are the time units of input data ('d' or 's')? ";
+    chop($timeunit = <STDIN>);
+}
+
+print "Please input the number of the RATE[ERROR] column in your file,\n";
+print "[ERROR] is optional: ";
+chop($raterec = <STDIN>);
+($column{"RATE"},$column{"ERROR"}) = split(/[[\]]/,$raterec);
+
+until ($dtype =~ /^(count|count\/s)$/){
+    print "What are the RATE column units ('count' or 'count/s')? ";
+    chop($dtype = <STDIN>);
+}
+
+print "Please input the number of the EXPOSURE column in your file,\n";
+print "(RETURN or 0 for no exposure column):  ";
+chop($column{"EXPO"} = <STDIN>);
+
+open(INFILE,$infile);
+
+
+while (<INFILE>) {
+    next unless(/^\s*[+\-]?[0-9.]/);
+    @elements = split(' ');
+    push(@timecol,$elements[$column{"TIME"}-1]) if $column{"TIME"};
+    push(@rate,$elements[$column{"RATE"}-1]) if $column{"RATE"};
+    push(@rate_error,$elements[$column{"ERROR"}-1]) if $column{"ERROR"};
+    push(@exposure,$elements[$column{"EXPO"}-1]) if $column{"EXPO"};
+}
+
+close(INFILE);
+
+#get defaults
+$tstart_def = $timecol[0];
+$tstop_def = $timecol[$#timecol];
+
+until ($timeunit_head =~ /^(s|d|NONE)$/){
+    print "What are the time unit for the header keywords \n";
+    print "TSTART, TSTOP, TIMEDEL, (and TIMEZERO) ('d' or 's')? ";
+    chop($timeunit_head = <STDIN>);
+}
+until ($timedel =~ /^\s*[+\-]?[0-9.]/){
+    print "What is input file bin size (TIMEDEL keyword)? ";
+    chop($timedel = <STDIN>);
+}
+until ($tstart =~ /^\s*[+\-]?[0-9.]/){
+    print "Input Start time (TSTART keyword): ";
+    print "[$tstart_def]" if $tstart_def;
+    chop($tstart = <STDIN>);
+    $tstart = $tstart_def if  $tstart =~ /^\s*$/;
+}
+$tstop_def = $tstart + $timedel*@rate unless defined($tstop_def);
+until ($tstop =~ /^\s*[+\-]?[0-9.]/){
+    print "Input Stop time (TSTOP keyword): ";
+    print "[$tstop_def]" if $tstop_def;
+    chop($tstop = <STDIN>);
+    $tstop = $tstop_def if $tstop =~ /^\s*$/;
+}
+
+# ask for TIMEZERO only if no TIME column in the file
+$timezero = 0;
+if(not $column{"TIME"}){
+until ($timezero =~ /^\s*[+\-]?[0-9.]/){
+         print "Input Zero time (TIMEZERO keyword): ";
+         print "[$tstart]";
+         chop($timezero = <STDIN>);
+         $timezero = $tstart if $timezero =~ /^\s*$/;
+}
+}
+
+
+$CDFILE = "col.txt$$";
+open(CDFILE,">$CDFILE");
+
+print CDFILE "TIME  1D   $timeunit\n" if $column{"TIME"};
+if ($dtype eq "count") {
+    print CDFILE "COUNT 1E $dtype\n";
+} else {
+    print CDFILE "RATE 1E $dtype\n";
+}
+print CDFILE "ERROR 1E $dtype\n" if $column{"ERROR"};
+print CDFILE "FRACEXP 1E \n" if $column{"EXPO"};
+
+close(CDFILE);
+
+$HEADFILE = "header.txt$$";
+open(HEADFILE, ">$HEADFILE");
+
+print HEADFILE "TIMEUNIT '$timeunit_head'\n";
+print HEADFILE "TSTART $tstart\n";
+print HEADFILE "TSTOP $tstop\n";
+print HEADFILE "TIMEDEL $timedel\n";
+print HEADFILE "TIMEZERO $timezero\n";
+print HEADFILE "HISTORY File created by ascii2lc using input $infile\n";
+
+close(HEADFILE);
+
+$DATAFILE = "data.txt$$";
+open(DATAFILE, ">$DATAFILE");
+
+while (@rate) {
+    $rec = '';
+    $rec .= shift(@timecol).' ';
+    $rec .= shift(@rate).' ';
+    $rec .= shift(@rate_error).' ';
+    $rec .= shift(@exposure)."\n";
+    print DATAFILE $rec;
+}
+
+close(DATAFILE);
+
+print "Creating the fits file...\n";
+
+&runcom("fcreate cdfile=$CDFILE datafile=$DATAFILE outfile=$outfile headfile=$HEADFILE tbltype=\"binary\" nskip=0 nrows=0 history=no morehdr=0 extname=\" \" anull=\" \" inull=0 clobber=yes", $bailout,"Couldn't create output file $outfile");
+
+
+sub bailout {
+    unlink($CDFILE,$HEADFILE, $DATAFILE) unless $opt_d;
+    die("\n$task: $_[0]\n$task: Fatal Error\n");
+}
+
+
+
+format FLAGS = 
+
+  @<<<<<<<<<<<<<<< ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~
+    $flag_name,   $flag_means
+                   ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+                  $flag_means
+.
+
+format TEXT1 =
+@|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+$task
+
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph_string
+
+
+COMMAND LINE PARAMETERS (if any are omitted or confused, you will be prompted):
+.
+
+} ;
+
+if($@) {print $@;} else {print "Done.\n";}
+unlink($CDFILE,$HEADFILE, $DATAFILE) unless $opt_d;
+

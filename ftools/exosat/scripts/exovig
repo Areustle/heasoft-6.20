@@ -1,0 +1,246 @@
+#! /usr1/local/bin/perl5
+use Getopt::Std;
+require "interface.pl";
+require "utils.pl";
+
+# EXOVIG
+# This program will prompt the user for information to be used to 
+# calculate the vignetting correction. This program is intended strictly
+# for EXOSAT.
+
+
+$out_err="outerr";
+$out_file="box3x3";
+$runfile="exovigrun";
+
+getopts('i:x:y:h');
+#** Note for using Getopts **
+# all arguments in Getopts that are followed by a colon require an argument
+# Example:
+# h as written above therefore doesn't require an argument
+#
+# Example 2:
+# &Getopts('cde:hmqvw:x:');
+# e and w and x require arguments
+# c,d,e,h,m,q,and v do not
+#****************************
+
+if ( defined $opt_h){
+    print <<EOHELP1;    
+
+EXOVIG
+	
+USAGE
+    exovig -i instrume -x xpixel -y ypixel 
+	    
+DESCRIPTION
+
+ The script returns the vignetting correction factor appropriate for a 
+ given X and Y position in the EXOSAT CMA1 and CMA2 detectors. 
+ The X and Y pixel position should be entered as the unbinned image 
+ coordinates which range between -1024 and 1023 pixel.
+ The correction factor is read from the vignetting map, which is rebinned 
+ by a factor of 16 from the original detector size. The vignetting map
+ was part of the original calibration files included in the FOT data.
+
+ The output vignetting factor is the value corresponding to the rebinned 
+ X and Y input position. Its value is > 1 for off-axis position and about 
+ 1 for on-axis and it is therefore a multiplicative factor for the observed 
+ count rate. The vignetting map is identical for the CMA1 and CMA2 detector 
+ but the pixel optical axis position is different in the CMA1 and CMA2 
+ detectors.
+  
+FLAGS
+     -h - Prints this help file
+
+    the following flags require arguments
+     -i - instrument [input value CMA1 or CMA2]
+     -x - X pixel  [input value ranges -1024 1023]
+     -y - Y pixel [input value ranges -1024 1023]
+
+
+EXAMPLES 
+
+  Calculate the CMA1 vignetting correction for pixel position 
+           X=-300 and Y=400 
+  > exovign -i CMA1 -x -300 -y 400
+
+
+EOHELP1
+&exit_wish;
+}
+
+
+# Read Command Line Arguments or Prompt User
+
+
+# X Pixel
+if(defined $opt_x){
+    $xpix=$opt_x;
+}else{
+    $xpix=&getScalar("X Pixel",1,"xpix"," ");
+    if($xpix == -9999){
+       &exit_wish;
+    }
+}
+$notxpix=1;
+while($notxpix){
+    if($xpix !~ /^([+-]?)(?=\d|\.\d)\d*(\.\d*)?([DdEe]([+-]?\d+))?$/ ){
+	print("The X pixel is not valid. Enter X pixel.\n");
+	$xpix=&getScalar("X Pixel, -9999 to quit",1,"xpix"," ");
+	if($xpix == -9999){
+	    &exit_wish;
+	}
+    }else{
+	$notxpix=0;
+    }
+}
+
+# Y Pixel
+if(defined $opt_y){
+    $ypix=$opt_y;
+}else{
+    $ypix=&getScalar("Y Pixel",1,"ypix"," ");
+    if($ypix == -9999){
+       &exit_wish;
+    }
+}
+$notypix=1;
+while($notypix){
+    if($ypix !~ /^([+-]?)(?=\d|\.\d)\d*(\.\d*)?([DdEe]([+-]?\d+))?$/ ){
+	print("The Y pixel is not valid. Enter Y pixel.\n");
+	$ypix=&getScalar("Y Pixel, -9999 to quit",1,"ypix"," ");
+	if($ypix == -9999){
+	    &exit_wish;
+	}
+    }else{
+	$notypix=0;
+    }
+}      
+
+#Instrument in use [CMA1 or CMA2]
+if(defined $opt_i){
+    $instrume=$opt_i;
+}else{
+    $instrume=&getScalar("Instrument in use (CMA1 or CMA2)");  
+}
+$instrume =~ tr/A-Z/a-z/;
+$notinst=1;
+if($instrume =~ /^(cma1|cma2)$/) {
+#    print("The instrument you selected is ok!\n");
+    $in_file="cma_vig.map";
+}else{
+    while($notinst){
+         print("Instrument incorrect. Please select another instrument \n");
+         $instrume=&getScalar("CMA1 or CMA2, -999 to quit");  
+         $instrume =~ tr/A-Z/a-z/;
+         if($instrume =~ /^(cma1|cma2)$/) {
+            $notinst=0;
+	    $in_file="cma1_vig.map";
+         }elsif($instrume == -999){
+           &exit_wish;
+         }
+    }
+}
+#
+# Now we have all of the input we need.
+#
+# Find the Vigneting Map FITS files
+# They will be in the $LHEA_DATA directory
+#
+$mapdir=$ENV{LHEA_DATA};
+#
+# Compute optical axis distance 
+#print("The instrument is $instrume and the input file is $in_file \n");
+if($instrume =~ /^cma1$/){
+    $dist=sqrt(($xpix-135)**2 + ($ypix-60)**2);
+}else{
+    $dist=sqrt(($xpix)**2 + ($ypix)**2);
+}
+$distam=($dist*4)/60;
+print  "  \n";
+printf("The X and Y position is at %7.3f arcmin off-axis \n",$distam);
+print  "  \n";
+
+#
+# Place distance in (+,+) quadrant of map. Center is (68,68)
+# in fits coordinate.
+# In EXOSAT pixel definition the vignetting has the maximun 
+# and the center at 68.5 68.5. This is 1024X1024 correspond 
+# to an offset to the relative center of the CMA1 and CMA2 of
+# (68.5-64) X 16 = 72 pixels 
+# therefore the xpix and Ypix inthe 128 x 128 maps is
+# (xpixel - xcenter + 72)/16 + 64 + 0.5
+# (ypixel - ycenter + 72)/16 + 64 + 0.5
+#
+if($instrume =~ /^cma1$/){
+    $xmap=($xpix - 135. + 72.)/16. + 64. + 0.5;
+    $ymap=($ypix -  60. + 72.)/16. + 64. + 0.5;
+}else{
+    $xmap=($xpix + 72.)/16. + 64. + 0.5;
+    $ymap=($ypix + 72.)/16. + 64. + 0.5;
+}
+# print "$xmap, $ymap\n";
+#
+# map bounderies 
+$xlow=$xmap-1;
+$xhigh=$xmap+1;
+$ylow=$ymap-1;
+$yhigh=$ymap+1;
+
+#
+# run only if the map is there  
+$map=$mapdir."/".$in_file;
+if(-r $map) {
+  open (TEMP,">$runfile");
+#  print ("fimgdmp infile=$map outfil=$out_file xlow=$xlow 
+#        xhigh=$xhigh ylow=$ylow yhigh=$yhigh\n ");
+
+  print TEMP ("fimgdmp infile=$map outfil=$out_file xlow=$xlow xhigh=$xhigh ylow=$ylow yhigh=$yhigh\n ");
+
+  close TEMP;
+  chmod 0777, $runfile;
+
+# Remove output file before running fimgdmp
+  if(-e $out_file){
+     `rm $out_file`;
+  }
+
+  @output=&runcom("$runfile > $out_err");
+# print "@output \n";
+  if($output[0] =~ /Error/i){
+     open(ERR,"$out_err");
+     while($line=<ERR>){
+          print("$line");
+     }
+     close ERR;
+  }
+
+# Read the center pixel value from output file
+  open(BOX,"$out_file");
+  while($line=<BOX>){
+       chop $line;
+       @num=split(/ +/,$line);
+       if($#num > 3){
+          $i++;
+	  if($i == 2){
+	    if($num[3] > 0){
+#
+# the map as maximun at 987 
+	      $vignet=987.0/($num[3]);
+#             print("1 $num[3] $vignet\n");
+              printf("The %s vignetting correction at X=%-7.2f Y=%-7.2f is\n %6.3f\n",
+                     $instrume,$xpix,$ypix,$vignet);
+	    }
+	  }
+       }		
+   }
+  `rm $out_err`;
+  `rm $runfile`;
+  `rm $out_file`;
+ }else{
+  print " File $map not found in LHEA_DATA \n";
+  print "     Probably the environment variable LHEA_DATA (refdata) \n"; 
+  print "     is not set properly or the file cma_vig.map is missing \n";
+  print "     from the refdata area \n";
+}   

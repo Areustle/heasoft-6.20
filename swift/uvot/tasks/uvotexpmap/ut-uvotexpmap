@@ -1,0 +1,230 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotexpmap/ut-uvotexpmap,v $
+# $Revision: 1.16 $
+# $Date: 2008/05/07 14:26:53 $
+#
+#	ut-uvotexpmap
+#		validate uvotexpmap operation
+#
+#
+# $Log: ut-uvotexpmap,v $
+# Revision 1.16  2008/05/07 14:26:53  rwiegand
+# Added SHIFTADD mode test case.
+#
+# Revision 1.15  2005/11/02 15:19:31  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.14  2004/12/23 19:35:30  rwiegand
+# Disabled ATTHIST mode test for Build 11.
+#
+# Revision 1.13  2004/10/15 21:55:55  rwiegand
+# Support for CALDB test mode.
+#
+# Revision 1.11  2004/08/09 13:42:53  rwiegand
+# Support windows not centered on detector.
+#
+# Revision 1.10  2004/07/07 18:30:49  rwiegand
+# Implemented MEANFOV method and use base task support.
+#
+# Revision 1.9  2004/05/12 15:59:45  rwiegand
+# Intra-tool parameter consistency renaming effort.
+#
+# Revision 1.8  2003/09/03 20:08:41  miket
+# changing default cleanup parameter to 'yes'
+#
+# Revision 1.7  2003/08/11 18:29:21  rwiegand
+# Attitude increment parameter changed to units of arc seconds.  Updated unit
+# test to use fitted distortion map.
+#
+# Revision 1.6  2003/08/06 20:01:22  rwiegand
+# Updated RAW binning keywords.
+#
+# Revision 1.5  2003/07/28 21:19:54  rwiegand
+# Use buildCommand.
+#
+# Revision 1.4  2003/07/10 22:41:52  rwiegand
+# Was failing to initialize detector image pixels.
+#
+# Revision 1.3  2003/06/11 21:26:40  miket
+# global name change from uexpmap to uvotexpmap
+#
+# Revision 1.2  2003/05/15 19:19:38  rwiegand
+# Makefile had some incorrect file names.
+#
+# Revision 1.1  2003/05/13 22:35:17  rwiegand
+# Renamed some invocation parameters.  Added test case and help files.
+#
+
+use strict;
+
+package Test::ExposureMap;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = Test::ExposureMap->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	foreach my $test (
+			{
+				method => 'MEANFOV',
+				template => 'meanfov.fits',
+			},
+			{
+				method => 'SHIFTADD',
+				template => 'shiftadd.fits',
+			},
+			) {
+
+		$self->runUvotexpmap($test)
+			if $self->isValid;
+
+		$self->checkResults
+			if $self->isValid;
+	}
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	# uvotexpmap uses farith and fcarith for MEANFOV method
+	$self->validateEnvironment('FTOOLS')
+		if $self->isValid;
+
+	$self->pilOptions(
+			options => [ qw(input=string output=string caldb=boolean chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub checkRun
+{
+	my ($self, $result) = @_;
+
+	if ($result->{error}) {
+		$self->error(BAD_EXECUTE, "$result->{command} => $result->{code}");
+	}
+
+	if ($result->{code}) {
+		$self->warning("$result->{command} => $result->{code}");
+	}
+}
+
+
+
+sub runUvotexpmap
+{
+	my ($self, $test) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	$self->{outfile} = "$output/expomaps.fits";
+	$self->{template} = "$input/$test->{template}";
+
+	my @task = (
+		infile 	   => "$input/skyimages.fits",
+		method     => $test->{method},
+		badpixfile => "$input/badpixmaps.fits",
+		attfile	   => "$input/swattitude.fits",
+		teldeffile => $caldb ? 'CALDB' : "$input/swuteldef.fits",
+
+		outfile	   => $self->{outfile},
+
+		aberration => 'no',
+
+		chatter	   => 5,
+		clobber	   => 'yes',
+		cleanup	   => 'yes',
+	);
+
+	# validate required files
+	my %task = @task;
+	foreach my $key (qw(infile badpixfile attfile teldeffile)) {
+		if ($task{$key} eq 'CALDB') {
+		}
+		elsif (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = $self->buildCommand('uvotexpmap', @task);
+	return if not $self->isValid;
+
+	my $result = $self->shell($command, { pipeFrom => 1 });
+	$self->checkRun($result);
+	{
+		my $fh = $result->{handle};
+		while (<$fh>) {
+			chomp;
+			$self->report($_);
+		}
+		if (not $fh->close) {
+			$self->error(BAD_EXECUTE,
+				"error closing uvotexpmap pipe");
+		}
+	}
+
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+				infile => $self->{outfile},
+				outfile => 'STDOUT',
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template},
+				infile2 => $self->{outfile},
+				tolerance => 0.1,
+				exclude => 'DATASUM,DTELDEF,UTELDEF',
+				);
+		$self->shell($command);
+	}
+
+}
+

@@ -1,0 +1,238 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+   body { margin-left: 5%; margin-right: 5%; }
+   h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+uvotflux - converts source count rates to magnitudes and flux
+
+<h2>USAGE</h2>
+
+<tt>uvotflux infile=&lt;filename&gt; zerofile=&lt;filename&gt;  
+filter=&lt;string&gt; syserr=&lt;bool&gt; ratecol=&lt;string&gt;  
+errcol=&lt;string&gt; history=&lt;bool&gt; chatter=&lt;enumerated  
+integer&gt;</tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+     Given a count rate in units of counts per second, and a 1-sigma
+error in the same units, uvotflux will convert the rate into an
+instrumental magnitude (based on UVOT's own filter system) and flux
+densities in units of erg/s/cm^2/Angstrom. The count rate error is
+propagated through each calculation.  Magnitudes, m, are determined
+from:
+</p>
+
+<p>
+m = ZPT - 2.5 * log_10(C)
+</p>
+
+<p>
+where C is a count rate and ZPT is a zero point appropriate to the
+specific filter.  The zeropoints have been calibrated from standard
+photometry fields and assume all sources have Vega-like spectra. The
+zero points are stored as FITS keywords within the UVOT CALDB (see
+http://heasarc.gsfc.nasa.gov/docs/heasarc/caldb/swift/docs/uvot/
+index.html).  Flux densities, F_lam, are calculated by a applying a
+straightforward multiplicative factor to the count rate:
+</p>
+
+<p>
+F_lam = FCF * C
+</p>
+
+<p>
+FCF is also filter specific and stored as CALDB keywords. Its units
+are erg/cm^2/angstrom/count.  The conversion factors assume a mean
+gamma-ray burst spectrum.
+</p>
+
+<p>
+     The user is required to provide the filter through which the
+observations were obtained (through the &quot;filter&quot; parameter)
+so that the tool knows which zero point and flux conversion factor to
+extract from the CALDB.
+</p>
+
+<p>
+     I/O is performed through a FITS table (&quot;infile&quot;) which
+must be prepared by the user. Requirements are to provide a minimum of
+two columns with arbitrary names containing numeric values. One column
+contains a count rate, the other contains the associated 1-sigma
+error. The table may contain any number of rows or other columns, the
+task will perform the conversion on all data rows. The output is
+written to the same FITS table. Four new columns are written:
+</p>
+
+<p>
+<pre>
+     MAG -- instrumental magnitude
+     MAG_ERR -- 1-sigma error associated with MAG
+     FLUX -- flux density in units of erg/s/cm^2/Angstrom
+     FLUX_ERR -- 1-sigma error associated with FLUX in the same units
+</pre>
+</p>
+
+<p>
+     Each zero point comes with an associated measurement error which
+is also stored as a CALDB keyword, e.g. ZPEV, ZPEWHITE and ZPEUVW1.
+To perform construct spectral energy distributions the zero point
+error should be included in the calculation.  However if one is
+interested in detecting relative structure in time series photometry
+the zero point error would add an unwanted level of error to each
+point along the curve.  In such cases it is appropriate to ignore the
+zero point error in the magnitude and flux density calculations.  Use
+the &quot;syserr&quot; argument to toggle between the two cases above.
+</p>
+
+<p>
+     There are prerequisites before running uvotflux. For a sensible
+conversion, any background or other contaminants must have been
+removed from the source count rate. Also the extracted count rates
+need to have been corrected for coincidence losses (see the ftool
+uvotcoincidence). Without a coincidence correction, magnitudes and
+fluxes will be systematically underestimated. The zero points stored
+in the CALDB are consistent only for a specific extraction aperture
+size.  Count rates should either be obtained from an aperture of the
+same size, or corrected for aperture size using e.g. a curve-of-growth
+point spread function correction using e.g. uvotapercorr.  The
+relevant aperture sizes are stored as keywords in the same CALDB
+product as the zero points, e.g. APTB, APTWHITE and APTUVW1.  At the
+time of writing, all default apertures are circles with radius of 10
+unbinned detector pixels (approx. 5 arcsec). Finally, the tool assumes
+that the deadtime correction (a small fraction due to detector
+readout) has already been applied to the count rates.
+</p>
+
+<p>
+     uvotflux may be run as a stand-a-lone ftool, but was designed as
+a workhorse to be used internally by UVOT's photometry tools, such as
+uvotsource, uvotmaghist, and uvotproduct. It will also perform on
+source table created by the source detection tool uvotdetect.
+</p>
+
+<h2>PARAMETERS</h2>
+
+<dl>
+
+<dt>infile [filename]</dt>
+<dd>FITS input table containing at least two numeric columns, one
+containing count rates in units of counts per second, the other
+containing 1-sigma measurement error in the same units.  Output data
+will be appended to the same table.</dd>
+
+<dt>zerofile [filename]</dt>
+<dd>Name of file containing photometric zero points. The majority of
+application require the most up-to-date data in the CALDB, and for
+these instances simply providing &quot;zerofile=caldb&quot; will allow
+the tool to locate and use the current CALDB data.</dd>
+
+<dt>(filter = WHITE|U|B|V|UVW1|UVM2|UVW2) [string]</dt>
+<dd>The UVOT filter through which the sources were observed.
+Alternatively, the user can specify &quot;filter=default&quot; which
+will ask the tool to search for a keyword named 'FILTER' in the header
+items of infile. If a valid filter is found, it will be adopted.</dd>
+
+<dt>(syserr = no) [string]</dt>
+<dd>This refers to the systematic error associated with the zero point
+calibration. Choose &quot;syserr=yes&quot; if you want to include the
+systematic error in the photometric zero point and flux conversion
+factor in the error calculation.  Choose &quot;syserr=no&quot; if you
+no not want to include them, such as if you are interested in
+analyzing relative structure within time series photometry.</dd>
+
+<dt>(ratecol = RATE) [string]</dt>
+<dd>Name of the table column in infile containing the count rates.
+Each row must contain a numeric value.</dd>
+
+<dt>(errcol = RATE_ERR) [string]</dt>
+<dd>Name of the table column in infile containing the 1-sigma count
+rate error.  Each row must contain a numeric value.  The units must be
+the same as in the &quot;ratecol&quot; column.</dd>
+
+<dt>(history = yes) [boolean]</dt>
+<dd>If yes, HISTORY keywords containing the uvotflux arguments, will
+be written to the header of &quot;infile&quot;.</dd>
+
+<dt>(chatter = 1) [enumerated integer]</dt>
+<dd>Standard HEAdas chatter parameter (1-5) controlling the verbosity
+of the task. Setting 1 is mute, while setting 5 is the most wordy.</dd>
+
+
+</dl>
+<h2>EXAMPLES</h2>
+
+<p>
+The following examples illustrate running uvotflux.
+</p>
+
+<p>
+1. Run uvotflux and wait to be prompted for all arguments.
+</p>
+
+<p>
+<pre>
+     uvotflux
+</pre>
+</p>
+
+
+<p>
+2. Run uvotflux specifying source list and rate columns on the shell
+command line.  countrates.fits is a FITS file containing a table in
+HDU number 1. (note that the first extension in the file, often an
+empty primary extension, is designated HDU number 0, by
+convention). The tool will look for table columns names RATE
+(containing the source count rate) and RATE_ERR (the 1-sigma error
+attached to RATE) to propogate through the magnitude and flux density
+conversion.
+</p>
+
+<p>
+<pre>
+     uvotflux infile=countrates.fits+1 ratecol=RATE errcol=RATE_ERR
+</pre>
+</p>
+
+
+<p>
+3. Run uvotflux specifying all arguments on the shell command
+line.  Old or adapted zeropoint CALDB files may be pointed to
+with the zerofile argument and specific filter zeropoints may be
+requested using the filter argument.
+<p>
+
+<p>
+<pre>
+     uvotflux infile=countrates.fits+1 ratecol=RATE errcol=RATE_ERR zerofile=/caldb/data/swift/uvota/bcf/phot/swuphot20041120v105.fits filter=UVW1 syserr=NO history=YES chatter=5
+</pre>
+</p>
+
+
+<h2>SEE ALSO</h2>
+
+<p>
+uvotdetect, uvotcoincidence, uvotsource, uvotmaghist, uvotproduct,
+uvotapercorr
+</p>
+
+<h2>LAST MODIFIED</h2>
+
+<p>
+August 21, 2007
+</p>
+
+</body>
+</html>
+

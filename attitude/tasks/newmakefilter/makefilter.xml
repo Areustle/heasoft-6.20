@@ -1,0 +1,215 @@
+<?xml version="1.0"?>
+
+<HELPFILE>
+    <TOOL>makefilter</TOOL>
+    <BRIEFLY>Creates a filter file which can be used with the maketime FTOOL</BRIEFLY>
+    <DESCRIPTION>
+    <P>
+    This tool generates a filter file by collating information from a
+    number of different tables. Such a file may be used by the maketime
+    FTOOL to produce good time intervals (GTIs), which may be used to
+    filter event lists using the extractor or some other tool.
+    </P>
+    
+    <P>
+    The input files must be in the "expanded HK" format, meaning that each 
+    quantity
+    must be stored in a separate column, and there must be a column named "TIME",
+    which gives the time stamp for each value. The rows must be sorted in TIME
+    order, but do not have to be evenly spaced in TIME.
+    Makefilter ignores rows with null TIME values. 
+    </P>
+
+    <P>
+    Generally, the input files are
+    spacecraft Housekeeping (HK) files, however they may contain any values
+    as long as they have the correct format. For example, the "prefilter"
+    HEAdas tool calculates a set of values derived from attitude and orbit
+    data, which can be used as input to this tool.
+    </P>
+
+    <P>
+    The output filter file will be in the same "expanded HK" format as the
+    input files - i.e. one column per filtering quantity and one TIME
+    column. The rows of the filter file will not in general be evenly spaced.
+    A value should be interpreted as being "in effect" from the
+    time in its row, until the time of the following row. This means that
+    the makefilter FTOOL should have the hidden parameters prefr=0.0 and
+    postfr=1.0. As of LHEASOFT 5.3.1 the default for these parameters is
+    0.5. The columns will be in the same order as they are listed in the
+    configuration file (see below). Any valid FITS column may be included
+    in a filter file, including arrays and strings.
+    </P>
+    
+    <P>
+    Makefilter examines each input column, and discards rows with null TIME
+    values or with redundant column values. The filter file will contain
+    all the undiscarded time values in all the input columns. If makefilter
+    needs to write a column value for which there is no time in the input file,
+    then it will interpolate using the method specified in the configuration
+    file (see below). The first row in the filter file will always be 
+    equal to or before the first TSTART value in the input tables.
+    Likewise, makefilter will write a row at the last TSTOP value in
+    the input files, unless there is an input row later that this time.
+    </P>
+    
+    <P>
+    The output columns will have the same TFORM, TSCALE, TZERO, and TNULL
+    as the input column. Makefilter often needs to write null values
+    for rows which come before or after an input file. So for integer
+    columns, makefilter will arbitrarily choose a value for TNULL if one is
+    not present in the input file.
+    Note that makefilter does not check whether this value conflicts with
+    legitimate data values in the input file.
+    Bit field columns (TFORM "X") do not have a standard
+    way to represent null values, so makefilter sets all bits to zero if
+    a value is null.
+    </P>
+    
+    <P>
+    Makefilter represents data internally using the data type which best matches
+    the TFORM for the column. This could affect the interpolation accuracy,
+    or the ability to use certain interpolation methods (see below). 
+    Step function interpolation will work with all column data types.
+    Columns with TSCALE not equal to 1.0, or
+    TZERO not equal to 0.0 are represented internally as floating point numbers.
+    </P>
+
+    <P>
+    The input files and columns are specified in a configuration file, formatted
+    in either FITS or ASCII. The FITS format has a number of string-valued
+    columns in the first extension of the file. The following columns must be
+    present:
+
+    <LIST type="ordered">
+    <ITEM>INCOL - the name of the column in the input file. If the column
+        name begins with a "%", then this is interpreted as an expression
+        calculated using the CFITSIO extended file name syntax. Note that
+        only the expression should be given in the configuration file 
+        (no brackets).
+        If a column does not exist, then makefilter aborts.
+    </ITEM>
+    
+    <ITEM>FILE - the name of the input FITS file. This should be just the
+        name of the file, without extension or filtering specifications
+        attached. Note that this file name will be prefixed with the value
+        in the infileroot parameter. For many missions, the beginning
+        of a file name indicates the mission and observation, while the end
+        of the file indicates the file type. This way the same configuration
+        file can be used for different observations by using a different
+        infileroot parameter. If a file does not exist, makefilter issues
+        a warning to stdout but continues to write a filter file without
+        this column.
+    </ITEM>
+    
+    <ITEM>EXTENSION - The value of the EXTNAME keyword in the FITS extension
+        containing the column you wish to read. Alternately this may be the
+        number of the extension in the file, where the first extension is "1".
+    </ITEM>
+    
+    <ITEM>INTERP - The interpolation method applied to the input column.
+    The currently available options are:
+        <LIST type="unordered">
+        <ITEM>D - Indicates discrete, step function interpolation. A value
+            in the input file is assumed to apply until the the time of the
+            next row. There is no extrapolation, values before the first row or at
+            or after the last row are set to null. This method should be used
+            for quantities like flags which change instantaneously between
+            discrete values.
+        </ITEM>
+        <ITEM>I- Indicates linear interpolation. This method may give more
+            accurate results for smoothly varying quantities. However,
+            the output filter file is not interpolated, so
+            the input file should already have sufficient rows to accurately
+            represent the quantity using a step function.
+            This method does not extrapolate.
+        </ITEM>
+        </LIST>
+    </ITEM>
+    
+    <ITEM> OUTCOL - The name of the column in the output filter file. This is
+         useful if the column names in the input files are not unique. If you
+         specify "%", then the output column will have the same name as
+         the input column.
+    </ITEM>
+    
+    <ITEM> COMMENT - This is the comment supplied for the TTYPE keyword for
+    in the output filter file. If you specify "%", then makefilter
+    will copy the comment from the input file. It is good form to provide
+    a descriptive comment for each column, including a list of meanings for
+    flag values if appropriate. Note however, that the number of characters
+    in this comment is limited.
+    </ITEM>
+    </LIST>
+    </P>
+    
+    <P> 
+    Any other columns will be ignored. Additional columns are
+    discouraged, because they might conflict with future expansions of
+    the configuration file format.
+    There are no restrictions on the header keywords, other than those
+    dictated by the FITS standard.
+    </P>
+    
+    <P>
+    The ASCII configuration file has a set of whitespace delimited columns 
+    corresponding to the FITS columns as follows:
+    "INCOL FILE EXTENSION INTERP % OUTCOL / COMMENT".
+    Note the "%" is a mandatory, but currently unused column. The "/" indicates
+    the beginning of the comment. Only the COMMENT value may contan whitespace.
+    </P>
+    
+    <P>
+    The ASCII format is convenient if you need to create a configuration file
+    on-the-fly in a script or if you will need to modify the configuration file
+    frequently. However, the FITS configuration file allows you to provide
+    additional metadata (e.g. CALDB keywords) in the FITS header.
+    </P>
+
+    </DESCRIPTION>
+
+    <PARAMETERS>
+        <PARAM>
+            <NAME>configure</NAME>
+            The name of the configuration file describing the columns to copy
+            into the filter file. The format of the configuration file is
+            described above.
+        </PARAM>
+        
+        <PARAM>
+            <NAME>infileroot</NAME>
+            The prefix to prepend to all the file names in the configuration file.
+            This allows you to use one configuration file for different 
+            datasets, if the dataset is identified by the beginning of the
+            file name and the file type is identified by the end of the file
+            name. If the configuration file contains complete file names, then
+            this should be set to "".
+        </PARAM>
+        
+        <PARAM>
+            <NAME>outfile</NAME>
+            The name of the output filter file which makefilter will create.
+        </PARAM>
+        
+        <PARAM>
+            <NAME>mission</NAME>
+            The value written to the TELESCOP keyword in the filter file.
+            If this parameter is set to "", then makefilter will not write
+            a TELESCOP keyword.
+        </PARAM>
+
+    </PARAMETERS>
+
+    <EXAMPLES>
+
+    </EXAMPLES>
+
+    <SEEALSO>
+        <P>
+        maketime
+        <LINK>prefilter</LINK>,
+        </P>
+    </SEEALSO>
+
+
+</HELPFILE>

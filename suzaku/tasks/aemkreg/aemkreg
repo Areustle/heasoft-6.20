@@ -1,0 +1,796 @@
+#!/usr/bin/perl -w
+#
+# aemkreg by Ken Ebisawa (ebisawa@isas.jaxa.jp)
+#   & Yoshitaka Ishisaki (ishisaki@phys.metro-u.ac.jp)
+#
+# version 1.0 2004-05-16	K.Ebisawa
+#
+# version 2.0 2005-11-15	K.Ebisawa
+#	XIS and HXD FOV are drawn
+#
+# version 3.0 2005-11-15	K.Ebisawa
+#	HXD-preference position is drawn
+#	XRS FOV is commented out.
+#
+# version 4.0 2005-12-18	Y.ISHISAKI
+#	renamed to "aemkreg"
+#	add "-xis", "-hxd", "-xrs" options
+#
+# version 5.0 2006-02-20	Y.ISHISAKI
+#	bug fix in the comment of euler angles, reported by T.Tamura (ISAS)
+#
+# version 6.0 2009-03-08	Y.ISHISAKI
+#	fix HXD FOV centered on HXD nominal, draw FWHM & FULL for PIN, GSO
+#
+# version 6.1 2009-03-12	Y.ISHISAKI
+#	fix HXD PIN/GSO FOV size, pointed out by K.Nakazawa (U-Tokyo)
+#
+
+$progname = "aemkreg";
+$version  = "6.1";
+
+$deg2radian = 0.0174532925199433;
+$radian2deg = 57.2957795130823;
+$arcmin2radian = $deg2radian / 60;
+
+$HXD_XCEN = -3.5;
+$HXD_YCEN =  0.0;
+
+sub usage {
+	print <<EOF;
+
+ $progname version $version
+
+ USAGE: ${progname} [-xis] [-hxd] [-xrs] Euler1 Euler2 Euler3
+
+ where Euler1,2,3 are the satellite Euler angles in degree.
+
+ This script creates a ds9 format region file (output in STDOUT)
+ for given satellite Euler angles.  Rough XIS and HXD field of views
+ are drawn by default, and with options, any combinations of
+ XIS, HXD, and XRS field of views can be generated. The HXD FOV box regions
+ represent FWHM square openings defined by the passive fine collimator.
+
+ In Suzaku, Z-axis roughly corresponds to the pointing direction,
+ and we adopt Z-Y-Z rotation for the Euler angle definition.
+ Consequently, (Euler1, 90.0-Euler2) is the equatorial coordinates
+ of the nominal pointing direction, and (90-Euler3) gives
+ the roll angle that is measured from North to DETY axis
+ in counter-clockwise.  The HXD preferred position
+ (DETX,DETY) = (-3.5',0.0') is also displayed.
+
+ This script gives only rough estimate of the pointing direction,
+ and the telescope definition (teldef) files are required for more
+ accurate sensor alignments.  The 'aecoordcalc' ftool is provided
+ for such purpose.
+
+EOF
+;
+}
+
+$num_opt = 0;
+$XISREGION = "YES";
+$HXDREGION = "YES";
+$XRSREGION = "NO";
+
+foreach $opt (@ARGV) {
+	if ( $opt eq "-xis" ) {
+		if ( 0 == $num_opt ) {
+			$XISREGION = "NO";
+			$HXDREGION = "NO";
+			$XRSREGION = "NO";
+		}
+		$XISREGION = "YES";
+		$num_opt++;
+	} elsif ( $opt eq "-hxd" ) {
+		if ( 0 == $num_opt ) {
+			$XISREGION = "NO";
+			$HXDREGION = "NO";
+			$XRSREGION = "NO";
+		}
+		$HXDREGION = "YES";
+		$num_opt++;
+	} elsif ( $opt eq "-xrs" ) {
+		if ( 0 == $num_opt ) {
+			$XISREGION = "NO";
+			$HXDREGION = "NO";
+			$XRSREGION = "NO";
+		}
+		$XRSREGION = "YES";
+		$num_opt++;
+	} else {
+		push(@Euler, $opt);
+	}
+}
+
+if ( 2 != $#Euler ) {
+	&usage();
+    exit(0);
+}
+
+printf("# Created with $progname version $version with Euler angles ($Euler[0], $Euler[1], $Euler[2])\n");
+
+&set_matrix(@Euler,$matrix1,$matrix2,$matrix3);
+
+#Definition of these parameters are needed, so that
+#these values are taken from subroutines.
+my @outvect1=(0.0, 0.0, 0.0);
+my @outvect2=(0.0, 0.0, 0.0);
+my @outvect3=(0.0, 0.0, 0.0);
+
+if ($XRSREGION eq "YES") {
+### For XRS
+$FOCALLEN=4500.0; # XRS focal length
+for ($pixel=0;$pixel<=31;$pixel++) {
+    if($pixel!=2&&$pixel!=3){
+	printf("fk5;polygon(");
+	for ($corner=0;$corner<=3;$corner++) {
+
+# Get the pixel corner positions from the teldef file
+# Unit is mm, and center of XRS is (0,0), in
+# "look-down" coordinates.
+	    $focX = &get_PixelXcorners($pixel,$corner);
+	    $focY = &get_PixelYcorners($pixel,$corner);
+
+# Determine the direction vector in FOC coordinates
+	    $phi    = atan2(sqrt($focX**2+$focY**2),$FOCALLEN);
+	    $theta  = atan2($focY,$focX);
+	    $Foc[0] = -sin($phi)*cos($theta);
+	    $Foc[1] = -sin($phi)*sin($theta);
+	    $Foc[2] = cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+	    &multi_matrix(@Foc,       $matrix1, @outvect1);
+	    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+	    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+	    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+	    printf("%10.6f,%10.6f",$alpha,$delta);
+	    if ( $corner < 3 ) {
+		printf(",");
+	    }
+	}
+	printf(")#text='XRS'\n");
+    }
+}
+}
+
+
+if ($XISREGION eq "YES") {
+### For XIS (18'x 18')
+printf("fk5;polygon(");
+$L = 9;
+for ($corner=0;$corner<=3;$corner++) {
+    if($corner==0){$focX=-$L; $focY=-$L;}
+    if($corner==1){$focX=-$L; $focY= $L;}
+    if($corner==2){$focX= $L; $focY= $L;}
+    if($corner==3){$focX= $L; $focY=-$L;}
+    $focX *= $arcmin2radian;
+    $focY *= $arcmin2radian;
+# Determine the direction vector in FOC coordinates
+    $phi    =  sqrt($focX**2+$focY**2);
+    $theta  = atan2($focY,$focX);
+    $Foc[0] = -sin($phi)*cos($theta);
+    $Foc[1] = -sin($phi)*sin($theta);
+    $Foc[2] = cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+    &multi_matrix(@Foc,       $matrix1, @outvect1);
+    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+    printf("%10.6f,%10.6f",$alpha,$delta);
+    if ($corner<3) {
+	printf(",");
+    }
+}
+printf(")#text='XIS',color='blue'\n");
+}
+
+
+if ($HXDREGION eq "YES") {
+### For PIN FULL (67.6' x 67.6' FOV)
+printf("fk5;polygon(");
+$L=33.8;
+for ($corner=0; $corner<=3; $corner++) {
+    if($corner==0){$focX=-$L+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    if($corner==1){$focX=-$L+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==2){$focX=+$L+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==3){$focX=+$L+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    $focX *= $arcmin2radian;
+    $focY *= $arcmin2radian;
+# Determine the direction vector in FOC coordinates
+    $phi =  sqrt($focX**2+$focY**2);
+    $theta= atan2($focY,$focX);
+    $Foc[0]=-sin($phi)*cos($theta);
+    $Foc[1]=-sin($phi)*sin($theta);
+    $Foc[2]= cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+    &multi_matrix(@Foc,       $matrix1, @outvect1);
+    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+    printf("%10.6f,%10.6f",$alpha,$delta);
+    if ( $corner < 3 ) {
+	printf(",");
+    }
+}
+printf(")#text='PIN (FULL)'\n");
+
+### For PIN FWHM (33.8' x 33.8' in diagonal, angle=45deg  FOV)
+printf("fk5;polygon(");
+$L=33.8/2;
+for ($corner=0; $corner<=3; $corner++) {
+    if($corner==0){$focX=-$L+$HXD_XCEN;$focY=  0+$HXD_YCEN;}
+    if($corner==1){$focX=  0+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==2){$focX=+$L+$HXD_XCEN;$focY=  0+$HXD_YCEN;}
+    if($corner==3){$focX=  0+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    $focX *= $arcmin2radian;
+    $focY *= $arcmin2radian;
+# Determine the direction vector in FOC coordinates
+    $phi =  sqrt($focX**2+$focY**2);
+    $theta= atan2($focY,$focX);
+    $Foc[0]=-sin($phi)*cos($theta);
+    $Foc[1]=-sin($phi)*sin($theta);
+    $Foc[2]= cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+    &multi_matrix(@Foc,       $matrix1, @outvect1);
+    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+    printf("%10.6f,%10.6f",$alpha,$delta);
+    if ( $corner < 3 ) {
+	printf(",");
+    }
+}
+printf(")#text='PIN (FWHM)'\n");
+
+### For GSO FULL (547.8' x 547.8' deg FOV)
+printf("fk5;polygon(");
+$L=273.9;
+for ($corner=0; $corner<=3; $corner++) {
+    if($corner==0){$focX=-$L+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    if($corner==1){$focX=-$L+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==2){$focX=+$L+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==3){$focX=+$L+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    $focX *= $arcmin2radian;
+    $focY *= $arcmin2radian;
+# Determine the direction vector in FOC coordinates
+    $phi =  sqrt($focX**2+$focY**2);
+    $theta= atan2($focY,$focX);
+    $Foc[0]=-sin($phi)*cos($theta);
+    $Foc[1]=-sin($phi)*sin($theta);
+    $Foc[2]= cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+    &multi_matrix(@Foc,       $matrix1, @outvect1);
+    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+    printf("%10.6f,%10.6f",$alpha,$delta);
+    if ( $corner < 3 ) {
+	printf(",");
+    }
+}
+printf(")#text='GSO (FULL)'\n");
+
+### For GSO FWHM (273.9' x 273.9' in diagonal, angle=45deg FOV)
+printf("fk5;polygon(");
+$L=273.9/2;
+for ($corner=0; $corner<=3; $corner++) {
+    if($corner==0){$focX=-$L+$HXD_XCEN;$focY=  0+$HXD_YCEN;}
+    if($corner==1){$focX=  0+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==2){$focX=+$L+$HXD_XCEN;$focY=  0+$HXD_YCEN;}
+    if($corner==3){$focX=  0+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    $focX *= $arcmin2radian;
+    $focY *= $arcmin2radian;
+# Determine the direction vector in FOC coordinates
+    $phi =  sqrt($focX**2+$focY**2);
+    $theta= atan2($focY,$focX);
+    $Foc[0]=-sin($phi)*cos($theta);
+    $Foc[1]=-sin($phi)*sin($theta);
+    $Foc[2]= cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+    &multi_matrix(@Foc,       $matrix1, @outvect1);
+    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+    printf("%10.6f,%10.6f",$alpha,$delta);
+    if ( $corner < 3 ) {
+	printf(",");
+    }
+}
+printf(")#text='GSO (FWHM)'\n");
+
+### For HXD nominal position (1'x1' square at DETX,DETY=-3.5arcmin, 0.0)
+printf("fk5;polygon(");
+$L=0.5;
+for($corner=0;$corner<=3;$corner++){
+    if($corner==0){$focX=-$L+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    if($corner==1){$focX=-$L+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==2){$focX=+$L+$HXD_XCEN;$focY=+$L+$HXD_YCEN;}
+    if($corner==3){$focX=+$L+$HXD_XCEN;$focY=-$L+$HXD_YCEN;}
+    $focX *= $arcmin2radian;
+    $focY *= $arcmin2radian;
+# Determine the direction vector in FOC coordinates
+    $phi    = sqrt($focX**2+$focY**2);
+    $theta  = atan2($focY,$focX);
+    $Foc[0] = -sin($phi)*cos($theta);
+    $Foc[1] = -sin($phi)*sin($theta);
+    $Foc[2] = cos($phi);
+# Convert the direction vector in the equatorial coordinates
+# with Euler rotation
+    &multi_matrix(@Foc,       $matrix1, @outvect1);
+    &multi_matrix(@outvect1,  $matrix2, @outvect2);
+    &multi_matrix(@outvect2,  $matrix3, @outvect3);
+
+# Project the tangential vector in alpha and delta
+    &tan2alphadelta(@outvect3,$alpha,$delta);
+# Write the ds9 region file for each pixel
+    printf("%10.6f,%10.6f",$alpha,$delta);
+    if ( $corner < 3 ) {
+	printf(",");
+    }
+}
+printf(")#text='HXD-nominal',color='red'\n");
+}
+
+exit 0;
+
+
+sub get_PixelXcorners{
+    local($pixel, $corner);
+    $pixel=$_[0];$corner=$_[1];
+# This is taken from xrs_teldef_2003-02-15.fit
+### for pixel X ###
+    if($pixel==20){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -0.6480;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -1.2720;}
+  	       }
+    if($pixel==22){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.0080;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.6320;}
+	       }
+    if($pixel==31){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.6320;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.0080;}
+	       }
+    if($pixel==29){if($corner==0){return    0.6480;}
+		   if($corner==1){return    1.2720;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    0.6480;}
+	       }
+    if($pixel==18){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.2880;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.9120;}
+	       }
+    if($pixel==19){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -0.6480;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -1.2720;}
+	       }
+    if($pixel==21){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.0080;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.6320;}
+	       }
+    if($pixel==30){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.6320;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.0080;}
+	       }
+    if($pixel==28){if($corner==0){return    0.6480;}
+		   if($corner==1){return    1.2720;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    0.6480;}
+	       }
+    if($pixel==27){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.9120;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.2880;}
+	       }
+    if($pixel==16){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.2880;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.9120;}
+	       }
+    if($pixel==17){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -0.6480;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -1.2720;}
+	       }
+    if($pixel==23){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.0080;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.6320;}
+	       }
+    if($pixel==24){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.6320;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.0080;}
+	       }
+    if($pixel==26){if($corner==0){return    0.6480;}
+		   if($corner==1){return    1.2720;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    0.6480;}
+	       }
+    if($pixel==25){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.9120;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.2880;}
+	       }
+    if($pixel== 9){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.2880;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.9120;}
+	       }
+    if($pixel==10){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -0.6480;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -1.2720;}
+	       }
+    if($pixel== 8){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.0080;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.6320;}
+	       }
+    if($pixel== 7){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.6320;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.0080;}
+	       }
+    if($pixel== 1){if($corner==0){return    0.6480;}
+		   if($corner==1){return    1.2720;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    0.6480;}
+              }
+    if($pixel== 0){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.9120;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.2880;}
+	       }
+    if($pixel==11){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.2880;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.9120;}
+	       }
+    if($pixel==12){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -0.6480;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -1.2720;}
+	       }
+    if($pixel==14){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.0080;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.6320;}
+	       }
+    if($pixel== 5){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.6320;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.0080;}
+	       }
+    if($pixel== 3){if($corner==0){return    0.6480;}
+		   if($corner==1){return    1.2720;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    0.6480;}
+	       }
+    if($pixel==13){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -0.6480;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -1.2720;}
+	       }
+    if($pixel==15){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.0080;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.6320;}
+	       }
+    if($pixel== 6){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.6320;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.0080;}
+	       }
+    if($pixel== 4){if($corner==0){return    0.6480;}
+		   if($corner==1){return    1.2720;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    0.6480;}
+	       }
+    if($pixel== 2){if($corner==0){return    4.0440;}
+		   if($corner==1){return    4.6680;}
+		   if($corner==2){return    4.6680;}
+		   if($corner==3){return    4.0440;}
+	       }
+}
+
+sub get_PixelYcorners{
+    local($pixel, $corner);
+    $pixel=$_[0];$corner=$_[1];
+# This is taken from xrs_teldef_2003-02-15.fit
+### for pixel Y ###
+    if($pixel==20){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.2880;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.9120;}
+	       }
+    if($pixel==22){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.2880;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.9120;}
+	       }
+    if($pixel==31){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.2880;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.9120;}
+	       }
+    if($pixel==29){if($corner==0){return    1.2880;}
+		   if($corner==1){return    1.2880;}
+		   if($corner==2){return    1.9120;}
+		   if($corner==3){return    1.9120;}
+	       }
+    if($pixel==18){if($corner==0){return    0.6480;}
+		   if($corner==1){return    0.6480;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    1.2720;}
+	       }
+    if($pixel==19){if($corner==0){return    0.6480;}
+		   if($corner==1){return    0.6480;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    1.2720;}
+	       }
+    if($pixel==21){if($corner==0){return    0.6480;}
+		   if($corner==1){return    0.6480;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    1.2720;}
+	       }
+    if($pixel==30){if($corner==0){return    0.6480;}
+		   if($corner==1){return    0.6480;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    1.2720;}
+	       }
+    if($pixel==28){if($corner==0){return    0.6480;}
+		   if($corner==1){return    0.6480;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    1.2720;}
+	       }
+    if($pixel==27){if($corner==0){return    0.6480;}
+		   if($corner==1){return    0.6480;}
+		   if($corner==2){return    1.2720;}
+		   if($corner==3){return    1.2720;}
+	       }
+    if($pixel==16){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.0080;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.6320;}
+	       }
+    if($pixel==17){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.0080;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.6320;}
+	       }
+    if($pixel==23){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.0080;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.6320;}
+	       }
+    if($pixel==24){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.0080;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.6320;}
+	       }
+    if($pixel==26){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.0080;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.6320;}
+	       }
+    if($pixel==25){if($corner==0){return    0.0080;}
+		   if($corner==1){return    0.0080;}
+		   if($corner==2){return    0.6320;}
+		   if($corner==3){return    0.6320;}
+	       }
+    if($pixel== 9){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.6320;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.0080;}
+	       }
+    if($pixel==10){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.6320;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.0080;}
+	       }
+    if($pixel== 8){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.6320;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.0080;}
+	       }
+    if($pixel== 7){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.6320;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.0080;}
+	       }
+    if($pixel== 1){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.6320;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.0080;}
+	       }
+    if($pixel== 0){if($corner==0){return   -0.6320;}
+		   if($corner==1){return   -0.6320;}
+		   if($corner==2){return   -0.0080;}
+		   if($corner==3){return   -0.0080;}
+	       }
+    if($pixel==11){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -1.2720;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -0.6480;}
+	       }
+    if($pixel==12){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -1.2720;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -0.6480;}
+	       }
+    if($pixel==14){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -1.2720;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -0.6480;}
+	       }
+    if($pixel== 5){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -1.2720;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -0.6480;}
+	       }
+    if($pixel== 3){if($corner==0){return   -1.2720;}
+		   if($corner==1){return   -1.2720;}
+		   if($corner==2){return   -0.6480;}
+		   if($corner==3){return   -0.6480;}
+	       }
+    if($pixel==13){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.9120;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.2880;}
+	       }
+    if($pixel==15){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.9120;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.2880;}
+	       }
+    if($pixel== 6){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.9120;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.2880;}
+	       }
+    if($pixel== 4){if($corner==0){return   -1.9120;}
+		   if($corner==1){return   -1.9120;}
+		   if($corner==2){return   -1.2880;}
+		   if($corner==3){return   -1.2880;}
+              }
+    if($pixel== 2){if($corner==0){return   -4.1870;}
+		   if($corner==1){return   -4.1870;}
+		   if($corner==2){return   -3.5630;}
+		   if($corner==3){return   -3.5630;}
+	       }
+}
+
+sub set_matrix{
+# Set rotation matrix for Euler angles
+    my($alpha,$delta,$theta);
+    my($matrix1,$matrix2,$matrix3);
+    $alpha = $_[0];
+    $delta = $_[1];
+    $theta = $_[2];
+    $alpha = $deg2radian*$alpha;
+    $delta = $deg2radian*$delta;
+    $theta = $deg2radian*$theta;
+    $matrix1->[0][0]= cos($theta);
+    $matrix1->[0][1]= -sin($theta);
+    $matrix1->[0][2]= 0.0E0;
+    $matrix1->[1][0]= sin($theta);
+    $matrix1->[1][1]= cos($theta);
+    $matrix1->[1][2]= 0.0E0;
+    $matrix1->[2][0]= 0.0E0;
+    $matrix1->[2][1]= 0.0E0;
+    $matrix1->[2][2]= 1.0E0;
+
+    $matrix2->[0][0]= cos($delta);
+    $matrix2->[0][1]= 0.0E0;
+    $matrix2->[0][2]= sin($delta);
+    $matrix2->[1][0]= 0.0E0;
+    $matrix2->[1][1]= 1.0E0;
+    $matrix2->[1][2]= 0.0E0;
+    $matrix2->[2][0]= -sin($delta);
+    $matrix2->[2][1]= 0.0E0;
+    $matrix2->[2][2]= cos($delta);
+
+    $matrix3->[0][0]= cos($alpha);
+    $matrix3->[0][1]= -sin($alpha);
+    $matrix3->[0][2]= 0.0E0;
+    $matrix3->[1][0]= sin($alpha);
+    $matrix3->[1][1]= cos($alpha);
+    $matrix3->[1][2]= 0.0E0;
+    $matrix3->[2][0]= 0.0E0;
+    $matrix3->[2][1]= 0.0E0;
+    $matrix3->[2][2]= 1.0E0;
+
+    $_[3]=$matrix1;
+    $_[4]=$matrix2;
+    $_[5]=$matrix3;
+}
+
+sub multi_matrix{
+    my(@invect,$matrix,@outvect,$i,$j);
+    $invect[0] =$_[0];
+    $invect[1] =$_[1];
+    $invect[2] =$_[2];
+    $matrix    =$_[3];
+    for($i=0;$i<=2;$i++){
+	$outvect[$i]=0.0;
+	for($j=0;$j<=2;$j++){
+	    $outvect[$i] = $outvect[$i]+$matrix->[$i][$j]*$invect[$j];
+	}
+    }
+    $_[4]=$outvect[0];
+    $_[5]=$outvect[1];
+    $_[6]=$outvect[2];
+}
+
+sub asin { atan2($_[0], sqrt(1 - $_[0] * $_[0])) }
+
+
+sub tan2alphadelta{
+    my(@outvect3,$alpha,$delta);
+    $outvect3[0]=$_[0];
+    $outvect3[1]=$_[1];
+    $outvect3[2]=$_[2];
+    if($outvect3[0]==0.0E0){
+	if($outvect3[1]==0.0E0){
+	    $alpha = 0.0E0;
+	}
+	elsif($outvect3[1] > 0.0){
+	    $alpha= 90.0E0;
+	}
+	else{
+	    $alpha= -90.0E0;
+	}
+    }
+    else{
+	$alpha = atan2($outvect3[1],$outvect3[0])*$radian2deg;
+    }
+    if ($alpha<0.0){
+	$alpha = $alpha + 360.0E0;
+    }
+    if(abs($outvect3[2]) > 1.0) {
+	print "Error!\n";
+	print "argument of asin below -1 or above 1\n";
+	print "argument of asin',$outvect3[2]<\n";
+	exit(0);
+    }
+    $delta = &asin($outvect3[2])*$radian2deg;
+    $_[3]=$alpha;
+    $_[4]=$delta;
+}
+
+# ;;; Local Variables: ***
+# ;;; mode:Perl ***
+# ;;; tab-width:8 ***
+# ;;; End: ***

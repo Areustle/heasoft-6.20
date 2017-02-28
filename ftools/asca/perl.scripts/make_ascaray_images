@@ -1,0 +1,306 @@
+#!/usr1/local/bin/perl
+## make_ascaray_images
+$version = '1.1';# 1999-12-20 by Ken Ebisawa
+## Questions and comments to ascahelp@olegacy.gsfc.nasa.gov
+## and/or ebisawa@olegacy.gsfc.nasa.gov
+
+require "utils.pl";
+require "interface.pl";
+
+if ($ARGV[0]=~/-(\S+)/){
+    $option=$1;
+    if($option=~/h/){$help =1;}
+    shift(@ARGV);
+}
+if($help){
+    print "make_ascaray_image version $version\n";
+    print "\n";
+    print "USAGE:\n";
+    print "     make_ascaray_image\n";
+    print "\n";
+    print "EXPLANATION:\n";
+    print "make_ascaray_images is a perl script to run the ftool \"ascaray\"\n";
+    print "sequentially for 300 energies from 0.1 keV to 12 keV.\n";
+    print "The output ray-trace images are used as input of \"ascaray\" to\n";
+    print "create ARFs with \"raytrace=yes\" option.  This method of crating\n";
+    print "ARF will be particularly effective for diffuse sources, though\n";
+    print "point-source ARFs may be used in the same manner.\n";
+    print "\n";
+    print "Users are prompted for the following inputs; name of the output file list\n";
+    print "(used for ascaarf input), number of input photons, either the source is \n";
+    print "extended or point-like, source extension (for extended case) or source\n";
+    print "position (point-source case), mirror surface gold density, origin of the\n";
+    print "atomic constants, image size (either GIS or SIS), energy range of the output,\n";
+    print "and either compress the output file or not.\n";
+    exit(0);
+}
+print "make_ascaray_images version $version \n";
+print "For help, enter \"make_ascaray_images -h\"\n";
+
+
+$PI=4.*atan2(1.,1.);
+
+
+print "Output file list name (used for ascaarf;default ascaray_list) ?\n";
+$listfile = <STDIN>;
+if($listfile!~/\S+/){$listfile ="ascaray_list";}
+print "Output file list = $listfile\n";
+
+$nphoton = &GetNumber("Number of input photons for each energy ", 1000000,
+		      "nphoton", "(or larger suggested)");
+
+print "Extended (e) or point source (p) ?\n";
+$notgot = 1;
+$answer = <STDIN>;
+if ( $answer=~/e/ || $answer =~/p/) {
+    $notgot = 0;
+}
+while($notgot){
+    $answer = <STDIN>;
+    if ( $answer=~/e/ || $answer =~/p/) {
+	$notgot = 0;
+    }
+    else{
+	print "Enter 'e' (for extended) or 'p' (for point)\n";
+    }
+}
+
+if ( $answer=~/e/ ) {
+# Extended source selected
+    $source="extended";
+    $size = &GetNumber("Size of the source extension ", '>0', "size", "(arcmin)");
+    $str = 2.0*$PI*(1.0-cos($size*$PI/10800.));
+}
+if ( $answer =~/p/) {
+    $source="point";
+# Point source selected
+    $theta = &GetNumber("Source angular distance from the optical axis", ' ', "theta", "(arcmin)");
+    $phi   = &GetNumber("Source azimuthal angle on the DETXY plane", ' ', "phi", "(degree)");
+}
+
+# Gold density 
+$gold = &GetNumber("Gold density value", "19.3",		      "gold", "(default)");
+
+# Nagoya or Owens optical constants
+$atomic=999;
+while($atomic != 1 &&  $atomic !=2 ){
+    $atomic = &GetNumber("Nagoya or Owens atomic constants ", "1 or 2",
+		      "atomic", "(1 for Nagoya; 2 for Owens)");
+}
+
+## Get the instrument  ## 
+print "Create GIS (g) or SIS (s) wmap size images?\n";
+$notgot = 1;
+$answer = <STDIN>;
+if ( $answer=~/g/ || $answer =~/s/) {
+    $notgot = 0;
+}
+while($notgot){
+    $answer = <STDIN>;
+    if ( $answer=~/g/ || $answer =~/s/) {
+	$notgot = 0;
+    }
+    else{
+	print "Enter 'g' (for GIS) or 's' (for SIS)\n";
+    }
+}
+if ( $answer=~/g/){
+    $inst="GIS";
+    $xymin = -32.;
+    $xymax = -$xymin;
+    $xybin=256;
+    $imcenter=  "128.5";
+    $binsize = "0.25"
+}
+elsif ($answer=~/s/){
+    $inst="SIS";
+    $xymin = -17.28;
+    $xymax = -$xymin;
+    $xybin=160;
+    $imcenter= "80.5";
+    $binsize = "0.216"
+}
+
+## Get the energy range of the images ## 
+print "As a default, 300 images are created from 0.1 keV to 12.0 keV.\n";
+print "(20 images for 0.1-2 keV, 200 images for 2-4 keV, and 80 images for 4-12 keV)\n";
+print "You may choose the energy range for the images to be created.\n";
+$low = &GetNumber("Index of the lowest energy image", 1,
+		      "low", "(corresponds to 0.1 keV)");
+$high = &GetNumber("Index of the highest energy image", 300,
+		      "low", "(corresponds to 12.0  keV)");
+
+
+## compress the image or not?
+print "Each image is 100~300 kbytes, but the size will be about one-sixth after the compression.\n";
+$compress=&YesOrNo("Do you like to compress the images?","compress",'y');
+
+## Start runnning ascaray 
+$energy = 0.0;
+$first=1;
+for ($i=0;$i<300;$i++){
+    if($energy <2.0 || $energy >= 3.9999){
+	$energy = $energy+0.1;
+    }
+    else{
+	$energy = $energy+0.01;
+    }
+    $energy=sprintf("%8.2f", $energy);
+    $energy=~/\s.(\S+)/;
+    $tmp=$1;
+    if($i>=$low-1 && $i<=$high-1){
+	$prefix = "ascaray";
+	if($source=~/point/){
+	    $outfile = "${prefix}\_t${theta}\_p${phi}\_e$tmp.fits";
+	    $command = "ascaray atomic=2 goldens=$gold runmode=1 nph=$nphoton incang1=$theta incang2=$phi difftype=-1 diffang=0.0 beta=0.0 region=1 energy=$energy rough=0.0 sigma1=0.004 lalin=0.35 sigma2=0.084 consct=1.1 flct=yes xybins=$xybin image=yes eefcalc=no xymin=$xymin xymax=$xymax xrtfile= DEFAULT outfile=$outfile verbose=no \n";
+	}
+	elsif($source=~/extended/){
+	    $outfile = "${prefix}\_d${size}\_e$tmp.fits";
+	    $command = "ascaray atomic=2 goldens=$gold runmode=1 nph=$nphoton incang1=0 incang2=0 difftype=0 diffang=$size beta=0.0 region=1 energy=$energy rough=0.0 sigma1=0.004 lalin=0.35 sigma2=0.084 consct=1.1 flct=yes xybins=$xybin image=yes eefcalc=no xymin=$xymin xymax=$xymax xrtfile= DEFAULT outfile=$outfile verbose=no \n";
+	}
+	if($first==1){
+	    open(LISTFILE,">$listfile");
+	    $first=-1;
+	}else{
+	    open(LISTFILE,">>$listfile");
+	}
+	print LISTFILE $energy, " ", $outfile,"\n";
+	close(LISTFILE);
+	print $command;
+	system($command);
+
+# Write comments in the image file
+	$comment = "This file has been created within \"make_ascaray_images\" version $version by running the \"ascaray\" with the following command:";
+	&addhistory($comment,$outfile,0);
+	&addhistory($command,$outfile,0);
+	$comment = sprintf("Energy is %5.2f keV, and number of input photons is %d.",$energy,$nphoton);
+	&addhistory($comment,$outfile,0);
+	if($source=~/extended/){
+	    $comment = sprintf("Extended source assumed with r=%7.2f arcmin (%8.3e str).",$size,$str);
+	}
+	else
+	{
+	    $comment = sprintf("Point source assumed with theta=%7.2f arcmin and phi =%7.2f deg.",$theta,$phi);
+	}
+	&addhistory($comment,$outfile,0);
+
+# modify the image so that unit for each pixel will be
+# cm2 for the point-source case and cm2*str for the diffuse case
+	$area = 826.64;
+	$const = $area/$nphoton;
+	if($source=~/extended/){
+	    #Solid angle (steradian) of the extended source
+	    $const = $const*$str;
+	}
+	$tmpfile = "make_ascara_images.$$.tmp.fits";
+	$command = "fcarith infile=$outfile const=$const outfil=$tmpfile ops=MUL datatype=r copyprime=yes clobber=yes\n";
+	print $command;
+        system($command);
+
+# Write comments in the image file
+	$comment = sprintf("After ray-tracing, the image has been normalized by multiplying %10.5e so that unit of each pixel will become ",$const);
+	if($source=~/extended/){
+	    $comment=$comment."cm**2*str.";
+	}else{
+	    $comment=$comment."cm**2.";
+	}
+	&addhistory($comment,$tmpfile,0);
+	if($source=~/extended/){
+	    $comment = "Note that the normalization factor is S*Omega/N, where S is the XRT geometrical area (826.64 cm**2), Omega is the solid angle, and N is the number of photons input.";
+	}else{
+	    $comment = "Note that the normalization factor is S/N, where S is the XRT geometrical area (826.64 cm**2), and N is the number of photons input.";
+	}
+	&addhistory($comment,$tmpfile,0);
+	if($source=~/extended/){
+	    $comment = "This file is supposed to be one of the set of many ray-tracing images from which you may create an ARF for the diffuse emission with  \"ascaarf\" raytrace=yes option.  When you use this ARF in xspec, the flux you will get should have the unit erg/s/cm**2/str, as opposed to erg/s/cm**2.";
+	    &addhistory($comment,$tmpfile,0);
+	}
+# add the 1-st extenstion to the modified image file
+	$command = "fappend infile=$outfile+1 outfile=$tmpfile pkeywds=no history=yes\n";
+	print $command; 
+        system($command);
+
+#       mv the tmp file to the output file
+	$command = "mv -f $tmpfile $outfile\n";
+	print $command; 
+        system($command);
+
+# add the proper keywords
+	$comment="\"Image Center X\"";
+	$command ="fparkey value=$imcenter fitsfile=\"$outfile+0\" keyword=CRPIX1 comm=$comment add = yes\n";
+	print $command;
+        system ($command);
+	$comment="\"Image Center Y\"";
+	$command ="fparkey value=$imcenter fitsfile=\"$outfile+0\" keyword=CRPIX2 comm=$comment add = yes\n";
+	print $command;
+	system ($command);
+	$comment="\"Corresponds to the optical axis\"";
+	$command ="fparkey value=0.0 fitsfile=\"$outfile+0\" keyword=CRVAL1 comm=$comment add = yes\n";
+	print $command;
+	system ($command);
+	$comment="\"Corresponds to the optical axis\"";
+	$command ="fparkey value=0.0 fitsfile=\"$outfile+0\" keyword=CRVAL2 comm=$comment add = yes\n";
+	print $command;
+	system ($command);
+	$comment="\"Pixel size in mm\"";
+	$command ="fparkey value=$binsize fitsfile=\"$outfile+0\" keyword=CDELT1 comm=$comment add = yes\n";
+	print $command;
+	system ($command);
+	$comment="\"Pixel size in mm\"";
+	$command ="fparkey value=$binsize fitsfile=\"$outfile+0\" keyword=CDELT2 comm=$comment add = yes\n";
+	print $command;
+	system ($command);
+
+#check sum the file
+	$command ="fchecksum $outfile update=yes\n";
+	print $command;
+	system ($command);
+	
+#       Compress the file
+	if($compress > 0){
+	    $command = "gzip $outfile\n";
+	    print $command;
+	    system($command);
+	}
+    }
+}
+
+sub addhistory{
+    local($comment,$file,$extension)=@_;
+    $commentfile="$$.comment";
+    open(COMMENT,">$commentfile");
+    $start = 0;
+    $width = 72; 
+    while($start < length($comment)){
+	if($start+$width < length($comment)){
+	    if(rindex($comment," ",$start+$width-1)<=$start){
+		$len = $width;
+	    }else
+	    {
+		$len = rindex($comment," ",$start+$width-1)-$start+1;
+	    }
+	}else{
+	    $len=$width;
+	}
+	print COMMENT "HISTORY ",substr($comment,$start,$len),"\n";
+	$start = $start+$len;
+    }
+    close(COMMENT);
+    $com ="fmodhead $file+$extension $commentfile\n";
+    print $com;
+    system $com;
+    $com ="rm -f $commentfile\n";
+    print $com;
+    system $com;
+}
+
+sub min{
+    local($a,$b)=@_; 
+    if($a<$b){
+	return $a;
+    }
+	return $b;
+}
+
+
+

@@ -1,0 +1,102 @@
+#!/bin/sh
+#
+# OFFSETCOORD, BY ERIC GOTTHELF (NASA/GSFC), 1998.
+# Script for offsetting a celestial coordinate value.
+# 
+if test $# -lt 2 -o $# -gt 4
+then
+ echo
+ echo '         SCRIPT TO OFFSET A CELESTIAL COORDINATE PAIR.'
+ echo
+ echo '     1: To offset the CRVAL keywords in a FITS image:'
+ echo 
+ echo '  Usage: offsetcoord fitsfile+ext ra_off dec_off '
+ echo
+ echo '              or,'
+ echo ' '
+ echo '     2: To offset a coordinate pair, and write result to the screen:'
+ echo
+ echo '  Usage: offsetcoord ra_old dec_old ra_off dec_off '
+ echo
+ echo '    where, "ra_off/dec_off" are RA/DEC offsets in arcmins,'
+ echo '      and, "ra_old/dec_old" are RA/DEC in degrees.'
+ echo
+ echo '    The offsets are simply added (i.e., ra_new = ra_old + offset / 60.0)'
+ echo
+ echo ' For futher details and a list of ASCA offsets, see ASCAGOF web page:'
+ echo
+ echo '       http://lheawww.gsfc.nasa.gov/users/evg/updatecoord.html'
+ echo
+ exit
+fi
+
+if test $# -eq 3
+then
+ file=$1
+ del_ra=$2
+ del_dec=$3
+ dofile=yes
+elif test $# -eq 4
+then
+ ra_old=$1
+ dec_old=$2
+ del_ra=$3
+ del_dec=$4
+ dofile=no
+else
+ echo
+ echo 'ERROR: Try program name without arguments to see usage (agr:'$#')'
+ echo
+ exit
+fi
+
+if test $dofile = yes
+then
+ fkeypar $file CRVAL1
+ exist=`pget fkeypar exist`
+ if test $exist = yes
+ then
+  com=`pget fkeypar comm`
+  if test `echo $com | grep UPDATED | wc -c` -gt 1
+  then
+   echo
+   echo 'ERROR: The CRVALs in this extention have been updated already?'
+   echo '       Exiting without changing file values...'
+   echo
+   exit
+  else
+   tmp=`pget fkeypar value`
+   ra_old=`printf "%10.5f" $tmp` 
+   fkeypar $file CRVAL2
+   exist=`pget fkeypar exist`
+   if test $exist = yes
+   then
+    tmp=`pget fkeypar value`
+    dec_old=`printf "%10.5f" $tmp` 
+   else
+    echo
+    echo 'ERROR: Could not get CRVAL1 value. Check extention number'
+    echo '       Exiting without changing file values...'
+    echo
+    exit   
+   fi
+  fi
+ else
+  echo
+  echo 'ERROR: Could not get CRVAL2 value. Check extention number'
+  echo '       Exiting without changing file values...'
+  echo
+  exit
+ fi
+fi
+echo Current RA/DEC: $ra_old $dec_old
+ra_new=`echo "scale=8; $ra_old + $del_ra/60.0" | bc -l` 
+dec_new=`echo "scale=8; $dec_old + $del_dec/60.0" | bc -l` 
+if test $dofile = yes
+then
+ fparkey $ra_new $file CRVAL1 comm=" UPDATED = $ra_old + $del_ra / 60 (degs)"
+ fparkey $dec_new $file CRVAL2 comm="UPDATED = $dec_old + $del_dec / 60 (degs)"
+fi
+echo Updated RA/DEC: $ra_new $dec_new
+exit
+

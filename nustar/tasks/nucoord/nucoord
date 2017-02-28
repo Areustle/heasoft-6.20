@@ -1,0 +1,877 @@
+#!/usr/bin/perl 
+#
+# 
+#	nucoord
+#
+#	INVOCATION:
+#
+#		nucoord [parameter=value ...]
+#
+#	DESCRIPTION:
+#               
+#
+#	DOCUMENTATION:
+#
+#
+#	CHANGE HISTORY:
+#        0.1.0 - NS 03/10/11 - First version
+#        0.1.1 - NS 30/11/11 - Removed nucalcpos input parameters for metrology processing
+#        0.1.2 - NS 09/12/11 - Renamed 'ra' 'dec' input paramters to 'pntra' 'pntdec'
+#        0.1.3 - NS 12/12/11 - Added 'nuoptaxis' task call
+#        0.1.4 - NS 25/01/12 - Replaced 'nuoptaxis' with 'nuskypos' task call
+#        0.1.5 - NS 11/05/12 - Added check of input attitude file
+#        0.1.6 - NS 26/07/12 - Add 'TUNIT*' keyword for 'X' and 'Y' columns
+#        0.1.7 - NS 04/09/12 - Handle long file naming
+#        0.1.8 - RF 22/04/16 - Update the value of the keywords RA DEC NAME name of the output file uf events
+#        
+#
+#	AUTHORS:
+#
+#       ASDC - ASI Science Data Center
+#
+#
+
+# NuSTAR perl library
+require "libnustarperl.pl";
+
+use strict;
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use vars qw( %Task %Default @Par %TmpInFiles );
+
+
+#
+# Specific of the task
+#
+
+%Task = (
+	 start       => `date`,
+	 name        => "nucoord",
+	 version     => "0.1.8",
+	 releasedate => "2016-04-22",
+	 stem        => "nucoord_0.1.8",
+	 clobber     => 0,  # it means 'clobber=no'
+	 chatter     => 0,
+	 status      => 0,
+	 errmess     => "",
+	 history     => "",
+	 tmpoutfile  => "",
+	 instrument  => "",
+	 tstart      => 0,
+	 tstop       => 0,
+	 StartDate   => "",
+	 StartTime   => "",
+	 teldef      => "",
+	 alignfile   => "",
+	 tmpdir      => $$."_tmp_nucoord",
+	 );
+
+
+#
+#  Defaults
+#
+%Default = (
+	    DEFAULT         => "DEFAULT",
+	    CALDB           => "CALDB",
+	    NONE            => "NONE",
+	    KNM_RA_NOM      => "RA_NOM",
+	    KVL_RA_NOM      => 0,
+	    KCM_RA_NOM      => "[deg] R.A. Nominal",
+	    KNM_DEC_NOM     => "DEC_NOM",
+	    KVL_DEC_NOM     => 0,
+	    KCM_DEC_NOM     => "[deg] Dec. Nominal",
+	   );
+
+
+#
+#  Temporary Files
+#
+%TmpInFiles = (
+	       attfile         => "",
+	       teldef          => "",
+	       );
+
+
+#
+# Get Input Parameters 
+#
+if ( &GetInputParameters ){
+    $Task{errmess} = "Error: parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+&RunningTask;
+
+&PrntChty(2, "$Task{stem}: Info: Name of the Input Event File  '".&GetValPar("infile")."'\n");
+&PrntChty(2, "$Task{stem}: Info: Name of the Output Event File '".&GetValPar("outfile")."'\n");
+&PrntChty(2, "--------------------------------------------------------------\n");
+
+
+#
+# Check input and output files
+#
+if (! -f &GetValPar("infile")) {
+    $Task{errmess} = "Input File: '".&GetValPar("infile")."' not found";
+    goto EXITWITHERROR;
+}
+
+if ( -f &GetValPar("outfile")) {
+    &PrntChty(2,"$Task{stem}: Info: '".&GetValPar("outfile")."' file exists,\n");
+
+    if ( (&GetValPar("clobber") =~ /[yY]/) ) {
+	&PrntChty(2,"$Task{stem}: Warning: parameter 'clobber' set, the\n");
+	&PrntChty(2,"$Task{stem}: Warning: '".&GetValPar("outfile")."' file will be overwritten.\n");
+    }
+    else{
+	&PrntChty(2, "$Task{stem}: Error: input parameter 'clobber' set to 'no'\n");
+	&PrntChty(2, "$Task{stem}: Error: cannot overwrite '".&GetValPar("outfile")."' file\n");
+	$Task{errmess} = "Cannot overwrite '".&GetValPar("outfile")."' file";
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Create a local directory for the temporary input file
+#
+if( -d $Task{tmpdir} ){
+    &PrntChty(2,"$Task{stem}: Error: unable to create temporary directory '$Task{tmpdir}' , already exists!\n");
+    goto EXITWITHERROR;
+}
+
+if( &CreateDir($Task{tmpdir}) ) { goto EXITWITHERROR; }
+
+
+#
+# Derive Temporary output file name
+#
+
+$Task{tmpoutfile} = $Task{tmpdir}."/".basename(&GetValPar("outfile"));
+
+if ( -f $Task{tmpoutfile} ) { unlink ($Task{tmpoutfile}); }
+
+if ( &GetValPar("infile") =~ /(.gz|.Z)$/ ) {
+
+    my $tmpoutfilezip = $Task{tmpoutfile};
+
+    if(&GetValPar("infile") =~ /(.gz)$/ ){
+	$tmpoutfilezip = $tmpoutfilezip.".gz"
+	}
+    else{
+	$tmpoutfilezip = $tmpoutfilezip.".Z"
+    }
+
+    &PrntChty(2, "$Task{stem}: Info: Decompressing and copying input file to '$Task{tmpoutfile}'\n");
+    if (!copy(&GetValPar("infile"), $tmpoutfilezip)) {
+
+	$Task{errmess} = "Unable to create temporary input file copy. $!";
+	goto EXITWITHERROR;
+    }
+
+    if ( system ( "gunzip -fq $tmpoutfilezip\n" ) ) {
+	if($? != 512){
+	    &PrntChty(3, "$Task{stem}: Error: running 'gunzip -fq $tmpoutfilezip'\n");
+	    goto EXITWITHERROR;
+	}
+    }
+}
+else{
+
+    &PrntChty(2, "$Task{stem}: Info: Copying input file to '$Task{tmpoutfile}'\n");
+    if (!copy(&GetValPar("infile"), $Task{tmpoutfile})) {
+
+	$Task{errmess} = "Unable to create temporary input file copy. $!";
+	goto EXITWITHERROR;
+    }
+}
+
+
+#
+# Get Instrument from the input Event File
+#
+&GetKeyword ( &GetValPar("infile"), "EVENTS", undef, "INSTRUME", \$Task{instrument});
+if ( $Task{status} ) { 
+    goto EXITWITHERROR; 
+}
+
+#
+# Get TSTART and TSTOP from the input Event File
+#
+&GetKeyword ( &GetValPar("infile"), "EVENTS", undef, "TSTART", \$Task{tstart});
+if ( $Task{status} ) { 
+    goto EXITWITHERROR; 
+}
+&GetKeyword ( &GetValPar("infile"), "EVENTS", undef, "TSTOP", \$Task{tstop});
+if ( $Task{status} ) { 
+    goto EXITWITHERROR; 
+}
+
+#
+# Get Observation Start Date from the input Event File
+#
+&GetEventStartDate(&GetValPar("infile"),\$Task{StartDate},\$Task{StartTime});
+if ( $Task{status} ) { 
+    goto EXITWITHERROR; 
+}
+
+
+#
+# Check Attitude file
+#
+if ( &CheckAttitude() ){
+    goto EXITWITHERROR;
+}
+
+
+#
+# Set Teldef file name
+#
+if ( &SetTeldefFileName($Task{instrument},\$Task{teldef}) ){
+    &PrntChty(3, "$Task{stem}: Error: unable to set teldef file name.\n");
+    goto EXITWITHERROR;
+}
+
+
+#
+# Set Align file name
+#
+if ( &SetAlignFileName($Task{instrument},\$Task{alignfile}) ){
+    &PrntChty(3, "$Task{stem}: Error: unable to set alignment file name.\n");
+    goto EXITWITHERROR;
+}
+
+
+#
+# Create symbolic links to input files
+# in the local directory
+#
+if( &CreateTemporaryLinks ) { 
+    goto EXITWITHERROR; 
+}
+
+
+#
+# Run nucalcpos task
+#
+&PrntChty(2, "$Task{stem}: Info: Computing DET1 and DET2 coordinates\n");
+if ( &RunNuCalcPos($Task{tmpoutfile}) ) {
+    $Task{errmess} = "Unable to compute DET1 and DET2 coordinates";
+    goto EXITWITHERROR;
+}
+
+#
+# Insert temporary columns needed by coordinator
+#
+if( insertFitsCol($Task{tmpoutfile}) ) {
+    $Task{errmess} = "Unable to insert temporary columns needed by coordinator";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Run coordinator task
+#
+&PrntChty(2, "$Task{stem}: Info: Computing X and Y coordinates\n");
+if ( &RunCoordinator($Task{tmpoutfile}) ) {
+    $Task{errmess} = "Unable to compute X and Y coordinates";
+    goto EXITWITHERROR;
+}
+
+
+#
+# Delete temporary columns
+#
+my @columns = ( "Module", "DETX", "DETY" );
+&delFitsCol($Task{tmpoutfile},"EVENTS",@columns);
+
+
+#
+# Move temporary file to output file name
+#
+&PrntChty(2, "$Task{stem}: Info: Moving temporary file '".$Task{tmpoutfile}."' to output file '".&GetValPar("outfile")."'\n");
+if ( &RenameFile($Task{tmpoutfile}, &GetValPar("outfile")) ){
+    goto EXITWITHERROR;
+}
+
+&PrntChty(2, "$Task{stem}: Info: Output Event File '".&GetValPar("outfile")."' successfully written.\n");
+
+
+#
+# Run nuskypos task
+#
+&PrntChty(2, "$Task{stem}: Info: Creating Optical Axis File\n");
+if ( &RunNuskypos() ) {
+    $Task{errmess} = "Unable to create Optical Axis File";
+    goto EXITWITHERROR;
+}
+
+#
+# Run UpdateExt task
+#
+if ( &UpdateExt() )
+{
+    goto EXITWITHERROR;
+}
+    
+
+#
+# Remove symbolic links to input files
+# in the temporary directory
+#
+&RemoveTemporaryLinks;
+
+#
+# Remove temporary directory
+#
+if( !rmdir($Task{tmpdir}) ){
+    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$Task{tmpdir}."' temporary directory. $!\n");
+}
+
+
+&Success;
+exit (0);
+
+
+ EXITWITHERROR:
+
+&Error;
+exit(1);
+
+#-------------------------------------------------------------
+#  subroutines UpdateExt
+#-------------------------------------------------------------
+
+
+sub UpdateExt 
+{
+  my $outfile=&GetValPar("outfile");
+  my ($fptr,$status) = (0,0);
+
+  $Default{KVL_RA_NOM}=&GetValPar("pntra");
+  $Default{KVL_DEC_NOM}=&GetValPar("pntdec");
+
+#   print "optaxisfile=$optaxisfile\n";
+#   print "det1reffile=$det1reffile\n";
+#   print "outfile=$outfile\n";
+#   print "RA=$Default{KVL_RA_NOM}\n";
+#   print "DEC=$Default{KVL_DEC_NOM}\n";
+#   
+
+  # open outfile file
+  fits_open_file($fptr,$outfile,READWRITE,$status);
+  if ($status) {
+      &PrntChty(3, "$Task{stem}: Error: unable to open '$outfile' file\n");
+      goto UpdateExt_end;
+  }
+
+  # update 'RA_NOM' keyword on extension+0
+  fits_update_key($fptr,TDOUBLE,$Default{KNM_RA_NOM}, $Default{KVL_RA_NOM},$Default{KCM_RA_NOM}, $status);
+  if ( $status ) {
+      &PrntChty(3, "$Task{stem}: Error: cannot update keyword 'RA_NOM' of '$outfile' file\n");
+      goto UpdateExt_end;
+  }
+
+  # update 'DEC_NOM' keyword on extension+0
+  fits_update_key($fptr,TDOUBLE,$Default{KNM_DEC_NOM}, $Default{KVL_DEC_NOM},$Default{KCM_DEC_NOM}, $status);
+  if ( $status ) {
+      &PrntChty(3, "$Task{stem}: Error: cannot update keyword 'DEC_NOM' of '$outfile' file\n");
+      goto UpdateExt_end;
+  }
+
+  # update current HDU checksum
+  fits_write_chksum($fptr,$status);
+  if ( $status ) {
+      &PrntChty(3, "$Task{stem}: Error: cannot update HDU checksum of file '$outfile'\n");
+	goto UpdateExt_end;
+  }
+
+  # move to 'GTI' extension
+  fits_movnam_hdu($fptr,ANY_HDU,"GTI",0,$status);
+  if ($status) {
+      &PrntChty(3, "$Task{stem}: Error: cannot move into '$outfile' file, extension 'GTI'\n");
+  }
+  else
+  {
+    # update 'RA_NOM' keyword on extension+0
+    fits_update_key($fptr,TDOUBLE,$Default{KNM_RA_NOM}, $Default{KVL_RA_NOM},$Default{KCM_RA_NOM}, $status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update keyword 'RA_NOM' of '$outfile' file\n");
+	goto UpdateExt_end;
+    }
+
+    # update 'DEC_NOM' keyword on extension+0
+    fits_update_key($fptr,TDOUBLE,$Default{KNM_DEC_NOM}, $Default{KVL_DEC_NOM},$Default{KCM_DEC_NOM}, $status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update keyword 'DEC_NOM' of '$outfile' file\n");
+	goto UpdateExt_end;
+    }
+
+    # update current HDU checksum
+    fits_write_chksum($fptr,$status);
+    if ( $status ) {
+	&PrntChty(3, "$Task{stem}: Error: cannot update HDU checksum of file '$outfile'\n");
+	  goto UpdateExt_end;
+    }
+  }    
+  # close optaxisfile file
+  if ( $fptr ) {
+      $status = 0;
+      fits_close_file($fptr,$status);
+      if ( $status ) { 
+	  &PrntChty(3, "$Task{stem}: Error: cannot close '$outfile' mkf file\n");
+	  goto UpdateExt_end;
+      }
+  }
+  
+  return 0;
+  
+  UpdateExt_end:
+
+  # close fits file
+  if ( $fptr ) {
+      $status = 0;
+      fits_close_file($fptr,$status);
+  }
+
+  return 1;
+}
+
+
+#-------------------------------------------------------------
+#  subroutines section
+#-------------------------------------------------------------
+
+
+sub GetInputParameters {
+
+    use vars qw( %Task  @Par  %Ind);
+  
+    my ( $name, $indref, $p);
+
+    # temporary set of chatter to normal
+    $Task{chatter} = 3;
+
+    # get parameter list from parameter file
+    ($indref,@Par) = &GetParameterList();
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    %Ind = %$indref;
+
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+    
+    # Get 'infile' input parameter
+    if (&GetValPar("infile","set") == 0 )  {
+	my $String = "";
+	chop($String = `pquery2 nucoord infile`);
+	if ( !$String && $String !~ "0" ) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 nucoord infile'\n");
+	    return 1;
+	}
+	&SetValPar("infile",$String);
+	&SetValPar("infile",2,"set");
+    }
+
+    foreach $p (@Par) {
+	if (($p->{set} == 1) && (!&RequestParameter($p->{name}))) {
+	    &PrntChty(2,"$Task{stem}: Error: input parameter '$p->{name}' not compatible with other input parameters.\n");
+	    return 1;
+	}
+    }
+
+    $Task{errmess} = "";
+    if (! &LoadParameter()) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+    
+    $Task{chatter} = &GetValPar("chatter");
+    
+    if ( &GetValPar("clobber") =~ /[yY]/ ) {
+	$Task{clobber} = 1;
+    }
+       
+    return 0;
+    
+} #GetInputParameters
+
+
+sub RequestParameter(){
+    use vars qw (%Default %Task);
+    my ($par_name) = @_;
+
+    return 1;
+} # RequestParameter
+
+
+sub RunNuCalcPos {
+
+    my ( $evtfile ) = @_;
+    
+    my ( $par, $ret );
+    my ( $command, %nucalcpos );
+
+    my ( $pid ) = $$;
+
+    my $TmpFile = substr($evtfile,0,rindex($evtfile,'.')).".${pid}tmp";
+    if ( -f $TmpFile ) { unlink ($TmpFile); }
+
+
+    %nucalcpos = (
+		  infile         => $evtfile,
+		  outfile        => $TmpFile,
+		  pixposfile     => &GetValPar("pixposfile"),
+		  saveraw2coord  => "no",
+		  initseed       => &GetValPar("initseed"),
+		  alignfile      => $Task{alignfile},
+		  mastaspectfile => &GetValPar("mastaspectfile"),
+		  chatter        => &GetValPar("chatter"),
+		  clobber        => &GetValPar("clobber"),
+		  history        => &GetValPar("history"),
+		  );
+
+
+    $command = "nucalcpos";
+    for $par ( keys %nucalcpos ) { $command .= " $par=$nucalcpos{$par}"; } 
+
+    &RunningSub("RunNuCalcPos","nucalcpos");
+    &RunningComm("RunNuCalcPos",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNuCalcPos","nucalcpos",$command);
+        $Task{errmess} = "ERROR running 'nucalcpos'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if ( &RenameFile($TmpFile, $evtfile) ) { return 1; }
+
+    &SuccessSub("RunNuCalcPos","nucalcpos", "DET1 and DET2 coordinates computed.");
+
+    return 0;
+
+} # RunNuCalcPos
+
+
+sub RunCoordinator {
+
+    my ( $evtfile ) = @_;
+    
+    my ( $par, $ret, $colnum );
+    my ( $command, %nucalcpos );
+
+    my ( %coordinator ) = (
+			   eventfile       => $evtfile,
+			   eventext        => "EVENTS",
+			   timecol         => "TIME",
+			   skyxnull        => -1,
+			   skyynull        => -1,
+			   attfile         => $TmpInFiles{attfile},
+			   teldef          => $TmpInFiles{teldef},
+			   aberration      => &GetValPar("aberration"),
+			   follow_sun      => &GetValPar("follow_sun"),
+			   ra              => &GetValPar("pntra"),
+			   dec             => &GetValPar("pntdec"),
+			   randomize       => &GetValPar("randomizecoordinator"),
+			   seed            => &GetValPar("seedcoordinator"),
+			   timemargin      => &GetValPar("timemargin"),
+			   interpolation   => &GetValPar("attinterpol"),
+			   chatter         => &GetValPar("chatter"),
+			   history         => &GetValPar("history"),
+			   );
+
+    $command = "coordinator";
+    for $par ( keys %coordinator ) { $command .= " $par=$coordinator{$par}"; } 
+    
+    &RunningSub("RunCoordinator","coordinator");
+    &RunningComm("RunCoordinator",$command);
+    
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunCoordinator","coordinator",$command);
+        $Task{errmess} = "ERROR running 'coordinator'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+    # Open Output file and update some keywords
+
+    my ($fptr,$status) = (0,0);
+
+    fits_open_file($fptr,$evtfile,READWRITE,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : $evtfile\n";
+	return 1;
+    }
+    
+    fits_movnam_hdu($fptr,ANY_HDU,"EVENTS",0,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot move into '$evtfile' file, extension 'EVENTS'";
+	goto error_runcoordinator;
+    }
+
+    fits_update_key($fptr,TDOUBLE,"EQUINOX",2000,"default", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'EQUINOX' of '$evtfile' file";
+	goto error_runcoordinator;
+    }
+
+    fits_get_colnum($fptr, 0, "X", $colnum, $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to get colnum of 'X' column in '$evtfile' file";
+	goto error_runcoordinator;
+    }
+    fits_update_key($fptr,TSTRING,"TUNIT${colnum}", "pixel", "physical unit of field", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'TUNIT${colnum}' of '$evtfile' file";
+	goto error_runcoordinator;
+    }
+
+    fits_get_colnum($fptr, 0, "Y", $colnum, $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to get colnum of 'Y' column in '$evtfile' file";
+	goto error_runcoordinator;
+    }
+    fits_update_key($fptr,TSTRING,"TUNIT${colnum}", "pixel", "physical unit of field", $status);
+    if ( $status ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot update keyword 'TUNIT${colnum}' of '$evtfile' file";
+	goto error_runcoordinator;
+    }
+
+    # end of work: update current HDU checksum
+    fits_write_chksum($fptr,$status);
+    if ( $status ) {
+	 $Task{status} = 1;
+	 $Task{errmess} = "Cannot update HDU 'EVENTS' checksum: $status";
+	 goto error_runcoordinator;
+    }
+
+
+    &SuccessSub("RunCoordinator","coordinator", "X and Y coordinates computed.");
+    
+    return 0;
+
+  error_runcoordinator:
+    
+    # close fits file
+    if ( $fptr ) {
+	$status = 0;
+	fits_close_file($fptr,$status);
+    }
+    
+    return 1;
+
+} # RunCoordinator
+
+
+sub RunNuskypos {
+    
+    my ( $par, $ret );
+    my ( $command, %nuskypos );
+
+    %nuskypos = (
+		  pntra          => &GetValPar("pntra"),
+		  pntdec         => &GetValPar("pntdec"),
+		  attfile        => &GetValPar("attfile"),
+		  alignfile      => $Task{alignfile},
+		  teldef         => $Task{teldef},
+		  instrument     => $Task{instrument},
+		  aberration     => &GetValPar("aberration"),
+		  optaxisfile    => &GetValPar("optaxisfile"),
+		  det1reffile    => &GetValPar("det1reffile"),
+		  det1xref       => &GetValPar("det1xref"),
+		  det1yref       => &GetValPar("det1yref"),
+		  mastaspectfile => &GetValPar("mastaspectfile"),
+		  initseed       => &GetValPar("initseed"),
+		  chatter        => &GetValPar("chatter"),
+		  clobber        => &GetValPar("clobber"),
+		  history        => &GetValPar("history"),
+		  );
+
+
+    $command = "nuskypos";
+    for $par ( keys %nuskypos ) { $command .= " $par=$nuskypos{$par}"; } 
+
+    &RunningSub("RunNuskypos","nuskypos");
+    &RunningComm("RunNuskypos",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunNuskypos","nuskypos",$command);
+        $Task{errmess} = "ERROR running 'nuskypos'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunNuskypos","nuskypos", "'".&GetValPar("optaxisfile")."' Optical Axis File created.");
+
+    return 0;
+
+} # RunNuskypos
+
+
+sub insertFitsCol() {
+    my ($filename) = @_;
+    
+    my ($command, $ret);
+    my (@newcolnames, @expressions, @tform);
+    
+    @newcolnames = ( "Module", "DETX", "DETY", "X", "Y" );
+    @expressions = ( 1, 0, 0, 0, 0 );
+    @tform       = ( "1B", "1I", "1I", "1I", "1I" );
+
+
+    for ( my $ii = 0 ; $ii <=  $#newcolnames ; $ii++ ) {
+
+	$command = "ftcalc infile=\"${filename}[EVENTS]\" outfile=${filename} column=$newcolnames[$ii] expression=\"$expressions[$ii]\" tform=$tform[$ii] clobber=yes";
+	
+	$ret = 0;
+	$ret = system( $command );
+	if ( $ret != 0 ) {
+	    &PrntChty(3, "$Task{stem}: Error: running '$command'\n");
+	    return 1;
+	}
+    }
+
+    return 0;
+
+} #insertFitsCol
+
+
+sub SetTeldefFileName(){
+    my ($instr,$teldef) = @_;
+   
+    if ( &CompUL(&GetValPar("teldef"),$Default{CALDB}) ) {
+
+	# Get Teldef File Name
+	my ($refa,$refb)  = &CallQuzcif("TELDEF", $Task{StartDate}, $Task{StartTime}, "-", 1, uc($instr), "-");
+	if ( $Task{status} ) {
+	    &PrntChty(4,"$Task{stem}: Error: cannot retieve Teldef file name from CALDB\n");
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 Teldef CALDB file\n");
+	    return 1;
+	}
+	else {
+	    $$teldef = @$refa[0];
+	}
+    }
+    else{
+	$$teldef = &GetValPar("teldef");
+    }
+
+    return 0;
+
+} # SetTeldefFileName
+
+
+sub SetAlignFileName(){
+    my ($instr,$align) = @_;
+  
+    if ( &CompUL(&GetValPar("alignfile"),$Default{CALDB}) ) {
+
+	# Get Alignment File Name
+	my ($refa,$refb)  = &CallQuzcif("ALIGNMENT", $Task{StartDate}, $Task{StartTime}, "type.eq.systems", 1, "FPM", "-");
+	if ( $Task{status} ) {
+	    &PrntChty(4,"$Task{stem}: Error: cannot retieve Alignment file name from CALDB\n");
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 Alignment CALDB file\n");
+	    return 1;
+	}
+	else {
+	    $$align = @$refa[0];
+	}
+    }
+    else{
+	$$align = &GetValPar("alignfile");
+    }
+
+    return 0;
+
+} # SetAlignFileName
+
+
+sub CheckAttitude() {
+
+    my ($tstart,$tstop);
+    my $checkexist = 1;
+
+    &GetKeyword ( &GetValPar("attfile"), "ATTITUDE", undef, "TSTART", \$tstart, $checkexist);
+    if ( $Task{status} ) { 
+	&PrntChty(2,"$Task{stem}: Warning: TSTART keywords not found in ".&GetValPar("attfile")." file\n");
+	$Task{status} = 0;
+    }
+    &GetKeyword ( &GetValPar("attfile"), "ATTITUDE", undef, "TSTOP", \$tstop, $checkexist);
+    if ( $Task{status} ) { 
+	&PrntChty(2,"$Task{stem}: Warning: TSTOP keywords not found in ".&GetValPar("attfile")." file\n");
+	$Task{status} = 0;
+    }
+
+    if( $Task{tstart}<$tstart || $Task{tstop}>$tstop ){
+	&PrntChty(2,"$Task{stem}: Warning: event file time range not covered by attitude time range (check TSTART and/or TSTOP)\n");
+    }
+
+
+    return 0;
+
+} # CheckAttitude
+
+
+sub CreateTemporaryLinks {
+
+    $TmpInFiles{attfile} = $Task{tmpdir}."/".basename(&GetValPar("attfile"));
+    $TmpInFiles{teldef} = $Task{tmpdir}."/".basename($Task{teldef});
+
+
+    # attfile link
+    if ( &CreateAbsSymbolicLink(&GetValPar("attfile"), $TmpInFiles{attfile}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{attfile}."' to '".&GetValPar("attfile")."'\n");
+	return 1;
+    }
+
+    # teldef link
+    if ( &CreateAbsSymbolicLink($Task{teldef}, $TmpInFiles{teldef}) ){
+	&PrntChty(2,"$Task{stem}: Error: unable to create symbolic links '".$TmpInFiles{teldef}."' to '".$Task{teldef}."'\n");
+	return 1;
+    }
+
+
+    return 0;
+
+} # CreateTemporaryLinks
+
+
+sub RemoveTemporaryLinks {
+
+    if ( !unlink($TmpInFiles{attfile}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{attfile}."' temporary file\n");
+    }
+
+    if ( !unlink($TmpInFiles{teldef}) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '".$TmpInFiles{teldef}."' temporary file\n");
+    }
+
+    return 0;
+
+} # RemoveTemporaryLinks

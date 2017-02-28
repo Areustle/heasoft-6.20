@@ -1,0 +1,1034 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+    body { margin-left: 5%; margin-right: 5%; }
+    h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+
+<body>
+
+<h2>NAME</h2>
+
+xrtgrblc - Swift XRT GRB light curve extraction task
+
+<h2>SYNOPSIS</h2>
+<code>xrtgrblc evtfiles=&lt;event&nbsp;files&gt;
+mkffiles=&lt;makefilter&nbsp;files&gt; xhdfiles=&lt;xrt&nbsp;headers&gt;
+attfiles=&lt;attitude&nbsp;files&gt; outdir=&lt;output&nbsp;dir&gt;
+outstem=&lt;stem&nbsp;for&nbsp;output&nbsp;files&gt;
+srcra=&lt;source&nbsp;RA&gt; srcdec=&lt;source&nbsp;Dec&gt;
+minenergy=&lt;minimum&nbsp;energy&gt; maxenergy=&lt;maximum&nbsp;energy&gt;
+splitenergy=&lt;soft/hard&nbsp;split&gt;</code>
+
+<h2>DESCRIPTION</h2>
+
+<p>This task extracts a number of different XRT light curves from a series of
+Swift gamma-ray burst (GRB) observations. It does so using a wide variety of
+HEASoft/Swift tasks, and relatively few inputs. It was designed to automate the
+somewhat cumbersome task of extracting a corrected, flux converted light curve
+from a potentially large set of Swift observations.
+
+<p>The process of extracting such a light curve observation is complicated by
+several factors:
+
+<ul>
+<li>
+GRBs always fade and sometimes flare. So simply choosing a circular region for
+the source light curve, and an annulus for the background, as is the usual
+practice, may produce erroneous results.</li>
+<li>
+GRBs can be bright, so CCD pileup must be accounted for. However, since they
+also fade and flare, pileup must be accounted for in a time-dependent
+manner.</li>
+<li>
+The Swift XRT automatically switches between Windowed Timing mode (WT) and
+Photon Counting mode (PC), depending on the count rate of the source. Each mode
+requires a slightly different set of reduction and light curve extraction
+techniques.</li>
+<li>
+GRBs often evolve spectrally over time, so converting count rates to flux units
+must be done in a time-dependent manner.</li>
+<li>
+Swift is in Low-Earth orbit. Observations of a single GRB may span numerous
+orbits, and the spacecraft attitude can and does change from one orbit to the
+next.</li>
+</ul>
+
+<p>To account for the above complications, this task is split into several
+main steps, described below.
+
+<h3>Extraction Region Determination</h3>
+
+<p>First, the cleaned event data are separated by mode - either PC or WT.
+The PC mode event lists are combined into a single image, and a sliding cell
+detection (XImage detect) is run to detect both the GRB and any field sources
+in the field of view.  Negative circular regions are generated for each field
+source, with radii equal to twice the half-box radius reported by XImage. The
+GRB source position is refined using xrtcentroid on this combined PC image, if
+asked to by the user.  Spacecraft orbit separations are determined by running
+<code>maketime</code> on the input makefilter files, and selecting on the
+SETTLED, TEN_ARCMIN, VRD1 and ANG_DIST columns (see <code>maketimeexpr</code>
+parameter).
+
+<p>Next, the source and background light curve extraction regions are
+determined.  For each orbit of the PC mode data, a light curve with 20 second
+time bins is extracted from a circular region of radius 40'' centered on the
+GRB. For each orbit of the WT mode data, a light curve with 4 second time bins
+is extracted from a box 15'' wide and 50'' long, rotated to match the
+spacecraft roll angle at the end of the orbit (i.e. aligned along the WT
+strip). 
+
+<p>There are two methods that can be used to then determine the extraction
+regions from these preliminary light curves.  First, if
+<code>splitorbits='yes'</code>, and the Chi-Squared probability that the
+preliminary light curve is constant is &lt; 15%, a sliding-cell type algorithm
+is applied to the light curves which chooses source and background regions based
+on the weighted average count rate in a fixed number of non-zero bins (10 at
+the moment). The time duration that a certain region covers grows or shrinks,
+depending on how the count rate changes. If, on the other hand, the preliminary
+light curve is deemed to be constant, then the mean count rate for that orbit
+is used.
+
+<p>If <code>splitorbits='no'</code>, then there is no sub-orbit interval
+splitting. If the light curve for this orbit is constant (see above), the
+region corresponding to the mean count rate is used. If the orbit light curve
+is not constant then the region corresponding to the maximum count rate in the
+orbit is used. This is done to allow for pileup to be properly accounted for in
+orbits that have high variability.
+
+<p>The count-rate dependent regions are as follows (cr=weighted mean count rate
+for sliding-cell, cr=mean count rate for roughly constant curve, cr=max count
+rate for <code>splitorbits='no'</code> and non-constant curve). There are two lists of regions for each of the PC and WT modes, and these lists can be selected by the user with the <code>pcreglist</code> and <code>wtreglist</code> parameters. The regions that differ between the two lists are indicated by a double asterisk (**).:
+
+<p><strong><big>PC Region List #1 (pcreglist=1)</big></strong>
+<ul>
+<li>
+0.00 &lt; cr &lt;= 0.001  
+<ul>
+    <li>source: circle, 12''</li>
+    <li>backgr: annulus, 40'' - 140''</li>
+</ul>
+</li>
+<li>
+0.001 &lt; cr &lt;= 0.005  
+<ul>
+    <li>source: circle, 17''</li>
+    <li>backgr: annulus, 40'' - 140''</li>
+</ul>
+</li>
+<li>
+0.005 &lt; cr &lt;= 0.01  
+<ul>
+    <li>source: circle, 22''</li>
+    <li>backgr: annulus, 45'' - 145''</li>
+</ul>
+</li>
+<li>
+0.01 &lt; cr &lt;= 0.05  
+<ul>
+    <li>source: circle, 25''</li>
+    <li>backgr: annulus, 50'' - 150''</li>
+</ul>
+</li>
+<li>
+0.05 &lt; cr &lt;= 0.10
+<ul>
+    <li>source: circle, 45''</li>
+    <li>backgr: annulus, 90'' - 190''</li>
+</ul>
+</li>
+<li>
+0.10 &lt; cr &lt;= 0.50
+<ul>
+    <li>source: circle, 55''</li>
+    <li>backgr: annulus, 110'' - 210''</li>
+</ul>
+</li>
+<li>
+0.50 &lt; cr &lt;= 1.00
+<ul>
+    <li>**source: annulus, 5'' - 65''</li>
+    <li>backgr: annulus, 130'' - 230''</li>
+</ul>
+</li>
+<li>
+1.00 &lt; cr &lt;= 3.00
+<ul>
+    <li>**source: annulus, 10'' - 75''</li>
+    <li>backgr: annulus, 150'' - 250''</li>
+</ul>
+</li>
+<li>
+3.00 &lt; cr &lt;= 5.00
+<ul>
+    <li>**source: annulus, 12'' - 85''</li>
+    <li>backgr: annulus, 170'' - 270''</li>
+</ul>
+</li>
+<li>
+5.00 &lt; cr &lt;= 7.00
+<ul>
+    <li>**source: annulus, 15'' - 95''</li>
+    <li>backgr: annulus, 190'' - 290''</li>
+</ul>
+</li>
+<li>
+cr &gt; 7.00
+<ul>
+    <li>**source: annulus, 20'' - 105''</li>
+    <li>backgr: annulus, 210'' - 310''</li>
+</ul>
+</li>
+</ul>
+
+<p><strong><big>PC Region List #2 (pcreglist=2)</big></strong>
+<ul>
+<li>
+0.00 &lt; cr &lt;= 0.001  
+<ul>
+    <li>source: circle, 12''</li>
+    <li>backgr: annulus, 40'' - 140''</li>
+</ul>
+</li>
+<li>
+0.001 &lt; cr &lt;= 0.005  
+<ul>
+    <li>source: circle, 17''</li>
+    <li>backgr: annulus, 40'' - 140''</li>
+</ul>
+</li>
+<li>
+0.005 &lt; cr &lt;= 0.01  
+<ul>
+    <li>source: circle, 22''</li>
+    <li>backgr: annulus, 45'' - 145''</li>
+</ul>
+</li>
+<li>
+0.01 &lt; cr &lt;= 0.05  
+<ul>
+    <li>source: circle, 25''</li>
+    <li>backgr: annulus, 50'' - 150''</li>
+</ul>
+</li>
+<li>
+0.05 &lt; cr &lt;= 0.10
+<ul>
+    <li>source: circle, 45''</li>
+    <li>backgr: annulus, 90'' - 190''</li>
+</ul>
+</li>
+<li>
+0.10 &lt; cr &lt;= 0.50
+<ul>
+    <li>source: circle, 55''</li>
+    <li>backgr: annulus, 110'' - 210''</li>
+</ul>
+</li>
+<li>
+0.50 &lt; cr &lt;= 1.00
+<ul>
+    <li>**source: annulus, 7.08'' - 65''</li>
+    <li>backgr: annulus, 130'' - 230''</li>
+</ul>
+</li>
+<li>
+1.00 &lt; cr &lt;= 3.00
+<ul>
+    <li>**source: annulus, 14.16'' - 75''</li>
+    <li>backgr: annulus, 150'' - 250''</li>
+</ul>
+</li>
+<li>
+3.00 &lt; cr &lt;= 5.00
+<ul>
+    <li>**source: annulus, 16.52'' - 85''</li>
+    <li>backgr: annulus, 170'' - 270''</li>
+</ul>
+</li>
+<li>
+5.00 &lt; cr &lt;= 7.00
+<ul>
+    <li>**source: annulus, 18.88'' - 95''</li>
+    <li>backgr: annulus, 190'' - 290''</li>
+</ul>
+</li>
+<li>
+cr &gt; 7.00
+<ul>
+    <li>**source: annulus, 23.60'' - 105''</li>
+    <li>backgr: annulus, 210'' - 310''</li>
+</ul>
+</li>
+</ul>
+
+<p><strong><big>WT Region List #1 (wcreglist=1)</big></strong>
+<ul>
+<li>
+0.00 &lt; cr &lt;= 1.00
+<ul>
+    <li>source: rectangle, 35'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 150'' x 15''</li>
+</ul>
+</li>
+<li>
+1.00 &lt; cr &lt;= 5.00
+<ul>
+    <li>source: rectangle, 71'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 200'' x 15''</li>
+</ul>
+</li>
+<li>
+5.00 &lt; cr &lt;= 10.0
+<ul>
+    <li>source: rectangle, 118'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 260'' x 15''</li>
+</ul>
+</li>
+<li>
+10.0 &lt; cr &lt;= 50.0
+<ul>
+    <li>source: rectangle, 165'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 300'' x 15''</li>
+</ul>
+</li>
+<li>
+50.0 &lt; cr &lt;= 100.
+<ul>
+    <li>source: rectangle, 200'' x 15''</li>
+    <li>**backgr: none</li>
+</ul>
+</li>
+<li>
+**100. &lt; cr &lt;= 300.
+<ul>
+    <li>**source: rectangle, 236'' x 15''</li>
+    <li>**backgr: none</li>
+</ul>
+</li>
+<li>
+300. &lt; cr &lt;= 400.
+<ul>
+    <li>source: rectangle, 300'' x 15''</li>
+    <li>pileup: rectangle, 9.43'' x 15''</li>
+    <li>**backgr: none</li>
+</ul>
+</li>
+<li>
+400. &lt; cr &lt; 600.
+<ul>
+    <li>source: rectangle, 450'' x 15''</li>
+    <li>pileup: rectangle, 23.65'' x 15''</li>
+    <li>backgr: none</li>
+</ul>
+</li>
+<li>
+600. &lt; cr &lt; 1000.
+<ul>
+    <li>source: rectangle, 450'' x 15''</li>
+    <li>pileup: rectangle, 28.38'' x 15''</li>
+    <li>backgr: none</li>
+</ul>
+</li>
+<li>
+cr &gt; 1000.
+<ul>
+    <li>source: rectangle, 450'' x 15''</li>
+    <li>pileup: rectangle, 37.84'' x 15''</li>
+    <li>backgr: none</li>
+</ul>
+</li>
+</ul>
+
+<p><strong><big>WT Region List #2 (wcreglist=2)</big></strong>
+<ul>
+<li>
+0.00 &lt; cr &lt;= 1.00
+<ul>
+    <li>source: rectangle, 35'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 130'' x 15''</li>
+</ul>
+</li>
+<li>
+1.00 &lt; cr &lt;= 5.00
+<ul>
+    <li>source: rectangle, 71'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 177'' x 15''</li>
+</ul>
+</li>
+<li>
+5.00 &lt; cr &lt;= 10.0
+<ul>
+    <li>source: rectangle, 118'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 224'' x 15''</li>
+</ul>
+</li>
+<li>
+10.0 &lt; cr &lt;= 50.0
+<ul>
+    <li>source: rectangle, 165'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 271'' x 15''</li>
+</ul>
+</li>
+<li>
+50.0 &lt; cr &lt;= 100.
+<ul>
+    <li>source: rectangle, 200'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 318'' x 15''</li>
+</ul>
+</li>
+<li>
+**100. &lt; cr &lt;= 200.
+<ul>
+    <li>**source: rectangle, 236'' x 15''</li>
+    <li>**pileup: rectangle, 4.72'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 365'' x 15''</li>
+</ul>
+</li>
+<li>
+**200. &lt; cr &lt;= 300.
+<ul>
+    <li>**source: rectangle, 260'' x 15''</li>
+    <li>**pileup: rectangle, 7.08'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 365'' x 15''</li>
+</ul>
+</li>
+<li>
+300. &lt; cr &lt;= 400.
+<ul>
+    <li>source: rectangle, 300'' x 15''</li>
+    <li>pileup: rectangle, 9.43'' x 15''</li>
+    <li>**backgr: rectangle, 450'' x 15'', minus rectangle, 412'' x 15''</li>
+</ul>
+</li>
+<li>
+400. &lt; cr &lt; 600.
+<ul>
+    <li>source: rectangle, 450'' x 15''</li>
+    <li>pileup: rectangle, 23.65'' x 15''</li>
+    <li>backgr: none</li>
+</ul>
+</li>
+<li>
+600. &lt; cr &lt; 1000.
+<ul>
+    <li>source: rectangle, 450'' x 15''</li>
+    <li>pileup: rectangle, 28.38'' x 15''</li>
+    <li>backgr: none</li>
+</ul>
+</li>
+<li>
+cr &gt; 1000.
+<ul>
+    <li>source: rectangle, 450'' x 15''</li>
+    <li>pileup: rectangle, 37.84'' x 15''</li>
+    <li>backgr: none</li>
+</ul>
+</li>
+</ul>
+
+
+<h3>Light Curve Extraction and Correction</h3>
+
+<p>Once the extraction regions and corresponding time ranges are determined,
+source and background unbinned light curve, spectrum, event list and total
+counts are extracted for each region. An exposure map is also generated for
+each interval. The source and background exposure corrections are calculated as
+the ratio of the nominal exposure time to the mean exposure time per pixel in
+each region. If there are any counts in the full band (see the
+<code>minenergy</code>, <code>maxenergy</code> and <code>splitenergy</code>
+parameters), then to get PSF corrected rates, two ARFs are generated - one with
+the PSF correction applied and weighted by the exposure map, and one with
+neither correction. If the source is detected (see the <code>detthresh</code>
+parameter), a double absorbed power law is then fit to the extracted spectrum,
+using both the PSF corrected, and non-PSF corrected ARFs. Galactic nH is
+assumed (and fixed) in the fit (see <code>nhmap</code> and <code>usernh</code>
+parameters).
+
+<p>If <code>psfcorrmeth='xspec'</code>, then the ratio of the power-law
+normalizations gives the PSF correction.  If
+<code>psfcorrmeth='xrtlccorr'</code>, then the
+task <code>xrtlccorr</code> is run on the light curve and event file
+for this interval to get the correction.  Additionally, a mean
+correction or a time-dependent correction can be selected using
+the <code>lccorravg</code> parameter.  In
+either <code>psfcorrmeth</code> case, the energy conversion factor is
+calculated using the model flux from the fitted spectrum, after
+setting the absorption terms to zero.
+ 
+<p>If this fit fails, or the source is not detected then the previously derived
+value for the flux conversion is used, and the PSF correction is taken as the
+average ratio of the PSF to non-PSF corrected spectral responses (no weighting
+applied). This is justified by the fact that if the fit fails, it is likely due
+to lack of spectral information, so any PSF correction will be an estimate
+anyway. If however, there is no previous good spectral fit, then the mean GRB
+flux conversion of 5e-11erg/cm**2/count is used.
+
+<p>The background subtracted light curve is converted to both corrected count
+rate, as well as flux using the per-interval conversion factors determined
+above. The synchronous raw rate, net light curve (source - background),
+corrected light curve, flux light curve and scaled background light curve are 
+saved to single FITS file for each mode.
+
+<h3>Binning and Hardness Ratios</h3>
+<p>Binning can be done in two ways (or not at all - see <code>bincurve</code>
+parameter). The first way is binning stricly on counts
+(<code>bintype=0</code>), whereby the raw light curve is binned to a minimum of
+<code>minbincnts</code> counts per bin. The binning algorithm will try not to
+cross what are considered gaps in the GTI coverage. This gap interval can be
+customized with the <code>gapintv</code> parameter, which is specified in
+seconds. If there are not enough counts to make a bin between gaps, then gaps
+may be spanned by time bins. If the algorithm is not able to make a bin from an
+orbit, but the previous and following orbits do have good bins, then either the
+bin will be dropped (<code>cutlowbins=yes</code>), or the low count bin will be
+included in the final products (<code>cutlowbins=no</code>).
+
+<p>The second binning method (<code>bintype=1</code>) is a step-binning one,
+where the number of counts per bin depends on the net rate (source - scaled
+background), and the signal-to-noise in that bin. The rates and corresponding
+counts per bin can be specified using the <code>pcsteprates</code> and
+<code>wtsteprates</code> parameters. These are comma separated lists of
+"&lt;max rate&gt;:&lt;counts/bin&gt; pairs. If the rate is less than or equal
+to &lt;max rate&gt;, then &lt;counts/bin&gt; will be used for that bin. Every
+time a count is added to a bin, the bin rate, and signal-to-noise are checked,
+and the required counts for that bin adjusted accordingly. The same rules for
+gaps and the gap interval as above apply to this method also, except that the
+gaps are only spanned if there are neither enough counts nor enough
+signal-to-noise.
+
+<p> For either method, if there are counts left over at the end of the light
+curves that cannot make a bin, and the signal to noise of the remaining interval
+is below <code>detthresh</code>, an upper limit is found for the remaining
+time. This is a Bayesian upper limit as described in Physical Review D 54, 1991
+page 166 equation 28.40. See the NOTE below for an explanation of how these
+are indicated in the FITS light curves.
+
+<p>After applying either of the above methods, the bin boundaries are then 
+applied to the net, corrected, flux, and background light curves. If band 
+splitting is requested, then the binning method is only applied to the hard
+band, and those bins are applied both to the hard and soft curves. This is
+done, since in general, there will be more soft photons detected than hard, and
+the bins need to match to get a hardness ratio.  The hardness ratio is simply
+then calculated as the ratio of corrected hard rate to corrected soft rate.
+
+If binning is requested, there will be another extension in the output FITS
+light curves, with EXTNAME='RATEBIN'. The column names and descriptions (see
+OUTPUT below), are identical to those for the unbinned light curves in the
+EXTNAME='RATE' extension.
+
+<h2>OUTPUT</h2>
+
+<h3>File Format</h3>
+<p>The FITS light curves have the following columns in the 'RATE'
+extension and, if binning is requested, the 'RATEBIN' extension:
+
+<p>
+<dl>
+    <dt>TIME, XAX_E, TIMEDEL, FRACEXP
+    <dd>Standard timing data columns
+
+    <dt>RATERAW, ERRORRAW
+    <dd>Raw (non-background subtracted) rate and error
+
+    <dt>RATENET, ERRORNET
+    <dd>Net (source - scaled background) rate and error
+    
+    <dt>RATECOR, ERRORCOR
+    <dd>Corrected rate and error
+    
+    <dt>RATEFLUX, ERRORFLUX
+    <dd>Flux rate and error
+
+    <dt>RATEBKG, ERRORBKG
+    <dd>Scaled background rate and error
+
+</dl>
+
+<p>If band splitting is specified there will be a light curve for
+each band as above. If binning is also done, there will be a single light curve
+containing both the binned hard curves, and the binned soft curves, as well as
+the hardness ratio. The soft band columns are named as above, except that each
+column name has a "1" as a suffix. A similar thing is done for the hard band
+columns, with "2" as the suffix. The hardness ratio column, and respective
+error column are named RATIO and RATIOERROR respectively.
+
+<p>Each light curve will also have a GTI extension, indicating the Good Time
+Intervals used in the light curve extraction.
+
+<p><strong>NOTE:</strong> Upper limits are indicated (at the time of this
+writing) by a NULL or INDEF in all of the ERROR* columns (except ERRORBKG). In
+this case the RATE* columns indicate the <code>detthresh</code>-sigma Bayesian
+upper limit.
+
+<h3>Filenames, etc.</h3>
+<p>The number of output files depends on both the <code>clean</code> and
+<code>splitenergy</code> parameters. The minimum set of output files occurs
+when <code>clean='yes'</code> and <code>splitenergy&lt;=0.0</code>. As an
+example, if <code>outdir=./test</code>, <code>outstem=GRBTEST</code>,
+<code>minenergy</code>, and <code>maxenergy</code> are 0.3, and 10.0
+respectively, then the minimum set of output files would be:
+
+<dl>
+    <dt><code>./test/GRBTEST_xpcetsra.lc</code>
+    <dd>PC mode source light curves (0.3-10 keV)
+    
+    <dt><code>./test/GRBTEST_xpcetsr.pha</code>
+    <dd>Average PC mode source PHA
+    
+    <dt><code>./test/GRBTEST_xpcetbg.pha</code>
+    <dd>Average PC mode background PHA
+    
+    <dt><code>./test/GRBTEST_xpcet.arf</code>
+    <dd>Weighted average PC mode ARF
+    
+    <dt><code>./test/GRBTEST_xwtetsra.lc</code>
+    <dd>WT mode source light curves (0.3-10 keV)
+    
+    <dt><code>./test/GRBTEST_xwtetsr.pha</code>
+    <dd>Average WT mode source PHA
+    
+    <dt><code>./test/GRBTEST_xwtetbg.pha</code>
+    <dd>Average WT mode background PHA
+    
+    <dt><code>./test/GRBTEST_xwtet.arf</code>
+    <dd>Weighted average WT mode ARF
+    
+    <dt><code>./test/GRBTEST_info.fits</code>
+    <dd>FITS table containing light curve, spectral, detection and region information
+</dl>
+
+<p><strong>NOTE:</strong>There may be more than one source and background
+spectrum for each mode. This can happen if the input event files for a given
+mode were filtered using different GRADE selections, or if the substrate
+voltage is different between the event files. In either case, the proper RMF
+will be different, neccessitating separate PHA files. The files will be
+numbered (e.g.  <code>GRBTEST_xpcetsr1.pha</code>) if and only if there is more
+than one PHA for that mode. Otherwise, the above convention will be used.
+
+<p>If energy band splitting is requested, with <code>splitenergy=2.0</code>,
+there will be corresponding the following additional files:
+
+<dl>
+    <dt><code>./test/GRBTEST_xpce1sra.lc</code>
+    <dd>PC mode source light curves (0.3-2 keV)
+    
+    <dt><code>./test/GRBTEST_xwte2sra.lc</code>
+    <dd>WT mode source light curves (2-10 keV)
+    
+    <dt><code>./test/GRBTEST_xpcetsrrb.lc</code>
+    <dd>binned PC mode hardness ratio time series
+    
+    <dt><code>./test/GRBTEST_xwtetsrrb.lc</code>
+    <dd>binned WT mode hardness ratio time series
+</dl>
+
+<p>Lastly, if <code>clean='no'</code>, then most intermediate files will not be
+removed, and if <code>cleanspec='no'</code> then files needed for the followup
+task <code>xrtgrblcspec</code> will not be removed. The list of files is too
+long to list here, but the filenames should be fairly self-explanatory
+(although they may not be).
+
+
+<h2>PARAMETERS</h2>
+
+<dl>
+    <dt>evtfiles [filename]
+
+    <dd>List of cleaned event files to extract light curve from. This can
+    either be a comma separated list of event files, or the name of a text file
+    containing a list of filenames (one per line) preceded by an '@' character.
+    <p><strong>NOTE:</strong>These should have been processed with the
+    <code>xrtpipeline</code> task, specifying the (RA, Dec) of the GRB.
+    Otherwise, for WT mode, <code>xrtgrblc</code> may not correctly identify
+    the GRB.
+
+    <p>
+    <dt>mkffiles [filename]
+
+    <dd>List of makefilter files (e.g. sw00000000000s.mkf), one for each
+    cleaned event file. This can either be a comma separated list of files, or
+    the name of a text file containing a list of filenames (one per line)
+    preceded by an '@' character. These should be the makefilter files produced
+    by xrtpipeline.
+
+    <p>
+    <dt>xhdfiles [filename]
+
+    <dd>List of XRT header housekeeping files (e.g. sw00000000000xhd.hk), one
+    for each clean event file. This can either be a comma separated list of
+    files, or the name of a text file containing a list of filenames (one per
+    line) preceded by an '@' character. These are typically found in the xrt/hk
+    subdirectory of an observation
+
+    <p>
+    <dt>attfiles [filename]
+
+    <dd>List of Swift attitude files (e.g. sw00000000000sat.fits), one for each
+    clean event file. This can either be a comma separated list of files, or
+    the name of a text file containing a list of filenames (one per line)
+    preceded by an '@' character. These are typically found in the auxil
+    subdirectory of an observation.
+
+    <p>
+    <dt>outdir [filename]
+
+    <dd>Output directory used for writing light curves, as well as various
+    scripts and intermediate files (of which there are many). If
+    <code>clobber</code> is not set, and this directory already exists, the
+    task will fail.
+    <p>
+    <strong>CAUTION: If <code>clobber</code> is set, and this directory already
+        exists, then this task will overwrite files as needed in this directory.
+    </strong>
+
+    <p>
+    <dt>outstem [string]
+
+    <dd>This is the base name for all output files.
+
+    <p>
+    <dt>srcra [HH:MM:SS.SS, HH MM SS.SS or DDD.DD]
+
+    <dd>RA of the GRB. The more accurate this is, the better.
+
+    <p>
+    <dt>srcdec [DD:MM:SS.SS, DD MM SS.SS or DDD.DD]
+
+    <dd>Dec of the GRB.
+
+    <p>
+    <dt>psfcorrmeth (xspec|xrtlccorr) [string]
+
+    <dd>Method to use to get PSF corrections for each interval. If
+    <code>xspec</code>, then the PSF correction is found using the ratio of
+    Xspec fit normalizations for each interval. If <code>xrtlccorr</code>, then
+    the task <code>xrtlccorr</code> is used to determine the PSF correction for
+    each interval (see fhelp xrtlccorr). 
+
+    <p>
+    <dt>lccorravg [bool]
+
+    <dd>Use a mean PSF correction when psfcorrmeth = 'xrtlccorr'? If
+    set to 'yes', <code>xrtlccorr</code> will be run
+    with <code>createinstrmap = no</code>, and a single PSF correction
+    factor will be calculated for and applied to each orbit's light
+    curve.  When set to 'no', <code>xrtlccorr</code> will be run with
+    <code>createinstrmap = yes</code>, <code>pcnframe = 4</code>,
+    and <code>wtnframe = 10</code>, and a time-dependent PSF
+    correction factor will be applied to each orbit's light curve.
+    Using the time-dependent PSF correction factor may be more
+    accurate in times when the attitude has not stabilized but
+    requires more processing time to calculate. The lccorravg
+    parameter has no effect when psfcorrmeth is not set to
+    'xrtlccorr'.
+
+    <p>
+    <dt>object [string]
+
+    <dd>Object name, or DEFAULT to use OBJECT keyword from input event files.
+    This will be written to the OBJECT keywords in the output data.
+
+    <p>
+    <dt>(usecentroid) [bool]
+
+    <dd>Run the task <code>xrtcentroid</code> to refine position? The input
+    RA/Dec for <code>xrtcentroid</code> will be taken from the
+    <code>srcra</code> and <code>srcdec</code> parameters.
+
+    <p>
+    <dt>centroidhbox [real]
+
+    <dd>Half-box width of <code>xrtcentroid</code> box, in arcminutes. This
+    is only queried if <code>usecentroid</code> is 'yes'.
+
+    <p>
+    <dt>(detthresh) [float]
+
+    <dd>Detection threshold (sigma). If signal to noise in a given interval is
+    below this level, data from the corresponding time range will not be
+    included in the final products.
+
+    <p>
+    <dt>(fldsrcdist) [float (degrees)]
+
+    <dd>Minimum distance in degrees from input RA/Dec (or centroided RA/Dec if
+    <code>usecentroid</code> is set to 'yes') for a detected field source to be
+    considered a field source.
+
+    <p>
+    <dt>(minpccnts) [float]
+
+    <dd>Minimum PC mode raw counts required for spectral analysis of each
+    interval.  If a PC mode interval has less than <code>minpccnts</code>
+    counts, the flux conversion and PSF correction will be treated as if the
+    spectral fit failed (see <strong>Light Curve Extraction and Correction</strong>)
+
+    <p>
+    <dt>(minwtcnts) [float]
+
+    <dd>Minimum WT mode raw counts required for spectral analysis of each
+    interval.  If a WT mode interval has less than <code>minwtcnts</code>
+    counts, the flux conversion and PSF correction will be treated as if the
+    spectral fit failed (see <strong>Light Curve Extraction and Correction</strong>)
+
+    <p>
+    <dt>(pcreglist) (1-2) [int]
+
+    <dd>PC mode source/background region list #1 or #2.  
+
+    <p>
+    <dt>(wtreglist) (1-2) [int]
+
+    <dd>WT mode source/background region list #1 or #2.  
+      
+
+    <p>
+    <dt>(pcframetime) [float]
+
+    <dd>Time bin duration for "unbinned" PC mode light curves. If &lt;= 0.0,
+    the FRAMTIME or TIMEDEL keyword from input event files will be used.
+
+    <p>
+    <dt>(wtframetime) [float]
+
+    <dd>Time bin duration for "unbinned" WT mode light curves. If &lt;= 0.0,
+    the FRAMTIME or TIMEDEL keyword from input event files will be used. You
+    should note that the WT mode frame time is ~1e-3, so the unbinned light
+    curves may be large if this parameter is set to 0.0. Also, the unbinned
+    light curves will likely not be well sampled at all.
+    
+    <p>
+    <dt>minenergy [float]
+
+    <dd>The minimum energy in keV to consider in generating the light curves.
+
+    <p>
+    <dt>maxenergy [float]
+
+    <dd>The maximum energy in keV to consider in generating the light curves.
+
+    <p>
+    <dt>splitenergy [float]
+
+    <dd>Where to split soft and hard bands. If 0.0 or &lt;= minenergy, no band
+    splitting will be done. If binning is also requested (see
+    <code>bincurve</code> parameter), then the hardness ratio curves will be
+    the ratio of the binned, corrected count rate from <code>splitenergy</code>
+    to <code>maxenergy</code> to the binned, corrected count rate from
+    <code>minenergy</code> to <code>splitenergy</code>. The binning for
+    hard/soft bands is done only on the hard band, then the bins are applied to
+    the soft band.
+
+    <p>
+    <dt>(splitorbits) [bool]
+
+    <dd>If set to 'no', then extraction regions, psf corrections, and flux
+    conversions will be done on a per-orbit basis. If set to 'yes', each orbit
+    may be split into sub-orbit intervals, based on count rate (see way above).
+
+    <p>
+    <dt>(maketimeexpr) [string]
+
+    <dd>This is the expression used to determine spacecraft orbits. It is
+    unlikely that the user will need or want to change this. In fact, changing
+    this parameter might lead to erroneous results, particularly with WT mode
+    data.
+
+    <p>
+    <dt>(bincurve) [bool]
+
+    <dd>Create binned light curves also? Default is 'yes'.
+
+    <p>
+    <dt>(bintype) [int]
+
+    <dd>0 =&gt; bin strictly on counts.<br>1 =&gt; use step binning.
+
+    <p>
+    <dt>minbincts [int]
+
+    <dd>Minimum number of counts per bin in binned light curve. This parameter
+    is only queried if <code>bincurve</code> is 'yes', and
+    <code>bintype=0</code>.
+
+    <p>
+    <dt>pcsteprates [string]
+
+    <dd>PC mode step binning max rate/count per bin pairs. This should be a
+    comma separated list of &lt;max rate&gt;:&lt;counts&gt; pairs, e.g.:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;1.0:20,2.0:30,3.0:40<br>
+    This would then bin the curves to 20 count/bin if the rate is &lt;= 1.0,
+    30 count/bin if the rate is &gt; 1.0 and &lt;= 2.0, etc.
+
+    <p>
+    <dt>wtsteprates [string]
+
+    <dd>WT mode step binning max rate/count per bin pairs. See the
+    <code>pcsteprates</code> parameter.
+
+    <p>
+    <dt>cutlowbins [bool]
+
+    <dd>Cut bins that are below <code>minbincts</code> per bin? If set to 'no',
+    and either <code>cutlowbinspc</code> or <code>cutlowbinswt</code> is set to
+    'yes', then low bins will only be cut in specific modes. If set to 'yes',
+    then all low bins will be cut. Only queried if <code>bincurve</code> is
+    'yes'.
+
+    <p>
+    <dt>cutlowbinspc [bool]
+
+    <dd>Cut PC mode bins that are below <code>minbincts</code> per bin? Only
+    queried if <code>bincurve</code> is 'yes'.
+
+    <p>
+    <dt>cutlowbinswt [bool]
+
+    <dd>Cut WT mode bins that are below <code>minbincts</code> per bin? Only
+    queried if <code>bincurve</code> is 'yes'.
+
+    <p>
+    <dt>(gapintv) [real]
+
+    <dd>Minimum time not covered by GTI to be considered a gap. The binning
+    algorithms will try not to cross gaps when binning.
+
+    <p>
+    <dt>(nhmap) [int] [-1,1]
+
+    <dd>Which HI map to use for the <code>nh</code> FTOOL. 0 = LAB map,
+    1 = Dickey &amp; Lockman Map, -1 = Neither (user specified Nh).
+
+    <p>
+    <dt>usernh [real]
+
+    <dd>User specified Nh value to use, in units of cm^-2. Queried if
+    <code>nhmap</code>=-1
+
+    <p>
+    <dt>(maxredchisq) [real]
+
+    <dd>Maximum reduced Chi-Squared of per-interval power-law fit to spectrum.
+    If the reduced Chi-Squared of the fit is higher than this, then the 
+    previously derived conversion factors are used.
+
+    <p>
+    <dt>(minredchisq) [real]
+
+    <dd>Minimum reduced Chi-Squared of per-interval power-law fit to spectrum.
+    If the reduced Chi-Squared of the fit is lower than this, then the 
+    previously derived conversion factors are used.
+
+    <p>
+    <dt>(pcfluxconv) [real]
+
+    <dd>User-specified PC flux conversion factor for total energy band. Set to 0 
+    to use a per-interval power-law fit instead. 
+
+    <p>
+    <dt>(pclofluxconv) [real]
+
+    <dd>User-specified PC flux conversion factor for lowest energy band. Set to 0 
+    to use a per-interval power-law fit instead. 
+
+    <p>
+    <dt>(pchifluxconv) [real]
+
+    <dd>User-specified PC flux conversion factor for highest energy band. Set to 0 
+    to use a per-interval power-law fit instead. 
+
+    <p>
+    <dt>(wtfluxconv) [real]
+
+    <dd>User-specified WT flux conversion factor for total energy band. Set to 0 
+    to use a per-interval power-law fit instead. 
+
+    <p>
+    <dt>(wtlofluxconv) [real]
+
+    <dd>User-specified WT flux conversion factor for lowest energy band. Set to 0 
+    to use a per-interval power-law fit instead. 
+
+    <p>
+    <dt>(wthifluxconv) [real]
+
+    <dd>User-specified WT flux conversion factor for highest energy band. Set to 0 
+    to use a per-interval power-law fit instead. 
+
+    <p>
+    <dt>(usetrigtime) [bool]
+
+    <dd>Offset light curves by TRIGTIME? If set to yes, then all output light
+    curves will be offset by the either the value of the <code>trigtime</code>
+    parameter (if &gt; 0), or by the first TRIGTIME keyword encountered in the
+    input event files. If set to 'no', then the output lightcurves will be
+    offset by the earliest TSTART keyword in the input event files. This
+    parameter will also minimally affect plotting. 
+
+    <p>
+    <dt>(trigtime) [real]
+
+    <dd>MET trigger time of burst in seconds. If 0.0, then the TRIGTIME keyword
+    of the event files will be used. This will be the TIMEZERO in output light
+    curves.
+
+    <p>
+    <dt>(trigfrombat) [bool]
+
+    <dd>Is the trigger time (either the <code>trigtime</code> parameter or the
+    value of the TRIGTIME keywords) from a BAT trigger? This parameter affects
+    plotting only.
+
+    <p>
+    <dt>(plotcurves) [bool]
+
+    <dd>Make plots of various light curves? If set to 'yes', then gif plots of
+    the corrected, flux and hardness ratio curves will be produced, as well as
+    the QDP files used to create them.
+
+    <p>
+    <dt>(plotftype) [string] (default = '/gif')
+
+    <dd>Type of plot file to create. This must be a variant of the following
+    PGPLOT file devices: GIF (e.g. '/gif'), Postscript (e.g. '/ps'), X-window
+    plot file (e.g. '/wd'), or PPM (e.g. '/ppm'). The sub-types of these are
+    also supprted (e.g.  '/vgif', '/cps', 'vwd', etc.)
+    
+    <p>
+    <dt>(clean) [bool]
+
+    <dd>Clean up temporary files and intermediate files?
+
+    <p>
+    <dt>(cleanspec) [bool]
+
+    <dd>Clean up files required for xrtgrblcspec? These files are basically the
+    per-interval source/background event files, PHA files and ARFs.
+
+    <p>
+    <dt>(chatter) [int] [0,5]
+
+    <dd>Chattiness level. 0 means essentially nothing will be printed. 5 is 
+    debugging mode with tons of output. Default is 2.
+
+    <p>
+    <dt>(clobber) [bool]
+
+    <dd>Clobber existing output files?
+
+</dl>
+
+<h2>NOTES</h2>
+
+<h2>LAST MODIFIED</h2>
+<p>April 2014
+
+</body>
+
+</html>

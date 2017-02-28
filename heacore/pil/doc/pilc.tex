@@ -1,0 +1,1396 @@
+\section{PIL C/C++ Language API}\label{PILRefClanguage}
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Introduction}\label{PILRefCintro}
+
+This  section  describes  the  C language implementation of the
+Parameter Interface Library Application Programming Interfaces (PIL APIs)
+It also gives C/C++ languages specific
+information necessary to use those APIs. Users interested only
+in using PIL from Fortran 90 applications should read section
+\ref{PILRefF90language}. 
+
+PIL library is standalone and can be compiled independently of other ISDC
+libraries.
+
+Unless stated otherwise all PIL API functions return status code of type
+int. This is either ISDC\_OK which equals PIL\_OK which equals 0, which
+means everything went perfectly or negative value (error code) meaning some
+error occured. List of error codes can be found in pil\_error.h file.
+Functions given below are the "official" ones. Internally PIL library
+calls many more functions. 	
+
+\subsection{PIL C/C++ include files}\label{PILRefCincludes}
+
+Applications calling PIL services from C/C++ source code should include
+{\tt pil.h}. Alternatively they can include {\tt isdc.h} which includes
+{\tt pil.h} file. {\tt pil.h} file in turn internally includes all other
+PIL relevant include files.
+
+{\tt pil.h} file can be called from either C or C++ source code. It contains
+prototypes of all C/C++ API functions, definitions of constants,
+declarations of global variables and definitions of data structures.
+
+
+\subsection{C/C++ API functions}\label{PILRefCfunctions}
+
+%%%%%%%%%%%          PILinit            %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILinit}
+
+\begin{verbatim}
+int PILInit(int argc, char **argv); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function initializes PIL library. This function has to be called before
+any other PIL function (there are some
+exceptions to this rule).  It does the following : \\
+Based on PILModuleName (or argv[0] if PILModuleName is empty) calculates
+name of parameter file. Usually name
+of parameter file equals argv[0] + ".par" suffix but this can be overriden
+by calling PILSetModuleName and/or
+PILSetModuleVersion before calling PILInit. After successful termination
+parameter file is opened and read in, and
+global variable PILRunMode is set to one of the following values : 
+
+\begin{verbatim}
+      ISDC_SINGLE_MODE 
+      ISDC_SERVER_MODE 
+\end{verbatim}
+
+ISDC\_SERVER\_MODE is set whenever there is parameter "ServerMode" and its
+value is "yes" or "y". In any other case PILRunMode is set
+to ISDC\_SINGLE\_MODE. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt int argc [In] } \\
+number of command line arguments
+\item
+{\tt char **argv [In] } \\
+array of pointers to command line arguments. argv[0] is typically name of
+the executable.
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+Only one parameter file can be open at a time. Parameter file remains open
+until PILClose is called. When
+writing applications for ISDC one should not use PILInit directly. Instead,
+one should call CommonInit function
+(from Common library) which calls PILInit. 
+}
+
+
+%%%%%%%%%%%       PILClose       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILClose}
+
+\begin{verbatim}
+int PILClose(int status); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function has to be called before application terminates. It closes open
+files, and writes all learned parameters
+to the disk files (only when status == ISDC\_OK). Once this function is
+called one cannot call any other PIL
+functions. One can however call PILInit to reinitialize PIL library. \\
+Function also clears PILRunMode, PILModuleName and PILModuleVersion global
+variables. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt int status [In] } \\
+PIL\_OK/ISDC\_OK/0 means normal return, any other value means abnormal
+termination. In this case changes to parameters made during runtime 
+are NOT written to parameter files. 
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+This function does not terminate process. It simply shuts down PIL library.
+When writing applications for ISDC one should not use PILClose directly. 
+Instead, one should call CommonExit function (from Common library) 
+which calls PILClose.
+}
+
+
+%%%%%%%%%%%       PILReloadParameters       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILReloadParameters}
+
+\begin{verbatim}
+int PILReloadParameters(void);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reloads parameters from parameter file. It is called
+internally by PILInit. It
+should be called explicitly by applications running in ISDC\_SERVER\_MODE to
+rescan
+parameter file and reload parameters from it. Current parameter list in
+memory (including
+any modifications) is deleted. PIL library locks whole file for exclusive
+access when reading
+from parameter file. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Notes\\}
+{\it
+parameter file remains open until PILClose is called. Function internally
+DOES NOT close/reopen parameter file. Application should call
+PILFlushParameters before calling this function, otherwise all changes
+made to parameters so far are lost.
+}
+
+
+%%%%%%%%%%%       PILFlushParameters       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILFlushParameters}
+
+\begin{verbatim}
+int PILFlushParameters(void);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function flushes changes made to parameter list (in memory) to disk.
+Current contents
+of parameter file is overwritten. PIL library locks whole file for exclusive
+access when writing to parameter file.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Notes\\}
+{\it
+parameter file remains open until PILClose is called.
+}
+
+
+%%%%%%%%%%%       PILSetModuleName       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetModuleName}
+
+\begin{verbatim}
+int PILSetModuleName(char *name);
+\end{verbatim}
+
+\paragraph{Description\\}
+Sets name of the module which uses PIL services. Result is stored in global
+variable
+PILModuleName. Usually name of parameter file equals argv[0] + ".par" suffix
+but this can
+be overriden by calling PILSetModuleName and/or PILSetModuleVersion before
+calling
+PILInit. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+new module name
+\end{itemize}
+
+
+%%%%%%%%%%%       PILSetModuleVersion       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetModuleVersion}
+
+\begin{verbatim}
+int PILSetModuleVersion(char *version);
+\end{verbatim}
+
+\paragraph{Description\\}
+Sets version of the module which uses PIL services. Result is stored in
+global variable
+PILModuleVersion.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *version [In] } \\
+new module version. If NULL pointer is passed version is set to "version
+unspecified" string
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetParFilename       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetParFileName}
+
+\begin{verbatim}
+int PILGetParFilename(char **fname);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function retrieves full path of used parameter file. Absolute path is
+returned only when
+PFILES environment variable contains absolute paths. If parameter file is
+taken from
+current dir then only filename is returned. Pointer returned points to a
+statically allocated
+buffer, applications should copy data from it using strcpy. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char **fname [Out] } \\
+pointer to name/path of the parameter file 
+\end{itemize}
+
+
+%%%%%%%%%%%       PILOverrideQueryMode       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILOverrideQueryMode}
+
+\begin{verbatim}
+int PILOverrideQueryMode(int newmode);
+\end{verbatim}
+
+\paragraph{Description\\}
+This functions globally overrides query mode. When newmode passed is
+PIL\_QUERY\_OVERRIDE, prompting for new values of parameters is completely
+disabled. If
+value is bad or out of range PILGetXXX return immediately with error without
+asking user.
+No i/o in stdin/stdout is done by PIL in this mode. When newmode is
+PIL\_QUERY\_DEFAULT
+PIL reverts to default query mode. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt int newmode [In] } \\
+new value for query override mode
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetBool       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetBool}
+
+\begin{verbatim}
+int PILGetBool(char *name, int *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type
+boolean. If this is not the case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt int *result [Out] } \\
+pointer to integer variable which will store result. Boolean value of
+FALSE is returned as a 0. Any other value means TRUE. 
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetInt       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetInt}
+
+\begin{verbatim}
+int PILGetInt(char *name, int *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type
+integer. If this is not the case error code is returned. 
+
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In]} \\
+name of the parameter 
+\item
+{\tt int *result [Out]} \\
+pointer to integer variable which will store result.
+
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetReal       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetReal}
+
+\begin{verbatim}
+int PILGetReal(char *name, double *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type real. If this is not the case
+error code is returned.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In]} \\
+name of the parameter
+\item
+{\tt double *result [Out]} \\
+pointer to double variable which will store result. 
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetReal4       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetReal4}
+
+\begin{verbatim}
+int PILGetReal4(char *name, float *result);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type real. If this is not the case
+error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+\item
+name of the parameter 
+{\tt float *result [Out] } \\
+\end{itemize}
+pointer to float variable which will store result.
+\paragraph{Notes\\}
+{\it
+PIL library internally performs all computations using double data type.
+This function merely calls PILGetReal() function then converts double to
+float.
+}
+
+
+%%%%%%%%%%%       PILGetString       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetString}
+
+\begin{verbatim}
+int PILGetString(char *name, char *result);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type string. If this is not the case error code is returned. 
+It is possible to enter empty string (without accepting default value).
+By default entering string "" (two doublequotes) sets value of given string
+parameter to an empty string. If PIL\_EMPTY\_STRING environment variable
+is defined then its value is taken as an empty string equivalent.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter
+\item
+{\tt char *result [Out] } \\
+pointer to character array which will store result. The character array
+should have at least PIL\_LINESIZE characters to assure enough storage for the longest
+possible string. 
+\end{itemize}
+
+
+\paragraph{Notes\\}
+{\it
+When enum list is specified for given parameter and is in effect (see
+section \ref{PILRefParFiles}), then PILGetString converts value
+entered to uppercase before returning. Also when comparing default/entered
+value PILGetString ignores case. This (i.e. conversion to uppercase
+and case-insensitive comparison) applies \_ONLY\_ to string parameters
+and \_ONLY\_ to those for which pipe (vertical bar) separated enum list is 
+specified (in {\tt min} field).
+}
+
+
+%%%%%%%%%%%       PILGetFname       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetFname}
+
+\begin{verbatim}
+int PILGetFname(char *name, char *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type filename. If this is not the case error code is returned. 
+It is possible to enter empty string (without accepting default value).
+By default entering string "" (two doublequotes) sets value of given string
+parameter to an empty string. If PIL\_EMPTY\_STRING environment variable
+is defined then its value is taken as an empty string equivalent.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter
+\item
+{\tt char *result [Out] } \\
+pointer to character array which will store result. The character array
+should have at least PIL\_LINESIZE characters to assure enough storage for
+the longest possible string.
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+leading and trailing spaces are trimmed.
+If the type of the parameter specifies it, access mode checks are done 
+on file. So if access mode specifies write mode, and the file is read-only 
+then PILGetFname will not accept that filename
+and will prompt user to enter name of the file which is writable. 
+Before applying any checks the value of the parameter (which may be URL, 
+for instance http://, file://etc/passwd) is converted to the filename
+(if it is possible). Details are given in paragraph \ref{PILSetRootNameFunction}.
+}
+
+
+%%%%%%%%%%%       PILGetDOL       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetDOL}
+
+\begin{verbatim}
+int PILGetDOL(char *name, char *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has to
+be of type string. If this is not the case error code is returned. 
+It is possible to enter empty string (without accepting default value).
+By default entering string "" (two doublequotes) sets the value of given string
+parameter to an empty string. If PIL\_EMPTY\_STRING environment variable
+is defined then its value is taken as an empty string equivalent.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter
+\item
+{\tt char *result [Out] } \\
+pointer to character array which will store result. The character array
+should have at least PIL\_LINESIZE characters to assure enough storage for
+the longest possible string.
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+leading and trailing spaces are trimmed.
+}
+
+
+%%%%%%%%%%%       PILGetAsString       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetAsString}
+
+\begin{verbatim}
+int PILGetAsString(const char *name, char *result);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter, regardless of its type,
+and returns its value as a string.
+
+\paragraph{Return Value\\}
+If successful returns ISDC\_OK; otherwise returns an error code. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanations.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter
+\item
+{\tt char *result [Out] } \\
+pointer to character array which will store result. The character array
+should have at least PIL\_LINESIZE characters to assure enough storage for the longest
+possible string. 
+\end{itemize}
+
+
+\paragraph{Notes\\}
+{\it
+The value of the parameter is obtained by calling the correct PIL code
+for the actual parameter type. That is, if the parameter type is bool, the
+code in PILGetBool will be called, if a string, PILGetString will be
+called etc. Therefore, please consult the detailed description of the
+relevant function for specific behavior for each parameter type.
+}
+
+
+%%%%%%%%%%%       PILGetIntVector       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetIntVector}
+
+\begin{verbatim}
+int PILGetIntVector(char *name, int nelem, int *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly NELEM integer numbers separated with spaces. If there are more
+or less then NELEM then error code is returned.
+
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In]} \\
+name of the parameter 
+\item
+{\tt int nelem [In]} \\
+number of integers to return
+\item
+{\tt int *result [Out]} \\
+pointer to vector of integers to store result
+
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetRealVector       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetRealVector}
+
+\begin{verbatim}
+int PILGetRealVector(char *name, int nelem, double *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly NELEM real numbers separated with spaces. If there are more
+or less then NELEM then error code is returned.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In]} \\
+name of the parameter
+\item
+{\tt int nelem [In]} \\
+number of doubles to return
+\item
+{\tt double *result [Out]} \\
+pointer to vector of doubles to store result
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetReal4Vector       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetReal4Vector}
+
+\begin{verbatim}
+int PILGetReal4Vector(char *name, int nelem, float *result);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly NELEM real numbers separated with spaces. If there are more
+or less then NELEM then error code is returned.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt int nelem [In]} \\
+number of floats to return
+\item
+{\tt float *result [Out] } \\
+pointer to vector of floats to store result
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetIntVarVector       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetIntVarVector}
+
+\begin{verbatim}
+int PILGetIntVarVector(char *name, int *nelem, int *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly *nelem integer numbers separated with spaces. The actual number
+of items found in parameter is returned in *nelem.
+
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In]} \\
+name of the parameter 
+\item
+{\tt int *nelem [In/Out]} \\
+Maximum expected number of item (on input). Actual number of floats found in
+parameter (on output)
+\item
+{\tt int *result [Out]} \\
+pointer to vector of integers to store result
+
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetRealVarVector       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetRealVarVector}
+
+\begin{verbatim}
+int PILGetRealVarVector(char *name, int *nelem, double *result); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+exactly *nelem real numbers separated with spaces.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation. The actual number
+of items found in parameter is returned in *nelem.
+
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In]} \\
+name of the parameter
+\item
+{\tt int *nelem [In/Out]} \\
+Maximum expected number of item (on input). Actual number of floats found in
+parameter (on output)
+\item
+{\tt double *result [Out]} \\
+pointer to vector of doubles to store result
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetReal4VarVector       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetReal4VarVector}
+
+\begin{verbatim}
+int PILGetReal4VarVector(char *name, int *nelem, float *result);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function reads the value of specified parameter. The parameter has
+to be of type string (type stored in parameter file). If this is not the
+case error code is returned. Ascii string (value of parameter) has to have
+at most *nelem real numbers separated with spaces. The actual number
+of items found in parameter is returned in *nelem.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt int *nelem [In/Out]} \\
+Maximum expected number of item (on input). Actual number of floats found in
+parameter (on output)
+\item
+{\tt float *result [Out] } \\
+pointer to vector of floats to store result
+\end{itemize}
+
+
+%%%%%%%%%%%       PILPutBool       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPutBool}
+
+\begin{verbatim}
+int PILPutBool(char *name, int b); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+boolean. If this is not the case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt int b [In] } \\
+new value for argument.
+\end{itemize}
+
+
+%%%%%%%%%%%       PILPutInt       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPutInt}
+
+\begin{verbatim}
+int PILPutInt(char *name, int i); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type integer.
+If this is not the case error code is returned. 
+The same happens when value passed is out of range.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt int i [In] } \\
+new value for argument.
+\end{itemize}
+
+
+%%%%%%%%%%%       PILPutReal       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPutReal}
+
+\begin{verbatim}
+int PILPutReal(char *name, double d); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+boolean. If this is not the case error code is returned. 
+The same happens when value passed is out of range.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt double d [In] } \\
+new value for argument.
+\end{itemize}
+
+
+%%%%%%%%%%%       PILPutString       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPutString}
+
+\begin{verbatim}
+int PILPutString(char *name, char *s); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+boolean. If this is not the case error code is returned. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt char *s [In] } \\
+new value for argument. Before assignment value is truncated PIL\_LINESIZE
+characters. 
+\end{itemize}
+
+
+%%%%%%%%%%%       PILPutFname       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILPutFname}
+
+\begin{verbatim}
+int PILPutFname(char *name, char *s); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function sets the value of specified parameter. without any prompts.
+The parameter has to be of type
+boolean. If this is not the case error code is returned. 
+The same happens when value passed is out of range.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt char *name [In] } \\
+name of the parameter 
+\item
+{\tt char *s [In] } \\
+new value for argument. Before assignment value is truncated PIL\_LINESIZE
+characters. 
+\end{itemize}
+
+
+%%%%%%%%%%%       PILGetNumParameters       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetNumParameters}
+
+\begin{verbatim}
+int PILGetNumParameters(int *parnum);
+\end{verbatim}
+
+\paragraph{Description\\}
+This function returns number of parameters in parameter file. The number
+returned includes entries for all lines in parameter file, including those
+in wrong/invalid format. Actual number of valid parameters can be found
+by iteratively calling PILGetParameter and checking for correct format
+flag.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt int *parnum [Out] } \\
+number of parameters found
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+This function does not have its F90 version.
+}
+
+
+%%%%%%%%%%%       PILGetParameter       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILGetParameter}
+
+\begin{verbatim}
+int PILGetParameter(int *parnum); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function returns full record about n-th parameter in parameter file.
+This record, stored in memory, is maintained internally by PIL. Any changes
+to a given parameter, are first reflected in this record and disk update
+is done only by PILClose or PILFlushParameters.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt idx [In] } \\
+index of parameter to return
+\item
+{\tt pp [Out] } \\
+returned parameter's data
+\item
+{\tt minmaxok [Out] } \\
+flag whether min/max(1) or enum(2) values are defined (and returned) for that parameter
+\item
+{\tt vmin [Out] } \\
+min value for returned parameter (converted to proper type), only when minmaxok==1
+\item
+{\tt vmax [Out] } \\
+max value for returned parameter (converted to proper type), only when minmaxok==1
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+One can use the following program to list parameters :
+
+\begin{verbatim}
+PILGetNumParameters(&parcnt);
+for (i=0; i<parcnt; i++)
+ { if (PIL_OK != PILGetParameter(i, &pardata, &minmaxflag, &minval, 
+                                 &maxval))
+     break;
+   if (PIL_FORMAT_OK != pp->format) continue;
+
+   minmaxstr[0] = 0;
+   if (1 == minmaxflag) sprintf(minmaxstr, "min=%s, max=%s ", 
+                                pp->strmin, pp->strmax);
+   if (2 == minmaxflag) sprintf(minmaxstr, "enum=%s ", pp->strmin);
+
+   printf("%-16.16s 0x%02x 0x%02x %20s %s// %s\n", pp->strname, 
+          pp->type, pp->mode, pp->strvalue, minmaxstr, pp->strprompt);
+ }
+\end{verbatim}
+
+Symbolic values are defined in pil.h
+
+This function does not have its F90 version.
+}
+
+
+%%%%%%%%%%%       PILVerifyCmdLine       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILVerifyCmdLine}
+
+\begin{verbatim}
+int PILVerifyCmdLine(void); 
+\end{verbatim}
+
+\paragraph{Description\\}
+PILVerifyCmdLine scans argument list (given by argc and argv parameters) and
+for all parameters in format Name=Value checks whether there is parameter with
+such name in parameter table (in memory). If this is not the case it returns
+with an error (meaning: bogus parameters specified in command line).
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Notes\\}
+{\it
+This function does not have its F90 version.
+}
+
+
+%%%%%%%%%%%       PILSetRootNameFunction       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetRootNameFunction}\label{PILSetRootNameFunction}
+
+\begin{verbatim}
+int PILSetRootNameFunction(int (*func)(char *s));
+\end{verbatim}
+
+\paragraph{Description\\}
+This function instruct PIL to use function 'func' as a new URL to filename
+conversion routine. This function will be called during validation
+of any parameter of type file with access checking on ('fr', 'fw', 'fn' or
+'fe').
+
+PIL's default function is the one which speaks CFITSIO's language. 
+
+It is valid to call this function with func set to NULL. In this case
+any URL will be treated verbatim as a filename during filename 
+validation phase.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt func [In] } \\
+pointer to the new URL to filename conversion function. This function
+should read input URL (passed in s), then it should check if it evaluates 
+to filename. If it does it should extract that filename and put it back into s.
+New function should return one of the following :
+   \begin{itemize}
+   \item
+   {\tt PIL\_ROOTNAME\_FILE } \\
+   if URL evaluates to filename. For instance
+   file://some/file.fits[1] or simply /some/file.fits. In both cases
+   the filename stored in s will be /some/file.fits (assuming default
+   PIL's conversion function).
+   \item
+   {\tt PIL\_ROOTNAME\_NOTFILE } \\
+   if URL does not evaluate to filename
+   \item
+   {\tt PIL\_ROOTNAME\_STDIN } \\
+   if URL specifies standard input stream (stdin/STDIN for instance)
+   \item
+   {\tt PIL\_ROOTNAME\_STDOUT } \\
+   if URL specifies standard input stream (stdout/STDOUT for instance)
+   \item
+   {\tt PIL\_ROOTNAME\_STDINOUT } \\
+   if URL specifies standard input stream ('-' for instance)
+   \item
+   {\tt other value } \\
+   generic error code, like NULL pointers, PIL not initialized, etc...
+   \end{itemize}
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+This function does not have its F90 version.
+}
+
+
+%%%%%%%%%%%       PILSetFileAccessFunction       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetFileAccessFunction}\label{PILSetFileAccessFunction}
+
+\begin{verbatim}
+int PILSetFileAccessFunction(int (*func)(const char *file_name, const char *open_mode)
+\end{verbatim}
+
+\paragraph{Description\\}
+This function allows the PIL client to supply a custom function for the
+purpose of checking file existence and/or access type.
+
+\paragraph{Return Value\\}
+If successful returns ISDC\_OK; otherwise returns an error code. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanations.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt func [In] } \\
+pointer to the new access checking function being supplied by the client. This function
+must return a 0 if the file does not exist or does not have the correct access
+mode, and a 1 if it does. The supplied function takes two arguments, and must handle
+them as follows:
+   \begin{itemize}
+   \item
+   {\tt file\_name} The name of the file being checked.
+   \item
+   {\tt open\_mode} The access mode to check. This may be either "r", "w", "" or 0.
+   The client function should interpret the first two options as checking for
+   read and write access, respectively. Either "" or 0 signifies that the client
+   function should only check for file existence.
+   \end{itemize}
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+This function does not have a F90 version.
+}
+
+
+%%%%%%%%%%%       PILSetReadlinePromptMode       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetReadlinePromptMode}\label{PILSetReadlinePromptMode}
+
+\begin{verbatim}
+int PILSetReadlinePromptMode(int mode); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function changes PIL's promping mode when compiled
+with READLINE support. 
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt mode [In] } \\
+The new PIL prompting mode. Allowable values are:
+
+\begin{itemize}
+\item PIL\_RL\_PROMPT\_PIL - standard prompting mode (compatible
+with previous PIL versions). The prompt format is :
+
+\begin{verbatim}
+           some_text  [ default_value ] : X
+\end{verbatim}
+
+: (which is printed) denotes beginning of the edit buffer (which in 
+this mode is always initially empty).
+X denotes cursor position. To enter empty using this mode, one has to
+enter "" (unless redefined by PIL\_EMPTY\_STRING environment variable).
+
+\item PIL\_RL\_PROMPT\_IEB - alternate prompting mode. The prompt
+format is :
+
+\begin{verbatim}
+           some_text : default_value X
+\end{verbatim}
+
+: (which is printed) denotes beginning of the edit buffer which in 
+this mode is initially set to the default value.
+X denotes cursor position. To enter empty in this mode one
+simply has to empty edit buffer using BACKSPACE/DEL keys then 
+press RETURN key.
+\end{itemize}
+\end{itemize}
+
+
+%%%%%%%%%%%       PILSetLoggerFunction       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetLoggerFunction}\label{PILSetLoggerFunction}
+
+\begin{verbatim}
+int PILSetLoggerFunction(int (*func)(char *s)); 
+\end{verbatim}
+
+\paragraph{Description\\}
+This function instructs PIL to use function 'func' as a new logger
+routine. New function will be called whenever PILGetXXX or PILPutXXX
+routine fails. The string passed to the new routine (and generated
+internally by PIL) usually contains the name of the parameter 
+for which the PIL routine failed.
+
+\paragraph{Return Value\\}
+If success returns ISDC\_OK. Error code otherwise. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt func [In] } \\
+pointer to the new logger function. The 'func' function
+should read input text (passed in s), then it should log 
+the text somewhere using its own logging mechanism.
+Calling PILSetLoggerFunction(NULL) instructs PIL not
+to log any messages (this is also done by PILInit).
+\end{itemize}
+
+\paragraph{Notes\\}
+{\it
+The PILSetLoggerFunction function does not have its F90 version.
+}
+
+
+%%%%%%%%%%%       PILSetReprompt       %%%%%%%%%%%%%%%%%
+
+\subsubsection{PILSetReprompt}\label{PILSetReprompt}
+
+\begin{verbatim}
+int PILSetReprompt(const char *par_name, int reprompt)
+\end{verbatim}
+
+\paragraph{Description\\}
+Resets the state of the given parameter such that the next call
+to the appropriate PILGet-family function will issue a prompt, regardless of
+whether that parameter was supplied on the command line, or was already prompted
+for, or is hidden.
+
+\paragraph{Return Value\\}
+If successful returns ISDC\_OK; otherwise returns an error code. See appendix \ref{PILRefErrorCodes}
+for a list of error codes and their explanation.
+
+\paragraph{Parameters}
+\begin{itemize}
+\item
+{\tt par\_name [In] } \\
+Name of the parameter for which to activate reprompt mode.
+\item
+{\tt reprompt [In] } \\
+Whether to reprompt: 1 means reprompt, 0 means do not reprompt.
+\end{itemize}
+
+\paragraph{Notes\\}
+{ If PILOverrideQueryMode is set to suppress prompts, this function has no effect.
+\it
+The PILSetReprompt function does not have its F90 version.
+}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Calling PIL library functions from C/C++}\label{PILRefCcalling}
+
+Applications can use PIL services in one of 2 different modes. The first one
+ISDC\_SINGLE\_MODE is the simplest
+one. In this mode application simply includes {\tt pil.h} header file, calls
+PILInit, plays with parameters by calling
+PILGetXxx/PILPutXxx functions and finally shuts down PIL library by calling
+PILClose. The skeleton code is given
+below. 
+
+\begin{verbatim}
+
+/* this is skeleton code for simple PIL aware applications, this
+   is not a working code.
+*/
+
+#include <stdio.h>
+#include <pil.h>
+
+int main(int argc, char **argv)
+{ int r;
+  float	fv[5];
+
+r = PILInit(argc, argv);
+
+if (r < 0)
+  {
+    printf("PILInit failed : %s\n", PIL_err_handler(r));
+    return(10);
+  }
+
+r = PILGetBool("boolParName1", &intptr);
+r = PILGetReal("RealParName34", &doubleptr);
+r = PILGetReal4Vector("real4vecname", 5, &(fv[0]));
+
+    /* .... application code follows .... */
+
+PILClose(PIL_OK);
+exit(0);
+} 
+
+\end{verbatim}
+
+The second mode, called ISDC\_SERVER\_MODE allows for multiple rereads of
+parameter file. Using this method
+application can exchange data with other processes via parameter file
+(provided other processes use locks to
+assure exclusive access during read/write operation). One example of code is
+as follows : 
+
+\begin{verbatim}
+
+/* this is skeleton code for PIL aware applications running in server mode,
+   this is not a working code.
+*/
+
+#include <stdio.h>
+#include <pil.h>
+
+int main(int argc, char **argv)
+{
+
+PILInit(argc, argv);
+
+if (ISDC_SERVER_MODE != PILRunMode)
+  exit(-1);  /* error - not in server mode - check parameter file */
+
+for (;;)
+ {
+   PILReloadParameters();
+   PILGetInt("IntParName", &intvar);
+
+   /* place for loop code here
+        ...
+   */
+
+   PILPutReal("RealParName", 4.567);
+   PILFlushParameters();
+   if (exit_condition) break;
+ }
+
+PILClose(status);
+return(PIL_OK);
+}
+
+\end{verbatim}
+
+After initial call to PILInit application jumps into main loop. In each
+iteration it rereads parameters from file
+(there is no need to call PILReloadParameters during first iteration), Based
+on new values of just read-in
+parameters (which might be modified by another process) application may
+decide to exit from loop or continue.
+If it decides to continue then after executing application specific loop
+code it calls PILFlushParameters to signal
+other process that it is done with current iteration. Algorithm described
+above is very simple, and the real applications are usually more complicated. 
+
+As mentioned earlier, applications written for ISDC should not use
+PILInit/PILClose directly. Instead they should
+use CommonInit/CommonExit functions from ISDC's Common Library. 
+
+\paragraph{Notes\\}
+{\it
+most applications will not support ISDC\_SERVER\_MODE so one can delete
+those fragments of skeleton code which deal with this mode.
+}

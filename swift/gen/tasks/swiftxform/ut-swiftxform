@@ -1,0 +1,227 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/gen/tasks/swiftxform/ut-swiftxform,v $
+# $Revision: 1.14 $
+# $Date: 2008/05/07 14:10:12 $
+#
+#	ut-swiftxform
+#
+#
+# $Log: ut-swiftxform,v $
+# Revision 1.14  2008/05/07 14:10:12  rwiegand
+# Ignore changes in UTELDEF since generic name is used for non-CALDB mode.
+#
+# Revision 1.13  2006/11/13 21:58:36  rwiegand
+# Need to ignore DTELDEF in CALDB mode to handle different CALDB roots.
+#
+# Revision 1.12  2006/11/07 14:26:01  rwiegand
+# Ignore TELDEF keywords when comparing non-CALDB mode results.
+#
+# Revision 1.11  2005/11/02 15:45:00  rwiegand
+# Execute commands using Task::shell.
+#
+# Revision 1.10  2005/09/16 12:09:14  rwiegand
+# Unit test in CALDB mode was not passing CALDB for alignfile.
+#
+# Revision 1.9  2004/10/17 15:54:21  rwiegand
+# Added CALDB test mode.
+#
+# Revision 1.8  2004/09/24 20:54:27  miket
+# Merge of Swift Build 9 back onto main trunk
+#
+# Revision 1.7  2004/08/13 14:56:15  rwiegand
+# Corrected quoting on regular expression.
+#
+# Revision 1.6  2004/08/09 15:23:06  rwiegand
+# Caught up with swiftxform parameter name changes.
+#
+# Revision 1.5  2004/07/21 18:40:41  rwiegand
+# Added zeronulls parameter which is passed straight through to imagetrans.
+#
+# Revision 1.4  2004/07/09 16:27:49  rwiegand
+# Parameter consistency effort.  Use PIL interface.
+#
+# Revision 1.2  2004/05/28 15:36:50  rwiegand
+# Allow MJDREF or MJDREFI/MJDREFF.
+#
+# Revision 1.1  2004/05/13 18:43:54  rwiegand
+# Added test tool for swifttrans.
+#
+
+use strict;
+
+package Test::Swiftxform;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+
+# main
+{
+	my $tool = Test::Swiftxform->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->pilOptions(
+			options => [ qw(input=string output=string
+					cleanup=boolean caldb=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	foreach my $test (qw(
+			uvot.raw2sky.mjd
+			uvot.raw2det.wdbn.3
+			xrt.raw2det.full.1
+			xrt.raw2sky.1
+			)) {
+
+		$self->runSwiftxform($test)
+			if $self->isValid;
+	}
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runSwiftxform
+{
+	my ($self, $test) = @_;
+
+	my $args = $self->args;
+	my $input = "$args->{input}/$test";
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	my $to;
+	if ($test =~ /2sky/) {
+		$to = 'SKY';
+	}
+	elsif ($test =~ /2det/) {
+		$to = 'DET';
+	}
+	else {
+		$self->error(BAD_INPUT, "unable to determine to system for '$test'");
+		return;
+	}
+
+	my $bitpix;
+	if ($test =~ /uvot/) {
+		$bitpix = -32;
+	}
+	elsif ($test =~ /xrt/) {
+		$bitpix = 0;
+		$self->warning("clearing CALDB flag for XRT test")
+			if $caldb;
+		$caldb = 0;
+	}
+	else {
+		$self->error(BAD_INPUT, "unable to determine bitpix for '$test'");
+		return;
+	}
+
+	my $ra = 0;
+	my $dec = 0;
+	my $attfile = "$input/attconst.fits";
+	if (-f $attfile) {
+		my $text = qx(cat $input/attconst.txt);
+		my $reReal = qr(\d+|-?\d*\.\d+|-?\d+\.\d*);
+		if ($text =~ /^($reReal)\s+($reReal)\s+($reReal)\s+($reReal)/) {
+			$ra = $2;
+			$dec = $3;
+		}
+		else {
+			$self->warning("unrecognized attitude: $text");
+		}
+	}
+	else {
+		$attfile = 'none';
+	}
+
+	my @args = (
+		infile     => "$input/input.fits",
+		outfile    => "$output/output.fits",
+
+		to         => $to,
+		teldeffile => $caldb ? 'CALDB' : "$input/test.teldef",
+		alignfile  => $caldb ? 'CALDB' : "$input/swalign.fits",
+		attfile    => $attfile,
+
+		method     => 'default',
+		ra         => $ra,
+		dec        => $dec,
+
+		bitpix     => $bitpix,
+
+		aberration => 'no',
+		zeronulls  => 'no',
+		copyall    => 'no',
+		clobber	   => 'yes',
+		history	   => 'yes',
+		cleanup	   => $args->{cleanup},
+		chatter	   => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(infile template)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	my $command = $self->buildCommand('swiftxform', @args);
+	my $result = $self->shell($command);
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{outfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $exclude = 'DATE,DATASUM,DTELDEF,UTELDEF';
+		if (not $caldb) {
+			$exclude .= ',UTELDEF';
+		}
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args{template},
+			infile2 => $args{outfile},
+			tolerance => 0.2,
+			exclude => $exclude,
+			);
+		$self->shell($command);
+	}
+}
+

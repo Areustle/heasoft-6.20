@@ -1,0 +1,280 @@
+#!/usr1/local/bin/perl5
+#
+# This script is designed to take an input spectrum file and a
+# a series or relative channel ranges and convert that to a range of 
+# absolute channel ranges. This script can be run silently by inputting
+# a series of flags/switches or run interactively and it will prompt you 
+# for the information that is needed. 
+#
+# Brian K. Elza 10/31/95
+# XTE GSFC/NASA
+#
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('i:f:c:ph ');	
+		
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+NAME
+    chantrans -- a script that queries the user for a series of relative 
+channel values (beginning at 0) and translates them into their absolute 
+channel values and store that into a file ready for input into SA(E)EXTRCT. 
+    
+    
+USAGE
+    chantrans -i "infile" -f "outfile" -c "Relative channel ranges" -h (help) -p (print out all channel information) or chantrans
+    
+    
+DESCRIPTION
+    This script file is meant to allow the user to specify an input file,
+and output file, and a series of relative channel ranges (i.e., 0-16, 22,
+28-50) and the script will read the CPIX keyword from the infile translate 
+the specified relative channel ranges to their absolute channels ranges 
+(e.g., given CPIXn = (0:22),(23~29), (30:51;2), (52:255), the output file 
+would contain 0-16, 22, 32-64) and this value would be input in SA(E)EXTRCT 
+as the "chint" value. 
+    
+PARAMETERS (SWITCHES/FLAGS)
+
+    -i {file} - provide name of the spectral file input to FPLOT.
+
+    -f {file} - provide the name of an output file to contain the absolute
+                channel range.
+
+    -c {Relative channel range} - Give a relative channel range in the form of
+		"0-5, 16, 17-22, 50-128" (Note that these values can
+	        be read off of an FPLOT image of the spectrum).
+
+    -p       - Print out relationship between relative channels and absolute 
+               channels. 
+    
+EXAMPLES
+    1. chantrans -i "sac.pha" -f "chint.out" -c "0-16, 22, 28-50"
+    2. chantrans  
+    
+NOTES:
+    
+    
+BUGS
+    
+        Please report problems to xtehelp\@athena.gsfc.nasa.gov. Provide a
+        detailed  description  of  the  problem and an e-mail address at
+        which you can be reached if  further  information  is  required.
+        Before  reporting  a  bug  please  check  your .PAR file. At the
+        moment all comparisons are CASE SENSITIVE.
+    
+    
+SEE ALSO
+    SAEXTRCT and SEXTRCT for more information
+
+EOHELP1
+exit;
+    }
+
+# now onto the program ...
+
+require "utils.pl";
+
+print "\n";
+print "Running CHANTRANS v4.0 \n";
+print "#######################################\n\n";
+
+if(defined $opt_i) {
+    print "Input filename provided was: $opt_i \n";
+    $infile = $opt_i;
+} else {
+    @infile2=&runcom('pget fplot infile');
+    chop($infile2[0]);
+    print "Input file name or \@file-of-filenames:[$infile2[0]]";
+    ($infile = <STDIN>);
+    if($infile =~ /^./ ){
+	chop($infile);
+    }
+    else{
+	$infile = $infile2[0];
+    }
+}
+
+# Now we will test to see if the input file is a LIST of files. If it is
+# then we will copy all of the files contained within this file to a
+# unique filename
+if($infile =~ /^@/ ){
+    $infile =~ s/^@//;	# Remove the @ symbol
+    open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+    $tmpfile = <INPUT_FILE>; # Copy files from INFILE to OUTPUT
+    chop($tmpfile);
+    -e $tmpfile || die "Cannot find $tmpfile !\n";
+    print "Input file used is $tmpfile\n";
+    close(INPUT_FILE);	# We are finished with the input file.
+} else {
+    -e $infile || die "Cannot find $infile !\n";
+    $tmpfile = $infile;
+}
+$infile = $tmpfile;
+
+if(defined $opt_f) {
+    print "Output filename provided was: $opt_f \n";
+    $outfile = $opt_f;
+} else {
+    print "Output filename:[outfile_${$}]";
+    ($outfile = <STDIN>);
+    if($outfile =~ /^./ ){
+	chop($outfile);
+    } else{			
+	$outfile = "outfile_${$}";
+    }
+}
+    open(OUTPUT_FILE,">$outfile") || die "Sorry can't open $outfile\n"; # open a unique output file
+
+if(defined $opt_c) {
+    print "Relative channel ranges are: $opt_c \n";
+    $tmpchan = $opt_c;
+} else {
+    print "Input relative channel range:[0-5, 16, 22-128]";
+    ($tmpchan = <STDIN>);
+    if($tmpchan =~ /^./ ){
+	chop($tmpchan);
+    }
+    else{
+	print "ERROR! No channel range specified!!!\n";
+	print "Nothing to do!... Aborting....\n";
+	exit;
+    }
+}
+
+print "\n##########################################\n";
+
+$rddescr_string = "rddescr phafil='$infile' ";
+$rddescr_string .= "chanfil=chanfil_${$} chatter='10' ";
+$rddescr_string .= "clobber='yes' mode='ql'";
+
+@result=&runcom($rddescr_string);
+
+open(CHAN_FILE,"chanfil_${$}") || die "Sorry can't find chanfil_${$}\n"; # Open the input file
+
+$ichan = 0;
+$istore = 0;
+while(<CHAN_FILE>) {
+    chop;
+    $chan_array[$ichan] = $_;
+    @h = split(/\s+/,$chan_array[$ichan]);
+    $itmpt = @h;
+#    print "itmpt array is $itmpt\n";
+    if($h[3] != -1) {
+	$tempval=$h[1];
+	while($tempval <= $h[2]){
+	    $startval[$istore]=$tempval;
+#	    print "startval is $tempval, ";
+	    $tempval += $h[3];
+#	    print " stopval is $tempval, ";
+#	    print " istore is $istore \n";
+	    if($tempval <= $h[2]){
+		$stopval[$istore] = ($tempval-1);
+	    } else {
+		$stopval[$istore]=$h[2];
+	    }
+	    $istore++
+	}
+	    
+#	for($icount = 1; $icount < $itmpt; $icount ++) {
+#	    print "Chan $ichan, Space $icount, value $h[$icount]\n";
+#	}
+    }
+    $ichan++;
+}
+
+$itmpt = @chan_array;
+
+#print "istore value is $istore\n";
+
+if(defined $opt_p){
+    print "\n--------------------------------------------------------------------------\n";
+    print" Relative Channel:    Absolute Start Channel      Absolute Stop Channel\n";
+    for ($icount=0; $icount < $istore; $icount++){
+
+	printf "          %5d                      %5d                      %5d \n",$icount,$startval[$icount],$stopval[$icount];
+    }
+    print "--------------------------------------------------------------------------\n";
+}
+
+$istore--;
+
+close(CHAN_FILE);
+unlink("chanfil_${$}") || print "Having trouble deleting chanfil_${$}\n";
+
+#print "Finished parsing channels and working on chint";
+
+@chan = split(/,/,$tmpchan);
+$itmpt = @chan;
+print "Number of channel ranges specified: $itmpt \n";
+$itmpt--;
+
+for($icount = 0; $icount <= $itmpt; $icount++) {
+    @k = split(/-/,$chan[$icount]);
+    $ik = @k;
+    if($ik == 1) {
+	if($k[0] > $istore){
+	    print "Specified value is out of range!\n";
+	    print "You specified $k[0], but maximum relative channel for this file is $istore\n";
+	    exit;
+	} elsif($k[0] < 0){
+	    print "Specified value is out of range!\n";
+	    print "You specified $k[0], but minimum relative channel for this file is 0";
+	}
+	if($startval[$k[0]] == $stopval[$k[0]]) {
+	    printf OUTPUT_FILE " %5d", $startval[$k[0]];
+	} else {
+	    printf OUTPUT_FILE " %5d   %5d ", $startval[$k[0]],$stopval[$k[0]];
+	}
+    } elsif($ik == 2) {
+	if($k[0] > $istore){
+	    print "Specified value is out of range!\n";
+	    print "You specified $k[0], but maximum relative channel for this file is $istore\n";
+	    exit;
+	} elsif($k[0] < 0){
+	    print "Specified value is out of range!\n";
+	    print "You specified $k[0], but minimum relative channel for this file is 0";
+	}
+	if($k[1] > $istore){
+	    print "Specified value is out of range!\n";
+	    print "You specified $k[1], but maximum relative channel for this file is $istore\n";
+	    exit;
+	} elsif($k[1] < 0){
+	    print "Specified value is out of range!\n";
+	    print "You specified $k[1], but minimum relative channel for this file is 0";
+	}
+
+	if($startval[$k[0]] == $stopval[$k[1]]) {
+	    printf OUTPUT_FILE " %5d", $startval[$k[0]];
+	} else {
+	    printf OUTPUT_FILE " %5d   %5d ", $startval[$k[0]],$stopval[$k[1]];
+	}
+    } else {
+	print "\n\nERROR! Your channel range input is invalid!\nPlease check it and try again.\n\n";
+    }
+    if($icount++ < $itmpt--){
+	print OUTPUT_FILE "\n";
+	$icount--;
+	$itmpt++;
+    }
+}
+
+print OUTPUT_FILE "\n";
+
+close (OUTPUT_FILE);
+print "\nAbsolute channel ranges are:\n";
+open(OUTPUT_FILE,"$outfile");
+while(<OUTPUT_FILE>) {
+    print $_; # Print the results stored in OUTPUT_FILE
+}
+close(OUTPUT_FILE);	# We are finished with the input file.
+
+
+print "\nWe are finished. The results are stored in $outfile.\n\n";

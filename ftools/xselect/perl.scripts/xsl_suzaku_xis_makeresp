@@ -1,0 +1,267 @@
+#! /usr/bin/perl 
+
+# This script creates a Suzaku XIS response.
+$version ="1.20";
+$date  ="2008-01-24";
+$author = "kaa";
+
+# define the binning breaks and xissimarfgen arguments
+
+$chan1 = 700;
+$chan2 = 2696;
+$energy1 = 1201;
+$energy2 = 5501;
+
+$fast_num_photons = 50000;
+$fast_accuracy = 0.05;
+$fast_estepfile = "sparse";
+
+$medium_num_photons = 100000;
+$medium_accuracy = 0.01;
+$medium_estepfile = "medium";
+
+$slow_num_photons = 200000;
+$slow_accuracy = 0.005;
+$slow_estepfile = "dense";
+
+
+# set the speed
+# The three speed options are as follows :
+#      fast : channel binning  2x then 4x from $chan1 and 8x from $chan2
+#             energy binning   2x then 4x from $energy1 and 8x from $energy2
+#             xissimarfgen run with num_photons=$fast_num_photons
+#                                   accuracy=$fast_accuracy
+#                                   estepfile=$fast_estepfile
+#    medium : channel binning  1x then 2x from $chan1 and 4x from $chan2
+#             energy binning   1x then 2x from $energy1 and 4x from $energy2
+#             xissimarfgen run with num_photons=$medium_num_photons
+#                                   accuracy=$medium_accuracy
+#                                   estepfile=$medium_estepfile
+#      slow : no response binning
+#             xissimarfgen run with num_photons=$slow_num_photons
+#                                   accuracy=$slow_accuracy
+#                                   estepfile=$slow_estepfile
+
+if(@ARGV < 1 || @ARGV > 6)
+{
+    print "\n usage : xsl_suzaku_xis_response filename regionfile extend? echo?\n\n";
+    print "Runs xisrmfgen to make an rmf, xissimarfgen to make an arf, combines\n";
+    print "them using marfrmf then optionally rebins the response using rbnrmf\n\n";
+    print "For the extend=no option the arf is calculated assuming a point source at the\n";
+    print "center of the selected region. The extend=yes option uses the detector image\n";
+    print "in the WMAP (the primary extension of the spectrum file) as the source from which\n";
+    print "to estimate the arf.\n\n";
+    exit(0);
+}
+
+$filename = $ARGV[0];
+$regionfile = $ARGV[1];
+$extend = "no";
+if ( @ARGV >= 3 && $ARGV[2] eq "yes" ) { $extend = "yes"; }
+$echo = "no";
+if ( @ARGV >= 4 && $ARGV[3] eq "yes" ) { $echo = "yes"; }
+$debug = "no";
+if ( @ARGV == 5 && $ARGV[4] eq "yes" ) { $debug = "yes"; }
+
+# construct the rmf and arf filenames
+
+$dot = index($filename,".");
+$rootname = substr($filename, 0, $dot);
+
+$rmffile = $rootname . ".rmf";
+$arffile = $rootname . ".arf";
+$respfile = $rootname . ".rsp";
+
+# first need to extract some information from the spectrum
+
+$command = "fkeypar fitsfile=$filename\[SPECTRUM\] keyword=INSTRUME";
+system($command);
+($instrume = `pget fkeypar value`) =~ tr/\n//d;
+
+$command = "fkeypar fitsfile=$filename\[SPECTRUM\] keyword=NAXIS2";
+system($command);
+($nbins = `pget fkeypar value`) =~ tr/\n//d;
+
+# set the speed based on the number of bins in the spectrum
+
+if ( $nbins eq "4096" ) {
+    $speed = "slow";
+} elsif ( $nbins eq "2048" ) {
+    $speed = "medium";
+} elsif ( $nbins eq "1024" ) {
+    $speed = "fast";
+} else {
+    print "$nbins bins in spectrum - should be 1024, 2048, or 4096.\n";
+    exit;
+}
+
+
+print "***************************************************************************\n";
+print "filename = $filename\n";
+print "regionfile = $regionfile\n";
+print "extend = $extend, echo = $echo, debug = $debug\n";
+print "$filename has $nbins spectral bins. Using $speed method for arf creation.\n";
+print "***************************************************************************\n\n\n";
+
+# run xisrmfgen to make the RMF.
+
+$command = "xisrmfgen phafile=$filename outfile=$rmffile";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+if ( $debug eq "no" ) { system($command); }
+
+if ( $extend eq "no" ) {
+
+# find the DETX/Y coordinates of the center of the WMAP - assumed to be the source center
+
+    $command = "fkeypar fitsfile=$filename+0 keyword=NAXIS1";
+    system($command);
+    ($naxis1 = `pget fkeypar value`) =~ tr/\n//d;
+    $command = "fkeypar fitsfile=$filename+0 keyword=NAXIS2";
+    system($command);
+    ($naxis2 = `pget fkeypar value`) =~ tr/\n//d;
+
+    $command = "fkeypar fitsfile=$filename+0 keyword=CRPIX1P";
+    system($command);
+    ($crpix1p = `pget fkeypar value`) =~ tr/\n//d;
+    $command = "fkeypar fitsfile=$filename+0 keyword=CRPIX2P";
+    system($command);
+    ($crpix2p = `pget fkeypar value`) =~ tr/\n//d;
+
+    $command = "fkeypar fitsfile=$filename+0 keyword=CDELT1P";
+    system($command);
+    ($cdelt1p = `pget fkeypar value`) =~ tr/\n//d;
+    $command = "fkeypar fitsfile=$filename+0 keyword=CDELT2P";
+    system($command);
+    ($cdelt2p = `pget fkeypar value`) =~ tr/\n//d;
+
+    $command = "fkeypar fitsfile=$filename+0 keyword=CRVAL1P";
+    system($command);
+    ($crval1p = `pget fkeypar value`) =~ tr/\n//d;
+    $command = "fkeypar fitsfile=$filename+0 keyword=CRVAL2P";
+    system($command);
+    ($crval2p = `pget fkeypar value`) =~ tr/\n//d;
+
+    $sourcex = ($naxis1/2.0 - $crpix1p)*$cdelt1p + $crval1p;
+    $sourcey = ($naxis2/2.0 - $crpix2p)*$cdelt2p + $crval2p;
+
+}
+
+# get the Euler angles to do the sky to detector conversion
+
+$command = "fkeypar fitsfile=$filename+0 keyword=MEAN_EA1";
+system($command);
+($euler1 = `pget fkeypar value`) =~ tr/\n//d;
+$command = "fkeypar fitsfile=$filename+0 keyword=MEAN_EA2";
+system($command);
+($euler2 = `pget fkeypar value`) =~ tr/\n//d;
+$command = "fkeypar fitsfile=$filename+0 keyword=MEAN_EA3";
+system($command);
+($euler3 = `pget fkeypar value`) =~ tr/\n//d;
+
+# set the speed options for xissimarfgen
+
+if ( $speed eq "fast" ) {
+    $num_photons = $fast_num_photons;
+    $accuracy = $fast_accuracy;
+    $estepfile = "$fast_estepfile";
+} elsif ( $speed eq "medium" ) {
+    $num_photons = $medium_num_photons;
+    $accuracy = $medium_accuracy;
+    $estepfile = "$medium_estepfile";
+} elsif ( $speed eq "slow" ) {
+    $num_photons = $slow_num_photons;
+    $accuracy = $slow_accuracy;
+    $estepfile = "$slow_estepfile";
+}
+
+# extended source case
+
+if ( $extend eq "yes" ) {
+
+    $command = "xissimarfgen instrume=$instrume source_mode=DETFITS source_image=$filename+0 " .
+	       "num_region=1 region_mode=SKYREG regfile1=$regionfile limit_mode=MIXED " .
+               "num_photon=$num_photons accuracy=$accuracy phafile=$filename detmask=none " .
+               "gtifile=$filename attitude=none ea1=$euler1 ea2=$euler2 ea3=$euler3 rmffile=$rmffile " .
+               "arffile1=$arffile estepfile=$estepfile clobber=yes";
+
+} else {
+
+# point source case
+
+    $command = "xissimarfgen instrume=$instrume source_mode=DETXY source_x=$sourcex source_y=$sourcey " .
+	       "num_region=1 region_mode=SKYREG regfile1=$regionfile limit_mode=MIXED " .
+               "num_photon=$num_photons accuracy=$accuracy phafile=$filename detmask=none " .
+               "gtifile=$filename attitude=none ea1=$euler1 ea2=$euler2 ea3=$euler3 rmffile=$rmffile " .
+               "arffile1=$arffile estepfile=$estepfile clobber=yes";
+
+}
+
+if ( $echo eq "yes" ) { print $command,"\n"; }
+if ( $debug eq "no" ) { system($command); }
+
+# now merge the rmf and arf to make the response file
+
+unlink($respfile);
+$command = "marfrmf rmfil=$rmffile arfil=$arffile outfil=$respfile";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+if ( $debug eq "no" ) { system($command); }
+
+# set up the text files needed to do the rebinning
+
+$chan1_1 = $chan1 - 1;
+$chan2_1 = $chan2 - 1;
+$energy1_1 = $energy1 - 1;
+$energy2_1 = $energy2 - 1;
+
+if ( $speed eq "fast" ) {
+    open(TMPFILE,">chanfile.txt");
+    print TMPFILE "0 $chan1_1 2\n";
+    print TMPFILE "$chan1 $chan2_1 4\n";
+    print TMPFILE "$chan2 4095 8\n";
+    close(TMPFILE);
+    open(TMPFILE,">energyfile.txt");
+    print TMPFILE "1 $energy1_1 2\n";
+    print TMPFILE "$energy1 $energy2_1 4\n";
+    print TMPFILE "$energy2 7900 8\n";
+    close(TMPFILE);
+} elsif ( $speed eq "medium" ) {
+    open(TMPFILE,">chanfile.txt");
+    print TMPFILE "0 $chan1_1 1\n";
+    print TMPFILE "$chan1 $chan2_1 2\n";
+    print TMPFILE "$chan2 4095 4\n";
+    close(TMPFILE);
+    open(TMPFILE,">energyfile.txt");
+    print TMPFILE "1 $energy1_1 1\n";
+    print TMPFILE "$energy1 $energy2_1 2\n";
+    print TMPFILE "$energy2 7900 4\n";
+    close(TMPFILE);
+}
+
+# rebin the response file if the medium or fast options are given
+
+if ( $speed eq "fast" || $speed eq "medium" ) {
+    $tmpfile = $rootname . ".tmp";
+    $command = "rbnrmf infile=$respfile binfile=chanfile.txt ebinfile=energyfile.txt outfile=$tmpfile clobber=yes";
+    if ( $echo eq "yes" ) { print $command,"\n"; }
+    if ( $debug eq "no" ) { system($command); }
+    if ( $debug eq "no" ) { rename($tmpfile, $respfile); }
+}
+
+$command = "fparkey value=$respfile fitsfile=$filename\[SPECTRUM\] keyword=RESPFILE";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+if ( $debug eq "no" ) { system($command); }
+
+$command = "fparkey value=NONE fitsfile=$filename\[SPECTRUM\] keyword=ANCRFILE";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+if ( $debug eq "no" ) { system($command); }
+
+# tidy up temporary files
+
+if ( $debug eq "no" ) { 
+    unlink($tmpfile);
+    unlink($arffile);
+    unlink($rmffile);
+    unlink("chanfile.txt");
+    unlink("energyfile.txt");
+}
+

@@ -1,0 +1,1079 @@
+#!/usr/bin/perl -w
+
+#####################################################################################
+
+#####################################################################################
+
+# 2005-12-13 first version of uvot_blink.pl
+
+# mod 2005-12-14 to add region files
+# mod 2005-12-15 to use Xvfb so that this can run from .procmail
+#		    note that this requires xorg-x11-Xvfb to be installed
+#			The script broke on 2007-01-07 because xorg-x11-Xvfb was
+#			not installed after an operating system upgrade.
+# mod 2005-12-16 to use new web file names
+# mod 2006-01-01 to add time to name of report file
+#		 to find file with candidate position
+# mod 2006-01-03 to change default $wrk_dir
+# mod 2006-01-08 to write title using region file
+# mod 2006-01-11 to include expid and filter in title
+# mod 2006-01-12 to write archive file to handle multiple FCs
+# mod 2006-01-18 to make rotation angle adjustable
+# mod 2006-02-02 to fix problem that blinkable Genie images are not being made
+#		    if corresponding srclist archive file exists
+#		    now require that msg_type is known
+#		 to add error messages to RPT if program quits
+# mod 2006-02-06 to change location of images on web
+#		 to add parameter $scale
+# mod 2006-02-07 to temporarily copy web images to old and new places
+# mod 2006-02-27 to stop copying to old web directory
+# mod 2006-03-23 to compare ages of $fn_dss and $fn_uvot with 0 not age of $rptfile
+#		 to improve creation of $rptfile
+# mod 2006-08-01 to look for ungzipped version of file unless -no_unzip_vrs
+# mod 2006-08-03 to adjust names for GCN files (e.g., uvot_sky_image.fits-89.gz)
+# mod 2006-08-08 to handle new names for GCN files
+# mod 2006-08-30 to organize images by FC number instead of filter
+#		 to load null images when starting a new burst
+# mod 2006-09-14 to use .grd file
+#		 to add -color, -white_on_black, and -black_on_white parameters
+#		 to tell dss size of image
+# mod 2006-09-21 to use sub uvot_count_fc for determining finding chart number
+# mod 2006-10-20 to save .jpg's
+# mod 2006-11-01 to use read_uvot_tokens and improve label on images
+# mod 2006-11-10 to fix problem converting to sexadecimal
+# mod 2006-11-15 to access stsci server to avoid WCS inaccuracies
+# mod 2007-01-08 to make accessing stsci a switch because stsci server hangs
+# mod 2007-01-11 to add auto scaling
+# mod 2007-01-26 to go back to log scaling for auto
+
+# this script produces images to blink from uvot TDRSS images and uploads
+# them to HEASARC web site
+
+# sample test case run in /local/data/khamseen4/marshall/swift/uvot_attach
+# uvot_blink_wrk.pl -bob -nomail -noglob -fn=232683_o1281_uvot_sky_image.fits
+# uvot_blink_wrk.pl -bob -nomail -noglob -fn=179968_o147_uvot_sky_srclist.fits
+# uvot_blink_wrk.pl -bob -nomail -noglob -fn=179968_o147_uvot_sky_image.fits
+
+# still to do:
+
+use strict;
+
+use base qw(Task);
+use lib "/home/heasfs/marshall/perl/lib";
+use Xvfb;
+
+{
+        my $task = __PACKAGE__->new(
+			args => {
+				chatter => 3,
+			});
+        $task->execute;
+}
+
+sub execute
+{
+
+my ($adx,$age,$age_dss,$age_rpt,$age_uvot,$base,$bat_area_min);
+my ($bat_dec,$bat_dist,$bat_dist_min,$bat_fract);
+my ($bat_msg,$bat_msg1,$bat_msg2,$bat_msg3,$bat_msg4,$bat_msg5);
+my ($bat_overlap,$bat_overlap_min,$bat_ra,$bat_radius,$bat_radius_min);
+my ($black_on_white,$bob);
+my ($cand_rad,$cand_type,$cdelt1,$cdelt1p,$cdelt2);
+my ($clobber,$cmdline,$color,$corr,$crpix1,$crpix2,$crval1,$crval2);
+my ($date,$date_obs,$ddec,$dec,$dec_cand,$dec_cand_dms,$dec_cent,$decdms);
+my ($dec_max,$dec_max_dms,$dec_min,$dec_min_dms,$decp,$die);
+my ($dir_archive,$dir_regions,$display,$distbuf,$distk,$distmax,$distmaxdeg);
+my ($dra,$ds9_wait,$dss_ang,$dt,$dx,$dy,$err,$err1,$expid,$ext_numb);
+my ($fem_add,$filter,$filter_lc,$fits,$fitsfile,$fn,$fn0,$fn_archive);
+my ($fn_box,$fn_cand,$fn_dss,$fn_dss_web,$fn_dss_web_new);
+my ($fn_grid,$fn_grid_genie,$fn_grid_srclist,$fn_nulljpg,$fn_page_log);
+my ($fn_reg,$fn_uvot,$fn_uvot_web,$fn_uvot_web_new,$fntmp);
+my ($fptr,$fractno,$glob,$grb_name,$hdunum,$help,$host);
+my ($i,$id,$id1,$ihdu,$image,$image_size,$imin,$indx,$instru,$j,$jj,$k,$line,$logfile);
+my ($max_age,$mean,$meonly,$min_age,$msg,$msg_type,$n,$name,$naxis1,$naxis2);
+my ($nblink,$newfile,$newval1,$newval2,$no_unzip_vrs,$no_xrt);
+my ($noarchive,$noglob,$nolog,$nomail,$nonull,$nosave,$nosize,$noupdate,$noweb);
+my ($nprev,$nrows,$nsame,$null_web,$numb,$nunique,$nunmatch,$offset_angle,$output);
+my ($ra,$ra_cand,$ra_cand_hms,$ra_cent,$rad,$rahms,$ra_max,$ra_max_hms,$ra_min);
+my ($ra_min_hms,$rap,$ratecol,$ratemin,$regionfile,$ret,$rpt,$rptfile);
+my ($sav_msg,$scale,$scale_max,$scale_min,$script,$sep,$sepdec,$sepra,$sep_sec,$server);
+my ($sigma,$size,$sizei,$srcfile,$status,$sumdec,$sumra);
+my ($t0,$t10,$targ_id,$tav,$tdec,$test,$texp,$threshold,$time,$title);
+my ($tm,$tmp1,$tmp1a,$tmp1b,$tmp2,$tmp3,$tmp4,$tmp5,$tmp6,$tmp7,$tmp_all);
+my ($to_adx,$tra,$troll,,$troll1,$tsettle,$tstart,$tstop,$twait);
+my ($unmag_mean,$unmag_std,$url,$url0);
+my ($use_entry,$user,$uvot_adx,$uvot_area,$uvotdetect);
+my ($uvot_msg,$uvot_msg1,$uvot_msg2,$uvot_msg3,$value1,$value2,$verbose,$vrs);
+my ($web_dir,$web_dir0,$white_on_black,$width,$width_dss,$width_min);
+my ($windowdx,$windowdy,$wrk_dir);
+my ($x_cent,$xrt_area_min,$xrt_dec,$xrt_dist,$xrt_dist_min,$xrt_fract);
+my ($xrt_msg,$xrt_msg1,$xrt_msg2,$xrt_msg3,$xrt_msg4,$xrt_msg5);
+my ($xrt_overlap,$xrt_overlap_min,$xrt_ra,$xrt_radius,$xrt_radius_min,$y_cent);
+my (@file_types,@mb,@tmp,@token_lines,@words);
+my (%prev_exp,%tmp);
+
+use lib "/home/heasfs/marshall/perl/lib";
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+use SimpleFITS;
+use Getopt::Long;
+use Mail::Sendmail;
+use File::Basename;
+use email_report;
+use deg2sex; # in lib
+use uvot_tdrss_subs; # in lib; has uovt_pushline, uvot_count_fc
+use find_latest_file_glob;
+use locale;
+
+my ($self) = @_;
+
+$vrs = "uvot_blink.pl vrs. 2007-01-26 fem";
+# capture start time for program in UT
+$date=`date -u "+%y%m%dd%Hh%Mm%Ss"`;
+chomp($date);
+$date = $date . "UT";
+$cmdline=$0;
+foreach $i (@ARGV){$cmdline .= " $i";}
+
+# my $equinox = 2000.0;
+$rad = 180.0/3.14159265;
+
+# set defaults and read parameters
+	$help=0;
+#	$logfile="uvot_blink.log";
+	$rptfile="uvot_blink_${date}.rpt";
+	$dir_archive="/Home/heasfs/marshall/swift/uvot_gcn";
+	
+	if(defined($ENV{'MAIL_FEM_WORK'})){
+	  $fem_add=$ENV{'MAIL_FEM_WORK'};
+	} else {
+	  $fem_add="marshall\@milkyway.gsfc.nasa.gov";
+	}
+
+# set env. variable DISPLAY to :0.0	
+#	if(defined($ENV{'DISPLAY'})){
+#	  print "Old DISPLAY was $ENV{'DISPLAY'}\n";
+#	  unless($ENV{'DISPLAY'} =~ /^\:0/){
+#	    $ENV{'DISPLAY'}=":0.0";
+#	    print "set DISPLAY to :0.0\n";
+#	  }
+#	} else {
+#	  $ENV{'DISPLAY'}="khamseen:0.0";
+#	  print "set DISPLAY to khamseen:0.0\n";
+#	  if(defined($ENV{'HOST'})){print "host: $ENV{'HOST'}\n";}
+#	}
+
+	$noweb=0;
+	$meonly=0;
+	$test=0;
+	$image=0;
+	$msg_type=undef;
+	$fn="";
+	$uvot_adx="uvot_cal\@astro.psu.edu";
+# $to_adx="$uvot_adx fmarshall\@lheapop.gsfc.nasa.gov";
+	$to_adx="$fem_add ssc\@athena.gsfc.nasa.gov";
+# should change this to list of individuals 
+# padi@milkyway, rwiegand@pop500.gsfc.nasa.gov, 
+# immler@milkyway.gsfc.nasa.gov, sholland@milkyway.gsfc.nasa.gov
+	$to_adx=$fem_add . " padi\@milkyway.gsfc.nasa.gov" . 
+	  " immler\@milkyway.gsfc.nasa.gov" . 
+	  " sholland\@milkyway.gsfc.nasa.gov" .
+	  " rwiegand\@pop500.gsfc.nasa.gov" .
+	  " fmarshall\@lheapop.gsfc.nasa.gov";
+	$adx=$fem_add;
+        $max_age=300; # maximum age of file in seconds; if 0, then do not check
+	$verbose=0;
+	$noarchive=0;
+	$noglob=0;
+	$nosave=0;
+	$nonull=0; # if set, do not copy null images to web site
+	$no_unzip_vrs=0; # unless set, try fn without .gz
+	$ds9_wait=0;
+	$ext_numb=undef;
+# default scale for ds9 for Genie image; other options are "sqrt" and "histequ"
+# for almost all Genie images the average value is ~7 and a linear plot works well
+#  this will make good images even when there is a bit error in the data a la 255445
+#	$scale="log";
+#	$scale="linear -scale limits 0 50"; 
+	$scale="auto";
+# default is black on white (inverted grey tones)
+	$white_on_black=0;
+	$black_on_white=1; # this is default (do not really need)
+	$color=""; # ds9 color map (standard, hsv, sls are only choices)
+	$fn_grid_genie="/Home/heasfs/marshall/perl/uvot_genie.grd";
+	$fn_grid_srclist="/Home/heasfs/marshall/perl/uvot_srclist.grd";
+	$bob=0; # if set, look for data from parallel system Bob set up
+#	$wrk_dir="/Home/heasfs/marshall/Attach";
+	$wrk_dir="/local/data/khamseen4/marshall/swift/uvot_attach";
+# $fn_nulljpg is a tar file of a directory blink which has a complete set of null 
+# images. It was created by copying ~/perl/uvot_null.jpg to 16 blink image files in
+# /local/data/khamseen4/marshall/swift/uvot_attach/blink
+# (the files need to be world readable (chmod 644 fc*.jpg))
+# and then tar cfp - *.jpg > uvot_null_blink.tar
+	$fn_nulljpg="$wrk_dir/blink/uvot_null_blink.tar";
+	$user="marshall";
+	$host="heasarcdev";
+	$web_dir0="/www.prod/htdocs/docs/swift/blink";
+	$web_dir="${user}\@${host}:$web_dir0";
+	$fn_page_log=undef;
+	$offset_angle=118.5; # modify from nominal 120 because of distortion
+	$server="";
+		
+# probably want to have ability to specify BAT and XRT error circles
+# for testing purposes
+	
+	$ret=GetOptions( "help" => \$help,
+		"black_on_white" => \$black_on_white,
+		"bob" => \$bob,
+		"clobber" => \$clobber,
+		"color=s" => \$color,
+		"dir_archive=s" => \$dir_archive,
+		"ds9_wait" => \$ds9_wait,
+		"ext_numb=i" => \$ext_numb,
+		"fn=s" => \$fn,
+		"fn_grid=s" => \$fn_grid,
+		"fn_page_log=s" => \$fn_page_log,
+		"image" => \$image,
+		"max_age=i" => \$max_age,
+		"meonly" => \$meonly,
+		"no_unzip_vrs" => \$no_unzip_vrs,
+		"noarchive" => \$noarchive,
+		"noglob" => \$noglob,
+		"nomail" => \$nomail,
+		"nonull" => \$nonull,
+		"nosave" => \$nosave,
+		"noweb" => \$noweb,
+		"null_web" => \$null_web,
+		"offset_angle=s" => \$offset_angle,
+		"scale=s" => \$scale,
+		"server=s" => \$server,
+                "test" => \$test,
+		"verbose=i" => \$verbose,
+		"white_on_black" => \$white_on_black,
+		"wrk_dir=s" => \$wrk_dir,
+		);
+# check for valid parameters
+	unless($ret){
+	  &help;
+#	  print RPT "Quitting -- Unexpected command line option(s)\n";
+	  die "Unexpected command line option(s)";
+	}
+	if($help){
+	  &help;
+	  exit 0;
+	}
+	$dir_regions=$dir_archive;
+	
+	if($test){
+	  $nomail=1;
+	  unless($verbose){$verbose=1;}
+	  $noarchive=1;
+	  $noweb=1;
+	}
+
+	unless(-d $wrk_dir){die "wrk_dir $wrk_dir is not a directory";}
+# open the rpt files
+	open(RPT,">$wrk_dir/$rptfile") || 
+	  die "error, unable to open $rptfile for writing, $!\n";
+	print RPT "$vrs at $date\n";
+	print RPT "Command line:  $cmdline\n\n";
+	
+# this code sets up Xvfb to display ds9
+
+# we will display to virtual buffer unless switch ds9_wait is set
+# if ds9_wait is set, display to local machine and don't exit ds9
+	
+	unless($ds9_wait){
+          $display = Xvfb::getVirtualDisplay($self);
+          if ($display) {
+	    print "display: $display\n";
+                $ENV{DISPLAY} = "127.0.0.1:$display.0";
+#               my $ds9 = '/usr1/local/bin/ds9-4.0b7';
+#               my $command = "$ds9 -dss size 10 10 -dss coord 17:41:04.27 34:56:16.8"
+#                                        . ' -saveas jpeg silly.jpg -exit';
+#                $self->shell($command);
+          } else {
+#	  print "unable to access Xvfb\n";
+                $self->report("unable to access Xvfb");
+		die "unable to access XVfb";
+          }
+	} # close unless($ds9
+
+# end Xvfb code	
+	
+	$err="";
+	
+	unless($nonull){
+# If cannot read null jpg file, do not try to copy to web site
+	  unless(-r $fn_nulljpg){
+	    print RPT "Could not find/read $fn_nulljpg\nSet \$nonull\n";
+	    print     "Could not find/read $fn_nulljpg\nSet \$nonull\n";
+	    $nonull=1;
+	  }
+	}
+	
+	unless($fn){
+	  if($image){
+	    $fn="uvot_sky_image.fits";
+	  } else {
+	    $fn="uvot_sky_srclist.fits";
+	  }
+	}
+
+	$base=basename($fn,"");
+	$msg_type=undef;
+	if($base =~ /srclist/){
+	  $msg_type="srclist";
+	} else {
+	  if ($base =~ /image/){
+	    $msg_type="image";
+	  } else {
+	    print RPT "Quitting because cannot determine message type.\n";
+	    die "error, unable to determine message type.";
+	  } 
+	} # close if($base
+
+# cd to working directory
+	unless(chdir ($wrk_dir)){
+	  print RPT "Quitting because could not cd to $wrk_dir\n";
+	  die "could not cd to $wrk_dir";
+	}
+	$msg=`pwd`;
+	print "Current directory is $msg";
+
+#	$meonly=1;
+	if($meonly){$to_adx=$fem_add;}
+
+
+# =========== find the file ================
+
+# the difficulty is that version numbers are added to the file name
+# by the mail utility that stores the files
+
+# all the files are delivered gzipped
+# they are then stored with unique names by adding "-n" before the .gz
+# this produces names such as fn-3.gz
+
+# if($noglob), user needs to specify complete file name including .gz if necessary
+# otherwise, program will search for the latest file whose name starts with the
+# specified name
+# if($bob), the program searches for "1*${fn}*"
+
+# in either case, the file will then be gunzipped if the name ends in .gz
+
+unless($noglob){
+
+# I believe that this will find either file whether or not it is gzipped
+
+# separate the name into base and extension
+#  if($fn =~ /\.(.+)$/){
+#    $glob=$` . "*." . $1;
+#  } else {
+    $glob = $fn . "*";
+#  }
+#  if($bob){$glob="[1-9]*$glob";} # set for parallel system
+  if($bob){
+    $glob="[1-9][0-9][0-9][0-9]*_o*_$glob"; # set for parallel system
+  } else {
+# added 2006-08-08 to handle new GCN file format
+    $glob="[1-9][0-9][0-9][0-9]*_g*_$glob"; # set for GCN system
+  }
+  print "glob for image file: $glob\n";
+  
+# find the newest such file
+  ($newfile,$min_age)=&find_latest_file_glob("",$glob);
+  $min_age*=86400; # convert to sec
+  if($newfile){
+    if($max_age <= 0 || $min_age <= $max_age){
+      print "Replacing $fn with $newfile\n";
+      $fn=$newfile;
+    } else {
+      print RPT "Quitting -- age of $newfile is $min_age seconds.\n";
+      die "$newfile is too old at $min_age seconds";
+    }
+  } else {
+      print RPT "Quitting -- glob failed to find any recent files like $glob\n";
+      die "glob found no recent files like $glob in $wrk_dir";
+  } # close if($newfile
+} # close unless($noglob
+
+# determine time delay from file name
+$base=basename($fn,"");
+$dt="";
+if($base =~ /^\d+_[go](\d+)_/){
+  $dt="$1";
+}
+print "base: $base dt: $dt\n";
+
+# ========= read the file =================
+
+  print RPT "input file is $fn\n";
+  print "\ninput file is $fn\n";
+
+# die "quit for now";
+
+  unless(-e $fn){
+    $die=1;
+    unless($no_unzip_vrs){
+      if($fn =~ /\.gz$/){
+        $fn0=$`;
+	if(-e $fn0){
+	  print RPT "use $fn0 instead of $fn\n";
+	  print     "use $fn0 instead of $fn\n";
+	  $fn=$fn0;
+	  $die=0;
+	}
+      }
+    } # close unless($no_unzip_vrs
+    if($die){
+      print RPT "Quitting -- cannot find $fn\n";
+      die       "Quitting -- cannot find $fn";
+    }
+  } # close unless(-e $fn
+# check for gzipped file
+  if($fn =~ /\.gz$/){
+    $fn0=$`;
+# remove ungzipped file if it exists
+    if(-e $fn0){
+      unless(unlink($fn0)){
+        print RPT "Quitting -- failed to remove $fn0\n";
+	die "Quitting -- failed to remove $fn0";
+      }
+    } # close if(-e
+    $ret=`gunzip $fn`;
+    unless(-e $fn0){
+      print RPT "Quitting -- failed to gunzip $fn\n";
+      die "Quitting -- failed to gunzip $fn";
+    }
+    $fn=$fn0; # change to unzipped file name
+  } # close if($fn
+
+print RPT "Using an offset to the roll angle of $offset_angle.\n";
+
+# die "exit 1";
+
+# ============= read the FITS file ================
+
+  $fptr = undef;
+  $status = 0;
+# &fits_open_file($fptr,$fitsfile,READWRITE(),$status);
+  $fptr = SimpleFITS->open("<$fn");  # read-write access to existing file
+  $status=$fptr->status();
+  if ( $status != 0 ){
+    print RPT "Quitting -- error opening $fn for reading, status = $status, $!\n";
+    die "error opening $fn for reading, status = $status, $!" if ( $status != 0 );
+  }
+  $hdunum = 0;
+
+# I may have to worry about the correct extension depending on which file
+# the srclist image has only 1 extension
+# the genie images has 2 extensions -- we want the second
+
+# &fits_get_num_hdus($fptr,$hdunum,$status);
+#  $hdunum = $fptr->nhdu();
+#  die "error getting number of HDUs in $fitsfile, status = $status, $!\n" if ( $status != 0 );
+#  print "There are $hdunum HDUs in $fitsfile\n";
+#  print RPT "There are $hdunum HDUs in $fitsfile\n";
+#  print "t10, tsettle: $t10 $tsettle\n";
+#  unless($hdunum == 3){next;} # attitude files have 2 extensions
+
+  if(defined($ext_numb)){
+    $ihdu=$ext_numb;
+  } else {
+    if($fn =~ /image/){
+      $ihdu=2;
+    } else {
+      $ihdu=1;
+    }
+  }
+  $fptr->move($ihdu); # hdu = ext + 1
+
+  $targ_id=$fptr -> readkey("TARG_ID");
+  $expid=$fptr -> readkey("EXPID");
+  $naxis1 = $fptr -> readkey("NAXIS1");
+  $cdelt1 = $fptr -> readkey("CDELT1");
+  $crval1 = $fptr -> readkey("CRVAL1");
+  $crpix1 = $fptr -> readkey("CRPIX1");
+  $naxis2 = $fptr -> readkey("NAXIS2");
+  $cdelt2 = $fptr -> readkey("CDELT2");
+  $crval2 = $fptr -> readkey("CRVAL2");
+  $crpix2 = $fptr -> readkey("CRPIX2");
+  $status=$fptr->status();
+  if($status != 0){
+    $err="Error reading FITS file after reading CRPIX2";
+    print RPT "$err\n";
+    close(RPT);
+    $fptr->close();
+    die "Quitting because of $err";    
+  }
+  
+# these values are not crucial
+  $tstart = $fptr -> readkey("TSTART");
+  $tstop = $fptr -> readkey("TSTOP");
+  $tav=($tstop + $tstart) / 2.;
+  $texp=($tstop - $tstart);
+  $date_obs=$fptr -> readkey("DATE-OBS");
+  $tra = $fptr -> readkey("RA_PNT");
+  $tdec = $fptr -> readkey("DEC_PNT");
+  $troll = $fptr -> readkey("PA_PNT");
+  $filter=$fptr -> readkey("FILTER");
+
+  unless(defined($filter)){$filter="x";}
+  $filter_lc=lc($filter);
+  unless(defined($expid)){$expid="000000000";}
+  
+# determine width of the box
+  $windowdx = $fptr -> readkey("WINDOWDX");
+  $cdelt1p = $fptr -> readkey("CDELT1P");
+# add $cdelt1p on 2005-12-14 (needed for binned images)
+  $width=$windowdx*$cdelt1/$cdelt1p;
+  if($width < 0.){$width = -$width;}
+
+# Close the FITS file.
+  $fptr->close();
+# warn "warning unable to close $fitsfile, status = $status, $!\n" if ( $status != 0 );
+
+  printf RPT "TSTART: %12.1f TSTOP %12.1f\n",$tstart,$tstop;
+# print "target_ID time: $targ_id $date_obs\n";
+# print "target RA,DEC,ROLL: $tra $tdec $troll\n";
+
+# check to see if we have already produced these files
+# if not, determine which image this is
+
+# ====== Determine which FC and output file names ===================
+
+  ($ret,$nprev,$nsame,$nblink)=&uvot_count_fc(
+    $targ_id,$dir_archive,$expid,$msg_type,"blink",$verbose);
+  if(defined($ret)){
+    print RPT "Quitting -- $ret $dir_archive\n";
+    die "$ret $dir_archive";
+  } 
+  $nprev++; # start counting at 1
+  print "FC number: $nprev  nsame: $nsame  nblink: $nblink\n"; 
+  if($nsame && !$clobber){
+    print RPT "Quitting -- Found previous blink output for this finding chart  ";
+    print RPT "and clobber not set.\n";
+    print "Found previous blink output for this finding chart and clobber not set.\n";
+    print "As directed, quitting.\n";
+    exit 1;
+  }
+
+# die "exit 2";
+
+$url0="http://heasarc.gsfc.nasa.gov/docs/swift/blink";
+# change names to eliminate $filter_lc on 2006-08-29
+if($image || (defined($msg_type) && $msg_type eq "image")){
+  $fn_uvot="fc${nprev}_genie.jpg";
+  $fn_dss="fc${nprev}_genie_dss.jpg";
+  $url="$url0/blink_uvot_genie_${nprev}.html";
+  unless($fn_grid){$fn_grid=$fn_grid_genie;}
+  if($scale =~ /auto/){
+# try to auto-scale the image
+# set limit to mean + 5*sigma, but no smaller than 5 and no larger than 100
+    $mean=undef;
+    $sigma=undef;
+# mod 2007-01-26
+#    @tmp=`ftstat $fn`;
+    @tmp=`ftstat centroid=no clip=yes $fn`;
+    foreach $line (@tmp){
+      chomp($line);
+      if($line =~/mean\:\s*(.*)$/){
+        $mean=$1;
+      } elsif ($line =~/sigma\:\s*(.*)$/) {
+        $sigma=$1;
+      }
+    } # close foreach
+    $scale_max=400.0;
+    $scale_min=0.5;
+    if(defined($mean) && defined($sigma)){
+      printf     "image mean: %7.1f sigma: %7.1f\n",$mean,$sigma;
+      printf RPT "image mean: %7.1f sigma: %7.1f\n",$mean,$sigma;
+#      $scale_max=$mean + 6.0*$sigma;
+      if($mean > 0.2 && $mean < 10.0){
+        $scale_min=0.5*$mean;
+	$scale_min=sprintf("%4.1f",$scale_min);
+      }
+    }
+    $scale="log -scale limits $scale_min $scale_max";
+  } else {
+   unless($scale =~ /linear/ || $scale =~ /sqrt/ || $scale =~ /histequ/ || $scale =~ /log/){
+    $scale="log";
+   }
+  }
+} else {
+  $fn_uvot="fc${nprev}_srclist.jpg";
+  $fn_dss="fc${nprev}_srclist_dss.jpg";
+  $url="$url0/blink_uvot_srclist_${nprev}.html";
+  $scale="log"; # use log for srclist
+  unless($fn_grid){$fn_grid=$fn_grid_srclist;}
+}
+
+# use black_on_white unless $color or $white_on_black set
+if($color){
+# only accept 3 colors, anything else gets changed to "standard"
+  unless($color eq "hsv" || $color eq "sls"){$color="standard";}
+  $scale .= " -cmap $color";
+} else {
+  unless($white_on_black){$scale .= " -invert";}
+}
+
+# =========== process the FITS file data =================
+
+# processing steps consist of:
+#  determine center of image in (RA,Dec)
+#  find relevant region files for BAT and XRT positions
+#  search for afterglow position and produce region file
+#  produce region file with bounding box and title
+#  call ds9 to produce 2 jpg images
+
+ $err1=""; # stores ds9 or scp errors
+
+ if($err){
+   print RPT ".jpg files will not be written because of error $err\n";
+ } else {
+# compute center pixel
+    print "RA_PNT: $tra  DEC_PNT: $tdec\n";
+    $x_cent=($naxis1 + 1.0)/2.0;
+    $y_cent=($naxis2 + 1.0)/2.0;
+    $dx=$x_cent - $crpix1;
+    $dy=$y_cent - $crpix2;
+    $dec_cent = $crval2 + $dy*$cdelt2;
+#    $ra_cent = $crval1 + cos($crval2/$rad)*$dx*$cdelt1;
+# corrected formula 2005-12-13
+    $corr=cos($crval2/$rad);
+    $ra_cent = $crval1 + $dx*$cdelt1/$corr;
+    print "x_cent y_cent crpix1 crpix2: $x_cent $y_cent $crpix1 $crpix2\n";
+    print "crval1 crval2 cdelt1 cdelt2: $crval1 $crval2 $cdelt1 $cdelt2\n";
+#   print "ra_cent,dec_cent,roll = $ra_cent $dec_cent $troll\n";
+# compute ra and dec limits
+    $dec_max=$crval2 + ($naxis2 - $crpix2)*$cdelt2;
+    $dec_min=$crval2 + (0 - $crpix2)*$cdelt2;
+    $ra_min=$crval1 + ($naxis1 - $crpix1)*$cdelt1/$corr;
+    $ra_max=$crval1 + (0 - $crpix1)*$cdelt1/$corr;
+
+# convert center to sexagesimal
+# changed 2006-11-10 to use 3rd parameter
+  ($rahms,$decdms)=&deg2sex($ra_cent,$dec_cent,":");
+  unless(defined($rahms)){$err1 = "conversion of $ra_cent, $dec_cent failed";}
+# convert corners to sexagesimal
+  ($ra_max_hms,$dec_max_dms)=&deg2sex($ra_max,$dec_max);
+  ($ra_min_hms,$dec_min_dms)=&deg2sex($ra_min,$dec_min);
+
+# call ds9
+
+  if($err1){
+    print RPT "Not writing .jpg files because of error $err1\n";
+  } else {
+# the title is not being displayed in the image
+#    $tmp1 ="$fn -$scale -grid yes -grid view axes label no -grid view title yes -grid type publication ";
+#    $tmp1a = "-grid view grid no -grid type axes exterior -grid type numerics exterior -zoom to fit -dss coord $rahms $decdms -linear ";
+#    $tmp1a .=" -grid yes -grid type numerics exterior -grid view grid yes -frame first -match frames wcs ";
+    $tmp1 ="$fn -$scale "; # note that we include dash
+# $tmp1a is grid for uvot image
+# -grid yes is needed to apply loaded grid file
+    $tmp1a = "-grid load $fn_grid -grid yes -zoom to fit ";
+# $tmp1b deals with dss image
+# starting 2006-11-15 specify stsci and dss survey
+    $tmp1b = "";
+    if($server =~ /stsci/i){
+      $tmp1b = "-dss server stsci -dss survey dss ";
+    }
+#    $tmp1b = "-dss server sao -dss survey dss ";
+    if($width > 0.01 && $width < 1.0 && defined($troll)){
+# convert to arc min, convert to diagonal and add safety factor
+      $width_dss=$width*60.0*1.5; 
+      $troll1 = ($troll + $offset_angle);
+      $dss_ang=$troll1 % 90.0;
+      if($dss_ang > 45.0){$dss_ang -= 90.0;}
+      if($dss_ang < 0){$dss_ang = -$dss_ang;}
+      $dss_ang+=45.0;
+      print "troll: $troll1 dss_ang: $dss_ang\n";
+      $width_dss*=sin($dss_ang/57.2965);
+      $tmp1b .= "-dss size $width_dss $width_dss -dss coord $rahms $decdms -linear ";
+    } else {
+      $tmp1b .= "-dss coord $rahms $decdms -linear ";
+    }
+# starting 2007-01-11, specify mode for dss image
+    $tmp1b .= "-scale mode minmax -grid yes -grid type numerics exterior ";
+    $tmp1b .= "-grid view grid yes -frame first -match frames wcs ";
+
+    $tmp2="-tile no -saveas jpeg $fn_uvot";
+    $tmp3="-frame last";
+# look for XRT region file
+    $fn_reg="$dir_regions/src_${targ_id}_XRT.reg";
+    $tmp4="";
+    if(-r $fn_reg){
+      $tmp4="-regions load $fn_reg";
+      print "found XRT region file: $fn_reg\n";
+    } else {
+# starting 2006-11-01 also look in sub-directory $targ_id
+      $fn_reg="$dir_regions/$targ_id/src_${targ_id}_XRT.reg";
+      if(-r $fn_reg){
+        $tmp4="-regions load $fn_reg";
+        print "found XRT region file: $fn_reg\n";
+      } else {
+	print "did not find XRT region file: $fn_reg\n";
+      }
+    }
+# look for BAT region file
+    $fn_reg="$dir_regions/src_${targ_id}_BAT.reg";
+    if(-r $fn_reg){
+      $tmp4 .= " -regions load $fn_reg";
+      print "found BAT region file: $fn_reg\n";
+    } else {
+# starting 2006-11-01 also look in sub-directory $targ_id
+      $fn_reg="$dir_regions/$targ_id/src_${targ_id}_BAT.reg";
+      if(-r $fn_reg){
+        $tmp4 .= " -regions load $fn_reg";
+        print "found BAT region file: $fn_reg\n";
+      } else {
+        print "did not find BAT region file: $fn_reg\n";
+      }
+    }
+
+    if($image || (defined($msg_type) && $msg_type eq "image")){
+      $cand_type="image";
+    } else {
+      $cand_type="srclist";
+    }
+
+# ========== look for afterglow candidate to make region file ============
+
+# starting 2006-11-01 use read_uvot_tokens instead of reading individual file
+# set default values in case reading tokens fails
+    $grb_name="";
+    $ra_cand=undef;
+    $dec_cand=undef;
+# read uvot tokens
+    @file_types=("bat","${cand_type}_catalog");
+    print "Search for positions in $dir_archive\n";
+    print RPT "Search for positions in $dir_archive\n";
+    @token_lines=();
+# last argument to &read_uvot_tokens is verbose level
+    $ret=&read_uvot_tokens(\@file_types,\@token_lines,$targ_id,
+		$expid,$dir_archive,0);
+    if($ret){
+# this should only fail if $dir_archive is not a directory
+	print RPT "Warning -- problem in read_uvot_tokens of $ret\n";
+	print     "Warning -- problem in read_uvot_tokens of $ret\n";
+#	die "problem in read_uvot_tokens of $ret";
+    } else {
+      $tm=token_message->new(\@token_lines);
+      $grb_name=&uvot_grb_name($tm);
+print "grb_name: $grb_name\n";
+      $ra_cand=&uvot_get1val($tm,"image_catalog_ra");
+      $dec_cand=&uvot_get1val($tm,"image_catalog_dec");
+    } # close if($ret
+    $ra_cand_hms=undef;
+    $dec_cand_dms=undef; 
+
+# make region file for srclist or image
+# box is centered at ($tra,$tdec) width of $width, angle of $troll+120
+# write region file with bounding box and title
+    $tmp7="";
+    $troll1=$troll+$offset_angle;
+    $fn_box="$dir_archive/${targ_id}_${cand_type}_box.reg";
+    if(open(REG,">$fn_box")){
+        print REG "\# Region file format: DS9 version 3.0\n";
+	print REG "\# File produced by $vrs\n";
+	print REG "global color=red font=\"helvetica 14 bold\" ";
+	print REG "select=1 edit=1 move=1 delete=1 include=1 fixed=0 source\n";
+# $tmp6 has the label for the plot
+	$title="UVOT/$filter ";
+	if($grb_name){
+	  $title .= "$grb_name/$targ_id ";
+	} else {
+	  $title .= "$targ_id ";
+	}
+	$title .= "T+${dt}s ($expid)";	
+	$tmp6=" \# text=\{$title\}";
+	printf REG "fk5\;box\(%6.4f,%6.4f,%6.4f,%6.4f,%4.1f\) $tmp6\n",
+	   $ra_cent,$dec_cent,$width,$width,$troll1,$tmp6; 
+	close(REG);
+	$tmp7="-regions load $fn_box";
+print "Wrote region file $fn_box at position $ra_cent $dec_cent with size $width\n";
+print RPT "Wrote region file $fn_box at position $ra_cent $dec_cent with size $width\n";
+    } # close open   
+     	
+    $tmp6="";
+    if(defined($ra_cand) && defined($dec_cand)){
+# write region file
+      $fn_cand="$dir_archive/${targ_id}_${expid}_${cand_type}_catalog.reg";
+      $cand_rad=5;
+      unless($cand_type =~ /image/){$cand_rad=10;} # use 10 for srclist
+      if(open(REG,">$fn_cand")){
+        print REG "\# Region file format: DS9 version 3.0\n";
+	print REG "\# Offset roll of $offset_angle\n";
+	print REG "global color=red font=\"helvetica 10 normal\" ";
+	print REG "select=1 edit=1 move=1 delete=1 include=1 fixed=0 source\n";
+	print REG "fk5\;circle\($ra_cand,$dec_cand,$cand_rad\"\)\n"; # set radius to 5 or 10 arc sec
+	close(REG);
+	$tmp6="-regions load $fn_cand";
+	print "Wrote region file $fn_cand at position $ra_cand $dec_cand with $cand_rad\" radius\n";
+	print RPT "Wrote region file $fn_cand at position $ra_cand $dec_cand with $cand_rad\" radius\n";
+	($ra_cand_hms,$dec_cand_dms)=&deg2sex($ra_cand,$dec_cand);
+      }
+    } else {
+      print "Could not find uvot candidate\n";
+      print RPT "Could not find uvot candidate\n";
+    }
+
+    if($ds9_wait){
+      $tmp5="-saveas jpeg $fn_dss";
+    } else {
+      $tmp5="-saveas jpeg $fn_dss -exit";
+    }
+    $tmp_all = "$tmp1 $tmp7 $tmp1a $tmp1b $tmp6 $tmp2 $tmp3 $tmp4 $tmp5";
+    print "$tmp_all\n";
+# Versions 3 and earlier of ds9 will not work
+    print RPT "ran /usr1/local/bin/ds9-4.0b7 $tmp_all\n";
+    $ret=`/usr1/local/bin/ds9-4.0b7 $tmp_all`;
+# check for errors
+    if($?){
+      print "return from ds9 is $?\n";
+      print RPT "return from ds9 is $?\n";
+      $err1="ds9 failed";
+    } else {
+# check that we actually created files
+      $age_dss=(-M $fn_dss)*86400; # ages are in seconds from start of program
+      $age_uvot=(-M $fn_uvot)*86400;
+# starting 2006-03-23 stop computing $age_rpt because it sometimes failed
+# compare ages of $fn_dss and $fn_uvot with 0
+#      $age_rpt=(-M $rptfile)*86400;
+#      print "age_rpt $age_rpt age_dss $age_dss age_uvot $age_uvot\n";
+      print RPT "age_dss $age_dss age_uvot $age_uvot\n";
+      unless($age_dss <= 1 && $age_uvot <= 1){
+        $err1="New .jpg files were NOT created.";
+	print "age_dss $age_dss age_uvot $age_uvot\n";
+        print "$err1\n";
+	print RPT "$err1\n";
+      } else {
+        unless($nosave){
+	  system("cp $fn_uvot ${targ_id}_$fn_uvot");
+	  system("cp $fn_dss ${targ_id}_$fn_dss");
+print RPT "Copied $fn_uvot to ${targ_id}_$fn_uvot and $fn_dss to ${targ_id}_$fn_dss\n";
+	}
+
+# ========= copy .jpg files to web =======================
+
+       if($noweb){
+         print "As directed, the files were not copied to the web.\n";
+       } else {
+         if($nonull){
+print     "Cannot find/read tar file with blank image to copy to web.\n";
+print RPT "Cannot find/read tar file with blank image to copy to web.\n";	  
+	 } else {
+          if($null_web || $nblink == 0){
+# if specified to do so
+# copy a tar file to web and untar full set of null images
+	   $tmp1="cat $fn_nulljpg \| ssh $user\@$host \"(cd $web_dir0; tar xfp -)\"";
+	   print "ssh command: $tmp1\n";
+	   system("$tmp1");
+	   if($?){
+             print     "return from ssh/tar to $host is $?\n";
+	     print RPT "return from ssh/tar to $host is $?\n";
+	   }
+	  } # close if($null_web
+	 } # close if($nonull
+         print RPT "ran scp $fn_uvot $web_dir/$fn_uvot\n";
+	 `scp $fn_uvot $web_dir/$fn_uvot`;
+# stop copying on indication of an error
+         if($?){
+           print "return from first scp is $?\n";
+	   print RPT "return from first scp is $?\n";
+	   $err1="scp for web file $fn_uvot failed";
+         } else {
+	   print RPT "ran scp $fn_dss $web_dir/$fn_dss\n";
+	   `scp $fn_dss $web_dir/$fn_dss`;
+           if($?){
+             print "return from second scp is $?\n";
+	     print RPT "return from second scp is $?\n";
+	     $err1="scp for web file $fn_dss failed";
+	   }
+         } # close if($?
+       } # close if($noweb
+      } # close unless($age
+    } # close if($?
+  } # close if($err1
+ } # close unless($err
+
+# ============= write archive file =================
+
+# starting 2006-02-02, do not write archive unless wrote .jpg files
+        if($noarchive || $noweb || $err || $err1){
+	  if($noarchive){
+            print "As requested, no archive file was written.\n";
+	    print RPT "As requested, no archive file was written.\n";
+	  } else {
+print     "Because of no copy to web or error, no archive file was written.\n";
+print RPT "Because of no copy to web or error, no archive file was written.\n";
+	  }
+        } else {
+# added expid and date on 2006-01-01
+$fn_archive="$dir_archive/${targ_id}_${expid}_${msg_type}_${nprev}_blink_${date}.txt";
+          if(open(OUT,">$fn_archive")){
+            print OUT
+"\# blink data for filter $filter for trig $targ_id EXPID $expid\n";
+            print OUT "\#   using $fn\n";
+            print OUT "\# produced by $vrs at $date\n";
+	    close (OUT);
+            print "\nWrote archive file $fn_archive\n";
+	  } # close if(open
+	} # close if($noarchive
+
+# ========== print and mail results ===========================
+
+# for coding simplicity I always generate lines to print and mail
+# and at the end print lines if verbose > 0 and mail report unless $nomail
+
+	@mb=();
+	$rpt=email_report->new
+	  (0,$to_adx,$adx,"$targ_id UVOT blink report for $base");
+	if($err || $err1){
+	  &uvot_pushline($rpt,\@mb,"Processing failed due to $err $err1\n");
+	} else {
+	  if($noweb){
+	   &uvot_pushline($rpt,\@mb,
+	    "As directed, the images are not available on the web.\n");
+	  } else {
+	   &uvot_pushline($rpt,\@mb,
+	    "The images to blink for trigger $targ_id are available at $url\n");
+	   &uvot_pushline($rpt,\@mb,
+	    "The image center is $rahms $decdms\n");
+	   &uvot_pushline($rpt,\@mb,
+	    "RA ranges from about $ra_min_hms to $ra_max_hms\n"); 
+	   &uvot_pushline($rpt,\@mb,
+	    "DEC ranges from about $dec_min_dms to $dec_max_dms\n");
+	   if(defined($ra_cand_hms)){
+	    &uvot_pushline($rpt,\@mb,
+"UVOT candidate AG shown as red circle centered at $ra_cand_hms $dec_cand_dms = $ra_cand $dec_cand\n");    
+	   }
+# should also print the center of the XRT error circle
+	  }
+        }
+# print the message
+	if($verbose > 0){
+	  for($j=0;$j<=$#mb; $j++){
+	    print "$mb[$j]";
+	  }
+	}
+# mail the message
+	unless($nomail){
+	  $rpt->mail_it();
+          print "mailed report to $to_adx\n";
+	  print RPT "mailed report to $to_adx\n";
+	}
+close(RPT);
+print "\nThe processing report is $wrk_dir/$rptfile\n";
+} # close sub execute
+
+# ================ uvot_grb_name ===================
+
+  sub uvot_grb_name {
+
+# this sub determines GRB name from tokens
+# the tokens need to include "bat" archive file
+
+# on success, it returns string "GRByymmdd[X]"
+# it returns empty string for failure
+
+my ($grb_name,$tm,$tmp);
+
+unless($#_ == 0){return "";}
+$tm=$_[0]; # object for searching tokens 
+$tmp=&uvot_get1val($tm,"bat_name");
+if(defined($tmp)){
+  return "GRB$tmp";
+} else {
+  $tmp=&uvot_get1val($tm,"bat_date");
+  if(defined($tmp)){
+    return " GRB$tmp";
+  }
+}
+""; # failed to find name
+}
+
+# ================ help ===================
+
+  sub help {
+
+  print <<END_OF_HELP_LINES;
+
+Help for $0
+
+This program reads the Swift uvot image messages
+(uvot_sky_srclist.fits or uvot_sky_image.fits)
+and produces 2 images for blinking.
+One is a jpeg uvot image and the other is 
+a matching jpeg dss image.
+The images can be copied to a file for web access.
+A processing report is in uvot_blink_DATE.rpt
+
+In detail, unless \$noglob is set,
+the program looks for files with names starting with \$fn
+in the working directory \$wrk_dir.
+The file must also be no older than \$max_age seconds.
+
+The program uses the following Perl modules:
+  Astro::FITS::CFITSIO SimpleFITS Getopt::Long Mail::Sendmail 
+  email_report deg2sex find_latest_file_glob
+
+Sample execution is:
+
+uvot_blink.pl [-help]
+  [-bob] [-clobber] [-color="standard"] 
+  [-dir_archive="/Home/heasfs/marshall/swift/uvot_gcn"]
+  [-ds9_wait] [-ext_numb=n] [-image] [-max_age=300] [-meonly] 
+  [-no_unzip_vrs] [-noarchive] [-noglob] [-noinvert] [-nomail]
+  [-nonull] [nosave] [-noweb] [-null_web]
+  [-offset_angle=120.0] [-scale="auto"] [-server=""] [-test]
+  [-verbose=0] [-white_on_black]
+  [-wrk_dir=/local/data/khamseen4/marshall/swift/uvot_attach] 
+  [-fn="uvot_sky_srclist.fits"]
+
+Option help prints out documentation and exits.
+Option bob specifies to look for files created by parallel TDRSS processing system
+Option clobber specifies to overwrite web files for same exposure
+Option color specifies color scale to use. Default is standard.
+  Other choices are "hsv" and "sls".
+Option dir_archive specifies directory for storing archive files
+  the script also searches for regions files in this directory
+  the default is "/Home/heasfs/marshall/swift/uvot_gcn"
+Option ds9_wait specifies not to exit automatically from ds9
+  Instead user intervention is required (a de-bugging feature)
+Option -ext_numb specifies extension number for image
+  This is normally not required for TDRSS messages
+Option image sets values for Genie image instead of srclist
+Option max_age specifies max. age in sec. of acceptable file
+Option meonly specifies to only send message to me
+Option no_unzip_vrs specifies not to use unzipped version 
+    if zipped version does not exit
+Option noarchive specifies not to write file documenting that data have been processed
+Option noglob specifies not to search for similar file names
+Option noinvert specifies not to invert color scheme for ds9 images
+Option nomail specifies not to mail results
+Option nonull specifies not to upload complete set of null images even if new trigger
+Option nosave specifies not to save .jpg files to file with targ_id in name
+Option noweb specifies not to copy results for web viewing
+Option null_web specifies to upload complete set of null images before
+	uploading new images (unless noweb is set)
+Option offset_angle specifies offset angle for roll of bounding box (default=120)
+Option scale sets the display scale in ds9 for Genie images (default=auto,linear,log,sqrt,histequ)
+	The auto option uses a linear scale with automatically determined limits
+	The limits can also be given as in "linear -scale limits 0 50"
+Option server specifies DSS server (default SAO)
+	The only other valid choice is stsci
+Option test sets noarchive, nomail, and noweb
+Option verbose specifies the amount of printing
+  0 => minimal printing
+  1 => print the results that are being e-mailed
+  2 => print information about every unidentified entry
+  3 => print information about every entry
+Option fn specifies file name
+Option white_on_black specifies to display inverted grey scale (color overrides)
+Option wrk_dir specifies directory to find file 
+
+END_OF_HELP_LINES
+
+        0;
+}
+

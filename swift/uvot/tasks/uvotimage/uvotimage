@@ -1,0 +1,1092 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotimage/uvotimage,v $
+# $Revision: 1.35 $
+# $Date: 2014/03/14 22:46:32 $
+#
+#	Make UVOT SKY images from RAW images and/or EVENTs
+#
+#
+# $Log: uvotimage,v $
+# Revision 1.35  2014/03/14 22:46:32  rwiegand
+# Work-around rare invalid values in UVOT event file WINDOW extension.
+#
+# Revision 1.34  2011/11/04 19:16:39  rwiegand
+# Need to forward alignfile to swiftxform in case refattopt != NONE.
+#
+# Revision 1.33  2011/10/12 21:18:53  rwiegand
+# Added optional check for missing/bogus attitude (refattopt).
+#
+# Revision 1.32  2008/03/28 15:28:52  rwiegand
+# Use UVOT::Time for converting between MET and ISO/UTC.
+#
+# Revision 1.31  2007/11/15 18:17:34  rwiegand
+# Added randomize parameter for passing to uvotrawevtimg.
+#
+# Revision 1.30  2007/11/06 21:07:32  rwiegand
+# Changed the output raw image file since it now includes the event mode
+# images.  Corrected count of raw images.
+#
+# Revision 1.29  2007/10/09 15:18:03  rwiegand
+# Added tool for creating raw images based on attitude corrected events.
+# Updated uvotimage to use uvotrawevtimg for creating raw images from
+# event data.
+#
+# Revision 1.28  2007/09/25 17:24:46  rwiegand
+# Updated cut-off exposure duration.
+#
+# Revision 1.27  2007/08/22 20:47:43  rwiegand
+# Negative ra parameter indicates to take ra,dec,roll from *_PNT keywords.
+# Produce deterministic order of IMAGE and EVENT exposures.  Only test
+# UEXPOSUR for short exposures if it is defined.
+#
+# Revision 1.26  2007/07/09 19:30:45  rwiegand
+# Skip EVENT exposures less than one frame in duration.
+#
+# Revision 1.25  2007/06/21 15:40:56  rwiegand
+# Write WCS D keywords to EVENT mode sky images.
+#
+# Revision 1.23  2007/03/06 21:03:58  rwiegand
+# Try to use DETNAM rather than WHEELPOS for TELDEF CALDB queries.
+# Plus a number of cosmetic changes.
+#
+# Revision 1.22  2007/02/27 15:52:08  rwiegand
+# Pass detector/DETNAM to CALDB query based on WHEELPOS.
+#
+# Revision 1.21  2007/01/29 15:36:25  rwiegand
+# Use the exposure midpoint for determining the event data sky transform,
+# and removed padding since uvotexpmap does not know about it.
+#
+# Revision 1.20  2007/01/18 16:04:35  rwiegand
+# Implemented mod8corr and flatfield parameters.
+#
+# Revision 1.19  2007/01/12 15:09:33  rwiegand
+# Take *LOSS keywords from event data WINDOW table.
+#
+# Revision 1.18  2007/01/11 22:09:13  rwiegand
+# Use SimpleFITS to load WINDOW table.  If multiple rows in WINDOW table
+# of event file have the same EXPID, keep the one with the longest exposure
+# (as indicated by UEXPOSUR column).
+#
+# Revision 1.17  2006/12/18 17:58:14  rwiegand
+# Write EXPID to sky images created from EVENT mode data.
+#
+# Revision 1.16  2006/10/19 16:26:05  rwiegand
+# Write TELDEF keywords to non-RAW images (currently SKY images from EVENT
+# data).
+#
+# Revision 1.15  2006/07/27 16:05:12  rwiegand
+# Write ASPCORR keyword to sky images with value NONE.
+#
+# Revision 1.14  2006/05/11 21:08:31  rwiegand
+# Needed to add {RA,DEC,PA}_PNT to the primary HDU for uvotskycorr to run
+# in the SDC pipeline.
+#
+# Revision 1.13  2006/04/14 20:37:49  rwiegand
+# Take time-related keywords from new event file WINDOW extension, if
+# possible, otherwise fallback to GTI based times.
+#
+# Revision 1.12  2006/02/28 20:05:22  rwiegand
+# Update TSTART/TSTOP, DATE-OBS/DATE-END of primary HDU of created sky image
+# files based on the earliest and latest image contained.
+#
+# Revision 1.11  2006/01/25 18:46:31  rwiegand
+# Initialize exposures key.
+#
+# Revision 1.10  2005/12/03 13:06:05  rwiegand
+# Make sky images for grism filters.
+#
+# Revision 1.9  2005/12/02 21:57:10  rwiegand
+# Need to retrieve WHEELPOS from extension since it is not available in
+# primary HDU.  Disabled snapshot determination since they are not being
+# used.
+#
+# Revision 1.8  2005/11/01 22:33:07  rwiegand
+# Was not including sky images created from raw images in nsky.
+#
+# Revision 1.7  2005/09/16 12:18:45  rwiegand
+# Allow user to qualify CALDB queries.
+#
+# Revision 1.6  2005/07/18 12:46:58  rwiegand
+# Only keep raw/sky image files that have image extensions.  Store
+# {RA,DEC,PA}_PNT keywords in each image extension.
+#
+# Revision 1.5  2005/06/20 15:24:04  rwiegand
+# Skip exposures with either dimension less than 20 pixels.  Write history
+# keywords at the start instead of the end of processing.
+#
+# Revision 1.4  2005/06/15 20:17:25  rwiegand
+# Separated aspect correction from image creation.
+#
+# Revision 1.3  2005/05/18 21:09:38  rwiegand
+# Process raw image and event files for all filters at once.
+#
+# Revision 1.2  2005/05/12 17:48:39  rwiegand
+# Saving initial work on aspcorr interface.
+#
+# Revision 1.1  2005/05/09 19:30:04  rwiegand
+# Make UVOT level I/II raw and sky image files from pipeline uvot2fits and
+# attitude files.
+#
+
+use strict;
+
+package UVOT::SkyImages;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use POSIX;
+
+use SimpleFITS;
+use Astro::Convert;
+use UVOT::Snapshot;
+use UVOT::Filter;
+use UVOT::Time;
+
+
+# could make these parameters
+use constant POSTFIX_RAW_IMAGE => '_rw.img';
+use constant POSTFIX_SKY_IMAGE => '_sk.img';
+use constant POSTFIX_EVENTS    => 'po_uf.evt';
+
+
+use constant METHOD_ONBOARD_IMAGE => 'onboardImage';
+use constant METHOD_RAW_EVENTS => 'rawEvents';
+use constant METHOD_CORR_RAW_EVENTS => 'corrEvents';
+use constant METHOD_SKY_EVENTS => 'skyEvents';
+
+
+my %WINDOW_COL_META = (
+	UTSTART		=> {
+		KEY => 'TSTART',
+		VALIDATE => \&validateMET,
+	},
+	UTSTOP		=> {
+		KEY => 'TSTOP',
+		VALIDATE => \&validateMET,
+	},
+	UTELAPSE	=> {
+		KEY => 'TELAPSE',
+		VALIDATE => \&validateExposure,
+	},
+	UONTIME		=> {
+		KEY => 'ONTIME',
+		VALIDATE => \&validateExposure,
+	},
+	ULIVETIM	=> {
+		KEY => 'LIVETIME',
+		VALIDATE => \&validateExposure,
+	},
+	UEXPOSUR	=> {
+		KEY => 'EXPOSURE',
+		VALIDATE => \&validateExposure,
+	},
+	UDEADC		=> {
+		KEY => 'DEADC',
+		VALIDATE => sub {
+			my ($task, $value) = @_;
+			if ($value != $value or abs($value) < 1e-10) {
+				$task->warning("invalid UDEADC '$value'; using default 1");
+				return 1;
+			}
+			return $value;
+		},
+	},
+	UBLOCL		=> {
+		KEY => 'BLOCLOSS',
+		VALIDATE => \&validateLoss,
+	},
+	USTALL		=> {
+		KEY => 'STALLOSS',
+		VALIDATE => sub {
+			my ($task, $value) = @_;
+			if ($value != $value or abs($value) < 1e-10) {
+				$task->warning("invalid USTALL '$value'; using default 0");
+				return 0;
+			}
+			return $value;
+		},
+	},
+	UTOSSL		=> {
+		KEY => 'TOSSLOSS',
+		VALIDATE => \&validateLoss,
+	},
+);
+
+
+
+
+# main
+{
+	my $task = __PACKAGE__->new(version => 0.6);
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->inspectFiles
+		if $self->isValid;
+
+	$self->classifyExposures
+		if $self->isValid;
+
+	$self->buildImages
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(options => [ qw(
+				infile=file prefix=file
+				attfile=file teldeffile=file alignfile=file
+				ra=real dec=real roll=real
+				mod8corr=boolean flatfield=boolean randomize=int
+				refattopt=string
+				cleanup=bool history=bool clobber=bool chatter=int
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	my @input;
+	if ($args->{infile} =~ /^@(.+)/) {
+		my $path = $1;
+		my $fh = FileHandle->new($path);
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to open $path [$!]");
+		}
+		else {
+			my @lines = <$fh>;
+			$fh->close;
+			foreach my $x (@lines) {
+				chomp($x);
+				next if $x =~ /^\s*$/;
+				next if $x =~ /^\s*#/;
+				push(@input, $x);
+			}
+		}
+	}
+	else {
+		@input = split(/,/, $args->{infile});
+	}
+
+	foreach my $file (@input) {
+		if (not -e $file) {
+			$self->error(BAD_INPUT, "input $file does not exist");
+		}
+	}
+	return if not $self->isValid;
+
+	$self->{input} = [ map { { path => $_ } } @input ];
+
+	if ($args->{ra} < 0) {
+		my $header;
+		my $status = SimpleFITS->readonly($input[0])
+				->readheader($header)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to read primary header of $input[0]");
+		}
+		else {
+			foreach my $key (qw(RA_PNT DEC_PNT PA_PNT)) {
+				if (not exists($header->{$key})) {
+					$self->error(BAD_INPUT,
+							"unable to find $key in $input[0] primary header");
+				}
+				else {
+					$self->{$key} = $header->{$key};
+				}
+			}
+		}
+	}
+	else {
+		$self->{RA_PNT} = $args->{ra};
+		$self->{DEC_PNT} = $args->{dec};
+		$self->{PA_PNT} = $args->{roll};
+	}
+
+	$self->{exposures} = [ ];
+}
+
+
+sub inspectFiles
+{
+	my ($self) = @_;
+
+	foreach my $info (@{ $self->{input} }) {
+		$self->inspectFilesAux($info);
+		last if not $self->isValid;
+	}
+
+}
+
+
+
+sub inspectFilesAux
+{
+	my ($self, $fileInfo) = @_;
+
+	my $header;
+	my $status = 0;
+	my $fits = SimpleFITS->readonly($fileInfo->{path})
+			->readheader($header, clean => 1)
+			->status($status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to read $fileInfo->{path} header [$status]");
+		return;
+	}
+
+	my $filter = $header->{FILTER};
+	if (not UVOT::Filter::isValid($filter)) {
+		$self->error(BAD_INPUT,
+				"unexpected input filter '$filter'");
+		return;
+	}
+
+	$fileInfo->{header} = $header;
+
+	# TODO: implement this in a way that does not depend
+	# on file naming convention
+	if ($fileInfo->{path} =~ /\.evt/) {
+		my $filterInfo = $self->getFilterInfo($filter);
+		$filterInfo->{eventpath} = $fileInfo->{path};
+		$self->inspectEvents($fileInfo, $fits);
+	}
+	elsif ($fileInfo->{path} =~ /\.img/) {
+		my $filterInfo = $self->getFilterInfo($filter);
+		$filterInfo->{imagepath} = $fileInfo->{path};
+		$self->inspectImages($fileInfo, $fits);
+	}
+	else {
+		$self->warning("ignoring unrecognized input file $fileInfo->{path}");
+	}
+
+	$self->determineCalibration($header, $filter);
+
+	delete($fileInfo->{header});
+	undef($fits);
+}
+
+
+
+sub determineCalibration
+{
+	my ($self, $header, $filter) = @_;
+
+	my $args = $self->args;
+
+	my $arg = $args->{teldeffile};
+	my $filterInfo = $self->getFilterInfo($filter);
+
+	if ($arg =~ /^CALDB/i) {
+		if (not $filterInfo->{teldefpath}) {
+			my $teldef = $self->queryCALDB('TELDEF',
+					header => $header,
+					qualifiers => $arg,
+					asString => 1,
+					);
+			if (not $teldef) {
+				$filterInfo->{TROUBLE} = "no TELDEF found for $filter";
+			}
+			else {
+				$filterInfo->{teldefpath} = $teldef;
+				$self->parameterNote(teldeffile => "[$filter] $teldef");
+				$self->report("CALDB TELDEF [$filter] => $teldef")
+					if $self->chatter;
+			}
+		}
+	}
+	else {
+		$filterInfo->{teldefpath} = $arg;
+	}
+
+}
+
+
+sub getFilterInfo
+{
+	my ($self, $filter) = @_;
+	my $key = "FILTER:$filter";
+	if (not $self->{$key}) {
+		$self->{$key} = { FILTER => $filter };
+	}
+	return $self->{$key};
+}
+
+
+sub inspectImages
+{
+	my ($self, $fileInfo, $fits) = @_;
+
+	my $nhdu = 0;
+	my $status = $fits->nhdu($nhdu)
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+			"unable to determine number of HDUs in $fileInfo->{path} [$status]");
+		return;
+	}
+
+	my @exposure;
+
+	for (my $i = 1; $self->isValid and $i < $nhdu; ++$i) {
+		my $header = '';
+		my %exposure = (
+			path => $fileInfo->{path},
+			hdu0 => $i,
+			raw => 1,
+			ORDER => 0,
+		);
+		$status = $fits->move($i + 1)
+				->readheader($header, clean => 1)
+				->status;
+		# need at least TSTART, TSTOP, FILTER
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to read HDU $i header [$status]");
+		}
+		else {
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(TSTART TSTOP FILTER NAXIS1 NAXIS2 EXPOSURE) ],
+					hash => \%exposure,
+					);
+
+			my $filterInfo = $self->getFilterInfo($exposure{FILTER});
+
+			if ($header->{EXTNAME} =~ /E$/) {
+				$self->report("skipping event based image HDU $header->{EXTNAME}");
+				next;
+			}
+
+			if ($header->{NAXIS1} < 20 or $header->{NAXIS2} < 20) {
+				my $dims = "$header->{NAXIS1} x $header->{NAXIS2}";
+				$self->report("skipping small exposure $dims");
+				next;
+			}
+
+			$exposure{ONTIME} = $header->{EXPOSURE};
+			$exposure{WINDOWDX} = $header->{NAXIS1};
+
+			push(@exposure, \%exposure);
+		}
+
+		undef($header);
+	}
+
+	if ($self->isValid) {
+		push(@{ $self->{exposures} }, @exposure);
+		my $count = @exposure;
+		$self->report("found $count IMAGE mode exposures in $fileInfo->{path}")
+			if $self->chatter(3);
+	}
+}
+
+
+sub inspectEvents
+{
+	my ($self, $fileInfo, $fits) = @_;
+
+	my $nhdu;
+	my $status = $fits->nhdu($nhdu)
+			->move('WINDOW')
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load $fileInfo->{path} [$status]");
+		return;
+	}
+
+	my @exposure;
+	my $header = $fileInfo->{header};
+	my @rawTable;
+	$status = $fits->loadtable(\@rawTable)
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load $fileInfo->{path} WINDOW table [$status]");
+		return;
+	}
+
+	my %keepers;
+	foreach my $exp (@rawTable) {
+		my $id = $exp->{EXPID};
+		if (exists($keepers{$id})) {
+			my $other = $keepers{$id};
+			$self->warning("multiple WINDOW rows with EXPID $id");
+			if ($exp->{UEXPOSUR} > $other->{UEXPOSUR}) {
+				$keepers{$id} = $exp;
+			}
+		}
+		else {
+			$keepers{$id} = $exp;
+		}
+	}
+
+	my @filtered = sort { $a->{EXPID} <=> $b->{EXPID} } values(%keepers);
+
+	foreach my $exp (@filtered) {
+
+		if ($exp->{WINDOWDX} < 20 or $exp->{WINDOWDY} < 20) {
+			my $dims = "$exp->{WINDOWDX} x $exp->{WINDOWDY}";
+			$self->report("skipping small EVENT exposure $dims");
+			next;
+		}
+
+		# ignore exposures less than 0.5s long
+		if (defined($exp->{UEXPOSUR}) and $exp->{UEXPOSUR} < 0.5) {
+			$self->report("skipping short EVENT exposure $exp->{UEXPOSUR}");
+			next;
+		}
+
+		$exp->{gtiname} = "GTI$exp->{EXPREF}";
+		$exp->{FILTER} = $header->{FILTER};
+
+		$fits->move($exp->{gtiname});
+
+		if ($fits->status) {
+			$self->error(BAD_INPUT,
+				"unable to load exposure $exp->{gtiname} from $fileInfo->{path}");
+			last;
+		}
+
+		my %exposure = (
+			path => $fileInfo->{path},
+			event => 1,
+			ORDER => 1,
+		);
+
+		foreach my $col (keys(%$exp)) {
+			my $meta = $WINDOW_COL_META{$col} || { KEY => $col };
+			my $key = $meta->{KEY};
+			if ($meta->{VALIDATE}) {
+				$exposure{$key} = $meta->{VALIDATE}->($self, $exp->{$col});
+			}
+			else {
+				$exposure{$key} = $exp->{$col};
+			}
+		}
+
+		foreach my $key (qw(TSTART TSTOP ONTIME)) {
+			if (not exists($exposure{$key})) {
+				$exposure{GTI_TIMES} = 1;
+			}
+		}
+
+		if ($exposure{GTI_TIMES}) {
+			# TSTART,TSTOP,ONTIME are in the uvot2fits 3.11 WINDOW extension
+			# (as UTSTART, UTSTOP UONTIME).  If processing data with the old
+			# WINDOW extension, take these values from the GTI
+			foreach my $key (qw(TSTART TSTOP ONTIME)) {
+				$fits->readkey($key => $exposure{$key});
+			}
+		}
+
+		push(@exposure, \%exposure);
+	}
+
+	if ($self->isValid) {
+		push(@{ $self->{exposures} }, @exposure);
+		my $count = @exposure;
+		$self->report("found $count EVENT mode exposures in $fileInfo->{path}")
+			if $self->chatter(3);
+		if (not $self->{maxgtis} or $count > $self->{maxgtis}) {
+			$self->{maxgtis} = $count;
+		}
+	}
+
+}
+
+
+sub writeKeyfix
+{
+	my ($self, $path) = @_;
+
+	my $fh = FileHandle->new($path, '>');
+	if (not $fh) {
+		die("unable to append to $path [$!]");
+	}
+	else {
+		$fh->print("
+RA_PNT = $self->{RA_PNT}
+DEC_PNT = $self->{DEC_PNT}
+PA_PNT = $self->{PA_PNT}
+HDUCLAS1 = 'IMAGE'
+-MTYPE1
+-MFORM1
+-MTYPE2
+-MFORM2
+-MTYPE3
+-MFORM3
+-DSTYP1
+-DSFORM1
+-DSVAL1
+-DSTYP2
+-DSFORM2
+-DSVAL2
+-DSUNI2
+-DSREF2
+");
+		for (my $i = 1; $i <= $self->{maxgtis}; ++$i) {
+			$fh->print("-ONTIME$i\n");
+			$fh->print("-${i}DSVAL1\n")
+				if $i > 1;
+			$fh->print("-${i}DSREF2\n")
+				if $i > 1;
+		}
+		$fh->close;
+	}
+}
+
+
+sub applyKeyfix
+{
+	my ($self, $path) = @_;
+	my $command = $self->buildCommand('fthedit',
+			infile => $path,
+			keyword => '@' . $self->{keyfix},
+			);
+	$self->shell($command);
+}
+
+
+sub classifyExposures
+{
+	my ($self) = @_;
+
+	my @sorted = sort { $a->{TSTART} <=> $b->{TSTART}
+				or $a->{ORDER} <=> $b->{ORDER} } @{ $self->{exposures} };
+
+	my %byfilter;
+
+	my $s = 0;
+
+	foreach my $info (@sorted) {
+
+		push(@{ $byfilter{$info->{FILTER}} }, $info);
+
+		if ($info->{event}) {
+			$info->{method} = METHOD_CORR_RAW_EVENTS;
+		}
+		else {
+			# for IMAGE mode images, we want to use the onboard corrected image
+			$info->{method} = METHOD_ONBOARD_IMAGE;
+		}
+	}
+
+	$self->{exposures} = \@sorted;
+	$self->{filters} = [ keys(%byfilter) ];
+	foreach my $filter (keys(%byfilter)) {
+		my $filterInfo = $self->getFilterInfo($filter);
+		$filterInfo->{exposures} = $byfilter{$filter};
+	}
+}
+
+
+sub runUvotbadpix
+{
+	my ($self, $filterInfo) = @_;
+
+	my $badfile = $self->temporary('badpix');
+
+	my $command = $self->buildCommand('uvotbadpix',
+			infile => $filterInfo->{tmpraw},
+			badpixlist => 'CALDB',
+			outfile => $badfile,
+			);
+
+	$self->shell($command);
+
+	$filterInfo->{badpixfile} = $badfile;
+}
+
+
+sub runUvotmodmap
+{
+	my ($self, $filterInfo) = @_;
+
+	# need a badpixmap to run uvotmodmap...
+	$self->runUvotbadpix($filterInfo);
+
+	my $corrfile = $self->temporary('mod8');
+
+	my $command = $self->buildCommand('uvotmodmap',
+			infile => $filterInfo->{tmpraw},
+			badpixfile => $filterInfo->{badpixfile},
+			outfile => $corrfile,
+			);
+
+	$self->shell($command);
+
+	# replace the raw file with the mod 8 corrected one
+	$filterInfo->{tmpraw} = $corrfile;
+}
+
+
+sub runUvotflatfield
+{
+	my ($self, $filterInfo) = @_;
+
+	my $flatfile = $self->temporary('flat');
+
+	my $command = $self->buildCommand('uvotflatfield',
+			infile => $filterInfo->{tmpraw},
+			flatfile => 'CALDB',
+			outfile => $flatfile,
+			);
+
+	$self->shell($command);
+
+	# replace the raw file with the flat fielded one
+	$filterInfo->{tmpraw} = $flatfile;
+}
+
+
+
+sub buildImages
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{keyfix} = $self->temporary('keys');
+	$self->writeKeyfix($self->{keyfix});
+
+	foreach my $filter (@{ $self->{filters} }) {
+
+		my $filterInfo = $self->getFilterInfo($filter);
+		if (my $trouble = $filterInfo->{TROUBLE}) {
+			$self->warning("$filter trouble: $trouble");
+			next;
+		}
+
+		my $datafile = $filterInfo->{imagepath} || $filterInfo->{eventpath};
+
+		my $code = UVOT::Filter::filterCode($filter);
+
+		$filterInfo->{outraw} = "$args->{prefix}u$code" . POSTFIX_RAW_IMAGE;
+		$filterInfo->{outsky} = "$args->{prefix}u$code" . POSTFIX_SKY_IMAGE;
+
+		$filterInfo->{tmpraw} = $self->temporary('tmpraw');
+		$self->createEmptyFITS($filterInfo->{tmpraw},
+				infile => $datafile,
+				);
+		$self->updatePrimaryTimes($filterInfo);
+		$self->applyKeyfix($filterInfo->{tmpraw});
+		$self->putParameterHistory($filterInfo->{tmpraw});
+		$filterInfo->{nraw} = 0;
+
+		next if UVOT::Filter::isGrism($filter);
+	}
+
+	foreach my $filter (sort @{ $self->{filters} }) {
+
+		my $filterInfo = $self->getFilterInfo($filter);
+		next if $filterInfo->{TROUBLE};
+
+		$self->buildRawImages($filterInfo);
+
+		if ($filterInfo->{nraw} > 0 and $args->{mod8corrFlag}) {
+			$self->runUvotmodmap($filterInfo);
+		}
+		if ($filterInfo->{nraw} > 0 and $args->{flatfieldFlag}) {
+			$self->runUvotflatfield($filterInfo);
+		}
+
+		$self->buildSkyImages($filterInfo);
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub updatePrimaryTimes
+{
+	my ($self, $filterInfo) = @_;
+
+	my $first = $filterInfo->{exposures}[0];
+	my $last = $filterInfo->{exposures}[-1];
+	my $dateobs = UVOT::Time::met2utc($self, $first->{TSTART});
+	my $dateend = UVOT::Time::met2utc($self, $last->{TSTOP});
+	my $times = $self->temporary('times', extension => '.key');
+	my $fh = FileHandle->new($times, 'w');
+	$fh->print("
+TSTART = $first->{TSTART}
+TSTOP = $last->{TSTOP}
+DATE-OBS = $dateobs
+DATE-END = $dateend
+");
+	$fh->close;
+	my $command = $self->buildCommand('fthedit',
+			infile => $filterInfo->{tmpraw},
+			keyword => '@' . $times,
+			);
+	$self->shell($command);
+}
+
+
+sub buildRawImages
+{
+	my ($self, $filterInfo) = @_;
+
+	my $keyEdit = '[col';
+	foreach my $key (qw(RA_PNT DEC_PNT PA_PNT)) {
+		$keyEdit .= " #$key=$self->{$key};";
+	}
+	$keyEdit .= " #ASPCORR='NONE'; #MOD8CORR=F; #FLATCORR=F]";
+
+	foreach my $info (@{ $filterInfo->{exposures} }) {
+
+		my $method = $info->{method};
+
+		my $str = join(', ', map { "$_=$info->{$_}" } sort keys(%$info));
+		$self->report("make RAW based on [$str]")
+			if $self->chatter(5);
+
+		if ($method eq METHOD_ONBOARD_IMAGE) {
+			# just transfer this HDU to the output file
+			my $infile = "$info->{path}+$info->{hdu0}";
+			$self->appendAnImage($infile, $filterInfo->{tmpraw},
+					keys => $keyEdit,
+					);
+		}
+		elsif ($method eq METHOD_CORR_RAW_EVENTS) {
+			$self->buildCorrectedRawEventImage($info, $filterInfo->{tmpraw});
+		}
+
+		last if not $self->isValid;
+
+		++$filterInfo->{nraw};
+	}
+
+	$filterInfo->{finalraw} = $filterInfo->{tmpraw};
+}
+
+
+sub buildDetectorImages
+{
+	my ($self, $filterInfo) = @_;
+	# convert grism RAW to DET
+}
+
+
+
+sub buildCorrectedRawEventImage
+{
+	my ($self, $info, $outfile) = @_;
+
+	my $args = $self->args;
+
+	# filtered the events
+	my $subevt = $self->temporary('gti', ext => '.evt');
+	my $ftcopy = $self->buildCommand('ftcopy',
+			infile => $info->{path} . "[gtifilter('[$info->{gtiname}]')]",
+			outfile => $subevt,
+			copyall => 'no',
+			);
+	$self->shell($ftcopy);
+	$self->applyKeyfix($subevt);
+
+	# create the raw attitude corrected event image
+	my $filterInfo = $self->getFilterInfo($info->{FILTER});
+	my $rawevtimg = $self->temporary('rawevt', ext => '.img');
+	my $command = $self->buildCommand('uvotrawevtimg',
+			eventfile => $subevt,
+			attfile => $args->{attfile},
+			outfile => $rawevtimg,
+			teldeffile => $filterInfo->{teldefpath},
+			x0 => $info->{WINDOWX0},
+			y0 => $info->{WINDOWY0},
+			dx => $info->{WINDOWDX},
+			dy => $info->{WINDOWDY},
+			trel => ($info->{TSTART} + $info->{TSTOP}) / 2,
+			t1 => $info->{TSTART},
+			t2 => $info->{TSTOP},
+			randomize => $args->{randomize},
+			);
+	$self->shell($command);
+
+	# take care of keys
+	{
+		$info->{HDUCLAS1} = 'IMAGE';
+		$info->{HDUCLAS2} = 'TOTAL';
+		$info->{'DATE-OBS'} = UVOT::Time::met2utc($self, $info->{TSTART});
+		$info->{'DATE-END'} = UVOT::Time::met2utc($self, $info->{TSTOP});
+		if ($info->{GTI_TIMES}) {
+			$info->{TELAPSE} = $info->{TSTOP} - $info->{TSTART};
+			$info->{DEADC} = $info->{DEADC} || 1.0;
+			$info->{LIVETIME} = $info->{ONTIME} * $info->{DEADC};
+			$info->{EXPOSURE} = $info->{LIVETIME};
+		}
+		$info->{EXTNAME} = sprintf('%s%08dE',
+				UVOT::Filter::filterCode($info->{FILTER}), $info->{EXPID});
+		$info->{BINX} = $info->{BINY} = 1;
+		$info->{CTYPE1} = 'RAWX';
+		$info->{CTYPE2} = 'RAWY';
+		$info->{CUNIT1} = $info->{CUNIT2} = 'pixel';
+		$info->{CDELT1} = $info->{BINX};
+		$info->{CDELT2} = $info->{BINY};
+		$info->{CRPIX1} = 1;
+		$info->{CRPIX2} = 1;
+		$info->{CRVAL1} = $info->{WINDOWX0};
+		$info->{CRVAL2} = $info->{WINDOWY0};
+		my $spec = $self->parseInputURL($filterInfo->{teldefpath});
+		$info->{UTELDEF} = $spec->{name};
+		$info->{DTELDEF} = $spec->{dir};
+	}
+
+	# append to output
+	{
+		my $keys = '[col';
+		foreach my $key (qw(EXTNAME DATE-OBS DATE-END UTELDEF DTELDEF
+				CTYPE1 CTYPE2 CUNIT1 CUNIT2)) {
+			$keys .= " #$key='$info->{$key}';";
+		}
+		foreach my $key (qw(EXPID TSTART TSTOP TELAPSE ONTIME LIVETIME EXPOSURE
+
+				DEADC BLOCLOSS STALLOSS TOSSLOSS
+				CRPIX1 CRPIX2 CRVAL1 CRVAL2 CDELT1 CDELT2
+				WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY BINX BINY)) {
+			if (exists($info->{$key})) {
+				$keys .= " #$key=$info->{$key};";
+			}
+		}
+		foreach my $key (qw(RA_PNT DEC_PNT PA_PNT)) {
+			$keys .= " #$key=$self->{$key};";
+		}
+		$keys .= " #ASPCORR='NONE'; #MOD8CORR=F; #FLATCORR=F";
+		$keys .= ']';
+
+		$self->appendAnImage($rawevtimg, $outfile, keys => $keys);
+	}
+}
+
+
+sub buildSkyImages
+{
+	my ($self, $filterInfo) = @_;
+
+	my $args = $self->args;
+
+	# transform RAW images to SKY
+	$filterInfo->{tmpsky} = $self->temporary('tmpsky');
+
+	my $command = $self->buildCommand('swiftxform',
+			infile => $filterInfo->{tmpraw},
+			outfile => $filterInfo->{tmpsky},
+			attfile => $args->{attfile},
+			alignfile => $args->{alignfile},
+			teldeffile => $filterInfo->{teldefpath},
+			to => 'SKY',
+			ra => $self->{RA_PNT},
+			dec => $self->{DEC_PNT},
+			roll => $self->{PA_PNT},
+			refattopt => $args->{refattopt},
+			);
+	my %args;
+	if (not $self->chatter(5)) {
+		$args{lines} = 20;
+	}
+	$self->shell($command, \%args);
+}
+
+
+sub appendAnImage
+{
+	my ($self, $infile, $path, %args) = @_;
+
+	if ($args{keys}) {
+		$infile .= $args{keys};
+	}
+
+	my $command = $self->buildCommand('ftappend',
+			infile => $infile,
+			outfile => $path,
+			);
+
+	$self->shell($command);
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+
+		foreach my $filter (@{ $self->{filters} }) {
+
+			my $info = $self->getFilterInfo($filter);
+
+			if (not $info->{TROUBLE}) {
+
+				rename($info->{finalraw}, $info->{outraw})
+					or $self->error(BAD_OUTPUT,
+						"unable to rename $info->{finalraw} to $info->{outraw} [$!]");
+
+				rename($info->{tmpsky}, $info->{outsky})
+					or $self->error(BAD_OUTPUT,
+						"unable to rename $info->{tmpsky} to $info->{outsky} [$!]");
+			}
+
+			$self->addTemporary($info->{tmpraw});
+			$self->addTemporary($info->{tmpsky});
+		}
+
+	}
+
+}
+
+
+sub validateMET
+{
+	my ($task, $in) = @_;
+	if ($in < 0 || $in > 1e16) {
+		$task->error(BAD_INPUT, "validateMET: bad MET '$in'; using default 0");
+		return 0;
+	}
+	return $in;
+}
+
+
+sub validateExposure
+{
+	my ($task, $in) = @_;
+	if ($in != $in || $in < 0 || $in > 1e16) {
+		$task->error(BAD_INPUT, "validateExposure: bad exposure time '$in'; using default 0");
+		return 0;
+	}
+	return $in;
+}
+
+
+sub validateLoss
+{
+	my ($task, $in) = @_;
+	if ($in < -1 || $in > 2) {
+		$task->warning("validateLoss: bad loss fraction '$in'; using default 0");
+		return 0;
+	}
+	return $in;
+}
+

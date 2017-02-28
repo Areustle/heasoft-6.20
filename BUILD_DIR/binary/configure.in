@@ -1,0 +1,152 @@
+dnl Process this file with autoconf to produce a configure script.
+AC_INIT()
+
+AC_REVISION($Revision: 1.26 $)
+
+AC_PREREQ(2.59)
+
+AC_CANONICAL_TARGET([])
+
+UNAME_SYSTEM=`(uname -s) 2>/dev/null` || UNAME_SYSTEM=unknown
+
+AC_PREFIX_DEFAULT(`cd ../..; pwd`)
+
+#-------------------------------------------------------------------------------
+
+h_this_script=`echo $0 | sed 's%.*/%%'`
+h_this_dir=`echo $0 | sed "s%$h_this_script\$%%"`
+h_top=`cd $h_this_dir/..; pwd`
+HD_SRC=$h_top
+AC_SUBST(HD_SRC)
+
+AC_PATH_PROGS(PERL, perl5 perl)
+$PERL -v 2> /dev/null > /tmp/$$.log
+if test `cat /tmp/$$.log | grep -c '5\.00[01234]'` -ne 0 -o `cat /tmp/$$.log | grep -c '[1234]\.[0123456789]'` -ne 0; then
+  AC_MSG_ERROR(Perl version 5.005 or better is required!)
+fi
+rm -f /tmp/$$.*
+AC_SUBST(PERL)
+
+AC_SUBST(UNAME_SYSTEM)
+
+case ${UNAME_SYSTEM} in
+  CYGWIN*)
+    EXT=win
+    ;;
+  Darwin*)
+    EXT=darwin
+    # HEASoft pre-compiled binaries are now 64-bit by default:
+    HD_BUILD_ARCH_32_BIT=no
+    ;;
+  Linux*)
+    EXT=lnx
+    ;;
+  OSF*)
+    EXT=osf
+    ;;
+  SunOS*)
+    EXT=sol
+  ;;
+esac
+AC_SUBST(EXT)
+AC_SUBST(HD_BUILD_ARCH_32_BIT)
+
+AC_OUTPUT(headas-setup fermi-setup)
+
+if test -f headas-setup; then chmod +x headas-setup; fi
+if test -f fermi-setup; then chmod +x fermi-setup; fi
+if test -f lhea-fixperl; then chmod +x lhea-fixperl; fi
+if test -f lhea-fixpfiles; then chmod +x lhea-fixpfiles; fi
+
+# Export variables for substitution during .parin -> .par file generation:
+LHEA_DATA=`cd ..; pwd`/refdata
+LHEA_HELP=`cd ..; pwd`/help
+export LHEA_DATA
+export LHEA_HELP
+
+# Generate .par files from .parin files (if any):
+if test -x lhea-fixpfiles -a -d ../syspfiles; then
+   if test `find ../syspfiles/ -name \*.parin 2> /dev/null | wc -l` -ne 0; then
+      touch ../syspfiles/*.parin
+      ./lhea-fixpfiles ../syspfiles/*
+   fi
+fi
+
+# Prepend LHEAPERL header to perl scripts:
+if test -x lhea-fixperl -a -d ../bin; then
+   cd ../bin; ../BUILD_DIR/lhea-fixperl; cd ../BUILD_DIR
+fi
+
+# Modify RPATH settings for Darwin 15.x and newer:
+case $host in
+  changequote(,)
+  *darwin[89]*|*darwin1[01234]*)
+    ;;
+  changequote([,])
+  *darwin*)
+    # Change this prior to each release:
+    hd_lib_dir_gsfc="/Users/birby/heasoft-6.20/x86_64-apple-darwin14.5.0/lib"
+    # Find binary lib directory:
+    hd_lib_dir=`cd ../lib; pwd`
+    # Make sure install_name_tool is installed:
+    if test ! -x /usr/bin/install_name_tool; then
+      AC_MSG_ERROR(/usr/bin/install_name_tool is required!)
+      AC_MSG_ERROR(Please run this command: xcode-select --install)
+      AC_MSG_ERROR(Then restart the configure)
+    fi
+    # Get listing of all items in bin directory, omitting third-party
+    # items and newmakefilter, which is just a link to makefilter:
+    hd_bin_dir_contents=`/bin/ls -1 ../bin/. | grep -v ^fpack | grep -v ^funpack | grep -v ^hd_install | grep -v ^lynx | grep -v ^newmakefilter | grep -v ^pgdisp | grep -v ^pgxwin_server | grep -v ^tclsh | grep -v ^wish | grep -v ^xpaaccess | grep -v ^xpaget | grep -v ^xpainfo | grep -v ^xpamb | grep -v ^xpans | grep -v ^xpaset | grep -v ^pcheck | grep -v ^pget | grep -v ^plist | grep -v ^pquery | grep -v ^pset | grep -v ^punlearn`
+    # Run install_name_tool to add rpaths with new location to compiled
+    # tasks and Perl bundles:
+    echo "Using install_name_tool to add rpath=$hd_lib_dir to compiled tasks and Perl bundles..."
+    for hd_task in $hd_bin_dir_contents; do
+      # If item is a Mach-O executable, change rpath with install_name_tool:
+      if test `/usr/bin/file -L ../bin/$hd_task | grep -c 'Mach-O'` -ne 0; then
+         /usr/bin/install_name_tool -rpath $hd_lib_dir_gsfc $hd_lib_dir ../bin/$hd_task
+      fi
+    done
+    # Add rpath to Perl bundles:
+    /usr/bin/install_name_tool -add_rpath $hd_lib_dir $hd_lib_dir/perl/auto/Astro/FITS/CFITSIO/CFITSIO.bundle
+    /usr/bin/install_name_tool -add_rpath $hd_lib_dir $hd_lib_dir/perl/auto/HEACORE/HEAINIT/HEAINIT.bundle
+    /usr/bin/install_name_tool -add_rpath $hd_lib_dir $hd_lib_dir/perl/auto/HEACORE/HEAUTILS/HEAUTILS.bundle
+    /usr/bin/install_name_tool -add_rpath $hd_lib_dir $hd_lib_dir/perl/auto/HEACORE/PIL/PIL.bundle
+    /usr/bin/install_name_tool -add_rpath $hd_lib_dir $hd_lib_dir/perl/auto/PGPLOT/PGPLOT.bundle
+    ;;
+  *)
+    ;;
+esac
+
+# Test whether VERSIONER_PERL_PREFER_32_BIT=yes is needed for mismatch test:
+if test "x$HD_BUILD_ARCH_32_BIT" = xyes; then
+   $PERL -V > /tmp/$$.log
+   if test `cat /tmp/$$.log | grep -c 'USE_64_BIT'` -ne 0; then
+      VERSIONER_PERL_PREFER_32_BIT=yes; export VERSIONER_PERL_PREFER_32_BIT
+   fi
+   rm -f /tmp/$$.log
+fi
+
+# Test for mismatch between Perl used at GSFC and configured $PERL:
+if test -x ../bin/perldemo2; then
+   echo "Checking for Perl mismatch..."
+   LHEAPERL="$PERL"; export LHEAPERL
+   PERLLIB="$HD_SRC/lib/perl"; export PERLLIB
+   mkdir /tmp/$$.tmp; mkdir /tmp/$$.tmp/pfiles
+   PFILES="/tmp/$$.tmp/pfiles;$HD_SRC/syspfiles"; export PFILES
+   LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$HD_SRC/lib"; export LD_LIBRARY_PATH
+   DYLD_LIBRARY_PATH="$DYLD_LIBRARY_PATH:$HD_SRC/lib"; export DYLD_LIBRARY_PATH
+   h_perl_cmd="../bin/perldemo2 infile=$LHEA_DATA/leapsec.fits outfile=/tmp/$$.fits text=perldemo2test scale=42"
+   (eval $h_perl_cmd)
+   if test $? -ne 0; then
+      AC_MSG_WARN(Perl error detected!)
+      AC_MSG_WARN(A conflict may exist between these binaries and $PERL.)
+      AC_MSG_WARN(Switching to PERL=/usr/bin/perl may help.)
+      AC_MSG_WARN(Please visit the link below for more information.)
+      AC_MSG_WARN(http://heasarc.gsfc.nasa.gov/lheasoft/perl.html)
+   else
+      echo "No Perl mismatch detected."
+   fi
+   rm -rf /tmp/$$.*
+fi
+
+echo "Finished"

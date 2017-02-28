@@ -1,0 +1,1293 @@
+\chapter{XSTAR2XSPEC}
+\label{sec:xstar2xspec}
+
+To facilitate using XSTAR with actual data, XSTAR2XSPEC was 
+developed.  XSTAR2XSPEC is a perl script which calls XSTAR multiple times 
+and generates table models from the results of these simulations 
+which can then be utilized for model fitting in the XSPEC spectral 
+fitting program.  XSTAR2XSPEC also generates a log file which is a concatenation 
+of all the xout\_step.log files from all the XSTAR runs.  This is a convenient  
+way of generating a grid of models for other purposes, such as studying 
+the dependence of line strengths on various input parameters, or exploring 
+the full dependence of the heating and cooling rates on temperature 
+and ionization parameter.  This last problem is illustrated in the 
+examples section of this chapter.
+
+\section{Parameters}
+
+The parameter handling for XSTAR2XSPEC is designed to be as flexible 
+as possible, in principle, limited only by the physical resources 
+(RAM, disk space \& CPU time) available on your machine.  You have the choice of 
+varying {\it any} of the physical parameters used as input in an XSTAR 
+model.
+
+\subsection{Physical Parameters}
+
+XSTAR models are based on 21 physical parameters described in detail 
+in Chapter~\ref{sec:xstarinput}.  In quick summary, they are 
+cfrac, temperature, pressure, density, trad, rlrad38, column, rlogxi,
+habund, heabund, cabund, nabund, oabund, neabund, mgabund, siabund, sabund, 
+arabund, caabund, feabund \& niabund.  Each of these parameters needs 
+at least one additional parameters and as many as four additional 
+parameters to specify is variation during the program run.
+
+Each parameter has three levels for classifying its variability:
+
+\begin{description}
+	\item[{\bf Constant (variation type = 0):}]  This parameter is held 
+	constant in all the XSTAR runs.
+
+	\item[{\bf Additive (variation type = 1):}]  The Additive class of 
+	parameters provides a 
+	simple method for varying parameters that are reasonably 
+	independent of the others.  For more info on how additive parameters 
+	function, see the XSPEC manual and OGIP Memo OGIP 92-009.
+
+	\item[{\bf Interpolated (variation type = 2):}]  Interpolated parameters 
+	provide the 
+	greatest accuracy in building table models.  They also require the 
+	most processing time.  For each interpolated parameter, you can 
+	define some number of points between a maximum and minimum range.  
+	The placement of these intermediate points is determined by the 
+	interpolation type -- linear (interpolation type = 0) or 
+	logarithmic (interpolation type = 1).
+	
+\end{description}
+
+In estimating the running time of XSTAR2XPEC, the key factor is the 
+number of times XSTAR is called.  Consider a run with ${\rm N}_{\rm I}$ 
+interpolated parameters, where interpolated parameter $i$ is evaluated 
+at $n_{i}$ points $(1 \leq i \leq {\rm N}_{\rm I})$.  The total number of 
+times XSTAR is called is then $\prod\limits_{\rm i=1}^{{\rm N}_{\rm 
+I}} n_i$.  However, if ${\rm N}_{\rm A}$ additive parameters are also 
+defined, then for each set of interpolated variables, there is one 
+run with all the additive parameters are zero and the remaining ${\rm 
+N}_{\rm A}$ runs have one of the additive parameters at it's maximum 
+value and the rest all zero.  This means that the total number of 
+times XSTAR must be run is given by
+
+\begin{equation}
+	({\rm N}_{\rm A}+1) \prod\limits_{\rm i=1}^{{\rm N}_{\rm I}} n_i
+\end{equation}
+and this can provide you with a feel for how long a complete 
+XSTAR2XSPEC run will require.  As an example, if we defined 2 
+interpolated parameters (one evaluated at 5 points and the other 
+evaluated at 4 points) and 8 additive parameters, XSTAR would be run a 
+total of
+\begin{equation}
+	(8+1)(5)(4) = 180 calls
+\end{equation}
+which means that if the XSTAR runs for the appropriate model range 
+averages five minutes, it will take approximately (180)(5 minutes) = 
+900 minutes = 15 hours for a complete XSTAR2XSPEC run.
+
+\subsection{XSTAR Fixed Parameters}
+
+These values are the same for {\it all} XSTAR runs.
+
+\subsection{XSTAR2XSPEC Control parameters}
+
+\begin{description}
+	\item[{\bf elow:}]  This parameter determines the low energy end (in 
+	eV) of the spectrum selected from the XSTAR output files.
+
+	\item[{\bf ehigh:}]   This parameter determines the high energy end (in 
+	eV) of the spectrum selected from the XSTAR output files.
+\end{description}
+
+\section{Running XSTAR2XSPEC}
+
+To run XSTAR2XSPEC, simply type
+
+\begin{verbatim}
+	xstar2xspec [options]
+\end{verbatim}
+at the system prompt, where [options] consists of one or more of the 
+options listed below.  Generally, you will run XSTAR2XSPEC with no 
+options.  There are a couple of control options which are 
+described below.  Currently the script prompts you for {\it all} 
+parameters by invoking the pset utility (included in the standard 
+XSTAR package).  The defaults are adequate for most situations.
+
+Entering all the many parameters prompted by XSTAR2XSPEC can be 
+tedious, and prone to error.  An alternative is to edit the parameter 
+file using an FTOOL routine or a text editor.  Since XSTAR2XSPEC is 
+actually a perl script and not an FTOOL, it does not have its own 
+parameter file.  Rather, it calls several other FTOOLS which do have 
+their own parameter files.  The FTOOL responsible for setting up the 
+multiple commands to call XSTAR is called XSTINITABLE, and all 
+the relevant parameters can be set by editing the parameter file
+xstinitable.par.  This is what we do when using this script.
+
+{\bf XSTAR2XSPEC Options:}
+
+\begin{description}
+
+	\item[{\tt -save}:]   Save the spectral FITS files, modifying the file name to
+    include the value of the loopcontrol variable for better
+    identification.  Note this can use GBs of disk space.
+    
+	\item[{\tt -verbose}:]   Generate more diagnostic messages (applies 
+	to the XSTAR2XSPEC script only).
+
+	\item[{\tt -restart}:]  Continues the XSTAR2XSPEC run using the previous run.
+    Note that it does {\it NOT} check the integrity of the table files from the 
+    terminated run.  This is the user's responsibility.
+\end{description}
+
+\subsection{Output}
+
+Four files are produced by xstar2xspec:
+
+\begin{enumerate}
+	\item xstar2xspec.log is a concatenation of all the xout\_step.log
+	files from all the xstar runs called by xstar2xspec.
+
+	\item xout\_ain.fits is a fits file containing the atable with the reflected 
+	emission spectrum produced by xstar.  This file is ready for use by xspec
+	using the `model atable xout\_ain.fits ...' command.
+
+	\item xout\_aout.fits is fits file containing the atable with the
+	emission spectrum in the forward (transmitted) direction 
+	produced by xstar.  This file is ready for use by xspec
+	using the `model atable xout\_aout.fits ...' command.
+
+	\item xout\_mtable.fits is a fits file containing the mtable with the 
+	absorption spectrum in the forward (transmitted) direction
+	produced by xstar.  This file is ready for use by xspec
+	using the `model mtable xout\_mtable.fits pow ...' command.
+
+\end{enumerate}
+
+\subsection{Important Notes on Mtables}
+
+If you are using mtables with variable abundances, then you will likely get 
+totally unphysical results unless you note the following.  
+
+The mtable models are constructed using two kinds of parameters:  interpolated 
+parameters and additive parameters.  Interpolated parameters are treated 
+as one might expect:  if the model is represented by a vector $M_i(x_j)$, 
+corresponding to the model flux at various energies $\varepsilon_i$ and 
+stored at various values of the free (intepolated) parameter $x_j$, 
+then for a value of the parameter not on the tabulated grid xspec 
+calculates the model value as
+
+$$M_i(x)=\Sigma_j M_i(x_j)\omega_j$$
+
+\noindent where $\omega_j$ are suitably chosen weights for, eg. linear 
+interpolation.  Ths is in contrast to the treatment of additive parameters:
+for an mtable, xspec needs the value of the model tabulated at only 
+two values of the free additive parameter $y$, 0 and $y_{max}$.  Then the 
+model is calculated for some arbitrary $y$ as
+
+$$M_i(y)=(M_i(y_{max})-M_i(0)){{y}\over{y_{max}}}+M_i(0)$$
+
+\noindent i.e. it is assumed that the model scales linearly with the value 
+of the additive parameter $y$.  This formalism was developed for 
+emission models, where emissivities might be expected to scale 
+linearly with elemental abundance.  In the case of absorption models, 
+the value of $M$ which xspec uses is a transmission coefficient, and this 
+does not scale linearly with abundance.  Rather, the transmission coefficient 
+is related to the optical depth by:
+
+$$M_i(y)=e^{-\tau_i(y)}$$
+
+\noindent and the optical depth $\tau_i(y)$ does scale (approximately) linearly
+with abundance.  For this reason, xspec has incorporated the etable models, 
+in which the model builder supplies optical depths rather than transmission 
+coefficient, linear interpolation is used to calculate the optical depth 
+for a given abundance, and then the transmission coefficient is 
+calculated using the above expression.  The results:
+
+(1) If you use an mtable calculated by xstar2xspec using varable abundances
+(i.e. any additive parameters allowed to vary) in xspec using 
+the `model mtable{xout\_mtable.fits}' command, you will get unphysical 
+results.  It is easy to see that if $M_i(0)$ is non-zero (which it often 
+is owing to 0 abundances) then you will never get deep absorption.
+
+(2) If so, you should use the `model etable{xout\_mtable2.fits}' command
+in xspec instead.  Entering parameter, etc., in xspec is the same for 
+etables as for mtables.
+
+(3) BUT, the etable itself is supposed to be filled with optical depths, not
+transmission coefficients.  The tables made by xstar2xspec are transmission coefficients,
+and they need to be converted.  This is a simple transformation:  replace 
+the contents of every cell of the model extension of the mtable file ($x_{ij}$)
+with -ln($x_{ij}$).  This can be done various ways.  One way is to use the calculator 
+inside of the ftools gui routine xv, one column at a time.  This has 
+been done for the various precalculated models on the website, and these 
+are stored with the names xout\_mtable2.fits.
+
+
+\begin{verbatim}
+_________________________________________________________________________________
+\end{verbatim}
+
+\noindent{\bf Some Specific Examples, and a Discussion of the Analytic Model warmabs}
+
+When fitting to absorption spectra it is important to 
+be aware of  the inherent limitations of xstar when applied to the 
+fitting of absorption.  There are two distinct reasons for this:
+spectral resolution effects, and interpolation effects.
+In order to illustrate these effects, we reproduce 
+here a discussion between TK and P. Oneill of Imperial College in 
+which these questions are raised, and some of the issues are discussed.
+
+Question:
+
+I've been using some of the sample XSPEC models from the current version 
+of XSTAR to model a warm absorber.
+
+I've been using the grid18 models with the abundances fixed at their 
+default values. I found that using the XSPEC model 
+"mtable{xout\_mtable.fits}*powerlaw" gave different results (less 
+absorption) than when I used "etable{xout\_mtable\_2.fits}*powerlaw".  I 
+thought that these should provide the same results, so long as the 
+abundances are not changed. Am I using these tables correctly, or is 
+there perhaps a problem somewhere?
+
+Answer:
+
+The problem is that variable abundances, they are treated as additive
+parameters in xspec tables, really can't be treated 
+accurately  using either type of table.  If you use an mtable, then 
+the transmittivity in a bin, i, at a given ionization parameter and 
+column, is:
+
+\begin{equation}
+M_i=M_i^0+\Sigma_j x_j M_i^j
+\end{equation}
+
+where $M_i^0$ is the 'zero abundance' version of the model at that 
+ionization parameter and column, $x_j$ is the abundance of element j, 
+and $M_i^j$ is the model calculated with that element set to unity (relative 
+to cosmic).  The first problem with this approach is that tranmission 
+doesn't  scale this way with abundance. If you double the abundance 
+of an element, you should double the optical depth.  Doubling the 
+transmittivity has both the wrong qualitative and quantitative behavior.
+But an even bigger problem with this is that the whole thing, $M_i$, 
+multiplies your continuum.  It is almost guaranteed to bigger than 1 if 
+some of the $x_j$ are non-zero.  So this is totally the wrong formulation to 
+use when the abundances vary.  
+
+
+In the case of an etable the transmittivity is:
+
+\begin{equation}
+M_i=exp(-(E_i^0+\Sigma_j x_j E_i^j))
+\end{equation}
+
+where $E_i^0=-{\rm ln}(M_i^0)$ etc.
+
+This is better, since it predicts the correct dependence on abundance,
+i.e. that the optical depth scales approximately linearly with 
+abundance.
+
+But it is important to remember that what you are trying 
+to simulate is a 'real' photoionized gas with some abundance set {$x_j$} 
+that fits your data.  What you are using to fit to your data are $M_i^0$, 
+which in the case of xstar are models calculated with only hydrogen and 
+helium, and the set of $M_i^j$, which are supposed to be calculated with 
+pure element j.  
+
+The first  problem is that the cooling, and therefore the 
+temperature, depends on the element abundance in the gas, and this is not 
+linear.  The temperature couples back into the ionization balance, and 
+that affects the opacity, transmittivity, etc. 
+
+The second problem is that, while it is straightforward to calculate 
+a model with no elements heavier than H and He, 
+it is not straightforward to calculate a 
+model with pure iron, or calcium, say.  That's because H and He havs nice 
+simple cooling properties at low temperature, and their opacity is simple, 
+etc.  Pure iron models at best are likely to be very different than 
+H+He+Fe models, or from a cosmic mix.  So what I do is  make the $M_i^j$ 
+using H+He+element j in cosmic ratios.  But the problem with this is that 
+then the opacity due to H and He are present 
+{\em in every $M_i^j$, and $E_i^j$}, 
+particularly at low ionization parameters.  So if you sum over cosmic 
+abundances using an etable you are including the H and He opacity with 
+every one of the $E_i^j$.  At high ionization parameter (log($\xi)>$1?) 
+this 
+should not be a problem because H and He are ionized sufficiently that they do 
+not contribute to the opacity.  But at low ionization parameter, the 
+model spectra calculated using etables will have significantly more 
+low energy opacity due to the multiple counting of H and He than they 
+would in a real xstar model with the corresponding parameters.  
+
+The strategy to use at low ionization parameters therefore
+is to use the etable to find a reasonably good fit to the 
+spectrum with xspec, and then run xstar2xspec and make a very small table, 
+i.e. just 1 column and 2 ionization parameters (xspec needs tables to 
+have at least 2 entries), with  constant abundances, set to the values 
+which come from the fit.  Constant abundance grids (such as grid19) when used 
+as mtables do not suffer from any of these problems.
+
+I attach 4 figures to illustrate these problems.  All use the mtable or 
+etable from grid18.  All are plotted between 0.6 and 0.7 keV, power law 
+continuum, index=1, norm=1, log($\xi$)=1.  The continuum level at .6 keV is 1.66.
+
+
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig1.epsi}
+\caption{figure 1: cosmic abundances, mtable}
+\label{fig:1 cosmic abundances, mtable}
+\end{figure}
+
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig2.epsi}
+\caption{figure 2: cosmic abundances, etable}
+\label{fig:2 cosmic abundances, etable}
+\end{figure}
+
+
+Comparing these shows the big problem with mtables with variable abundances:  they give a 
+transmittivity which is $>$1.  In this case, the transmittivity is $>$10.
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig3.epsi}
+\caption{figure 3: oxygen=1, other metals=0, etable}
+\label{fig:3 oxygen=1, other metals=0, etable}
+\end{figure}
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig4.epsi}
+\caption{figure 4: oxygen=1, other metals=0, mtable}
+\label{fig:4 oxygen=1, other metals=0, mtable}
+\end{figure}
+
+
+Here again, the problem is that even the pure oxygen mtable has the 
+transmittivity of the 'zero abundance' model, $M_i^0$, which really has pure 
+H and He and therefore has unit transmittivity.  The line never can go 
+black.  The only model which is nearly correct is 3, but here again you 
+have the problem of multiple counting of the H and He opacity.  But at 
+this high ionization parameter that is negligible.  Anyway, I hope you 
+understand the problem. 
+
+It is straightforward to use xstar2xspec to calculate grids without 
+variable abundances.  THEN you can use mtables, and there should be none 
+of these problems.
+
+
+Question:
+
+I have made some comparisons between vturb=0 models and 
+those with vturb=100.  I find that vturb=0  gave very different results 
+(much less absorption) to the vturb=100 grid18 etable.  I 
+hadn't expected to see the large difference with a change from vturb=100 
+to vturb=0. Is this expected behaviour? 
+
+Answer:
+
+vturb can make a significant difference in the results of xstar modeling 
+of absorption spectra, and the reason is at least 
+partially due to numerics.  In calculating the energy dependent opacity  Xstar simply 
+evaluates the profile function for the line at each grid energy.  So 
+if the line width is less than, or comparable to, the xstar grid spacing, 
+then maximum depth of a given absorption line in the mtable  may be very 
+different from the true depth at line center.  Obviously this problem is 
+more severe for small vturb, i.e. narrow lines.  The total line equivalent 
+width does not depend on vturb, but the numerics do not reflect that 
+unless the line is broader than the grid resolution.  And the limiting 
+resolution is the internal xstar grid spacing, which corresponds to 420 
+km/s, since this is what is used in constructing the table.  This is 
+another flaw in the use of tables for fitting to spectra.   
+
+\begin{verbatim}
+_________________________________________________________________________________
+\end{verbatim}
+
+There is now subroutine which calculates xstar warm absorber (called 'warmabs') and 
+warm emitter (called 'photemis') spectra and which can be called as 
+an xspec `analytic' model.  This calculates absorption spectra
+`on the fly', and so  will evaluate the profile 
+function on whatever grid you use in xspec.  So you can choose to resolve 
+all the lines if you want, using the 'dummyrsp' command with a very large number 
+of bins.  It is available on the xstar web site, look for the link under `XSTAR news'.
+It also does not suffer from the problems discussed previously about the 
+approximations inherent in variable abundance.  It calculates the 
+opacity directly from a stored library of level populations calculated for a
+generic power law grid.  
+
+One drawback of this routine is that it brute-force 
+calculates Voigt profiles and opacity for all the lines and bound-free
+continua which are above a certain threshold in strength, and so it is time-consuming.
+Currently calls to this routine can take up to 30 seconds on a slow or busy machine. 
+It will be much faster on a faster machine, or if there are few elements with non-zero 
+abundances, or if only a narrow spectral range is of interest, or if the 
+ionization parameter is frozen.
+
+Another drawback to this routine is that the current version assumes 
+constant ionization throughout a slab of given ionization parameter and column.
+Real slabs will have lower mean ionization in the deeper, shielded regions, and 
+this lower ionization material will absorb more efficiently.
+This means that the current warmabs assumption results in an 
+underestimate of the opacity, particularly at low energies,
+for slabs with large column.  This will be remedied in future versions of this routine.
+
+
+\begin{verbatim}
+_________________________________________________________________________________
+\end{verbatim}
+
+Yet another issue which deserves mention is that of interpolation and grid 
+spacing in the interpolated parameters as implemented by xspec.  Many of the 
+available xstar grids were calculated with models spaced 1 decade apart in column.
+This has the potential to lead to inaccuracies in the model spectrum calculated 
+by xspec, since it will interpolate between grid points.  Sparsely gridded 
+models may miss important details.  Grids 19b and 19c provide an example.
+
+
+\begin{verbatim}
+_________________________________________________________________________________
+\end{verbatim}
+
+Question:
+
+I have compared the grids with the warmabs analytical model. These are in 
+firgure 5. 19c is the solid line, warmabs is the dashed line, and 19b 
+is the dotted line. The model here is the same model that I used to fit 
+the data using 19c (ie, it has 1.4e20 of wabs also). I hope you can get 
+some info from this. The parameters used for these models were: log$\xi$=1.27, 
+N=5.89e22.
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig5.epsi}
+\caption{figure 5: Comparison of grid19b, 19c, and warmabs}
+\label{fig:Comparison of grid19b, 19c, and warmabs}
+\end{figure}
+
+Answer:
+
+OK, so what I see from your plot comparing the models is that:
+
+1) grid19b and grid19c give qualitatively different results near the best 
+fit parameter values in the strength of the absorption near the K edge of 
+oxygen.  This seems to me to be clear evidence for the errors introduced 
+by interpolation in a sparsely gridded table in column, as I suggested. 
+
+2) grid19c and warmabs agree well at energies above .8 keV, except for the 
+lines.  This seems to me to be a comforting check on the validity of 
+warmabs.  
+
+3) there is disagreement in the strength of the absorption below 0.8 keV.  
+We decided that the assumption of a constant ionization slab made in 
+warmabs would tend to underestimate the absorption, since the ionization 
+balance would be lower in the shielded parts of a real slab, hence more 
+absorption.  This is the sense of the disagreement, and so seems to make 
+sense.  Of course, there is still some interpolation involved in the use 
+of grid19c, since your best fit values for N and $/xi$ are not precisely on 
+the grid values.  I have compared warmabs and grid19c for the nearest grid 
+values, and the effect of interpolation does not appear to change the 
+sense of the disagreement.  So this is a strong argument for fixing up 
+warmabs so that it does not make the uniform slab assumption.
+
+4) There is also disagreement between grid19c and warmabs about the 
+strength of the lines.  I think this is due to the effect of energy 
+binning:  Your energy grid must be rather coarse, i.e.R=E/Delta(E)~100.
+If you make the same plot with a grid resolution of R=10000, things look 
+better.  I attach these plots: figure 6=warmabs, figure 7=grid19c.  But there is 
+still disagreement, and this I think is because the grid19c results have 
+the intrinsic xstar internal resolution, which is much less than 10000, 
+and so information is lost about the line profiles, while warmabs 
+calculates the lines specifically for the resolution requested, and so 
+should be more accurate.
+
+\setcounter{figure}{6}
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig6.epsi}
+\caption{figure 6: warmabs model, same parameters as figure 5, R=10000}
+\label{fig:6 }
+\end{figure}
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{warmabsfig7.epsi}
+\caption{figure 7: grid19c, same parameters as figure 5, R=10000}
+\label{fig: 7 }
+\end{figure}
+
+
+\subsection{Notes on Normalization}
+
+
+The problem with creating a flexible tool for modelling emission and 
+absorption is that there have several free parameters affecting 
+real spectra, including: source luminosity, distance, reprocessor column density, 
+ionization parameter, and geometry.  By geometry we mean 
+covering fraction around the source, which affects emission, and covering
+fraction across our line of sight to the source, which affects absorption.
+With the xstar2xspec tables you should be able to model a wide range
+of choices for this, but there is not a unique one-to-one mapping between the 
+values of these physical parameters and the values used in running xstar and 
+constructing the tables.
+
+The free parameters which can be varied when running xstar2xspec include the abundances, 
+column density, gas density, and ionization parameter.  These all have a straightforward intepretation 
+as physical parameters.  The emitter normalization and geometry are not 
+uniquely determined, owing to the ambiguity between source luminosity and distance. 
+
+It is helpful here to be very specific, at the risk of being repetitive.
+The procedure followed by xstar2xspec in making tables is:  (i) Generate 
+a sequence of command line calls to xstar (this is done by the tool xstinitable);
+(ii) step through the calls to xstar; (iii) for each one calculate the appropriate 
+xstar model; (iv) and then  take the spectrum output of the model (the file xout\_spect1.fits) and 
+convert it to the right units and append it to the fits table (xout\_aout.fits, xout\_ain.fits,
+or xout\_mtable.fits).  The last step (iv) is done by the tool xstar2table.  The conversion 
+is as follows:  xspec wants a binned spectrum in units model counts/bin for atables.
+If this is denoted $F_n^{mod}$, and the luminosity used in calculating the xstar grid is $L_{tot}^{xstar}$
+then
+
+$$F_n^{mod}=\frac{L_\varepsilon^{xstar}}{L_{tot}^{xstar}} \frac{10^{38}}{4 \pi (1 {\rm kpc})^2} \left(\frac{\Delta\varepsilon}{\varepsilon}\right)$$
+
+which can be rewritten:
+
+$$F_n^{mod}=\frac{L_\varepsilon^{xstar}}{L_{tot}^{xstar}} \left(\frac{\Delta\varepsilon}{\varepsilon}\right) 8.356 \times 10^{-7}$$
+
+and $\left(\frac{\Delta\varepsilon}{\varepsilon}\right)$ is the fractional energy bin size.  
+
+The meaning of this quantity and the normalization can be better understood if we consider how 
+xspec works in more detail.  Xspec calculates the model count rates per bin by multiplying the 
+$F_n^{mod}$ vector with the response matrix $A_{nm}$ and multiplying by a normalization factor $\kappa$:
+
+$$C_m^{mod}=\kappa \Sigma_n{F_n^{mod} A_{nm}}$$
+
+\noindent The observed count rate $C_m^{obs}$ is calculated from the physical flux recieved by the 
+satellite $F_\varepsilon^{obs}$:
+
+$$C_m^{obs}=\Sigma_n{F_\varepsilon^{obs} A_{nm}}\left(\frac{\Delta\varepsilon}{\varepsilon}\right)$$
+
+\noindent Then it's easy to see that $C_m^{obs}=C_m^{mod}$ if the shape of the model fits the observations and
+
+$$\kappa = \frac{C_m^{obs}}{C_m^{mod}}$$
+
+or
+
+$$\kappa=\frac{F_\varepsilon^{obs} \left(\frac{\Delta\varepsilon}{\varepsilon}\right)}{F_n^{mod}}$$
+
+Now, if the astronomical X-ray source actually resembles the physical scenario assumed by xstar, i.e. if it 
+consists of a shell of photoionized material surrounding
+a point source of continuum with covering fraction $f$  then $F_\varepsilon^{obs}=f L_\varepsilon^{source}/(4\pi D^2)$, where 
+$L_\varepsilon^{source}$ is the actual specific luminosity emitted by the shell, and $D$ is the distance 
+to the source.  Then
+
+$$\kappa=f \frac{L_\varepsilon^{source}/10^{38}}{L_\varepsilon^{xstar}/L_{tot}^{xstar}} \frac{1}{D_{kpc}^2}$$
+
+And, if we have gotten the model exactly right and $L_\varepsilon^{source}=L_\varepsilon^{xstar}$ 
+(which implies that $L_{tot}^{source}=L_{tot}^{xstar}$) then
+
+$$\kappa=f  \frac{L_{tot}^{xstar}/10^{38}}{D_{kpc}^2}$$
+
+If, on the other hand, the shape of the emitted spectrum is right but the luminosity of the astrophyscial source is 
+different from the luminosity used in calculating the xstar model then 
+$L_\varepsilon^{source}=L_\varepsilon^{xstar} L_{tot}^{source}/L_{tot}^{xstar}$
+and 
+
+$$\kappa=f  \frac{L_{tot}^{source}/10^{38}}{ D_{kpc}^2}$$
+
+which can be inverted to find the things on the right hand side if you have a fitted value for $\kappa$.
+
+
+
+So, for example, if your atable model fits to the data with a normalization=1, let's say,
+and you used luminosity=1 in creating the table, then this would
+imply that your data was consistent with a full shell illuminated 
+by a luminosity of 10$^{38}$ erg/s at a distance of 1 kpc, 
+or it also could be a shell illuminated by a luminosity of 10$^{44}$ erg/s 
+at a distance of 1000 kpc.  
+
+For another example, let's say  you know the distance to the source 
+is 1 kpc and the luminosity is 10$^{38}$, but the best fit has an emitter 
+normalization of 0.1.  This would suggest (to me) that rather than 
+a full sphere, the emitter only subtends 10$\%$ of the solid angle around the 
+source.  
+
+Obviously, the column density of the emitter is important also.  If you 
+don't know the column density, then a shell of column density 10$^{19}$ cm$^{-2}$ 
+illuminated by a 10$^{38}$ erg s$^{-1}$ source will probably have very
+similar emitted X-ray spectrum to a shell of column density 10$^{20}$ illuminated by a 
+10$^{37}$ erg s$^{-1}$ source.  If there are absorption features in the 
+spectrum, then they may constrain the column density.
+
+
+\subsection{Speeding Things Up}
+
+If your disk or CPU resources are limited, you might want methods to 
+reduce the execution time of and XSTAR run.  Here are some methods:
+
+\begin{enumerate}
+	\item  In most cases, you are interested in the physical conditions 
+	in a plasma of fixed composition (usually solar).  In this case, you 
+	can define the variation type of the composition parameters as 
+	zero.  This will keep the abundances constant and can reduce the 
+	running time by about a factor of twelve.
+
+	\item  Keep the number of interpolated parameters at a {\it 
+	minimum}.  Two is usually sufficient.  Two interpolated parameters 
+	sampled at five points each requires 25 runs of XSTAR.  Adding two 
+	more parameters at the same sampling requires 625 XSTAR runs.  With 
+	our sample five minute (optimistically) XSTAR run, that comes out 
+	to over 52 {\it hours}!
+
+\end{enumerate}
+
+\section{Examples}
+
+In what follows we give a couple of examples of the use of XSTAR2XSPEC.  
+Here we provide the entire parameter file XSTINITABLE.PAR.  If the 
+desired application resembles one of these, then the user can edit these 
+files and copy them into the pfiles directory.
+
+\subsection{Example 1: A grid of coronal models}
+
+In this example density is held constant, column density is low, 
+thermal equilibrium is not satisfied, and temperature and 
+element abundances are varied in the manner familiar from 
+models such as APEC or MEKAL.
+
+\begin{verbatim}
+
+cfrac,r,a,1.,0.,1.,"covering fraction soft maximum"
+cfractyp,i,h,0,0,2,"covering fraction variation type"
+cfracint,i,a,1,0,1,"covering fraction interpolation type"
+cfracsof,r,a,0.,0.,1.,"covering fraction soft minimum"
+cfracnst,i,a,1,1,20,"covering fraction number of steps"
+temperature,r,h,1000.,0.,1.E4,"temperature soft maximum (/10**4K)"
+temperaturetyp,i,h,2,0,2,"temperature variation type"
+temperatureint,i,a,1,0,1,"temperature interpolation type"
+temperaturesof,r,a,1.,0.,1.,"temperature soft minimum"
+temperaturenst,i,a,7,1,20,"temperature number of steps"
+pressure,r,h,0.03,0.,1.,"pressure soft maximum (dyne/cm**2)"
+pressuretyp,i,h,0,0,2,"pressure variation type"
+pressureint,i,a,1,0,1,"pressure interpolation type"
+pressuresof,r,a,0.,0.,1.,"pressure soft minimum"
+pressurenst,i,a,1,1,20,"pressure number of steps"
+density,r,a,1.E+8,0.,1.E18,"density soft maximum (cm**-3)"
+densitytyp,i,h,0,0,2,"density variation type"
+densityint,i,a,0,0,1,"density interpolation type"
+densitysof,r,a,1.e+10,0.,1.e+18,"density soft minimum"
+densitynst,i,a,2,1,20,"density number of steps"
+trad,r,a,-1.,,,"radiation temperature or alpha soft maximum?"
+tradtyp,i,h,0,0,2,"radiation temperature variation type"
+tradint,i,a,1,0,1,"radiation temperature interpolation type"
+tradsof,r,a,0.,0.,1.,"radiation temperature soft minimum"
+tradnst,i,a,1,1,20,"radiation temperature number of steps"
+rlrad38,r,a,1.,0.,1.E10,"luminosity soft maximum (/10**38 erg/s)"
+rlrad38typ,i,h,0,0,2,"luminosity variation type"
+rlrad38int,i,a,1,0,1,"luminosity interpolation type"
+rlrad38sof,r,a,0.,0.,1.,"luminosity soft minimum"
+rlrad38nst,i,a,1,1,20,"luminosity number of steps"
+column,r,a,1.E17,0.,1.E25,"column density soft maximum (cm**-2)"
+columntyp,i,h,0,0,2,"column density variation type"
+columnint,i,a,1,0,1,"column density interpolation type"
+columnsof,r,a,1.E17,1.,1.E25,"column density soft minimum"
+columnnst,i,a,1,1,20,"column density number of steps"
+rlogxi,r,a,-6.0,-10.,+10.,"log(ionization parameter) soft maximum (erg cm/s)"
+rlogxityp,i,h,0,0,2,"log(ionization parameter) variation type"
+rlogxiint,i,a,0,0,1,"log(ionization parameter) interpolation type"
+rlogxisof,r,a,-6.,-10.0,+10.0,"log(ionization parameter) soft minimum"
+rlogxinst,i,a,0,1,20,"log(ionization parameter) number of steps"
+habund,r,h,1.,0.,100.,"hydrogen abundance soft maximum"
+habundtyp,i,h,0,0,2,"hydrogen abundance variation type"
+habundint,i,a,1,0,1,"hydrogen abundance interpolation type"
+habundsof,r,a,0.,0.,1.,"hydrogen abundance soft minimum"
+habundnst,i,a,1,1,20,"hydrogen abundance number of steps"
+heabund,r,h,1.,0.,100.,"helium abundance soft maximum"
+heabundtyp,i,h,0,0,2,"helium abundance variation type"
+heabundint,i,a,1,0,1,"helium abundance interpolation type"
+heabundsof,r,a,0.,0.,1.,"helium abundance soft minimum"
+heabundnst,i,a,1,1,20,"helium abundance number of steps"
+liabund,r,h,0.,0.,100.,"lithium abundance soft maximum"
+liabundtyp,i,h,0,0,2,"lithium abundance variation type"
+liabundint,i,h,1,0,1,"lithium abundance interpolation type"
+liabundsof,r,h,0.,0.,1.,"lithium abundance soft minimum"
+liabundnst,i,h,1,1,20,"lithium abundance number of steps"
+beabund,r,h,0.,0.,100.,"beryllium abundance soft maximum"
+beabundtyp,i,h,0,0,2,"beryllium abundance variation type"
+beabundint,i,h,1,0,1,"beryllium abundance interpolation type"
+beabundsof,r,h,0.,0.,1.,"beryllium abundance soft minimum"
+beabundnst,i,h,1,1,20,"beryllium abundance number of steps"
+babund,r,h,0.,0.,100.,"boron abundance soft maximum"
+babundtyp,i,h,0,0,2,"boron abundance variation type"
+babundint,i,h,1,0,1,"boron abundance interpolation type"
+babundsof,r,h,0.,0.,1.,"boron abundance soft minimum"
+babundnst,i,h,1,1,20,"boron abundance number of steps"
+cabund,r,h,1.,0.,100.,"carbon abundance soft maximum"
+cabundtyp,i,h,1,0,2,"carbon abundance variation type"
+cabundint,i,a,1,0,1,"carbon abundance interpolation type"
+cabundsof,r,a,0.,0.,1.,"carbon abundance soft minimum"
+cabundnst,i,a,1,1,20,"carbon abundance number of steps"
+nabund,r,h,1.,0.,100.,"nitrogen abundance soft maximum"
+nabundtyp,i,h,1,0,2,"nitrogen abundance variation type"
+nabundint,i,a,1,0,1,"nitrogen abundance interpolation type"
+nabundsof,r,a,0.,0.,1.,"nitrogen abundance soft minimum"
+nabundnst,i,a,1,1,20,"nitrogen abundance number of steps"
+oabund,r,h,1.,0.,100.,"oxygen abundance soft maximum"
+oabundtyp,i,h,1,0,2,"oxygen abundance variation type"
+oabundint,i,a,1,0,1,"oxygen abundance interpolation type"
+oabundsof,r,a,0.,0.,1.,"oxygen abundance soft minimum"
+oabundnst,i,a,1,1,20,"oxygen abundance number of steps"
+fabund,r,h,0.,0.,100.,"fluorine abundance soft maximum"
+fabundtyp,i,h,0,0,2,"fluorine abundance variation type"
+fabundint,i,h,1,0,1,"fluorine abundance interpolation type"
+fabundsof,r,h,0.,0.,1.,"fluorine abundance soft minimum"
+fabundnst,i,h,1,1,20,"fluorine abundance number of steps"
+neabund,r,h,1.,0.,100.,"neon abundance soft maximum"
+neabundtyp,i,h,0,0,2,"neon abundance variation type"
+neabundint,i,a,1,0,1,"neon abundance interpolation type"
+neabundsof,r,a,0.,0.,1.,"neon abundance soft minimum"
+neabundnst,i,a,1,1,20,"neon abundance number of steps"
+naabund,r,h,0.,0.,100.,"sodium abundance soft maximum"
+naabundtyp,i,h,0,0,2,"sodium abundance variation type"
+naabundint,i,h,1,0,1,"sodium abundance interpolation type"
+naabundsof,r,h,0.,0.,1.,"sodium abundance soft minimum"
+naabundnst,i,h,1,1,20,"sodium abundance number of steps"
+mgabund,r,h,1.,0.,100.,"magnesium abundance soft maximum"
+mgabundtyp,i,h,1,0,2,"magnesium abundance variation type"
+mgabundint,i,a,1,0,1,"magnesium abundance interpolation type"
+mgabundsof,r,a,0.,0.,1.,"magnesium abundance soft minimum"
+mgabundnst,i,a,1,1,20,"magnesium abundance number of steps"
+alabund,r,h,0.,0.,100.,"aluminium abundance soft maximum"
+alabundtyp,i,h,0,0,2,"aluminium abundance variation type"
+alabundint,i,h,1,0,1,"aluminium abundance interpolation type"
+alabundsof,r,h,0.,0.,1.,"aluminium abundance soft minimum"
+alabundnst,i,h,1,1,20,"aluminium abundance number of steps"
+siabund,r,h,1.,0.,100.,"silicon abundance soft maximum"
+siabundtyp,i,h,1,0,2,"silicon abundance variation type"
+siabundint,i,a,1,0,1,"silicon abundance interpolation type"
+siabundsof,r,a,0.,0.,1.,"silicon abundance soft minimum"
+siabundnst,i,a,1,1,20,"silicon abundance number of steps"
+pabund,r,h,0.,0.,100.,"phosphorus abundance soft maximum"
+pabundtyp,i,h,0,0,2,"phosphorus abundance variation type"
+pabundint,i,h,1,0,1,"phosphorus abundance interpolation type"
+pabundsof,r,h,0.,0.,1.,"phosphorus abundance soft minimum"
+pabundnst,i,h,1,1,20,"phosphorus abundance number of steps"
+sabund,r,h,1.,0.,100.,"sulfur abundance soft maximum"
+sabundtyp,i,h,1,0,2,"sulfur abundance variation type"
+sabundint,i,a,1,0,1,"sulfur abundance interpolation type"
+sabundsof,r,a,0.,0.,1.,"sulfur abundance soft minimum"
+sabundnst,i,a,1,1,20,"sulfur abundance number of steps"
+clabund,r,h,0.,0.,100.,"chlorine abundance soft maximum"
+clabundtyp,i,h,0,0,2,"chlorine abundance variation type"
+clabundint,i,h,1,0,1,"chlorine abundance interpolation type"
+clabundsof,r,h,0.,0.,1.,"chlorine abundance soft minimum"
+clabundnst,i,h,1,1,20,"chlorine abundance number of steps"
+arabund,r,h,1.,0.,100.,"argon abundance soft maximum"
+arabundtyp,i,h,1,0,2,"argon abundance variation type"
+arabundint,i,a,1,0,1,"argon abundance interpolation type"
+arabundsof,r,a,0.,0.,1.,"argon abundance soft minimum"
+arabundnst,i,a,1,1,20,"argon abundance number of steps"
+kabund,r,h,0.0,0.,100.,"potassium abundance soft maximum"
+kabundtyp,i,h,0,0,2,"postassium abundance variation type"
+kabundint,i,h,1,0,1,"postassium abundance interpolation type"
+kabundsof,r,h,0.,0.,1.,"postassium abundance soft minimum"
+kabundnst,i,h,1,1,20,"postassium abundance number of steps"
+caabund,r,h,1.,0.,100.,"calcium abundance soft maximum"
+caabundtyp,i,h,1,0,2,"calcium abundance variation type"
+caabundint,i,a,1,0,1,"calcium abundance interpolation type"
+caabundsof,r,a,0.,0.,1.,"calcium abundance soft minimum"
+caabundnst,i,a,1,1,20,"calcium abundance number of steps"
+scabund,r,h,0.,0.,100.,"scandium abundance soft maximum"
+scabundtyp,i,h,0,0,2,"scandium abundance variation type"
+scabundint,i,h,1,0,1,"scandium abundance interpolation type"
+scabundsof,r,h,0.,0.,1.,"scandium abundance soft minimum"
+scabundnst,i,h,1,1,20,"scandium abundance number of steps"
+tiabund,r,h,0.,0.,100.,"titanium abundance soft maximum"
+tiabundtyp,i,h,0,0,2,"titanium abundance variation type"
+tiabundint,i,h,1,0,1,"titanium abundance interpolation type"
+tiabundsof,r,h,0.,0.,1.,"titanium abundance soft minimum"
+tiabundnst,i,h,1,1,20,"titanium abundance number of steps"
+vabund,r,h,0.,0.,100.,"vanadium abundance soft maximum"
+vabundtyp,i,h,0,0,2,"vanadium abundance variation type"
+vabundint,i,h,1,0,1,"vanadium abundance interpolation type"
+vabundsof,r,h,0.,0.,1.,"vanadium abundance soft minimum"
+vabundnst,i,h,1,1,20,"vanadium abundance number of steps"
+crabund,r,h,0.,0.,100.,"chromium abundance soft maximum"
+crabundtyp,i,h,0,0,2,"chromium abundance variation type"
+crabundint,i,h,1,0,1,"chromium abundance interpolation type"
+crabundsof,r,h,0.,0.,1.,"chromium abundance soft minimum"
+crabundnst,i,h,1,1,20,"chromium abundance number of steps"
+mnabund,r,h,0.,0.,100.,"manganese abundance soft maximum"
+mnabundtyp,i,h,0,0,2,"manganese abundance variation type"
+mnabundint,i,h,1,0,1,"manganese abundance interpolation type"
+mnabundsof,r,h,0.,0.,1.,"manganese abundance soft minimum"
+mnabundnst,i,h,1,1,20,"manganese abundance number of steps"
+feabund,r,h,1.,0.,100.,"iron abundance soft maximum"
+feabundtyp,i,h,1,0,2,"iron abundance variation type"
+feabundint,i,a,1,0,1,"iron abundance interpolation type"
+feabundsof,r,a,0.,0.,1.,"iron abundance soft minimum"
+feabundnst,i,a,1,1,20,"iron abundance number of steps"
+coabund,r,h,0.,0.,100.,"cobalt abundance soft maximum"
+coabundtyp,i,h,0,0,2,"cobalt abundance variation type"
+coabundint,i,h,1,0,1,"cobalt abundance interpolation type"
+coabundsof,r,h,0.,0.,1.,"cobalt abundance soft minimum"
+coabundnst,i,h,1,1,20,"cobalt abundance number of steps"
+niabund,r,h,0.,0.,100.,"nickel abundance soft maximum"
+niabundtyp,i,h,0,0,2,"nickel abundance variation type"
+niabundint,i,a,1,0,1,"nickel abundance interpolation type"
+niabundsof,r,a,0.,0.,1.,"nickel abundance soft minimum"
+niabundnst,i,a,1,1,20,"nickel abundance number of steps"
+cuabund,r,h,0.,0.,100.,"copper abundance soft maximum"
+cuabundtyp,i,h,0,0,2,"copper abundance variation type"
+cuabundint,i,h,1,0,1,"copper abundance interpolation type"
+cuabundsof,r,h,0.,0.,1.,"copper abundance soft minimum"
+cuabundnst,i,h,1,1,20,"copper abundance number of steps"
+znabund,r,h,0.,0.,100.,"zinc abundance soft maximum"
+znabundtyp,i,h,0,0,2,"zinc abundance variation type"
+znabundint,i,h,1,0,1,"zinc abundance interpolation type"
+znabundsof,r,h,0.,0.,1.,"zinc abundance soft minimum"
+znabundnst,i,h,1,1,20,"zinc abundance number of steps"
+spectrum,s,a,"pow",,,"spectrum type?"
+spectrum_file,s,a,"spct.dat",,,"spectrum file?"
+spectun,i,a,0,0,1,"spectrum units? (0=energy, 1=photons)"
+redshift,i,h,1,0,1,"Is redshift a parameter? (0=no, 1=yes)"
+nsteps,i,h,3,1,1000,"number of steps"
+niter,i,h,0,,,"number of iterations"
+lwrite,i,h,0,0,1,"write switch (1=yes, 0=no)"
+lprint,i,h,0,0,1,"print switch (1=yes, 0=no)"
+lstep,i,h,0,,,"step size choice switch"
+npass,i,h,1,1,10000,"number of passes"
+lcpres,i,h,0,0,1,"constant pressure switch (1=yes, 0=no)"
+emult,r,h,1.,1.e-6,1.e+6,"Courant multiplier"
+taumax,r,h,2.,1.,10000.,"tau max for courant step"
+xeemin,r,h,1.e-6,1.e-6,0.5,"minimum electron fraction"
+critf,r,h,1.e-14,1.e-24,0.1,"critical ion abundance"
+vturbi,r,h,1.,0.,30000.,"turbulent velocity (km/s)"
+radexp,r,h,0.,-3.,3.,"density distribution power law index"
+ncn2,i,h,9999,999,99999,"number of continuum bins"
+modelname,s,a,"coronal grid",,,"model name"
+loopcontrol,i,h,0,0,30000,"loop control (0=standalone)"
+elow,r,h,1.0E+2,0.,5.11E+5,"energy band low end (eV)"
+ehigh,r,h,2.0E+4,0.,5.11E+5,"energy band high end (eV)"
+mode,s,h,"ql",,,"mode"
+\end{verbatim}
+
+
+\subsection{Example 2: Photoionized Grid}
+
+In this example a grid of photoionization models is calculated 
+with varying ionization parameter, column density, and element 
+abundances.  The ionizing spectrum is a power law with index -1.
+
+
+\begin{verbatim}
+
+cfrac,r,a,0.,0.,1.,"covering fraction soft maximum"
+cfractyp,i,h,0,0,2,"covering fraction variation type"
+cfracint,i,a,1,0,1,"covering fraction interpolation type"
+cfracsof,r,a,0.,0.,1.,"covering fraction soft minimum"
+cfracnst,i,a,1,1,20,"covering fraction number of steps"
+temperature,r,h,1.,0.,1.E4,"temperature soft maximum (/10**4K)"
+temperaturetyp,i,h,0,0,2,"temperature variation type"
+temperatureint,i,a,1,0,1,"temperature interpolation type"
+temperaturesof,r,a,0.,0.,1.,"temperature soft minimum"
+temperaturenst,i,a,1,1,20,"temperature number of steps"
+pressure,r,h,0.03,0.,1.,"pressure soft maximum (dyne/cm**2)"
+pressuretyp,i,h,0,0,2,"pressure variation type"
+pressureint,i,a,1,0,1,"pressure interpolation type"
+pressuresof,r,a,0.,0.,1.,"pressure soft minimum"
+pressurenst,i,a,1,1,20,"pressure number of steps"
+density,r,a,1.E+10,0.,1.E18,"density soft maximum (cm**-3)"
+densitytyp,i,h,0,0,2,"density variation type"
+densityint,i,a,1,0,1,"density interpolation type"
+densitysof,r,a,0.,0.,1.,"density soft minimum"
+densitynst,i,a,1,1,20,"density number of steps"
+trad,r,a,-1.,,,"radiation temperature or alpha soft maximum?"
+tradtyp,i,h,0,0,2,"radiation temperature variation type"
+tradint,i,a,1,0,1,"radiation temperature interpolation type"
+tradsof,r,a,0.,0.,1.,"radiation temperature soft minimum"
+tradnst,i,a,1,1,20,"radiation temperature number of steps"
+rlrad38,r,a,1.e+6,0.,1.E10,"luminosity soft maximum (/10**38 erg/s)"
+rlrad38typ,i,h,0,0,2,"luminosity variation type"
+rlrad38int,i,a,1,0,1,"luminosity interpolation type"
+rlrad38sof,r,a,0.,0.,1.,"luminosity soft minimum"
+rlrad38nst,i,a,1,1,20,"luminosity number of steps"
+column,r,a,1.E23,0.,1.E25,"column density soft maximum (cm**-2)"
+columntyp,i,h,2,0,2,"column density variation type"
+columnint,i,a,1,0,1,"column density interpolation type"
+columnsof,r,a,1.E20,1.,1.E25,"column density soft minimum"
+columnnst,i,a,7,1,20,"column density number of steps"
+rlogxi,r,a,4.5,-10.,+10.,"log(ionization parameter) soft maximum (erg cm/s)"
+rlogxityp,i,h,2,0,2,"log(ionization parameter) variation type"
+rlogxiint,i,a,0,0,1,"log(ionization parameter) interpolation type"
+rlogxisof,r,a,-1.,-10.0,+10.0,"log(ionization parameter) soft minimum"
+rlogxinst,i,a,20,1,20,"log(ionization parameter) number of steps"
+habund,r,h,1.,0.,100.,"hydrogen abundance soft maximum"
+habundtyp,i,h,0,0,2,"hydrogen abundance variation type"
+habundint,i,a,1,0,1,"hydrogen abundance interpolation type"
+habundsof,r,a,0.,0.,1.,"hydrogen abundance soft minimum"
+habundnst,i,a,1,1,20,"hydrogen abundance number of steps"
+heabund,r,h,1.,0.,100.,"helium abundance soft maximum"
+heabundtyp,i,h,0,0,2,"helium abundance variation type"
+heabundint,i,a,1,0,1,"helium abundance interpolation type"
+heabundsof,r,a,0.,0.,1.,"helium abundance soft minimum"
+heabundnst,i,a,1,1,20,"helium abundance number of steps"
+cabund,r,h,1.,0.,100.,"carbon abundance soft maximum"
+cabundtyp,i,h,1,0,2,"carbon abundance variation type"
+cabundint,i,a,1,0,1,"carbon abundance interpolation type"
+cabundsof,r,a,0.,0.,1.,"carbon abundance soft minimum"
+cabundnst,i,a,1,1,20,"carbon abundance number of steps"
+nabund,r,h,1.,0.,100.,"nitrogen abundance soft maximum"
+nabundtyp,i,h,1,0,2,"nitrogen abundance variation type"
+nabundint,i,a,1,0,1,"nitrogen abundance interpolation type"
+nabundsof,r,a,0.,0.,1.,"nitrogen abundance soft minimum"
+nabundnst,i,a,1,1,20,"nitrogen abundance number of steps"
+oabund,r,h,1.,0.,100.,"oxygen abundance soft maximum"
+oabundtyp,i,h,1,0,2,"oxygen abundance variation type"
+oabundint,i,a,1,0,1,"oxygen abundance interpolation type"
+oabundsof,r,a,0.,0.,1.,"oxygen abundance soft minimum"
+oabundnst,i,a,1,1,20,"oxygen abundance number of steps"
+neabund,r,h,1.,0.,100.,"neon abundance soft maximum"
+neabundtyp,i,h,1,0,2,"neon abundance variation type"
+neabundint,i,a,1,0,1,"neon abundance interpolation type"
+neabundsof,r,a,0.,0.,1.,"neon abundance soft minimum"
+neabundnst,i,a,1,1,20,"neon abundance number of steps"
+mgabund,r,h,1.,0.,100.,"magnesium abundance soft maximum"
+mgabundtyp,i,h,1,0,2,"magnesium abundance variation type"
+mgabundint,i,a,1,0,1,"magnesium abundance interpolation type"
+mgabundsof,r,a,0.,0.,1.,"magnesium abundance soft minimum"
+mgabundnst,i,a,1,1,20,"magnesium abundance number of steps"
+siabund,r,h,1.,0.,100.,"silicon abundance soft maximum"
+siabundtyp,i,h,1,0,2,"silicon abundance variation type"
+siabundint,i,a,1,0,1,"silicon abundance interpolation type"
+siabundsof,r,a,0.,0.,1.,"silicon abundance soft minimum"
+siabundnst,i,a,1,1,20,"silicon abundance number of steps"
+sabund,r,h,1.,0.,100.,"sulfur abundance soft maximum"
+sabundtyp,i,h,1,0,2,"sulfur abundance variation type"
+sabundint,i,a,1,0,1,"sulfur abundance interpolation type"
+sabundsof,r,a,0.,0.,1.,"sulfur abundance soft minimum"
+sabundnst,i,a,1,1,20,"sulfur abundance number of steps"
+arabund,r,h,1.,0.,100.,"argon abundance soft maximum"
+arabundtyp,i,h,1,0,2,"argon abundance variation type"
+arabundint,i,a,1,0,1,"argon abundance interpolation type"
+arabundsof,r,a,0.,0.,1.,"argon abundance soft minimum"
+arabundnst,i,a,1,1,20,"argon abundance number of steps"
+caabund,r,h,1.,0.,100.,"calcium abundance soft maximum"
+caabundtyp,i,h,1,0,2,"calcium abundance variation type"
+caabundint,i,a,1,0,1,"calcium abundance interpolation type"
+caabundsof,r,a,0.,0.,1.,"calcium abundance soft minimum"
+caabundnst,i,a,1,1,20,"calcium abundance number of steps"
+feabund,r,h,1.,0.,100.,"iron abundance soft maximum"
+feabundtyp,i,h,1,0,2,"iron abundance variation type"
+feabundint,i,a,1,0,1,"iron abundance interpolation type"
+feabundsof,r,a,0.,0.,1.,"iron abundance soft minimum"
+feabundnst,i,a,1,1,20,"iron abundance number of steps"
+niabund,r,h,0.,0.,100.,"nickel abundance soft maximum"
+niabundtyp,i,h,0,0,2,"nickel abundance variation type"
+niabundint,i,a,1,0,1,"nickel abundance interpolation type"
+niabundsof,r,a,0.,0.,1.,"nickel abundance soft minimum"
+niabundnst,i,a,1,1,20,"nickel abundance number of steps"
+spectrum,s,a,"pow",,,"spectrum type?"
+spectrum_file,s,a,"spct.dat",,,"spectrum file?"
+spectun,i,a,0,0,1,"spectrum units? (0=energy, 1=photons)"
+redshift,i,h,1,0,1,"Is redshift a parameter? (0=no, 1=yes)"
+nsteps,i,h,3,1,1000,"number of steps"
+niter,i,h,99,,,"number of iterations"
+lwrite,i,h,0,0,1,"write switch (1=yes, 0=no)"
+lprint,i,h,0,0,1,"print switch (1=yes, 0=no)"
+lstep,i,h,0,,,"step size choice switch"
+npass,i,h,1,1,10000,"number of passes"
+lcpres,i,h,0,0,1,"constant pressure switch (1=yes, 0=no)"
+emult,r,h,0.5,1.e-6,1.e+6,"Courant multiplier"
+taumax,r,h,5.,1.,10000.,"tau max for courant step"
+xeemin,r,h,0.1,1.e-6,0.5,"minimum electron fraction"
+critf,r,h,1.e-14,1.e-24,0.1,"critical ion abundance"
+vturbi,r,h,1.,0.,30000.,"turbulent velocity (km/s)"
+modelname,s,a,"photoionized grid",,,"model name"
+loopcontrol,i,h,0,0,30000,"loop control (0=standalone)"
+elow,r,h,1.0E+2,0.,5.11E+5,"energy band low end (eV)"
+ehigh,r,h,2.0E+4,0.,5.11E+5,"energy band high end (eV)"
+mode,s,h,"ql",,,"mode"
+
+\end{verbatim}
+
+
+\subsection{Example 3: Photoionized Grid; Exploring the T-$\xi$ Plane}
+
+In this example a grid of photoionization models is calculated 
+each with fixed ionization parameter and temperature.  The column 
+densities are all small, so that each model is effectively optically thin 
+and isothermal.  The output of these models which is of interest is in the 
+ascii file xstar2xspec.log, and this file can be parsed to extract quantities
+such as heating and cooling rates vs. xi and T.
+The ionizing spectrum is a power law with index -1.
+The xstinitable.par file which produces this is:
+
+\begin{verbatim}
+cfrac,r,h,1.,0.,1.,"covering fraction soft maximum"
+cfractyp,i,h,0,0,2,"covering fraction variation type"
+cfracint,i,h,1,0,1,"covering fraction interpolation type"
+cfracsof,r,h,0.,0.,1.,"covering fraction soft minimum"
+cfracnst,i,h,1,1,20,"covering fraction number of steps"
+temperature,r,h,1000.,0.3,1.E4,"temperature soft maximum (/10**4K)"
+temperaturetyp,i,h,2,0,2,"temperature variation type"
+temperatureint,i,h,1,0,1,"temperature interpolation type"
+temperaturesof,r,h,1.,0.,1.,"temperature soft minimum"
+temperaturenst,i,h,10,1,20,"temperature number of steps"
+pressure,r,h,0.03,0.00000001,1.,"pressure soft maximum (dyne/cm**2)"
+pressuretyp,i,h,0,0,2,"pressure variation type"
+pressureint,i,h,1,0,1,"pressure interpolation type"
+pressuresof,r,h,1.e-9,1.e-10,1.,"pressure soft minimum"
+pressurenst,i,h,1,1,20,"pressure number of steps"
+density,r,h,1.E+12,1.e+4,1.E21,"density soft maximum (cm**-3)"
+densitytyp,i,h,0,0,2,"density variation type"
+densityint,i,h,1,0,1,"density interpolation type"
+densitysof,r,h,1e10,1.e+4,1.e+18,"density soft minimum"
+densitynst,i,h,1,1,20,"density number of steps"
+trad,r,h,-1.,,,"radiation temperature or alpha soft maximum?"
+tradtyp,i,h,0,0,2,"radiation temperature variation type"
+tradint,i,h,1,0,1,"radiation temperature interpolation type"
+tradsof,r,h,0.,0.,1.,"radiation temperature soft minimum"
+tradnst,i,h,1,1,20,"radiation temperature number of steps"
+rlrad38,r,h,1.e+6,1.e-20,1.E10,"luminosity soft maximum (/10**38 erg/s)"
+rlrad38typ,i,h,0,0,2,"luminosity variation type"
+rlrad38int,i,h,1,0,1,"luminosity interpolation type"
+rlrad38sof,r,h,1e1,1.e-23,1.e+10,"luminosity soft minimum"
+rlrad38nst,i,h,1,1,20,"luminosity number of steps"
+column,r,h,1.e+10,1.e+10,1.E25,"column density soft maximum (cm**-2)"
+columntyp,i,h,0,0,2,"column density variation type"
+columnint,i,h,1,0,1,"column density interpolation type"
+columnsof,r,h,1.E+10,1.,1.E25,"column density soft minimum"
+columnnst,i,h,1,1,20,"column density number of steps"
+rlogxi,r,h,5.,-10.,+10.,"log(ionization parameter) soft maximum (erg cm/s)"
+rlogxityp,i,h,2,0,2,"log(ionization parameter) variation type"
+rlogxiint,i,h,0,0,1,"log(ionization parameter) interpolation type"
+rlogxisof,r,h,1.,-10.0,+10.0,"log(ionization parameter) soft minimum"
+rlogxinst,i,h,10,1,20,"log(ionization parameter) number of steps"
+habund,r,h,1.,0.,100.,"hydrogen abundance soft maximum"
+habundtyp,i,h,0,0,2,"hydrogen abundance variation type"
+habundint,i,h,1,0,1,"hydrogen abundance interpolation type"
+habundsof,r,h,0.,0.,1.,"hydrogen abundance soft minimum"
+habundnst,i,h,1,1,20,"hydrogen abundance number of steps"
+heabund,r,h,1.,0.,100.,"helium abundance soft maximum"
+heabundtyp,i,h,0,0,2,"helium abundance variation type"
+heabundint,i,h,1,0,1,"helium abundance interpolation type"
+heabundsof,r,h,0.,0.,1.,"helium abundance soft minimum"
+heabundnst,i,h,1,1,20,"helium abundance number of steps"
+liabund,r,h,0.,0.,100.,"lithium abundance soft maximum"
+liabundtyp,i,h,0,0,2,"lithium abundance variation type"
+liabundint,i,h,1,0,1,"lithium abundance interpolation type"
+liabundsof,r,h,0.,0.,1.,"lithium abundance soft minimum"
+liabundnst,i,h,1,1,20,"lithium abundance number of steps"
+beabund,r,h,0.,0.,100.,"beryllium abundance soft maximum"
+beabundtyp,i,h,0,0,2,"beryllium abundance variation type"
+beabundint,i,h,1,0,1,"beryllium abundance interpolation type"
+beabundsof,r,h,0.,0.,1.,"beryllium abundance soft minimum"
+beabundnst,i,h,1,1,20,"beryllium abundance number of steps"
+babund,r,h,0.,0.,100.,"boron abundance soft maximum"
+babundtyp,i,h,0,0,2,"boron abundance variation type"
+babundint,i,h,1,0,1,"boron abundance interpolation type"
+babundsof,r,h,0.,0.,1.,"boron abundance soft minimum"
+babundnst,i,h,1,1,20,"boron abundance number of steps"
+cabund,r,h,1.,0.,100.,"carbon abundance soft maximum"
+cabundtyp,i,h,0,0,2,"carbon abundance variation type"
+cabundint,i,h,1,0,1,"carbon abundance interpolation type"
+cabundsof,r,h,0.,0.,1.,"carbon abundance soft minimum"
+cabundnst,i,h,1,1,20,"carbon abundance number of steps"
+nabund,r,h,1.,0.,100.,"nitrogen abundance soft maximum"
+nabundtyp,i,h,0,0,2,"nitrogen abundance variation type"
+nabundint,i,h,1,0,1,"nitrogen abundance interpolation type"
+nabundsof,r,h,0.,0.,1.,"nitrogen abundance soft minimum"
+nabundnst,i,h,1,1,20,"nitrogen abundance number of steps"
+oabund,r,h,1.,0.,100.,"oxygen abundance soft maximum"
+oabundtyp,i,h,0,0,2,"oxygen abundance variation type"
+oabundint,i,h,1,0,1,"oxygen abundance interpolation type"
+oabundsof,r,h,0.,0.,1.,"oxygen abundance soft minimum"
+oabundnst,i,h,1,1,20,"oxygen abundance number of steps"
+fabund,r,h,0.,0.,100.,"fluorine abundance soft maximum"
+fabundtyp,i,h,0,0,2,"fluorine abundance variation type"
+fabundint,i,h,1,0,1,"fluorine abundance interpolation type"
+fabundsof,r,h,0.,0.,1.,"fluorine abundance soft minimum"
+fabundnst,i,h,1,1,20,"fluorine abundance number of steps"
+neabund,r,h,1.,0.,100.,"neon abundance soft maximum"
+neabundtyp,i,h,0,0,2,"neon abundance variation type"
+neabundint,i,h,1,0,1,"neon abundance interpolation type"
+neabundsof,r,h,0.,0.,1.,"neon abundance soft minimum"
+neabundnst,i,h,1,1,20,"neon abundance number of steps"
+naabund,r,h,0.,0.,100.,"sodium abundance soft maximum"
+naabundtyp,i,h,0,0,2,"sodium abundance variation type"
+naabundint,i,h,1,0,1,"sodium abundance interpolation type"
+naabundsof,r,h,0.,0.,1.,"sodium abundance soft minimum"
+naabundnst,i,h,1,1,20,"sodium abundance number of steps"
+mgabund,r,h,1.,0.,100.,"magnesium abundance soft maximum"
+mgabundtyp,i,h,0,0,2,"magnesium abundance variation type"
+mgabundint,i,h,1,0,1,"magnesium abundance interpolation type"
+mgabundsof,r,h,0.,0.,1.,"magnesium abundance soft minimum"
+mgabundnst,i,h,1,1,20,"magnesium abundance number of steps"
+alabund,r,h,0.,0.,100.,"aluminium abundance soft maximum"
+alabundtyp,i,h,0,0,2,"aluminium abundance variation type"
+alabundint,i,h,1,0,1,"aluminium abundance interpolation type"
+alabundsof,r,h,0.,0.,1.,"aluminium abundance soft minimum"
+alabundnst,i,h,1,1,20,"aluminium abundance number of steps"
+siabund,r,h,1.,0.,100.,"silicon abundance soft maximum"
+siabundtyp,i,h,0,0,2,"silicon abundance variation type"
+siabundint,i,h,1,0,1,"silicon abundance interpolation type"
+siabundsof,r,h,0.,0.,1.,"silicon abundance soft minimum"
+siabundnst,i,h,1,1,20,"silicon abundance number of steps"
+pabund,r,h,0.,0.,100.,"phosphorus abundance soft maximum"
+pabundtyp,i,h,0,0,2,"phosphorus abundance variation type"
+pabundint,i,h,1,0,1,"phosphorus abundance interpolation type"
+pabundsof,r,h,0.,0.,1.,"phosphorus abundance soft minimum"
+pabundnst,i,h,1,1,20,"phosphorus abundance number of steps"
+sabund,r,h,1.,0.,100.,"sulfur abundance soft maximum"
+sabundtyp,i,h,0,0,2,"sulfur abundance variation type"
+sabundint,i,h,1,0,1,"sulfur abundance interpolation type"
+sabundsof,r,h,0.,0.,1.,"sulfur abundance soft minimum"
+sabundnst,i,h,1,1,20,"sulfur abundance number of steps"
+clabund,r,h,0.,0.,100.,"chlorine abundance soft maximum"
+clabundtyp,i,h,0,0,2,"chlorine abundance variation type"
+clabundint,i,h,1,0,1,"chlorine abundance interpolation type"
+clabundsof,r,h,0.,0.,1.,"chlorine abundance soft minimum"
+clabundnst,i,h,1,1,20,"chlorine abundance number of steps"
+arabund,r,h,1.,0.,100.,"argon abundance soft maximum"
+arabundtyp,i,h,0,0,2,"argon abundance variation type"
+arabundint,i,h,1,0,1,"argon abundance interpolation type"
+arabundsof,r,h,0.,0.,1.,"argon abundance soft minimum"
+arabundnst,i,h,1,1,20,"argon abundance number of steps"
+kabund,r,h,0.0,0.,100.,"potassium abundance soft maximum"
+kabundtyp,i,h,0,0,2,"postassium abundance variation type"
+kabundint,i,h,1,0,1,"postassium abundance interpolation type"
+kabundsof,r,h,0.,0.,1.,"postassium abundance soft minimum"
+kabundnst,i,h,1,1,20,"postassium abundance number of steps"
+caabund,r,h,1.,0.,100.,"calcium abundance soft maximum"
+caabundtyp,i,h,0,0,2,"calcium abundance variation type"
+caabundint,i,h,1,0,1,"calcium abundance interpolation type"
+caabundsof,r,h,0.,0.,1.,"calcium abundance soft minimum"
+caabundnst,i,h,1,1,20,"calcium abundance number of steps"
+scabund,r,h,0.,0.,100.,"scandium abundance soft maximum"
+scabundtyp,i,h,0,0,2,"scandium abundance variation type"
+scabundint,i,h,1,0,1,"scandium abundance interpolation type"
+scabundsof,r,h,0.,0.,1.,"scandium abundance soft minimum"
+scabundnst,i,h,1,1,20,"scandium abundance number of steps"
+tiabund,r,h,0.,0.,100.,"titanium abundance soft maximum"
+tiabundtyp,i,h,0,0,2,"titanium abundance variation type"
+tiabundint,i,h,1,0,1,"titanium abundance interpolation type"
+tiabundsof,r,h,0.,0.,1.,"titanium abundance soft minimum"
+tiabundnst,i,h,1,1,20,"titanium abundance number of steps"
+vabund,r,h,0.,0.,100.,"vanadium abundance soft maximum"
+vabundtyp,i,h,0,0,2,"vanadium abundance variation type"
+vabundint,i,h,1,0,1,"vanadium abundance interpolation type"
+vabundsof,r,h,0.,0.,1.,"vanadium abundance soft minimum"
+vabundnst,i,h,1,1,20,"vanadium abundance number of steps"
+crabund,r,h,0.,0.,100.,"chromium abundance soft maximum"
+crabundtyp,i,h,0,0,2,"chromium abundance variation type"
+crabundint,i,h,1,0,1,"chromium abundance interpolation type"
+crabundsof,r,h,0.,0.,1.,"chromium abundance soft minimum"
+crabundnst,i,h,1,1,20,"chromium abundance number of steps"
+mnabund,r,h,0.,0.,100.,"manganese abundance soft maximum"
+mnabundtyp,i,h,0,0,2,"manganese abundance variation type"
+mnabundint,i,h,1,0,1,"manganese abundance interpolation type"
+mnabundsof,r,h,0.,0.,1.,"manganese abundance soft minimum"
+mnabundnst,i,h,1,1,20,"manganese abundance number of steps"
+feabund,r,h,1.,0.,100.,"iron abundance soft maximum"
+feabundtyp,i,h,0,0,2,"iron abundance variation type"
+feabundint,i,h,1,0,1,"iron abundance interpolation type"
+feabundsof,r,h,0.1,0.,1.,"iron abundance soft minimum"
+feabundnst,i,h,0,1,20,"iron abundance number of steps"
+coabund,r,h,0.,0.,100.,"cobalt abundance soft maximum"
+coabundtyp,i,h,0,0,2,"cobalt abundance variation type"
+coabundint,i,h,1,0,1,"cobalt abundance interpolation type"
+coabundsof,r,h,0.,0.,1.,"cobalt abundance soft minimum"
+coabundnst,i,h,1,1,20,"cobalt abundance number of steps"
+niabund,r,h,0.,0.,100.,"nickel abundance soft maximum"
+niabundtyp,i,h,0,0,2,"nickel abundance variation type"
+niabundint,i,h,1,0,1,"nickel abundance interpolation type"
+niabundsof,r,h,0.,0.,1.,"nickel abundance soft minimum"
+niabundnst,i,h,1,1,20,"nickel abundance number of steps"
+cuabund,r,h,0.,0.,100.,"copper abundance soft maximum"
+cuabundtyp,i,h,0,0,2,"copper abundance variation type"
+cuabundint,i,h,1,0,1,"copper abundance interpolation type"
+cuabundsof,r,h,0.,0.,1.,"copper abundance soft minimum"
+cuabundnst,i,h,1,1,20,"copper abundance number of steps"
+znabund,r,h,0.,0.,100.,"zinc abundance soft maximum"
+znabundtyp,i,h,0,0,2,"zinc abundance variation type"
+znabundint,i,h,1,0,1,"zinc abundance interpolation type"
+znabundsof,r,h,0.,0.,1.,"zinc abundance soft minimum"
+znabundnst,i,h,1,1,20,"zinc abundance number of steps"
+spectrum,s,h,"pow",,,"spectrum type?"
+spectrum_file,s,h,"bknpw5",,,"spectrum file?"
+spectun,i,h,0,0,1,"spectrum units? (0=energy, 1=photons)"
+redshift,i,h,1,0,1,"Is redshift a parameter? (0=no, 1=yes)"
+nsteps,i,h,3,1,1000,"number of steps"
+niter,i,h,0,,,"number of iterations"
+lwrite,i,h,0,0,1,"write switch (1=yes, 0=no)"
+lprint,i,h,0,0,1,"print switch (1=yes, 0=no)"
+lstep,i,h,0,,,"step size choice switch"
+npass,i,h,1,1,10000,"number of passes"
+lcpres,i,h,0,0,1,"constant pressure switch (1=yes, 0=no)"
+emult,r,h,0.5,1.e-6,1.e+6,"Courant multiplier"
+taumax,r,h,5.,1.,10000.,"tau max for courant step"
+xeemin,r,h,0.1,1.e-6,0.5,"minimum electron fraction"
+critf,r,h,1.e-4,1.e-24,0.1,"critical ion abundance"
+vturbi,r,h,300.,0.,30000.,"turbulent velocity (km/s)"
+radexp,r,h,0.,-3.,3.,"density distribution power law index"
+ncn2,i,h,999,999,99999,"number of continuum bins"
+modelname,s,h,"template",,,"model name"
+loopcontrol,i,h,0,0,30000,"loop control (0=standalone)"
+elow,r,h,1.0E+2,0.,5.11E+5,"energy band low end (eV)"
+ehigh,r,h,2.0E+4,0.,5.11E+5,"energy band high end (eV)"
+mode,s,h,"ql",,,"mode"
+
+\end{verbatim}
+
+A very simple Python script which parses this file and prints out the values of 
+log(xi), T, httot, cltot, is:
+
+\begin{verbatim}
+
+#!/usr/bin/python
+import sys
+WANTED=11
+a=[]
+with open('xstar2xspec.log', 'r') as inF:
+  for line in inF:
+    left,sep,right = line.partition(' log(xi)=')
+    if sep: 
+       atmp=float(right[:WANTED])
+       a.append(atmp)
+    left,sep,right = line.partition(' log(xi)=')
+    if sep: 
+       atmp=float(right[:WANTED])
+       a.append(atmp)
+    left,sep,right = line.partition('httot=')
+    if sep: 
+       atmp=float(right[:WANTED])
+       a.append(atmp)
+    left,sep,right = line.partition('cltot=')
+    if sep: 
+       atmp=float(right[:WANTED])
+       a.append(atmp)
+       print " ".join('%0.2f' % item for item in a)
+       a=[]
+
+\end{verbatim}
+
+This can be used to make figures such as this:
+
+\begin{figure}
+\epsfxsize=5.6in  % narrow the plot
+\epsfysize=7.0in  % shorten the plot
+\epsffile{f70a.ps}
+\caption{Figure showing contours of constant heating - cooling in the 
+(T-$\xi$) plane for an illuminating spectrum which is a $\gamma$=2 power law.  
+Equlibrium is shown as the solid curve.  Figures 
+such as this can be created using the input in this section.}
+\end{figure}
+

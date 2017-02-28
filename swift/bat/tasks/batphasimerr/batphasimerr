@@ -1,0 +1,334 @@
+#!/usr/bin/perl
+#
+# File: batphasimerr - estimate statistical errors for simulated BAT spectrum
+#
+# Since the BAT is not a photon-counting detector in the conventional
+# sense, the statistics are a little more complicated.  However, I think
+# it ends up being just as easy.  I need guidance from you about how to
+# proceed.
+#
+# What I have is a pulse height vector of a "typical" background, per
+# detector.  Given the following definitions,
+#
+#    S = source counts per fully illuminated detector
+#    B = background counts per fully illuminated detector
+#    T = exposure
+#    s = S/T = source rate      <---- THIS IS WHAT XSPEC PREDICTS
+#    b = B/T = background rate  <---- THIS IS WHAT I HAVE
+#    Ndet = number of enabled detectors = 32768 
+#    alpha = geometry dependent factor for BAT = 0.28
+#
+#    sigma_S = sqrt( (2 * B + S) / (alpha * Ndet) ) = counts uncertainty   [1]
+#
+#    sigma_s = sqrt( (2 * b + s) / (alpha * Ndet * T) ) = rate uncertainty [2]
+#
+# The BAT is almost always background dominated, so it is usually
+# possible to ignore the source term.  Compare to the normal way Poisson
+# rates are defined,
+#
+#    sigma_S = sqrt(  2 * B + S ) 
+#    sigma_s = sqrt( (2 * b + s) / T )
+#
+# And you can see that they really only differ by a factor in the
+# denominator of the square root.  
+#
+# This is of course if one knew the background and source terms S and B
+# independently.  Usually you just know the total R=(S+B), so you get
+# an uncertainty in the background-subtracted spectrum of sqrt(R+B).
+#
+# If we can ignore the source rate, then it should be straightforward to
+# rescale the BAT background to be equivalent to the Poisson case, and
+# presumably make it simpler for WebSPEC and PIMMS to work.
+#
+#
+#
+use HEACORE::HEAINIT;
+
+my $taskname = "batphasimerr";
+my $taskvers = "1.4";
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+eval {
+    $status = headas_main(\&batphasimerr);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub batphasimerr {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batphasimerr_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batphasimerr_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+    use POSIX;
+
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetReal('exposure', $exposure)) == 0 || die "error getting exposure parameter";
+    ($status = PILGetFname('bkgfile', $bkgfile)) == 0 || die "error getting bkgfile parameter";
+    ($status = PILGetFname('eboundfile', $eboundfile)) == 0 || die "error getting eboundfile parameter";
+    ($status = PILGetReal('alpha', $batalpha)) == 0 || die "error getting alpha parameter";
+    ($status = PILGetReal('pcodefr', $pcodefr)) == 0 || die "error getting pcodefr parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    if ($chatter >= 2) {
+	print "$taskname $taskvers\n";
+	print "--------------------------------------------------------\n";
+	print "           Spectrum file: $infile\n";
+	# XXX
+    }
+
+    $ngoodpix = $pcodefr * 32768;
+
+    #  Verify that two files exist 
+    die "ERROR: Spectrum file $infile does not exist" if (! -r $infile);
+    $fits = SimpleFITS->open("+<$infile")->move(2);
+    $status = $fits->status();
+    die "ERROR: could not read the DATE-OBS keyword from $infile (error $status)" if ($status);
+
+    # ====
+    # Check for type I / type II spectral file format
+    # (this task only handles type I)
+    $phatype = 1;
+    $hduclas3 = $fits->readkey("HDUCLAS3");
+    $fits->setstatus(0);
+    $hduclas4 = $fits->readkey("HDUCLAS4");
+    $fits->setstatus(0);
+    # Note this change because of lame OGIP spectral format documentation
+    # originally said HDUCLAS3 == 'TYPE:II', later revised (May 2009) to 
+    # say HDUCLAS4 == 'TYPE:II'
+    if ( $chatter >= 5 ) { print "  (HDUCLAS3=$hduclas3 HDUCLAS4=$hduclas4)\n"; }
+    if ("$hduclas3" =~ m/TYPE:II/ || "$hduclas4" =~ m/TYPE:II/ ) {
+	$phatype = 2;
+    }
+    if ( $chatter >= 5 ) { print "  (found type $phatype spectral file)\n"; }
+    $fits->setstatus(0);
+    die "ERROR: this task only works on Type I PHA files" if ($phatype == 2);
+
+    # ====
+    # Read simulated spectrum data, convert to rate if needed
+    $srcexposure = $fits->readkey("EXPOSURE");
+    if ($fits->colnum("RATE") < 0) {
+      print "Converting COUNTS to RATE\n" if ($chatter >= 5);
+      $fits->setstatus(0);
+      @srcrate = $fits->readcol("COUNTS");
+      foreach $i (0 .. $#srcrate) {
+	$srcrate[$i] = $srcrate[$i] / $srcexposure;
+      }
+      $fits->insertcol({TTYPE=>["RATE","Estimated BAT rate"],
+			TFORM=>"D",
+			TUNIT=>"count/s"});
+      $fits->writecol("RATE", {}, \@srcrate);
+      $delcmd = "-COUNTS";
+    } else {
+      @srcrate = $fits->readcol("RATE");
+      $delcmd = "";
+    }
+
+    # Re-name this column
+    $col = $fits->colnum("RATE");
+    $fits
+      ->writekey("TTYPE$col", "ORIG_RATE")
+      ->writekey("TUNIT$col", "count/s")
+      ->writekey("HDUCLAS3", "RATE");
+    die "ERROR: could not re-write RATE column keywords (col $col)" 
+      if ($fits->status());
+
+    # Query the CALDB for the background file
+    if ($bkgfile eq "CALDB") {
+	$cmd = "quzcif mission=Swift instrument=BAT detector=- filter=- codename=BKGRND_SPEC ".
+	  "date='now' time='00:00:00' expr='-' retrieve='NO' ";
+	if ($chatter >= 5) { print "$cmd\n"; }
+	$bkgfile = `$cmd`;
+	chomp($bkgfile);
+	if ("$bkgfile" =~ m/^(\S*) /) {
+	    $bkgfile = "$1";
+	}
+	die "ERROR: could not find background file in CALDB" 
+	  if ("$bkgfile" =~ m/^\s*$/);
+	if ($chatter >= 5) { print "Found CALDB file: $bkgfile\n"; }
+    }
+
+    # Defend against possible remote-CALDB
+    if ("$bkgfile" !~ m/^(http|ftp):/i and not -f "$bkgfile") {
+      die "ERROR: could not locate CALDB file $bkgfile";
+    }
+    $fsys = SimpleFITS->open("<$bkgfile")->move("2");
+    $status = $fsys->status();
+    die "ERROR: could not open $bkgfile" if ($status);
+    @bkgrate = $fsys->readcol("RATE_DET");
+    $status = $fsys->status();
+    die "ERROR: could not read RATE_DET column from $bkgfile" if ($status);
+    
+    # Read the energy boundaries of the background spectrum
+    $fsys->move(3);
+    @semin = $fsys->readcol("E_MIN");
+    @semax = $fsys->readcol("E_MAX");
+    $status = $fsys->status();
+    $fsys->close();
+    die "ERROR: could not read E_MIN/E_MAX columns from $bkgfile" if ($status);
+
+    # ====
+    # Make a look-up table of background rate vectors, spaced on a 10 eV grid
+    $smin = 1.0E308;
+    $smax = 0;
+    $efact = 100.0;  # Conversion from 1 keV to 10 eV
+    foreach $i (0 .. $#semin) {
+	$imin = POSIX::floor($semin[$i]*$efact);
+	$imax = POSIX::floor($semax[$i]*$efact);
+
+	# Treat the integral bins specially
+	if ($i == 0)       { $imin = $imax; }
+	if ($i == $#semin) { $imax = $imin; }
+
+	if ($imin < $smin) { $smin = $imin; }
+	if ($imax > $smax) { $smax = $imax; }
+	foreach $j ($imin .. $imax) {
+	    $bkghash{$j} = $bkgrate[$i] / ($semax[$i] - $semin[$i]) / $efact;
+	}
+    }
+
+    # ====
+    # Read the energy bounds of the source file
+    $efits = SimpleFITS->open("<$eboundfile")->move("EBOUNDS");
+    $status = $efits->status();
+    die "ERROR: 'ebound' file does not have an EBOUNDS extension" if ($status);
+    
+    @emin = $efits->readcol("E_MIN");
+    @emax = $efits->readcol("E_MAX");
+    $status = $efits->status();
+    die "ERROR: could not read E_MIN/E_MAX columns from EBOUNDS extension" if ($status);
+
+    # Back to the spectrum
+    $efits->close();
+
+    # Average the systematic error vector over each of the spectrum's bins
+    foreach $i (0 .. $#emin) {
+	$imin = POSIX::floor($emin[$i]*100);
+	$imax = POSIX::floor($emax[$i]*100);
+
+	if ($imin < $smin) { $imin = $smin; }
+	if ($imax < $smin) { $imax = $smin; }
+	if ($imin > $smax) { $imin = $smax; }
+	if ($imax > $smax) { $imax = $smax; }
+
+	$bkg = 0.0;
+	$n   = 0;
+	foreach $j ($imin .. $imax) {
+	    $bkg += $bkghash{$j};
+	    $n ++;
+	}
+	$phabkg[$i] = $bkg;
+
+	# See formula [2] above
+	$phaerr[$i] = sqrt((2.0*$bkg + $srcrate[$i])/($batalpha*$ngoodpix*$exposure));
+	if ($chatter >= 5) { 
+	  print "$i $imin $imax $sys $n $phabkg[$i] $phaerr[$i]\n"; 
+	}
+
+    }
+
+    if ($fits->colnum("STAT_ERR") < 0) { $makestat = 1; }
+    $fits->setstatus(0);
+    if ($fits->colnum("BKG_RATE") < 0) { $makebkg  = 1; }
+    $fits->setstatus(0);
+
+    if ($makestat) {
+      print "Inserting STAT_ERR column ($makestat)\n" if ($chatter >= 5);
+      $fits->insertcol({TTYPE=>["STAT_ERR","Estimated statistical error"],
+			TFORM=>"D",
+			TUNIT=>"count/s"});
+    }
+    if ($makebkg) {
+      print "Inserting BKG_RATE column ($makebkg)\n" if ($chatter >= 5);
+      $fits->insertcol({TTYPE=>["BKG_RATE","Estimated background rate"],
+			TFORM=>"D",
+			TUNIT=>"count/s"});
+    }
+    $status = $fits->status();
+    if ($status == 0) {
+      $status = $fits
+	->writecol("STAT_ERR", {}, \@phaerr)
+	->writecol("BKG_RATE", {}, \@phabkg)
+	  ->status();
+    }
+    
+    die "ERROR: Could not write estimated statistical error column" if ($status);
+
+    # Remove the keyword, which may conflict
+    $fits->delkey("STAT_ERR")->setstatus(0);
+
+    # Make sure the new exposure is written
+    $fits->writekey("EXPOSURE",$exposure);
+
+    # ===== 
+    # Write history keywords
+    HDpar_stamp($fits->handle(), 0, $status);
+
+    $fits->close();
+
+    $cmd = "ftcopy '$infile"."[col *;RATE=ORIG_RATE+RANDOMN()*STAT_ERR;#TUNIT#=\"count/s\";#POISSERR = F;$delcmd]' '$infile' clobber=YES copyall=YES";
+    system($cmd);
+
+    $status = $fits->status;
+    $fits->setstatus(0)->close();
+    if ($chatter >= 2) {
+	print "--------------------------------------------------------\n";
+	print "  File modified in place: $infile\n";
+	print "--------------------------------------------------------\n";
+    }
+
+    return $status;
+}
+
+
+

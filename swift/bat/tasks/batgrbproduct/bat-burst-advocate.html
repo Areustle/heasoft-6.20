@@ -1,0 +1,550 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>bat-burst-advocate HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+bat-burst-advocate - standard BAT GRB processing
+
+<h2>USAGE</h2>
+
+<tt>bat-burst-advocate indir outdir</tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+bat-burst-advocate performs standard processing for gamma-ray bursts
+detected by the Swift BAT instrument.  It performs the following
+activities:
+
+<ul>
+<li>generation of a master quality map</li>
+<li>generation of good time interval files</li>
+<li>extraction of events near the time of the GRB</li>
+<li>computing mask weights for all events for the GRB position</li>
+<li>finding an optimal time interval based on Bayesian blocks analysis</li>
+<li>generation of sky images</li>
+<li>generation of a partial coding map</li>
+<li>refinement of the BAT position (if possible)</li>
+<li>generation of energy spectra for different time intervals, including
+ <ul>
+ <li>pre-slew</li>
+ <li>during-slew</li>
+ <li>post-slew</li>
+ </ul>
+</li>
+<li>generation of detector response matrices</li>
+<li>generation of light curves with different samplings</li>
+<li>computation of counts fluences</li>
+<li>creation of a summary report</li>
+<li>creation of a detailed execution log file</li>
+</ul>
+
+<p>
+NOTE: the scripts batgrb<!-- -->product and bat-<!-- -->burst-advocate
+are identical.  The first name has been preserved for historical
+reasons, and the second name for consistency with the product scripts
+of the UVOT and XRT.
+
+<p>
+By default it is assumed that the TDRSS position message is present.
+This message provides information about the position of the burst and
+the initial time interval of the burst.  However, the user can
+override these values using command line parameters.  If the RA and
+Dec values are set to BLIND, then sky images are made, but no further
+analysis is done, and it is up to the user to search the image to find
+new sources.
+
+<p>
+<b>PREREQUISITES</b> - the user must have the standard FTOOLS (6.0.5
+or later) installed and set up.  Also, the Swift BAT Calibration
+Database (CALDB) must be installed and set up.  It is assumed that the
+input directory is structured as a standard Swift archive, as produced
+by the Swift Data Center (SDC) and the HEASARC archive.  The following
+subdirectories are required: bat/event, bat/hk, auxil, and tdrss.  The
+uvot and xrt subdirectories are not required, although there is no
+harm for them to be present. The event by event data should already be
+energy-calibrated by either the SDC or running bateconvert manually
+(i.e. the PI and ENERGY columns should be filled).
+
+<h2>DETAILS of OPERATION</h2>
+
+<p>
+After initialization, bat-burst-advocate begins by extracting the
+various burst parameters from the TDRSS burst position message such as
+position, trigger start/stop time, and background start/stop time.  If
+the TDRSS position message is not available, then the user must supply
+these values at the command line.  As noted below, special processing
+is done for short bursts.
+
+<p>
+A quality map is created from the detector enable/disable map and the
+event data itself, by searching for noisy detectors.  Various good
+time intervals are created.  Only data from "near" the burst are
+retained, defined as within 'tnear' seconds of the burst trigger time
+('tnear' is a parameter).  Using this time selector, a new event file
+is extracted, covering only the time range of interest.  The mask
+weight calculation (ray tracing) is done at this stage using the input
+celestial position, after which, the full event file is copied into
+separate pre-slew, slew, and post-slew time segments.
+
+<p>
+Once the near-trigger event file has been created, a search is
+performed for the "best" burst time interval.  This involves searching
+light curves of several trial time bin sizes (currently 4 ms, 16 ms,
+64 ms, 1 s, and 16 s) for the burst duration, using the Bayesian
+blocks algorithm of 'battblocks'.  A set of criteria is used to decide
+whether to accept a particular trial duration estimate or not.  If
+battblocks failed in any way, then that trial duration estimate is
+discarded.  If the trial estimated duration is greater than 2 times
+the bin size, and 30% greater than the previous best estimate, then
+current trial estimate becomes the new best estimate.  If 'battblocks'
+fails to detect the burst with any of the trial binnings, then the
+script falls back to the time interval values specified in the TDRSS
+message (or the command line).  These time intervals -- T50, T90, and
+T100 -- form the best estimated durations of the burst, and are used
+to extract "burst" spectra and images.  These intervals are also saved
+in the output gti subdirectory as standard GTI files.
+
+<p>
+At this stage, detector and sky images are made for the "burst" time
+interval, and pre-burst pointed data, if any.  Here "pre-burst" means
+any pointed time interval before T100.  If a slew occurs during the
+burst, then separate burst images are made from the pre-slew and
+post-slew pointings.  Images are never made while the spacecraft is
+maneuvering.  Pre-slew and post-slew partial coding maps are also
+created, which give an indication of the off-axis exposure level for
+these time intervals.
+
+<p>
+If a pre-slew image was successfully created, the burst was not an
+on-board "image" trigger, and the position came from the TDRSS
+position message, then bat-burst-advocate will attempt to refine the
+burst position.  The pre-slew sky imge is used to estimate a refined
+centroid location.
+
+<p>
+Spectra are made for several different time intervals, including T50,
+T90, T100, and the peak 1 second flux interval.  The total burst is
+also divided into separate pre-slew, slew and post-slew spectra, in
+case the user wishes to perform a more refined analysis.  Response
+matrices are made for pre-slew and post-slew time intervals.
+
+<p>
+Light curves are extracted in several bin sizes and binnings.  For the
+total energy range (15-350 keV), light curves are extracted with 4 ms,
+64 ms, and 1 s binnings.  Light curves in 4 energy bands are also
+created (15-25,25-50,50-100,100-350 keV) with 64 ms and 1 s binnings.
+Finally, 1-channel and 4-channel light curves are created using the
+Bayesian block time intervals determined by battblocks.
+
+<p>
+As a last step, a report file is generated which contains basic
+summary information about the burst analysis.  The burst time
+intervals and position are reported, as well as the counts fluences in
+various bands.
+
+<h2>SUMMARY OUTPUTS</h2>
+<p>
+Upon finishing, the output directory contains a text file called
+<tt>process.log</tt>.  This file contains all the commands executed
+and detailed output transcripts.  Users can check this file to: (a)
+diagnose problems; and (b) to get ideas on how to use the software to
+make their own custom science products.
+
+<p>
+The output directory also contains report.txt, which is text file with
+a summary report giving basic statistics and factual information about
+the trigger that was analyzed.
+
+<p>
+The task concludes by printing to the console a detailed inventory of
+files it created, including the name and a brief description for each
+file.
+
+<h2>OUTPUT RESULTS</h2>
+
+<p>
+The output files are arranged by type into several directories. The
+following list describes each directory.  Each file name contains
+code phrases which are also described.
+<dl>
+
+<dt>outdir/lc</dt><dd>Light curves, in standard OGIP light curve
+format.  File names are of the form
+<tt>swNNNNNNNNNNNb_xchan_bbb.lc</tt>, where NNNNNNNNNNN is the
+observation ID.  File names with "1chan" and "4chan" have 1 and 4
+energy bins respectively.  The <tt>bbb</tt> portion of the file name
+specifies the time binning.  Time binnings can be 1 second ("1s"), 64
+millisecond ("64ms") and 4 millisecond ("4ms").  The light curves
+cover the full range of event data.  Light curves with "bb" in their
+file name are binned with the Bayesian Block algorithm and have
+variable time bin sizes.  Light curve rates are based on the mask
+weighting algorithm, and have Gaussian-distributed uncertainties.</dd>
+
+<dt>outdir/pha</dt><dd>Spectra and response matrices, in standard OGIP
+spectral format.  Spectral file names are of the form
+<tt>swNNNNNNNNNNNb_type.pha</tt>, where NNNNNNNNNNN is the observation
+ID, and <tt>type</tt> is the time interval for accumulating the
+spectrum, as described in the next sentence.  Spectra are computed for
+the total burst interval ("total"), the T50/T90 intervals ("t50" and
+"t90"), the peak 1 second flux interval ("peak"), and also for the
+pre-slew, slew, and post-slew intervals ("preslew", "slew" and
+"postslew").  Response matrices are computed for the pre-slew and
+post-slew intervals, and have similar file names, except with the
+".rsp" suffix.</dd>
+
+<dt>outdir/dpi</dt><dd>Detector images, in DPI format.  Detector image
+file names are of the form <tt>swNNNNNNNNNNNb_type_xchan.pha</tt>,
+where NNNNNNNNNNN is the observation ID, and <tt>type</tt> is the time
+interval for accumulating the spectrum, and <tt>xchan</tt> describes
+the energy binning.  Detector images are made in the pre-burst,
+pre-slew and post-slew time intervals ("preburst", "preslew" and
+"postslew").  Pre-burst means an image created before any detectable
+emission.  Images with 1 and 4 energy bins are created.</dd>
+
+<dt>outdir/img</dt><dd>Sky and partial coding images, as standard FITS
+image extensions with full World Coordinate System keywords.  Matching
+sky images are made for each 1-channel detector image in the
+<tt>dpi</tt> directory.  Small "postage-stamp" images are also created
+(suffix ".postimg"), centered on a small region around the burst
+position.  Partial coding maps are made for the pre-slew and post-slew
+intervals, with suffix ".pcodeimg".</dd>
+
+<dt>outdir/gti</dt><dd>Duration information.  Various good time
+interval files are generated.  File names with "acs" are
+spacecraft-attitude related ("acs_10am", "acs_sett", "acs_slew"
+corresponding to the 10-arcmin, settled, and slewing flags,
+respectively).  File names with "grb" select events near the GRB
+(within 2000 seconds), including the pre-slew, slew and post-slew
+intervals.  The "tdrss" file contains time intervals transcribed from
+the TDRSS position message.  File names with "bb" are Bayesian blocks
+produced with the battblocks task on light curves with different time
+binnings.  The file named <tt>swNNNNNNNNNNNb_dur.gti</tt> contains the
+estimated burst durations, including T50, T90, T100 and the peak 1
+second interval, corresponding to FITS extensions named GTI_T50,
+GTI_T90, GTI_TOT, GTI_PEAK.</dd>
+
+<dt>outdir/auxil</dt><dd>Auxiliary information.  The file name with
+"qmap" is a detector quality map.  The file with "output.cat" contains
+a revised position based on a fit to all pre-slew data.  The
+"output.reg" file is a region file suitable for use within DS9 or FV.
+The "evaux" file is an auxiliary ray-tracing file.  </dd>
+
+<dt>outdir/events</dt><dd>Event files. Event file names are of the
+form <tt>swNNNNNNNNNNNb_type.pha</tt>, where NNNNNNNNNNN is the
+observation ID, and <tt>type</tt> is the time interval for
+accumulating the events, described in the next sentence.  The event
+files correspond to all events near the GRB trigger ("all"), pre-slew
+events ("preslew"), slew events ("slew") and post-slew events
+("postslew").  All event files in this directory are filtered
+according to the 'tnear' parameter.  Since they are re-created each
+time the task is run, the files in this directory can be deleted if
+desired.  </dd> </dl>
+
+<h2>CREATING CUSTOM SPECTRA or LIGHTCURVES</h2>
+
+<p>
+As detailed above, this task creates several standard spectra and
+light curves which will often be useful to the observer.  However, it
+is understood that the user may also want to make spectra or light
+curve products with different options from the standard ones.  This
+section gives some suggestions of how this could be done.
+</p>
+
+<p>The user is also urged to read the sections of the BAT software
+documentation on making spectra and light crves for more detailed
+information and caveats.  Both BAT spectra and light curves are
+created with the 'batbinevt' task, but there are several other
+procedures that must be completed in order to have scientifically
+meaningful results.  Recommended analysis techniques may change over
+time, so the user is urged to periodically consult the software
+documentation to be sure they are using the most up-to-date
+techniques.
+</p>
+
+<p>
+A typical BAT spectrum can be created with the following 'batbinevt'
+command:
+</p>
+<pre>
+
+  batbinevt infile='outdir/events/swNNNNNNNNNNNb_all.evt' \
+     outfile='custom_spectrum.pha' outtype=PHA timedel=0 timebinalg=u \
+     energybins='CALDB:80' detmask='outdir/auxil/swNNNNNNNNNNNb_qmap.fits' \
+     ecol=ENERGY weighted=YES outunits='RATE' 
+
+</pre>
+<p>
+In this command, 'outdir' is the output directory as given on the
+batgrbproduct command line; and 'NNNNNNNNNN' is the Swift observation
+number (which should also be the name of the 'indir', if the data came
+from the archive).  Of course the user is free to choose different
+time filtering or energy bins, as described in the BAT software
+documentation; this example uses the standard 80 energy bins.
+<b>IMPORTANT NOTES:</b> there are additional corrections that must be
+applied to a spectrum before it is scientifically meaningful.  Please
+read the BAT software documentation before doing spectral fitting.
+</p>
+
+<p>
+A custom light curve file can be constructed in a similar way:
+</p>
+<pre>
+
+  batbinevt infile='outdir/events/swNNNNNNNNNNNb_all.evt' \
+     outfile='custom_lightcurve_1s.lc' outtype=LC timedel=1 timebinalg=u \
+     energybins='15-350' detmask='outdir/auxil/swNNNNNNNNNNNb_qmap.fits' \
+     ecol=ENERGY weighted=YES outunits='RATE' 
+
+</pre>
+<p>
+Please see above for the meanings of 'outdir' and 'NNNNNNNNNN'.  Of
+course the user is free to choose different time or energy bins, as
+described in the BAT software documentation; this example uses 1
+second bins in the 15-350 keV range.  Please consult the BAT software
+documentation for more information about constructing meaningful light
+curves.
+</p>
+
+<h2>SHORT BURSTS</h2>
+
+<p>
+For short burst triggers (triggers shorter than or equal to 64
+milliseconds), the BAT flight software reports the incorrect burst
+trigger time in the BAT TDRSS position message (the keyword containing
+the trigger start time is named TRIGTIME).  The value in the telemetry
+is the <i>start</i> of a 320 millisecond interval which contains the
+<i>end</i> of the trigger interval.  Thus, in principle, the end of a
+short burst trigger could have fallen anywhere within a 320
+millisecond interval starting at TRIGTIME.
+
+<p>
+For short bursts this behavior can cause problems.  First of all, the
+automatic burst-finding algorithm in battblocks cannot always find
+short, faint bursts, which causes the algorithm to fall back to the
+time intervals reported in the position message.  Since these time
+intervals are incorrect, the result can appear to be a non-detection.
+
+<p>
+There are several ways to work around this problem.  The first way is
+to examine the light curve and manually adjust the trigger start and
+stop time to cover the true interval of the burst (using the trigtime
+and trigstop parameters to this task).  
+
+<p>
+There are also two automatic ways to work around this problem, using
+the 'shortfix' parameter.  If 'shortfix' is set to 'scaledmap', this
+task will use the BAT "scaled map" product to determine the burst
+intervals.  The scaled map is a detector plane image which contains
+the exact time intervals of the burst trigger with no ambiguity.  If
+'shortfix' is set to 'expand' then the trigger interval will be
+automatically expanded to at least 320 milliseconds so that the true
+burst interval will be included.  This method unavoidably adds extra
+noise to the analysis, so it should be avoided if possible.  The
+default value of 'scaledmap,expand' causes this task to first check
+for a scaled map, and only if one is not present, use the expand
+method.
+
+<p>
+Users should be aware that the TRIGTIME keyword in all of the output
+results will contain the <i>adjusted</i> trigger start time and
+<i>not</i> the telemetered value.  This is true if the trigger time is
+specified on the command line using the trigtime/trigstop parameters,
+or if it is adjusted automatically via the 'shortfix' parameter.
+
+
+<h2>ERRORS</h2>
+
+<p>
+Most error conditions are reported on the console.  Please note that
+not all bursts are the same, and the Swift spacecraft response is not
+the same.  For example, there may not be a slew to the burst, in which
+case, there won't be "slew" and "post-slew" spectra or images.  Also,
+if the burst does not extend past the end of the slew (if there is
+one), there will not be a post-slew spectrum.  The task will report
+these failures to produce spectra and images as errors, but they are
+benign.
+
+<p>
+For certain kinds of bursts -- namely short hard bursts -- the task is
+not always able to find the time interval of the burst.  In those
+cases, the task falls back to the trigger interval reported in the
+telemetry (or, the adjusted trigger time as described above).
+
+<h2>PARAMETERS</h2> <dl>
+
+<dt>indir [string]
+
+<dd>Input directory containing Swift data.  This directory must have
+the standard Swift archive layout.  Files in the input directory will
+not be modified.
+
+<dt>outdir [string]
+
+<dd>Output directory which will contain the processing results.  The
+output files are organized by file type: events, pha (spectra), lc
+(light curves), gti (good time intervals), auxil (miscellaneous).
+Also a summary report is created (report.txt), and a detailed
+processing log (process.log).
+
+<dt>ra = "BAT" [string]
+
+<dd>RA of the source (degrees).  A value of "BAT" or "XRT" means that
+the BAT or XRT TDRSS position should be used.  A value of "BLIND"
+means to do the analysis blind, without concentrating on any one position
+in the field of view.  When "BLIND", then the
+trigtime/trigstop/backstrt/backstop parameters must be specified.
+<p>
+
+<dt>dec = "BAT" [string].  
+
+<dd>Declination of the source (degrees).  See "ra".
+<p>
+
+<dt>trigtime = 0.0 [real]
+
+<dd>Start time of the foreground interval containing the burst in
+mission elapsed time.  A value of 0 indicates to use the times from
+the TDRSS position message, and a non-zero value overrides the TDRSS
+message.
+<p>
+
+<dt>trigstop = 0.0 [real]
+
+<dd>Stop time of the foreground interval containing the burst in
+mission elapsed time.  A value of 0 indicates to use the times from
+the TDRSS position message, and a non-zero value overrides the TDRSS
+message.
+<p>
+
+<dt>backstrt = 0.0 [real]
+
+<dd>Start time of the background interval before the burst in mission
+elapsed time.  A value of 0 indicates to use the times from the TDRSS
+position message, and a non-zero value overrides the TDRSS
+message.
+<p>
+
+<dt>backstop = 0.0 [real]
+
+<dd>Stop time of the background interval before the burst in mission
+elapsed time.  A value of 0 indicates to use the times from the TDRSS
+position message, and a non-zero value overrides the TDRSS
+message.
+<p>
+
+<dt>shortfix = "scaledmap,expand" [string]
+
+<dd>Specify a method to work around the problem of incorrect BAT
+trigger times for short bursts (see detailed description above).  The
+value should be either "scaledmap" (use BAT scaled map to determine
+burst interval), "expand" (expand the short burst interval to at least
+320 milliseconds), or "scaledmap,expand" (try both methods).
+<p>
+
+<dt>tnear = 2000.0 [real]
+
+<dd>Specifies approximate time interval of interest near the time of
+the trigger, defined as TRIGTIME-tnear to TRIGTIME+tnear.
+<p>
+
+<dt>tbinmax = 1000.0 [real]
+
+<dd>Specifies the largest trial time bin size to use while searching
+for the burst duration.  See above for the list of currently-used
+trial time bin sizes.
+<p>
+
+<dt>date_obs = "INDEF" [string]
+
+<dd>User override of the DATE-OBS keyword in event files.  This
+parameter is useful if the input data has an invalid date, like
+'2001-01-01' or 'TBD'.  In that case, set date_obs='YYYY-MM-DD' where
+YYYY-MM-DD is the date of the observation.  A value of "INDEF"
+indicates that the DATE-OBS keyword should not be changed (although it
+will still be checked for validity).
+<p>
+
+<dt>(tbkgsub = YES) [boolean]
+
+<dd>If set, then the task instructs battblocks to perform background
+subtraction during the "background" intervals before and after the GRB
+before estimating the T50/T90 durations.  If not set, then it is
+assumed that the light curves are already background subtracted (via
+mask weighting).  Caveats: setting tbkgsub=YES may cause problems if
+the light curve doesn't have a true quiescent background interval;
+setting tbkgsub=NO may cause problems if the light curve is not fully
+background subtracted.
+<p>
+
+<dt>(pcodethresh = 0.0) [real]
+
+<dd>Minimum partial coding threshold.  Set this value to a number
+greater than 0 in order to exclude noisy data when a GRB passes 
+out of the BAT field of view.  A value of 0.0 includes all data;
+A value of 1.0 includes only data when the source is in the (small)
+BAT fully coded field of view.
+<p>
+
+<dt>(imgpcodethresh = 0.05) [real]
+
+<dd>Minimum partial coding threshold for image analysis.  Set this 
+number to a value greater than 0.0 to exclude noisy pixels at the 
+edges of the BAT image.
+<p>
+
+<dt>(chatter = 1) [integer, 0 - 5]
+
+<dd>Currently ignored.
+<p>
+
+<dt>(history = YES) [boolean]
+
+<dd>Currently ignored.
+<p>
+
+</dl>
+
+<h2>EXAMPLES</h2>
+
+<p>
+
+1. Run the BAT GRB product script on BAT trigger 154112 (GRB 050908).
+The BAT GRB data are archived in a directory called 00154112000 (the
+"000" refers to segment number 0).  bat-burst-advocate will perform a
+standard analysis and place the results in the directory
+00154112000-results.
+
+<p>
+<pre>
+     bat-burst-advocate 00154112000 00154112000-results
+</pre>
+
+<h2>SEE ALSO</h2>
+
+<p>
+<a href="batmaskwtevt.html">batmaskwtevt</a>, 
+<a href="batbinevt.html">batbinevt</a>, 
+<a href="batdetmask.html">batdetmask</a>, 
+<a href="battblocks.html">battblocks</a>, 
+<a href="batfftimage.html">batfftimage</a>,
+<a href="batcelldetect.html">batcelldetect</a>, 
+<a href="bat-burst-advocate.html">bat-burst-advocate</a>
+
+<h2>LAST MODIFIED</h2>
+
+Mar 2009
+
+</body>
+</html>

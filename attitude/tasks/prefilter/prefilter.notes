@@ -1,0 +1,448 @@
+
+Swift prefilter v1.0
+
+
+1 Introduction
+
+The prefilter program derives attitude and orbit related quantities for
+the Swift mission.
+
+
+
+2 Arguments
+
+The Swift prefilter provides parameters as follows (see the Argument structure
+in derive.h)
+
+	outname
+		name of FITS output file
+	parname
+		name of file containing listing of parameters to output
+	tlename
+		name of FITS TLE file
+	attname
+		name of FITS attitude file
+	leapname
+		name of FITS leap second file
+	rigname
+		name of atFunctions rigidity file
+
+	start
+		start year, doy, fractional day as
+			YYYYDDD.FRACTION
+		e.g.
+			2001001.25 refers to 2001 Jan 1 + 6hours Z
+	duration
+		output duration (seconds)
+	interval
+		output interval (seconds)
+
+	ranom
+		nominal right ascension of spacecraft Z axis (degrees)
+	decnom
+		nominal declination of spacecraft Z axis (degrees)
+
+	attextrap
+		limit on attitude extrapolation (seconds)
+	origin
+		value for FITS ORIGIN keyword
+	verbose
+		boolean: report each value as it is derived?
+
+
+	# parameters for testing prefilter
+	frfname
+		name of ASCA FRF file for orbital elements
+	frfmode
+		boolean: use FRF orbit file for position?
+
+	xtename
+		name of XTE xtederive/xtefilt output FITS file
+	xtecompare
+		boolean: use XTE file for position and attitude?
+
+	# HEADAS builtin parameters
+	chatter
+		verbosity level [0-5]
+	clobber
+		boolean: overwrite output file if it exists?
+	mode
+
+
+3 Algorithms
+
+Swift prefilter makes use of the atFunctions library where possible.
+
+The following descriptions may be clarified by reading the (very brief)
+sections 4 and 5 on implementation.
+
+
+3.Position
+
+Derivation
+	Based on NORAD TLEs received from Swift MOC and the SGP4 modelling
+	defined by NORAD (see www.celestrak.com/WhitePaper for SGP modelling
+	details).
+
+	The latest TLE available before the output start time is used in
+	the SGP4 model to find the position and velocity at the desired
+	timestamp.
+
+
+3.Attitude
+
+Derivation
+	Attitude is determined using the coord and coordfits libraries.
+	Attitude from the FITS file is interpolated to the desired timestamp.
+
+
+3.Polar position
+
+FITS columns
+	SAT_ALT
+	SAT_LAT
+	SAT_LON
+
+Derivation
+	AtPolarVect *polar = &derived->polarPosition
+
+	atGeodetic(context->mjd, context->position, geodetic)
+	atVectToPol(derived->geodetic, polar)
+
+	SAT_ALT = polar->r
+	SAT_LON = radians_to_degrees(polar->lon)
+	SAT_LAT = radians_to_degrees(polar->lat)
+
+
+
+3.Pointing vector
+
+Derivation
+	AtRotMat rm
+	AtRotMat aib
+	AtVect zAzis = { 0, 0, 1 }
+
+	atQuatToRM(context->quaternion, rm)
+	atInvRotMat(rm, aib)
+	atRotVect(rm, zAxis, derived->pointingVector)
+
+
+3.Right ascension, declination, roll
+
+FITS columns
+	Z_RA
+	Z_DEC
+	Z_ROLL
+
+Derivation
+	AtRotMat rm
+	AtEulerAng euler
+
+	atQuatToRM(context->quaternion, rm)
+	atRMToEuler(rm, &euler)
+	Z_RA = radians_to_degrees(euler.phi)
+	Z_DEC = 90 - radians_to_degrees(euler.theta)
+	Z_ROLL = radians_to_degrees(euler.psi) - 90
+
+
+3.Earth angles
+
+FITS columns
+	ELV
+	BR_EARTH
+	FOV_FLAG
+
+Dependencies
+	pointingVector
+
+Derivation
+	double angle[3]
+	AtVect sunPosition
+
+	atSun(context->mjd, sunPosition)
+	atEarthElev(context->position, derived->pointingVector,
+		sunPosition, &flag, angle)
+
+	ELV = radians_to_degrees(angle[0])
+	BR_EARTH = radians_to_degrees(angle[1])
+	FOV_FLAG = flag
+
+
+3.Sunshine
+
+FITS column
+	SUNSHINE
+
+Derivation
+	AtVect sunPosition
+	AtVect sunNormal
+
+	atSun(context->mjd, sunPosition)
+	atNormVect(sunPosition, sunNormal)
+
+	atEarthOccult(context->position, sunNormal, sunPosition, &flag, &dummy)
+
+	if (flag == 0)
+		SUNSHINE = 1
+	else
+		SUNSHINE = 0
+
+
+3.Sun angle
+
+FITS column
+	SUN_ANGLE
+
+Dependencies
+	pointingVector
+
+Derivation
+	double angle
+	AtVect sunPosition
+
+	atSun(context->mjd, sunPosition)
+	atAngDistance(sunPosition, derived->pointingVector, &angle)
+
+	SUN_ANGLE = radians_to_degrees(angle)
+
+
+3.Moon angle
+
+FITS column
+	MOON_ANGLE
+
+Dependencies
+	pointingVector
+
+Derivation
+	double angle
+	AtVect moonPosition
+	double size, phase, distance
+
+	atMoon(context->mjd, moonPosition, &size, &phase, &distance)
+	atAngDistance(moonPosition, derived->pointingVector, &angle)
+
+	MOON_ANGLE = radians_to_degrees(angle)
+
+
+3.Ram angle
+
+FITS column
+	RAM_ANGLE
+
+Dependencies
+	pointingVector
+
+Derivation
+	double angle
+
+	atAngDistance(context->velocity, derived->pointingVector, &angle)
+
+	RAM_ANGLE = radians_to_degrees(angle)
+
+
+3.Pointing separation
+
+FITS column
+	ANG_DIST
+
+Dependencies
+	pointingVector
+
+Derivation
+	double angle
+	AtVect nominal
+
+	atPolDegToVect(1, args->nomra, args->nomdec, nominal);
+	atAngDistance(nominal, derived->pointingVector, &angle)
+
+	ANG_DIST = radians_to_degrees(angle)
+
+
+3.Cut off rigidity ASCA
+
+FITS column
+	COR_ASCA
+
+Dependencies
+	polarPosition
+
+Derivation
+	float rigidity
+
+	atRigSet(args->rigname)
+	atRigidity(&derived->polarPosition, &rigidity)
+
+	COR_ASCA = rigidity
+
+
+3.Cut off rigidity SAX
+
+FITS column
+	COR_SAX
+
+Derivation
+	real tjd
+	real xyz[3]
+	real b0, fl, latitude, world
+
+	tjd = context->mjd - 40000
+	xyz = context->position
+
+	xyzmag(&tjd, xyz, &b0, &fl, &rigidity, &latitude, world);
+
+	COR_SAX = rigidity
+
+
+3.McIlwain L
+
+FITS column
+	MCILWAIN_L
+
+Dependencies
+	geodetic
+
+Derivation
+	real scpos[3] = derived->geodetic / EARTH_RADIUS
+
+	shellc_(&scpos[0], &mcIlwainL, &icode, &b0);
+
+	MCILWAIN_L = mcIlwainL
+
+
+3.SAA
+
+FITS columns
+	SAA
+	SAA_TIME
+
+Dependencies
+	polarPosition
+
+Derivation
+	[derived->timeChangeSAA is initialized to null once per run]
+
+	int flag
+
+	atBrazil(derived->polarPostion.lon, derived->polarPosition.lat, &flag)
+
+	SAA = flag
+
+	if SAA != previous value
+		derived->timeChangeSAA = mission time
+
+	if timeChangeSAA is not null
+		SAA_TIME = mission time - derived->timeChangeSAA
+
+
+
+4 Extension
+
+prefilter is implemented to be readily extended.
+
+To add an output parameter modify swift_register_parameter in derive.c,
+add a variable for the calculation to the Derived structure, and implement
+the appropriate Derivation function.
+
+For example, say we want to derive the parameter foo.  Foo will be
+calculated using a double precision floating point variable (foo), and
+stored to a FITS TFLOAT column.  The FITS column will have name 'FOO'
+and units m/s.
+
+Modify Derived (in derive.h) to include the appropriate field
+
+	struct Derived
+	{
+		...
+		double foo;
+		...
+	};
+
+
+Modify swift_register_parameters to include
+
+	Parameter *p = create_parameter("FOO");
+
+	p->derivation = &swift_derive_foo;
+
+	p->derivedType = PREFILTER_DOUBLE;
+	p->derivedOffset = PREFILTER_OFFSET(foo);
+	p->fitsType = TFLOAT;
+	p->fitsColumn = "FOO";
+	p->fitsUnits = "[m/s]";
+
+	/*
+	 * note that define_parameter passes ownership of the parameter to
+	 * the Setup object
+	 */
+	define_parameter(setup, p);
+
+
+And implement
+
+	int swift_derive_foo (const Context *context, Derived *derived)
+	{
+		/* totally bogus computation for illustrative purposes only */
+		derived->foo = context->position[0] / context->met;
+		return derived->code;
+	}
+
+
+Multiple output parameters can share the same derivation function.
+It will only be called once per timestamp.
+
+The actual parameters that are output can be a subset of those built
+into the system using the parameters argument.
+
+
+
+5 Implementation
+
+The prefilter process is implemented in C
+
+	prefilter.h
+		mission-independent prefilter interface
+
+	derive.h
+		swift prefilter Argument, Context, Derived declarations
+
+	driver.c
+		performs Argument setup
+
+	prefilter.c
+		mission-independent prefilter implementation
+
+	derive.c
+		derivation of filter parameters
+
+
+Derivation functions are passed pointers to two objects - a (constant)
+Context struct and a modifiable Derived struct.  The convention as to
+what belongs in the Context versus Derived is somewhat arbitrary.
+It is expected that extensions will add only to the Derived structure and
+leave the Context alone.
+
+The Context provides mission time (AtTime), position and velocity
+(AtVect), and attitude (AtQuat).  It also has some state that is used
+to iterate the Context between time points, and FITS null values.
+
+
+
+
+6 Acronyms
+
+FITS	Flexible Image Transport System
+
+MOC	Mission Operations Center
+
+NORAD	North American Aerospace Defense Command
+
+SAA	South Atlantic Anomaly
+
+SAX	Satellite per Astronomia in raggi X
+
+SGP	Space Geodesy Project
+
+TLE	Two Line Elements
+
+

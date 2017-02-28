@@ -1,0 +1,112 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotapplywcs/ut-uvotapplywcs,v $
+# $Revision: 1.1 $
+# $Date: 2008/04/17 21:28:11 $
+#
+# $Log: ut-uvotapplywcs,v $
+# Revision 1.1  2008/04/17 21:28:11  rwiegand
+# Prepared unit test.
+#
+
+use strict;
+
+package Test::ApplyWCS;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotapplywcs
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotapplywcs
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		infile    => "$input/xy.txt",
+		outfile   => "$output/sky.txt",
+		wcsfile   => "$input/sky.img+1",
+		operation => 'PIX_TO_WORLD',
+
+		from      => '-',
+		to        => '-',
+
+		format    => 'DEFAULT',
+		inprec    => 3,
+		outprec   => 5,
+
+		chatter	  => 3,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.txt";
+	foreach my $key (qw(infile template)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	{
+		my $command = $self->buildCommand('uvotapplywcs', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = "diff $args{template} $args{outfile}";
+		$self->shell($command);
+	}
+}
+

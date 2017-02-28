@@ -1,0 +1,122 @@
+#!/usr/bin/perl
+# Authors: Ziqin Pan
+# Description: displayOnPow creates and displays regions on POW window and save
+#              them as a region file.
+# Modifiction: Original created on 12/08/04
+#
+
+use Getopt::Std;
+use Math::Trig;
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+
+displayOnPow creates and displays regions on POW window and save 
+them as a region file.
+
+EOHELP
+exit 0;
+}
+
+ $infile =0;
+ $timeout=0;
+
+exit headas_main(\&displayOnPow);
+
+sub displayOnPow {
+
+ my $tname ="displayOnPow";
+ my $tvers ="1.0";
+
+
+ &displayOnPow_getpar();
+
+ $status =
+ &displayOnPow_work($infile,$timeout);
+
+}
+ 
+
+sub displayOnPow_work {
+
+
+   my @val =@_;
+
+   $| = 1;
+
+   $proc_id=fork;
+   if ( $proc_id == 0) {
+      system("POWplot $val[0] &");
+   }
+   elsif ( defined $proc_id) {
+      my $count =0;
+      $xpa_user =$ENV{XPA_USER};
+      $host =$ENV{HOST};
+      $helpdir = $ENV{LHEA_HELP};
+
+      if ( !(defined $xpa_user) || $xpa_user eq "") {
+          $pow = "pow";
+          #########################
+          # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+          #########################
+          $heraXPA = "heraXPA";
+      } else {
+          $pow ="pow_$xpa_user";
+          #########################
+          # Pan Chai - XPA entry point heraXPA will now handle all help pages.
+          #########################
+          $heraXPA = "heraXPA_$xpa_user";
+      }
+
+      #########################
+      # Pan Chai - check to see if XPA entry point heraXPA exists.. if not,
+      #            use pow (this is most likely for command line running)
+      #########################
+      $result = `xpaget xpans 2>/dev/null`;
+
+      if ($result !~ /heraXPA/) {
+         $heraXPA = $pow;
+      }
+
+      print "Try to access to POWplot on $pow. Please wait!\n";
+      $lbx ="NULL";
+      while (($lbx =~ /NULL/) || ($lbx =~ /XPA/i) || ($lbx =="")) {
+          if ($count > $val[6] ) {
+             print "Access to POW plot timeout\n";
+             kill 9, $proc_id;
+             return 1;
+          }
+          sleep 5;
+           $value = `xpaget $pow bounds 2>/dev/null`;
+          ($lbx,$lby,$rtx,$rty) = split(/ /,$value,4); 
+           chop($lbx);
+          $count =$count+5;
+
+      }
+      system("xpaset -p $pow scope 100 100");
+   }
+
+   return 0;
+
+}
+
+
+sub displayOnPow_getpar {
+  
+
+ if (PILGetString("infile",$infile)) {
+    print "Error to get parameter \"infile\"\n";
+    exit(-1)
+ }
+
+ if (PILGetReal("timeout",$timeout)){
+    print "Error to get parameter \"timeout\"\n";
+    exit(-1)
+ }
+
+}
+

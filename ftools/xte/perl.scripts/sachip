@@ -1,0 +1,503 @@
+#!/usr1/local/bin/perl
+#
+# SACHIP
+#
+# XTE Data Analysis script, to run SAEXTRCT with filters, and supply
+# the user the option of plotting/saving the results using FPLOT
+# etc, hiding the temporary files, reducing the available options
+# to the useful few, and cleaning up afterwards. 
+#
+# Alan P. Smale 9/25/95
+# XTE GOF, NASA/GSFC
+#
+# Version history:
+#     0.1  (09/25/95):  basic Perl functionality test shell.
+#     0.2  (early Oct): Getopts, plotting installed. First int.release
+#     0.21 (late Oct):  Time/ch filters, logging, full Q/A added.
+#
+
+$Version_number = "0.21";
+
+require "utils.pl";
+use Getopt::Std;
+
+#
+#==============================================================#
+# Startup banner.
+#
+
+print "Starting up SACHIP v.".$Version_number."\n\n";
+
+#
+#==============================================================#
+# Flag check; read in the options, and provide feedback to user
+#   about each. 'Help' comes first, then the others grouped by
+#   function.
+#
+
+getopts('b:c:dghi:lmop:s:t:');
+
+if (defined $opt_h) { 
+   print <<EOHELP1;
+
+NAME 
+    sachip v.0.21 -- a script to allow the user to create filtered
+    spectra and light curves from XTE/SA data with either a single
+    command-line entry, or a simplified Q/A session.
+
+USAGE
+    sachip -[bcdghilmopt]
+
+DESCRIPTION 
+
+    SACHIP is a Perl script which allows the user to create and plot
+    spectra and light curves for a given list of XTE Science Array
+    files, taking into account (optional) time and energy filter
+    information. All necessary information can be supplied by the 
+    user as switches on the command line, and the script can/will
+    take sensible defaults in the absence of overriding user input. 
+    Alternatively, the script can be run interactively, in which case
+    the user will be prompted for important parameters not supplied
+    as switches.
+
+
+PARAMETERS  (actually SWITCHES/FLAGS) (grouped by function):
+
+     -i {file} - provide name of ASCII file containing list of XTE/SA
+            files (assumed default: 'fits_files.txt').
+     -p {file} - provide root filename for product files - i.e., 
+	    'sachip -p paris' will create files paris.lc, paris.pha.
+            (assumed default: 'sachip_out').
+     
+     -b {number} - provide requested binning for light curve file - i.e.
+            'sachip -b 1.0' will create 1-second bins.
+            (assumed default: 32 seconds).
+
+     -c "{channels}" - provide range of ORIGINAL (not binned) channel 
+            filters to be used in the accumulation, e.g. "10-20,40-100".
+     -t "{times}" - provide range of times to be used to filter the data
+            (additional to those already present in the GTI extension) 
+            when accumulating, e.g. "48798400.0-48798900.0".
+
+     -m   - Resultant spectra/curves will contain separate columns for each
+            of the good data columns in the input files.
+     -o   - Resultant spectra/curves will contain the sum of all the
+            good data columns (the default).
+
+     -d   - Take default values for all parameters not set on the command
+            line.
+     -g   - Take all GOOD columns (this is not only the current default,
+	    but your only option at the moment).
+     -s   - Device to plot on (assumed default: '/xterm').
+     -l   - Logfile switch. Currently, logging is the default (in a
+            file sachip.log), and  -l will disable this logging.
+     -h   - Print this help information.
+
+
+EXAMPLES
+
+     sachip -b 8.0 -m -p torres -d
+            will create and plot one spectra and one light curve file, 
+	    The output files will be called torres.lc and torres.pha,
+	    and will contain one column per input good data column. The
+            light curve will have 8-sec binning. Sensible defaults taken
+            for all other values.
+
+     sachip -i kim.txt -t "{times}" -c "{channels}" -b 1000.0 -og
+            will look in file 'kim.txt' for the list of input files, apply
+            time and channel filter ranges as applied, and
+	    create and plot a 1000-sec binned light curve and a single 
+	    spectrum, to be found in sachip_out.lc and sachip_out.pha.
+            Values not provided will be prompted for (in this case,
+            the root for the product file).
+     sachip -d
+            will take fits_files.txt and plot a spectrum and light curve
+	    for all the data with 32-sec resolution and put the data
+	    in sachip_out.lc and sachip_out.pha.
+     sachip 
+            will prompt the user for each parameter.
+
+NOTES
+
+    SACHIP is intended as a 'fast' tool to minimize the amount of
+    FTOOLing around for the user with straightforward data analysis
+    requirements. It is not intended to replace or reproduce the full
+    functionality available from the individual FTOOLS. However, I'm
+    open to suggestions about how to improve the script to meet
+    commonly-occuring data analysis needs. Future versions will include
+    calls to XTEFILT and MKTIME to apply simple data cleaning.
+
+BUGS
+
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+
+    SAEXTRCT and FPLOT for more information.
+
+EOHELP1
+exit;
+}
+
+# If parameter is entered on command line, use it. If not, and the
+# -d option is set, use a sensible default. Otherwise, prompt the user
+# for the parameter value. If the user enters a carriage return, 
+# take the default anyway.
+
+# Logical flags have initial capitals.
+
+$Defaults= 0;
+$Logging= 1;
+
+$inname= "fits_files.txt";
+$outroot= "sachip_out";
+$columns= "GOOD";
+$accumulate= "ONE";
+$binsize= 32.0;
+$channels="INDEF";
+$times="INDEF";
+$device="/xterm";
+
+if( defined $opt_l ) {
+    $Logging = 0;
+    print " ** Logging disabled.\n";
+}	
+
+$Logging && ( open(LOGFILE,">sachip.log") || die "Can't create logfile");
+$Logging && print LOGFILE "Starting up SACHIP v.".$Version_number."\n\n";
+
+if( defined $opt_d ) {
+    $Defaults = 1;
+    $string= " ** Going with preset defaults where applicable.\n";
+#            &announce($string);
+    print "$string";
+    $Logging && print LOGFILE $string;
+
+}			# Go with all defaults except where
+                        # overriden by command line. no Q/A
+
+if( defined $opt_i ){
+   print " ** Input filename provided for FITS filelist: $opt_i \n";
+   -e $opt_i || die " !! Exiting: file $opt_i does not exist.\n";
+   $inname = $opt_i;
+} else {
+   unless ( $Defaults ) {
+      print " > Give name of file containing FITS filelist [".$inname."] > ";
+      chop($dummy=<STDIN>);
+      until ($dummy eq '' || -e $dummy) {
+         print " > File not found. Please try again. > ";
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$inname = $dummy;}
+   }
+}
+
+$inname = "@".$inname;
+       
+if( defined $opt_p ){
+   print " ** Product (output) filename root supplied: ".$opt_p."\n";
+   $outroot = $opt_p;
+} else {
+   unless ( $Defaults ) {
+      print " > Give root for product (output) filenames [$outroot] > ";
+      chop($dummy=<STDIN>);
+      unless ($dummy eq '') {$outroot = $dummy;}
+   }
+}
+	
+if( defined $opt_g ){
+   print " ** Columns = GOOD (the unalterable default) \n";
+}
+
+if( defined $opt_b ){
+   $binsize = $opt_b;
+   print " ** Binsize = $binsize \n";
+} else {
+   unless ( $Defaults ) {
+      print " > Give binsize (in sec) for output light curve [$binsize] > ";
+      chop($dummy=<STDIN>);
+      unless ($dummy eq '') {$binsize = $dummy;}
+   }
+}				
+
+if( defined $opt_c ){
+   print " ** Channel filter info provided: $opt_c.\n";
+   $dummy=$opt_c;
+   if ( &CHECK_RANGE($dummy) ) {
+      $channels=$opt_c;
+   } else { print " > Invalid channel range supplied: try again [$channels] > ";
+      chop($dummy=<STDIN>);
+      until( &CHECK_RANGE($dummy) || $dummy eq '') {
+         print " > Invalid range: try again [$channels] > ";    
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$channels= $dummy;}
+   }
+} else {
+   unless ( $Defaults ) {
+      print " > Give channel bounds [$channels] > ";    
+      chop($dummy=<STDIN>);
+      until( &CHECK_RANGE($dummy) || $dummy eq '') {
+         print " > Invalid range: try again [$channels] > ";    
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$channels= $dummy;}
+   }
+}
+
+if( defined $opt_t ){
+   print " ** Time filter info provided: $opt_t.\n";
+   $dummy=$opt_t;                
+   if ( &CHECK_RANGE($dummy) ) {
+      $times=$opt_t;
+   } else {print " > Invalid time range supplied: try again [$times] > ";
+      chop($dummy=<STDIN>);
+      until( &CHECK_RANGE($dummy) || $dummy eq '') {
+         print " > Invalid range: try again [$times] > ";    
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$times= $dummy;}
+   }
+} else {
+   unless ( $Defaults ) {
+      print " > Give time ranges [$times] > ";    
+      chop($dummy=<STDIN>);
+      until( &CHECK_RANGE($dummy) || $dummy eq '') {
+         print " > Invalid range: try again [$times] > ";    
+         chop($dummy=<STDIN>);
+      }
+      unless ($dummy eq '') {$times= $dummy;}
+   }
+}
+
+# If no channel selection has occurred, set default to INDEF. Do same
+# for time selection. (We didn't do this earlier because many users
+# won't understand a default of INDEF showing up in their prompt.)
+
+if ($channels eq "-") {$channels="INDEF"}
+if ($times eq "-") {$times="INDEF"}
+
+
+if( defined $opt_o && defined $opt_m ){
+    die " !! Fatal error: you have selected both one AND many
+ !! Please supply EITHER -o OR -m, but not both\n\n";
+}				# Can't do both, dude.
+
+
+if( defined $opt_m ){
+   $accumulate="MANY";
+   print " ** MANY option selected\n";
+} elsif ( defined $opt_o ){
+   $accumulate="ONE";
+   print " ** ONE option selected\n";
+} else {
+   unless ( $Defaults ) {
+      print " > Give ONE or MANY for output curves/spectra [$accumulate] > ";
+      chop($dummy=<STDIN>);
+      $dummy=~ tr/a-z/A-Z/;        # Uppercase it all
+      until ($dummy eq '' || $dummy eq "MANY" || $dummy eq "ONE") {
+         print " > Enter ONE or MANY, or <CR> ... > ";
+         chop($dummy=<STDIN>);
+      }
+      unless($dummy eq '') {$accumulate = $dummy;}
+   }
+}
+
+if( defined $opt_s ){
+   $device = $opt_s;
+   print " ** Device = $device \n";
+} else {
+   unless ( $Defaults ) {
+      print " > Give device to plot the output curve/spectrum to [$device] > ";
+      chop($dummy=<STDIN>);
+      unless ($dummy eq '') {$device = $dummy;}
+   }
+}				
+
+#==============================================================#
+# Sanity check section, may be either commented out or enhanced
+# in delivered version.
+# Creates a string containing the relevant status variables and
+# prints it to STDOUT,  and also to LOGFILE if $Logging is True.
+
+# (no ;;;; - extended string)
+
+$string = 
+"-----------------------------------------------------
+     Input file name: $inname
+     Output file root: $outroot
+     Binsize: $binsize 
+     Accumulate: $accumulate
+     Channel filter: $channels
+     Time filter: $times
+     Device: $device
+-----------------------------------------------------\n";
+
+print $string;
+$Logging && print LOGFILE $string;
+
+# print "Exiting before calling FTOOLS (parameter entry checking only)\n";
+# exit;
+
+# 
+#==============================================================#
+# We're now good to go.
+#
+# First, run SAEXTRCT. The command_string goes to the screen,
+#  into the log, if set, and to the &yakker executer. 
+#
+# Then, call FPLOT in a subroutine twice,
+#  first for the light curve and then for the spectrum.
+
+
+print "\n Firing up SAEXTRCT now. Please wait; you won't see anything
+further until it has completed its accumulation  ... \n\n";
+
+$command_string='saextrct infile="'.$inname.'" outroot="'.$outroot.'" accumulate="'.$accumulate.'" columns="'.$columns.'" binsz="'.$binsize.'" printmode=BOTH lcmode=RATE spmode=SUM chint="'.$channels.'" timeint="'.$times.'" mode=h';
+
+print "$command_string\n";
+$Logging && print LOGFILE "$command_string\n";
+
+@result=&yakker($command_string, "1");
+
+#
+# Get the plot device from the environment variable XTEPLOT, if
+# set. If not, default to /xterm and tell the user what you're doing.
+# Nope, this is not multiplatform enough, so comment this out and
+# use a system call instead in CALL_FPLOT
+# 
+#  $device = $ENV{'XTEPLOT'};
+#
+# while ( $device eq '') {
+#    print "XTEPLOT environment variable not set -- use 'setenv XTEPLOT /xterm'
+# (or equivalent for your system). In the meantime, please supply a
+# plotting device at the prompt > ";
+#    chop($device=<STDIN>);
+# }
+#
+# Call FPLOT.
+#
+
+&CALL_FPLOT($outroot, ".lc", $device);
+
+if ($accumulate eq "MANY") {
+   print "** Warning: since you chose the MANY option, this plot \n";
+   print "**   will contain several spectra which may overwrite. \n";
+}
+
+&CALL_FPLOT($outroot, ".pha", $device);
+
+# ====================================================================
+# Quit tidily. If LOGFILE is open, close it.
+
+$Logging && close(LOGFILE);
+exit;
+
+# ====================================================================
+# sub CALL_FPLOT
+# ====================================================================
+sub CALL_FPLOT {
+
+    local($fname,$type,$dev) = @_;
+    local($xparm,$yparm,$stringy);
+
+# Now: 
+#    if $type is ".lc", we're looking at a light curve and
+#             xparm=TIME, yparm=RATE[ERROR]
+#    elsif $type is ".pha", it's a spectrum and 
+#             xparm=CHANNEL, yparm= COUNTS[STAT_ERROR]
+#    else the parameter has not been passed correctly and 
+#             it's time to die. 
+
+    if ($type eq ".lc") {
+	$xparm = "TIME"; $yparm = "RATE[ERROR]"} 
+    elsif ($type eq ".pha") {$xparm = "CHANNEL"; $yparm="COUNTS[STAT_ERR]"} 
+    else { die "!! $type not recognized in CALL_FPLOT"}
+
+$stringy =  'fplot infile="'.$fname.$type.'" xparm="'.$xparm.'" yparm="'.$yparm.'" device="'.$dev.'" mode=h';
+
+print "\n\n                  Plotting file $fname$type
+  |------------------------------------------------------------------|
+  | Type 'q' to quit, 'r x low high' to rescale X-axis between given |
+  | values for low/high bounds, or any other QDP command.            |
+  |------------------------------------------------------------------|\n";
+
+@result = system($stringy);
+
+}
+
+# ====================================================================
+# sub CHECK_RANGE
+# ====================================================================
+# S/R to (eventually) check that a supplied range is valid. 
+#
+# The requirement for a range to be valid is that it consists of a
+# string with pairs of numbers linked by hyphens and delimited by 
+# commas. Thus, if we break the line into an array of strings, one
+# for each range, and then break each of those into two numbers,
+# and each is a valid number and contains no letters or other 
+# bizarreness, that's Test 1 complete.
+#
+# The status of the test is carried in $status; this is initially
+# set to 1 (true) but is reset to 0 (false) if an irregularity is
+# discovered. $status is then returned at the end of CHECK_RANGE.
+
+sub CHECK_RANGE {
+   local($range) = @_;
+   local(@ranges, @subranges);
+   local($status, $a, $b, $c, $d, $e);
+   $status=1;
+
+   @ranges = split(/,/,$range);
+   $a = @ranges;
+#   print "$a items in ranges array\n";
+#   print "@ranges\n";
+   foreach ( @ranges ) {
+      @subranges = (@subranges, split(/-/,$_) );
+   }
+   $b = @subranges;
+#   print "$b items in subranges array\n";
+#   print " @subranges\n";
+
+#
+# Odd or even? $b must be divisible by 2.
+#
+
+   $d = $b/2.0;
+   $e = int($d);
+#   print "$d, $e\n";
+
+   if ( ($d - $e) lt 0.01 ) {     # number is even, everything is fine     
+   } else {
+      print "Error: odd number of range items\n";
+      $status=0;
+   }
+
+#
+# @subranges should contain nothing that isn't a number or a .
+#
+
+   foreach $c ( @subranges ) {
+#      print "In subranges loop $c \n";
+      if ( $c =~ /[^0-9.]/ ) {
+         print "Error: element $c is not valid\n";
+         $status=0;
+      }
+   }
+
+# Test 2 is to make sure that in each case the lower bound is lower
+# than the upper bound. All other checking and reordering is done in
+# SAEXTRCT. This is not done yet.
+
+   $status;
+}
+
+# ====================================================================
+# sub DO_PRINT
+# ====================================================================
+sub DO_PRINT {
+   print @_;
+   $Logging && print LOGFILE @_;
+}
+
+

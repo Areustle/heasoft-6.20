@@ -1,0 +1,440 @@
+#!/usr/bin/perl -w
+
+=head1 SYNOPSIS
+
+aeattcor2
+
+=head1 DESCRIPTION
+
+Corrects a Suzaku attitude file for spacecraft thermal wobble based on measured
+source position as a function of time.
+
+Based on aeattcor.sl by John E. Davis:
+
+    http://space.mit.edu/ASC/software/suzaku/aeatt.html
+
+=head1 SUBROUTINES
+
+=cut
+
+######################
+# libraries + pragmas
+######################
+use strict;
+
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEAGen::HEAGen qw( :all );
+use Astro::FITS::CFITSIO qw( :longnames :constants );
+
+$| = 1;
+
+###################
+# Global variables
+###################
+my $taskName = 'aeattcor2';
+my $taskVers = '1.0';
+
+my %params = (
+    attitude     => '',
+    outfile      => '',
+    eventfile    => '',
+    regionfile   => '',
+    integ_time   => 0.0,
+    minfrexp     => 0.0,
+    gtifile      => '',
+    savexycurve  => 0,
+    xycurve      => '',
+    clipmean     => 0,
+    clipsigma    => 0.0,
+    clipiter     => 0,
+    cleanup      => 0,
+    clobber      => 0,
+    chatter      => 0,
+    history      => 0
+);
+
+my @clean = ( );
+
+#########
+# run it
+#########
+exit( headas_main( \&aeattcor2 ) );
+
+=head3 aeattcor2
+
+=over
+
+Main subroutine. Does the business.
+
+=back
+
+=cut
+
+sub aeattcor2 {
+
+    ######################
+    # library setup stuff
+    ######################
+    set_toolname( $taskName );
+    set_toolversion( $taskVers );
+    setTask( $taskName, $taskVers );
+    setChat( 2 );
+    setSysChat( 3 );
+
+    ##################
+    # do the business
+    ##################
+    my $stat = 0;
+
+    intro( );
+    !( $stat = getParams( ) ) || goto CLEANUP;
+    setChat( $params{chatter} );
+    !( $stat = checkParams( ) ) || goto CLEANUP;
+    !( $stat = aeattcor2_work( ) ) || goto CLEANUP;
+
+CLEANUP:
+    if ( $params{cleanup} ) {
+        cleanup( @clean );
+    }
+    outtro( $stat );
+    return $stat;
+}
+
+=head3 getParams
+
+=over
+
+Queries input parameters.
+
+=back
+
+=cut
+
+sub getParams {
+
+    my $stat = 0;
+
+    ###################
+    # automatic params
+    ###################
+    foreach ( qw( attitude outfile eventfile regionfile ) ) {
+        !( $stat = getFileParam( $_, \$params{$_} ) ) || return $stat;
+    }
+    !( $stat = getFltParam( 'integ_time', \$params{integ_time} ) )
+        || return $stat;
+
+    ################
+    # hidden params
+    ################
+    !( $stat = getFileParam( 'gtifile', \$params{gtifile} ) ) || return $stat;
+    !( $stat = getBoolParam( 'savexycurve', \$params{savexycurve} ) ) || return $stat;
+    !( $stat = getFileParam( 'xycurve',  \$params{xycurve} ) ) || return $stat;
+    !( $stat = getBoolParam( 'clipmean', \$params{clipmean} ) ) || return $stat;
+    !( $stat = getFltParam( 'clipsigma', \$params{clipsigma} ) ) || return $stat;
+    !( $stat = getIntParam(  'clipiter', \$params{clipiter} ) ) || return $stat;
+    !( $stat = getFltParam( 'minfrexp', \$params{minfrexp} ) ) || return $stat;
+    !( $stat = getBoolParam( 'cleanup', \$params{cleanup} ) ) || return $stat;
+    !( $stat = getBoolParam( 'clobber', \$params{clobber} ) ) || return $stat;
+    !( $stat = getIntParam(  'chatter', \$params{chatter} ) ) || return $stat;
+    !( $stat = getBoolParam( 'history', \$params{history} ) ) || return $stat;
+
+    return $stat;
+}
+
+=head3 checkParams
+
+=over
+
+Checks input parameters.
+
+=back
+
+=cut
+
+sub checkParams {
+    my $stat = 0;
+    if ( !$params{clobber} && -e $params{outfile} ) {
+        error( 1, "Output file $params{outfile} exists "
+                . "and clobber not set!\n" );
+        $stat = -1;
+    }
+
+    # FITS local or remote files
+    foreach my $file (qw( attitude eventfile )) {
+        my $exists = 0;
+        fits_file_exists( $params{$file}, $exists, $stat );
+        if ( $exists == 0 || $stat != 0 ) {
+            error( 1, "File $file=$params{$file} does not exist!\n" );
+            $stat = -1;
+        }
+    }
+
+    # require these to be local
+    foreach my $file (qw( regionfile gtifile )) {
+        if ( $params{$file} !~ /^none$/i && !-f $params{$file} ) {
+            error( 1, "File $file=$params{$file} does not exist!\n" );
+            $stat = -1;
+        }
+    }
+
+    return $stat;
+}
+
+=head3 aeattcor2_work
+
+=over
+
+Does the attitude correction calculations
+
+=back
+
+=cut
+
+sub aeattcor2_work {
+
+    my $stat = 0;
+
+    #############################
+    # handle additional GTI file
+    #############################
+    my $gtifile;
+    if ( $params{gtifile} !~ /^none$/i ) {
+        $gtifile = getTmpFile( 'gti' );
+        push @clean, $gtifile;
+        $stat = mgtime( [ $params{gtifile}, $params{eventfile} ],
+                        $gtifile, 'AND' );
+        return $stat unless $stat == 0;
+    } else {
+        $gtifile = $params{eventfile} . '[2]';
+    }
+
+    ######################################################
+    # make a "light curve" of the X and Y event positions
+    ######################################################
+    chat( 2, "Extracting time-series of mean X/Y event positions\n" );
+    chat( 2, "Time-series bin time is: %.4f s\n", $params{integ_time} );
+    my $xycurve = getTmpFile( 'fits' );
+    if ( $params{savexycurve} ) {
+        $xycurve = $params{xycurve};
+    } else {
+        push @clean, $xycurve;
+    }
+    my $infile  = $params{eventfile} . '[EVENTS]';
+    if ( $params{regionfile} !~ /^none$/i ) {
+        $infile .= "[regfilter('$params{regionfile}',X,Y)]";
+    }
+    $stat = runSystem( 'fcurve',
+                       { infile     => $infile,
+                         gtifile    => $gtifile,
+                         outfile    => $xycurve,
+                         timecol    => 'TIME',
+                         columns    => 'X,Y',
+                         binsz      => $params{integ_time},
+                         lowval     => 'INDEF',
+                         highval    => 'INDEF',
+                         binmode    => 'Mean',
+                         gticols    => 'START STOP',
+                         gtidate    => 'MJDREF',
+                         gtitime    => '-',
+                         extname    => 'MEANPOS',
+                         obsdate    => 'MJDREF',
+                         obstime    => '-',
+                         outtimecol => 'TIME',
+                         outcol     => 'XMEAN,YMEAN',
+                         outerr     => 'NONE',
+                         outlive    => 'FRACEXP',
+                         copyprime  => 'yes',
+                         copyall    => 'no',
+                         sensecase  => 'no',
+                         clobber    => 'yes' } );
+    return $stat unless $stat == 0;
+
+    ###########################
+    # filter out low exposures
+    ###########################
+    chat( 2, "Removing time-series bins with fractional exposure < %.3f\n",
+             $params{minfrexp} );
+    $stat = runSystem( 'ftselect',
+                       { infile     => $xycurve,
+                         outfile    => $xycurve,
+                         expression => "FRACEXP>$params{minfrexp}",
+                         clobber    => 'yes',
+                         copyall    => 'yes',
+                         chatter    => $params{chatter},
+                         history    => 'no' } );
+    return $stat unless $stat == 0;
+
+    ################################################
+    # get the mean X and Y for the whole event file
+    ################################################
+    chat( 2, "Calculating overall mean X/Y event positions\n" );
+    my ( $meanx, $meany );
+    ( $stat, $meanx ) = runSystem( 'ftstat',
+                                   { infile   => $xycurve . '[1][col XMEAN]',
+                                     outfile  => 'STDOUT',
+                                     clip     => bs( $params{clipmean} ),
+                                     nsigma   => $params{clipsigma},
+                                     maxiter  => $params{clipiter},
+                                     chatter  => 1,
+                                     clobber  => 'no' } );
+    return $stat unless $stat == 0;
+    foreach my $line ( @$meanx ) {
+        chomp $line;
+        if ( $line =~ /^\s*mean:\s+(\S+)$/ ) {
+            $meanx = $1 * 1.0;
+            last;
+        }
+    }
+    if ( !defined $meanx ) {
+        error( 1, "Could not determine mean event X position!\n" );
+        return -1;
+    }
+    ( $stat, $meany ) = runSystem( 'ftstat',
+                                   { infile   => $xycurve . '[1][col YMEAN]',
+                                     outfile  => 'STDOUT',
+                                     clip     => bs( $params{clipmean} ),
+                                     nsigma   => $params{clipsigma},
+                                     maxiter  => $params{clipiter},
+                                     chatter  => 1,
+                                     clobber  => 'no' } );
+    return $stat unless $stat == 0;
+    foreach my $line ( @$meany ) {
+        chomp $line;
+        if ( $line =~ /^\s*mean:\s+(\S+)$/ ) {
+            $meany = $1 * 1.0;
+            last;
+        }
+    }
+    if ( !defined $meany ) {
+        error( 1, "Could not determine mean event Y position!\n" );
+        return -1;
+    }
+    if ( $params{clipmean} ) {
+        chat( 2, "After %d iterations of %.1f-sigma clipping:\n",
+                 $params{clipiter}, $params{clipsigma} );
+    }
+    chat( 2, "MEAN EVENT X POSITION: %.3f\n", $meanx );
+    chat( 2, "MEAN EVENT Y POSITION: %.3f\n", $meany );
+
+    ######################
+    # get the pixel scale
+    ######################
+    my $fp = Astro::FITS::CFITSIO::open_file( $params{eventfile} . '[EVENTS]',
+                                              READONLY, $stat );
+    return $stat unless $stat == 0;
+    my ( $xcol, $ycol, $xcdlt, $ycdlt );
+    $fp->get_colnum( CASEINSEN, "X", $xcol, $stat );
+    $fp->get_colnum( CASEINSEN, "Y", $ycol, $stat );
+    $fp->read_key_dbl( "TCDLT$xcol", $xcdlt, undef, $stat );
+    $fp->read_key_dbl( "TCDLT$ycol", $ycdlt, undef, $stat );
+    $fp->close_file( $stat );
+    return $stat unless $stat == 0;
+
+    ################################################################
+    # calculate the X/Y offsets from the mean as a function of time
+    ################################################################
+    chat( 2, "Converting pixel offsets to Euler angle offsets\n" );
+    my $filt = "[col EULER1DIFF=$xcdlt*($meanx-XMEAN);"
+             . "EULER2DIFF=-$ycdlt*($meany-YMEAN);*]";
+    $stat = ftcopy( $xycurve . $filt, $xycurve, 1 );
+    return $stat unless $stat == 0;
+
+    ######################################
+    # interpolate onto attitude time grid
+    ######################################
+    chat( 2, "Interpolating offsets onto input attitude data\n" );
+    my $interp = getTmpFile( 'fits' );
+    push @clean, $interp;
+    $stat = runSystem( 'finterp',
+                       { infile1  => $params{attitude} . "[1]",
+                         infile2  => $xycurve . "[1]",
+                         outfile  => $interp,
+                         incol    => 'EULER1DIFF',
+                         sortkey1 => 'TIME',
+                         sortkey2 => 'TIME',
+                         order    => 1,
+                         tcheck   => 'yes',
+                         extrap   => 'IGNORE' } );
+    return $stat unless $stat == 0;
+    $stat = runSystem( 'finterp',
+                       { infile1  => $interp . "[1]",
+                         infile2  => $xycurve . "[1]",
+                         outfile  => $interp,
+                         incol    => 'EULER2DIFF',
+                         sortkey1 => 'TIME',
+                         sortkey2 => 'TIME',
+                         order    => 1,
+                         tcheck   => 'yes',
+                         extrap   => 'IGNORE' } );
+    return $stat unless $stat == 0;
+
+    ###################################################################
+    # apply shifts to euler angles where we have a valid interpolation
+    ###################################################################
+    chat( 2, "Calculating output attitude file in $params{outfile}\n" );
+    $filt = "[1][col EULER=(isnull(EULER1DIFF).OR.isnull(EULER2DIFF))"
+          . "?{EULER[1],EULER[2],EULER[3]}"
+          . ":{(EULER[1]+EULER1DIFF+360.0)%360.0,EULER[2]+EULER2DIFF,EULER[3]};"
+          . "*]";
+    $stat = ftcopy( $interp . $filt, $params{outfile}, 1 );
+
+    ######################################################
+    # remove the extra columns from the new attitude file
+    ######################################################
+    $stat = runSystem( 'fdelcol',
+                       { infile  => $params{outfile} . "[1]",
+                         colname => 'EULER1DIFF',
+                         confirm => 'no',
+                         proceed => 'yes' } );
+    return $stat unless $stat == 0;
+    $stat = runSystem( 'fdelcol',
+                       { infile  => $params{outfile} . "[1]",
+                         colname => 'EULER2DIFF',
+                         confirm => 'no',
+                         proceed => 'yes' } );
+    return $stat unless $stat == 0;
+
+    ##########################
+    # update history keywords
+    ##########################
+    $stat = histStamp( $params{outfile} );
+    return $stat unless $stat == 0;
+
+    ###################
+    # update checksums
+    ###################
+    $stat = runSystem( 'ftchecksum',
+                       { infile  => $params{outfile},
+                         update  => 'yes',
+                         datasum => 'yes',
+                         chatter => $params{chatter} } );
+    return $stat;
+}
+
+=head1 MODIFICATION HISTORY
+
+=over
+
+2010-06-01 - CAP - Initial Version
+
+=back
+
+=head1 AUTHOR
+
+=over
+
+Alex Padgett (Charles.A.Padgett@nasa.gov).
+
+=back
+
+=head1 BUGS
+
+=over
+
+None, of course.
+
+=back
+
+=cut
+

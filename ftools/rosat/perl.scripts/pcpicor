@@ -1,0 +1,501 @@
+#! /usr/local/bin/perl5
+#
+# script to run pcsasscor, pctcor and pcecor
+#
+# Rehana Yusaf Feb 26 1996
+# HEASARC NASA/GSFC/HSTX
+#
+# Banashree M. Seifert Sept 1996 2.0.0
+# This task is rewritten 
+#   . runcom introduced
+#   . option for caldb or not introduced
+#   . ^C catch   
+#   . online help when pcpicor -h is typed
+#
+# Banashree M. Seifert Aug 1997 2.1.0
+#   . pctcor uses 13 caldb files instead of 8 which was before.
+#
+# Banashree M. Seifert Sep 1997 2.2.0
+#   . pcecor uses a new parameter calflag for user option to use
+#     ground or inflight callibration.
+# Ning Gan Dec 1999 2.2.1
+#   . copy the event file to pcsass.out before run pcsasscor.
+#
+use Getopt::Std;
+require "utils.pl";
+use Config;
+use File::Copy;
+#print "$Config{'sig_name'}";
+
+$task='PCPICOR';
+$version_number='2.2.1';
+
+# ---------- start up -----------------------------------
+
+print " \n";
+print "              *** ".$task." Ver ".$version_number." ***\n\n";
+
+# ----------------------------------------------------------
+#
+# Output the help if -h is specified
+#
+getopts('hv:');
+if (defined $opt_h) {
+  print <<EOHELP1;
+
+NAME
+    PCPICOR ver 2.1.0 -- a script to enable the user to run the tasks
+    pcsasscor, pctcor, and pcecor all of them together or anyone, or
+    any two of them.   
+
+USAGE
+    pcpicor -[hv]
+
+DESCRIPTION
+
+    PCPICOR is a Perl script which allows the user to create the 
+    corrected PI data file. It spawns three task according as the 
+    user prompts.  These tasks are PCSASSCOR, PCTCOR and PCECOR.
+    Regarding the details of these tools, please see help on
+    corresponding tools.  It provides user option whether user
+    wants to use CALDB or not.  If CALDB is not used, then user
+    is prompted for required files.
+
+PARAMETERS
+
+     -h         - only help on pcpicor will be shown and exit
+     -v #       - where # is the chatter no for verbose
+                  if not defined on the commandline then
+                  by default verbose=9(quiet)
+
+EXAMPLES
+
+     pcpicor -h
+            will show only the help for this task.
+
+     pcpicor 
+            will run all three tasks pcsasscor,pctcor, and pcecor 
+
+     pcpicor -v10
+            will show user the input files if CALDB is not used
+
+     pcpicor pcsasscor=no
+            will run pctcor and pcecor 
+
+     pcpicor pctcor=no
+            will run pcsasscor and pcecor
+
+     pcpicor pcecor=no
+            will run pcsasscor and pctcor
+
+
+KNOWN BUGS
+
+     nothing known at the time of release (Sept 1996)
+
+
+EOHELP1
+exit;
+}
+ 
+#$SIG{'INT'}='handler';
+$SIG{'INT'}=\&handler;
+$SIG{'HUP'}='IGNORE';
+
+#*************** CHECK VERBOSE ***********************************
+if(defined $opt_v ){
+   $verbose=$opt_v;
+}
+else{
+   $verbose=9;
+}
+
+# now onto the program ...
+# See if there are any flags:
+
+@args = @ARGV;   # lose flags
+# see the need of user pcsasscor/pctcor/pcecor
+
+if (grep(/pcsasscor=no/,@args)) {
+  $pcsass = 0;
+}else{
+  $pcsass = 1;
+}
+if (grep(/pctcor=no/,@args)) {
+  $pct = 0;
+}else{
+  $pct = 1;
+}
+if (grep(/pcecor=no/,@args)) {
+  $pce = 0;
+}else{
+  $pce = 1;
+}
+
+
+# Run programs 
+# ------------
+print "Please enter events filename[ext#] : ";
+chop($evt_fil = <STDIN>);
+     if($evt_fil =~ /^$/){
+        print ".... file not entered.  Try again......\n";
+        print "Please enter events filename[ext#] : ";
+        chop($evt_fil = <STDIN>);
+        if($evt_fil =~ /^$/){
+           die ".... Input file name must be entered. Exiting ...\n";
+        }
+     }
+
+  die "file \"$evt_fil\"  doesn't exist. Exiting \n" if(!-e $evt_fil);
+
+#----------------------- CALDB enquiry ------------------------
+print "Do you want to use default CALDB calibration files?[y/n] :";
+chop($qdefault=<STDIN>);
+
+
+#-------------------- output filename ------------------
+print "Please enter output filename:";
+chop($out_fil = <STDIN>);
+unlink $out_fil if(-e $out_fil);
+
+
+# ------------------- running the trio 
+#if PCSASSCOR to run
+if ($pcsass) {
+   if($qdefault=~ /^n/i){
+      print "Energy dependent correction filename:";
+      chop($end_ep = <STDIN>);
+       die "... file name should be entered! ..Exiting \n" if($end_ep =~ /^$/);    
+       die "file $end_ep doesn't exist. Exiting \n" if(!-e $end_ep);
+      print "Golden disk filename:";
+      chop($y_map = <STDIN>);
+       die "... file name should be entered! ..Exiting \n" if($y_map =~ /^$/);
+       die "file $y_map doesn't exist. Exiting \n" if(!-e $y_map);
+      print "ADC binfile name:";
+      chop($adc = <STDIN>);
+       die "... file name should be entered! ..Exiting \n" if($adc =~ /^$/);    
+       die "file $adc doesn't exist. Exiting \n" if(!-e $adc);
+      print "E-dep spatial gain correction filename:";
+      chop($spg = <STDIN>);
+       die "... file name should be entered! ..Exiting \n" if($spg =~ /^$/);    
+       die "file $spg doesn't exist. Exiting \n" if(!-e $spg);
+      print "Pos-dep spatial gain correction file:";
+      chop($spgk = <STDIN>);
+       die "... file name should be entered! ..Exiting \n" if($spgk =~ /^$/);
+       die "file $spgk doesn't exist. Exiting \n" if(!-e $spgk);
+      print "Alk history file:";
+      chop($alk = <STDIN>);
+       die "... file name should be entered! ..Exiting \n" if($alk =~ /^$/);    
+       die "file $alk doesn't exist. Exiting \n" if(!-e $alk);
+
+      if($verbose >= 10) {
+
+         $string =
+           "         -----------------------------------------------------
+           Running PCSASSCOR
+           Input event file                    : $evt_fil
+           Energy dep. correction file         : $end_ep
+           Golden disk file                    : $y_map
+           ADC binfile                         : $adc
+           E-dep spatial gain correction file  : $spg
+           Pos-dep spatial gain correction file: $spgk 
+           Alk history file                    : $alk
+         -----------------------------------------------------\n";
+
+         print "\n $string\n";
+      }
+
+   }else{
+      $end_ep = 'caldb';
+      $y_map  = 'caldb';
+      $adc    = 'caldb';
+      $spg    = 'caldb';
+      $spgk   = 'caldb';
+      $alk    = 'caldb';
+   }
+
+
+   if ((!($pct)) && (!($pce)))  {
+      $command_string='pcsasscor infile='.$evt_fil.' outfile='.$out_fil.' endepfile='.$end_ep.' ymapfile='.$y_map.' adcfile='.$adc.' spgfile='.$spg.' spgkfile='.$spgk.' alkfile='.$alk.' chatter='.$verbose;
+
+   }else{
+      copy ( $evt_fil, "pcsass.out" );
+      $command_string='pcsasscor infile='.$evt_fil.' outfile=!pcsass.out endepfile='.$end_ep.' ymapfile='.$y_map.' adcfile='.$adc.' spgfile='.$spg.' spgkfile='.$spgk.' alkfile='.$alk.' chatter='.$verbose;
+
+   }
+
+   $prog_name='PCSASSCOR';
+   print "\n ...running $prog_name \n";
+   @tmp_array=&runcom($command_string,"error","runtime error");
+   print " ...... done \n\n";
+} 
+
+#if PCTCOR to run
+if ($pct) {
+   print " ......... going for PCTCOR\n";
+   if($qdefault=~ /^n/i){
+      print "1st Al K alpha calibration file (for pctcor):";
+      chop($alkmap1 = <STDIN>);
+       die "file $alkmap1 doesn't exist. Exiting \n" if(!-e $alkmap1);
+      print "2nd Al K alpha calibration file:";
+      chop($alkmap2 = <STDIN>);
+       die "file $alkmap2 doesn't exist. Exiting \n" if(!-e $alkmap2);
+      print "3rd Al K alpha calibration file:";
+      chop($alkmap3 = <STDIN>);
+       die "file $alkmap3 doesn't exist. Exiting \n" if(!-e $alkmap3);
+      print "4th Al K alpha calibration file:";
+      chop($alkmap4 = <STDIN>);
+       die "file $alkmap4 doesn't exist. Exiting \n" if(!-e $alkmap4);
+      print "5th Al K alpha calibration file:";
+      chop($alkmap5 = <STDIN>);
+       die "file $alkmap5 doesn't exist. Exiting \n" if(!-e $alkmap5);
+      print "6th Al K alpha calibration file:";
+      chop($alkmap6 = <STDIN>);
+       die "file $alkmap6 doesn't exist. Exiting \n" if(!-e $alkmap6);
+      print "7th Al K alpha calibration file:";
+      chop($alkmap7 = <STDIN>);
+       die "file $alkmap7 doesn't exist. Exiting \n" if(!-e $alkmap7);
+      print "8th Al K alpha calibration file:";
+      chop($alkmap8 = <STDIN>);
+       die "file $alkmap8 doesn't exist. Exiting \n" if(!-e $alkmap8);
+      print "9th Al K alpha calibration file:";
+      chop($alkmap9 = <STDIN>);
+       die "file $alkmap9 doesn't exist. Exiting \n" if(!-e $alkmap9);
+      print "10th Al K alpha calibration file:";
+      chop($alkmap10 = <STDIN>);
+       die "file $alkmap10 doesn't exist. Exiting \n" if(!-e $alkmap10);
+      print "11th Al K alpha calibration file:";
+      chop($alkmap11 = <STDIN>);
+       die "file $alkmap11 doesn't exist. Exiting \n" if(!-e $alkmap11);
+      print "12th Al K alpha calibration file:";
+      chop($alkmap12 = <STDIN>);
+       die "file $alkmap12 doesn't exist. Exiting \n" if(!-e $alkmap12);
+      print "13th Al K alpha calibration file:";
+      chop($alkmap13 = <STDIN>);
+       die "file $alkmap8 doesn't exist. Exiting \n" if(!-e $alkmap13);
+
+
+      if($verbose >= 10) {
+         $string =
+         "         -----------------------------------------------------
+           Running PCTCOR
+           Al K calibration files are : 
+           1) $alkmap1
+           2) $alkmap2
+           3) $alkmap3
+           4) $alkmap4
+           5) $alkmap5
+           6) $alkmap6
+           7) $alkmap7
+           8) $alkmap8
+           9) $alkmap9
+          10) $alkmap10
+          11) $alkmap11
+          12) $alkmap12
+          13) $alkmap13
+                     
+         -----------------------------------------------------\n";
+
+         print "\n $string\n";
+      }
+
+   }else{
+      $alkmap1 = 'caldb';
+      $alkmap2 = 'caldb';
+      $alkmap3 = 'caldb';
+      $alkmap4 = 'caldb';
+      $alkmap5 = 'caldb';
+      $alkmap6 = 'caldb';
+      $alkmap7 = 'caldb';
+      $alkmap8 = 'caldb';
+      $alkmap9 = 'caldb';
+      $alkmap10 = 'caldb';
+      $alkmap11 = 'caldb';
+      $alkmap12 = 'caldb';
+      $alkmap13 = 'caldb';
+   }
+
+
+   if (!($pce)) {
+      if ($pcsass) {
+         $command_string='pctcor infile=pcsass.out alkfile1='.$alkmap1.' alkfile2='.$alkmap2.' alkfile3='.$alkmap3.' alkfile4='.$alkmap4.' alkfile5='.$alkmap5.' alkfile6='.$alkmap6.' alkfile7='.$alkmap7.' alkfile8='.$alkmap8.' alkfile9='.$alkmap9.' alkfile10='.$alkmap10.' alkfile11='.$alkmap11.' alkfile12='.$alkmap12.' alkfile13='.$alkmap13.' chatter='.$verbose.' outfile='.$out_fil;
+
+      }else{
+         $command_string='pctcor infile='.$evt_fil.' alkfile1='.$alkmap1.' alkfile2='.$alkmap2.' alkfile3='.$alkmap3.' alkfile4='.$alkmap4.' alkfile5='.$alkmap5.' alkfile6='.$alkmap6.' alkfile7='.$alkmap7.' alkfile8='.$alkmap8.' alkfile9='.$alkmap9.' alkfile10='.$alkmap10.' alkfile11='.$alkmap11.' alkfile12='.$alkmap12.' alkfile13='.$alkmap13.' chatter='.$verbose.' outfile='.$out_fil;
+      }
+   }else{
+      if ($pcsass) {
+         $command_string='pctcor infile=pcsass.out alkfile1='.$alkmap1.' alkfile2='.$alkmap2.' alkfile3='.$alkmap3.' alkfile4='.$alkmap4.' alkfile5='.$alkmap5.' alkfile6='.$alkmap6.' alkfile7='.$alkmap7.' alkfile8='.$alkmap8.' alkfile9='.$alkmap9.' alkfile10='.$alkmap10.' alkfile11='.$alkmap11.' alkfile12='.$alkmap12.' alkfile13='.$alkmap13.' chatter='.$verbose.' outfile=!pctcor.out';
+
+      }else{
+         $command_string='pctcor infile='.$evt_fil.' alkfile1='.$alkmap1.' alkfile2='.$alkmap2.' alkfile3='.$alkmap3.' alkfile4='.$alkmap4.' alkfile5='.$alkmap5.' alkfile6='.$alkmap6.' alkfile7='.$alkmap7.' alkfile8='.$alkmap8.' alkfile9='.$alkmap9.' alkfile10='.$alkmap10.' alkfile11='.$alkmap11.' alkfile12='.$alkmap12.' alkfile13='.$alkmap13.' chatter='.$verbose.' outfile=!pctcor.out';
+      }
+   }
+
+   $prog_name='PCTCOR';
+   print "\n ...running $prog_name \n";
+   @tmp_array=&runcom($command_string,"error","runtime error");
+   print " ...... done \n\n";
+}
+
+
+#if PCECOR to run
+if ($pce) {
+    print " ......... going for PCECOR\n";
+
+#-------------------- calflag to use ------------------
+# calflag = 1 --> ground callibration
+# calflag = 2 --> inflight callibration
+
+print "Which correction algorithm to be used [grnd=1/inflight=2]?:";
+chop($calflg = <STDIN>);
+
+    if ($pct) {
+       if(! ($pcsass)){
+         if($qdefault=~ /^n/i){
+           print "Alk history filename:";
+           chop($alk = <STDIN>);
+           die "file $alk doesn't exist. Exiting \n" if(!-e $alk);
+         }else{
+           $alk = 'caldb';
+         }
+       }
+
+       $command_string='pcecor infile=pctcor.out outfile='.$out_fil.' alkfile='.$alk.' calflag='.$calflg.' chatter='.$verbose;
+
+    }else{
+
+       if($pcsass){
+         $command_string='pcecor infile=pcsass.out outfile='.$out_fil.' alkfile='.$alk.' calflag='.$calflg.' chatter='.$verbose;
+
+       }else{
+
+         if($qdefault=~ /^n/i){
+           print "Alk history filename:";
+           chop($alk = <STDIN>);
+           die "file $alk doesn't exist. Exiting \n" if(!-e $alk);
+
+           if($verbose >= 10) {
+              $string =
+              "         -----------------------------------------------------
+                Running PCECOR
+                Event file        : $evt_fil
+                Al K history file : $alk 
+              -----------------------------------------------------\n";
+
+              print "\n $string\n";
+           }
+
+         }else{
+            $alk = 'caldb';
+         }
+         $command_string='pcecor infile='.$evt_fil.' outfile='.$out_fil.' alkfile='.$alk.' calflag='.$calflg.' chatter='.$verbose;
+       }
+    }
+
+   $prog_name='PCECOR';
+   print "\n ...running $prog_name \n";
+   @tmp_array=&runcom($command_string,"error","runtime error");
+   print " ...... done \n\n";
+}
+
+
+print "*** Successfully done PCPICOR \n";
+
+#cleanup intermediate files created
+
+if(-e 'pcsass.out'){
+   $string = " Following files are created by this task:\n";
+   print "$string";
+   $string = "-----------------------------------------------------\n";
+   print "$string";
+   $string = "    from running pcsasscor         = pcsass.out\n";
+   print "$string";
+   if(-e 'pctcor.out'){
+     $string = "    from running pctcor            = pctcor.out\n";
+     print "$string";
+     $string=  "-----------------------------------------------------\n";
+     print "$string\n";
+     print "Do you want to delete all intermediate files created?[yes]:";
+     chop ($qdelete=<STDIN>);
+     if ($qdelete=~ /n/i){
+       print "Files are not deleted. ...Exiting\n";
+     }else{
+       unlink 'pcsass.out';
+       unlink 'pctcor.out';
+       print "Files deleted. ...Exiting\n";
+     }
+   }else{
+          $string=  "-----------------------------------------------------\n";
+          print "$string\n";
+          print "Do you want to delete all intermediate files created?[yes]:";
+          chop ($qdelete=<STDIN>);
+          if ($qdelete=~ /n/i){
+          print "Files are not deleted. ...Exiting\n";
+          }else{
+            unlink 'pcsass.out';
+            print "Files deleted. ...Exiting\n";
+          }
+   }
+
+}else{
+   if(-e 'pctcor.out'){
+     $string = " Following files are created by this task:\n";
+     print "$string";
+     $string = "-----------------------------------------------------\n";
+     print "$string";
+     $string = "    from running pctcor        = pctcor.out\n";
+     print "$string";
+     $string=  "-----------------------------------------------------\n";
+     print "$string";
+     print "Do you want to delete all intermediate files created?[yes]:";
+     chop ($qdelete=<STDIN>);
+     if ($qdelete=~ /n/i){
+       print "Files are not deleted. ...Exiting\n";
+     }else{
+       unlink 'pctcor.out';
+       print "Files deleted. ...Exiting\n";
+     }
+   }
+}
+$SIG{'INT'}='DEFAULT';
+
+
+#--------------------------------------------------------------------
+# subroutine for erroring out while running runcom
+#--------------------------------------------------------------------
+sub error {
+# This routine is called when an error occurs in RUNCOM.
+    local ($err_str) = $_[0];
+    print "@tmp_array\n";
+die ("\n$prog_name: $err_str\nExiting $task Ver $version_number\n");
+}
+
+#--------------------------------------------------------------------
+# subroutine for terminating when ^C is pressed
+#--------------------------------------------------------------------
+
+sub handler{
+     local($sig)=@_;
+     while(glob("/tmp/er*"))
+     {
+           unlink  $_;
+#           print "Temporary File= $_ deleted \n";
+     }
+     while(glob("/tmp/E*"))
+     {
+           unlink  $_;
+#           print "Temporary File= $_ deleted \n";
+     }
+
+     while(glob("/tmp/R*"))
+     {
+           unlink  $_;
+#           print "Temporary File= $_ deleted \n";
+     }
+
+
+     print "\n\n..... Terminating $task V$version_number ......\n\n ";
+     exit(1);
+}
+

@@ -1,0 +1,143 @@
+#!/usr1/local/bin/perl5
+#
+#	ut-uvotexpcorr
+#
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+# main
+{
+  my $tool = bless({
+		    tool => 'ut-uvotexpcorr',
+		    code => 0,
+		   });
+
+  eval {
+    $tool->parseOptions(
+			argv => [ @ARGV ],
+			options => [ qw(
+					input output chatter
+				       ) ],
+		       );
+
+    $tool->execute;
+  };
+
+  if ($@) {
+    $tool->error(BAD_TASK, "exception: $@");
+  }
+
+  my $result = $tool->{code} ? 'failed' : 'passed';
+  $tool->report("test $result");
+  exit($tool->{code});
+}
+
+
+sub execute{
+  my ($self) = @_;
+
+  $self->validate
+    if $self->isValid;
+
+  $self->runUvotexpcorr
+    if $self->isValid;
+}
+
+
+sub validate{
+  my ($self) = @_;
+
+  # validate environment
+  foreach my $var (qw(PFILES HEADAS)) {
+    if (not defined($ENV{$var})) {
+      $self->fatal(BAD_INPUT,
+		   "environment variable $var not set");
+    }
+    elsif ($var eq 'PFILES') {
+    }
+    elsif (not -d $ENV{$var}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $var directory $ENV{$var}");
+    }
+  }
+
+  # validate input/output directories
+  foreach my $key (qw(input output)) {
+    my $arg = $self->args->{$key};
+    if (not -d $arg) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key directory: $arg");
+    }
+  }
+}
+
+
+sub runUvotexpcorr{
+  my ($self) = @_;
+
+  my $input = $self->args->{input};
+  my $output = $self->args->{output};
+
+  my @args = (
+	      sequence => '00131560001',
+	      dataloc  => "$input/00131560001",
+
+	      threshold => '0.95',
+	      allowcorr => 'yes',
+
+	      chatter => 3,
+	      history => 'yes',
+	     );
+
+  # validate required files
+  my %args = @args;
+  $args{template} = "$input/uvotexpcorr_template.img.gz";
+  $args{infile} = "$input/uvotexpcorr_orig.img.gz";
+  foreach my $key (qw(template infile)) {
+    if (not -f $args{$key}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key file: $args{$key}");
+    }
+  }
+
+  my $result = $self->runCommand("/bin/rm -f $args{dataloc}/uvot/image/sw00131560001uvv_rw.img");
+  my $result = $self->runCommand("gunzip -c $args{infile} > $args{dataloc}/uvot/image/sw00131560001uvv_rw.img");
+
+  my $command = $self->buildCommand('uvotexpcorr', @args);
+  my $result = $self->runCommand($command);
+
+  if ($self->isValid) {
+    $self->report($result->{output})
+      if $self->chatter(5);
+
+    my $command = $self->buildCommand('ftverify',
+				      infile => "$args{dataloc}/uvot/image/sw00131560001uvv_rw.img",
+				      outfile => 'STDOUT',
+				     );
+    $self->runCommand($command);
+  }
+  else {
+    $self->error(BAD_EXECUTE, "output: $result->{output}");
+  }
+
+  if ($self->isValid) {
+    my $command = $self->buildCommand('ftdiff',
+				      infile1 => "$args{dataloc}/uvot/image/sw00131560001uvv_rw.img",
+				      infile2 => $args{template},
+				      reltol => 1.0e-06,
+				     );
+    my $result = $self->runCommand($command);
+    $self->report($result->{output})
+      if $self->chatter(5);
+    if ($result->{code}) {
+      $self->error(BAD_OUTPUT,
+		   "ftdiff complained");
+    }
+  }
+  my $result = $self->runCommand("/bin/mv $args{dataloc}/uvot/image/sw00131560001uvv_rw.img $output");
+}

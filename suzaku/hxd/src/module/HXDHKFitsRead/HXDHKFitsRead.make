@@ -1,0 +1,59 @@
+HXDHKFitsRead_DIR = ${HXD_MODULE_DIR}/HXDHKFitsRead/2.0.0
+
+HXDHKFitsRead = HXDHKFitsRead.o \
+	HXDHKFitsReadACU.o HXDHKFitsReadDLT.o \
+	HXDHKFitsReadPPR.o HXDHKFitsReadSCL.o \
+	HXDHKFitsReadSP_PMT.o HXDHKFitsReadAET_HC.o \
+	HXDHKFitsReadECC_DMP.o HXDHKFitsReadPST.o \
+	HXDHKFitsReadSFC.o HXDHKFitsReadSTM.o \
+	HXDHKFitsReadAET_SC.o HXDHKFitsReadHK.o \
+	HXDHKFitsReadRECC_DMP.o HXDHKFitsReadSFF1.o \
+	HXDHKFitsReadSYS.o HXDHKFitsReadIO_DMP.o \
+	HXDHKFitsReadRHK.o HXDHKFitsReadSFF2.o \
+	HXDHKFitsReadMEM_DMP.o HXDHKFitsReadRIO_DMP.o \
+	HXDHKFitsReadSP_PIN.o
+
+HXDHKFitsRead.o: $(HXDHKFitsRead_DIR)/HXDHKFitsRead.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsRead.c
+HXDHKFitsReadACU.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadACU.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadACU.c
+HXDHKFitsReadDLT.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadDLT.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadDLT.c
+HXDHKFitsReadPPR.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadPPR.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadPPR.c
+HXDHKFitsReadSCL.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSCL.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSCL.c
+HXDHKFitsReadSP_PMT.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSP_PMT.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSP_PMT.c
+HXDHKFitsReadAET_HC.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadAET_HC.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadAET_HC.c
+HXDHKFitsReadECC_DMP.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadECC_DMP.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadECC_DMP.c
+HXDHKFitsReadPST.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadPST.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadPST.c
+HXDHKFitsReadSFC.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSFC.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSFC.c
+HXDHKFitsReadSTM.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSTM.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSTM.c
+HXDHKFitsReadAET_SC.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadAET_SC.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadAET_SC.c
+HXDHKFitsReadHK.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadHK.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadHK.c
+HXDHKFitsReadRECC_DMP.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadRECC_DMP.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadRECC_DMP.c
+HXDHKFitsReadSFF1.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSFF1.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSFF1.c
+HXDHKFitsReadSYS.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSYS.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSYS.c
+HXDHKFitsReadIO_DMP.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadIO_DMP.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadIO_DMP.c
+HXDHKFitsReadRHK.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadRHK.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadRHK.c
+HXDHKFitsReadSFF2.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSFF2.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSFF2.c
+HXDHKFitsReadMEM_DMP.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadMEM_DMP.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadMEM_DMP.c
+HXDHKFitsReadRIO_DMP.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadRIO_DMP.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadRIO_DMP.c
+HXDHKFitsReadSP_PIN.o: $(HXDHKFitsRead_DIR)/HXDHKFitsReadSP_PIN.c
+	$(CC) $(CFLAGS) $(ANLCFLAGS) -c $(HXDHKFitsRead_DIR)/HXDHKFitsReadSP_PIN.c

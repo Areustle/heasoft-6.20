@@ -1,0 +1,710 @@
+#!/usr/bin/perl
+#
+# batoccultgti - compute BAT good time intervals due to occultation
+#
+# USAGE: batoccultgti infile outfile ra dec ...
+#
+# Description:  
+#
+# batoccultgti computes the occultation good time intervals for a
+# particular source during a BAT observation.  Occultation of the earth,
+# moon and/or sun can be considered.  The BAT field of view is large
+# enough that any of these bodies may occult cosmic sources.  Note that
+# this task is used for a single source, usually for data selection.  If
+# operating on a sky image, the batoccultmap task should be used.
+#
+# ... See 'fhelp batoccultgti' for more information and options ...
+#
+# Author: C. B. Markwardt
+#
+# $Log: batoccultgti,v $
+# Revision 1.9  2010/11/23 22:38:47  craigm
+# Add code documentation --CM
+#
+# Revision 1.8  2007/07/30 23:58:09  craigm
+# Bump to version 2.4; consider case where no partial coding constraints are applied but theta/IMX/IMY constraints are applied; unit tests still pass --CM
+#
+# Revision 1.7  2006/12/16 20:55:53  craigm
+# Revise tasks so that they call all ftools with explicit parameter names (no positional parameters); apparently this is 'standard' practice; unit tests still pass (ut_batgrbproduct had to be tweaked slightly but for reasons unrelated to the changes); all version numbers bumped --CM
+#
+# Revision 1.6  2006/09/18 23:55:08  craigm
+# Bump to version 2.2; batoccultgti can work on regular swift attitude files (not prefilter SAO file), if all you are doing is field-of-view checking; a prefilter file is still needed if earth occultation is checked; unit test still passes --CM
+#
+# Revision 1.5  2006/04/07 21:53:44  craigm
+# Add proper error handling code to the perl scripts so that 'die' commands are caught and reported to the headas_main level; unit tests still pass --CM
+#
+# Revision 1.4  2006/03/07 04:01:24  craigm
+# Bump to version 2.1; Add exception handling; revise the processing so that the user does not need to know about, or delete, the required scratch files if they say INDEF;  users can still give explicit scratch file names and the results will be kept; use the correct 'linear' designation for FOV polygon region files --CM
+#
+# Revision 1.3  2006/01/19 02:43:52  craigm
+# Add some code documentation --CM
+#
+# Revision 1.2  2005/12/21 06:44:26  craigm
+# Add some documentation --CM
+#
+# Revision 1.1  2005/09/20 02:23:18  craigm
+# Now in the public branch -- CM
+#
+# Revision 1.7  2005/08/18 05:41:11  craigm
+# Commit region file changes that will come soon with a new checkout of CFITSIO; it's all commented out for now -- CM
+#
+# Revision 1.6  2005/07/26 07:43:11  craigm
+# Add filters for THETA, IMX and IMY --CM
+#
+# Revision 1.5  2005/07/08 23:01:49  craigm
+# Bump to version 2.0; major changes to accomodate the partial coding threshold: addition of partial coding contours at various levels; an interpolator to interpolate between levels to the requested one; and code to do the transformations to image plane coordinates; unit test still works --CM
+#
+# Revision 1.4  2005/07/06 00:16:30  craigm
+# Bump to version 1.2; now the 'parstamp' is written to the HISTORY of the output GTI (parstamp = list of parameters used to run the task) --CM
+#
+#
+use HEACORE::HEAINIT;
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+eval {
+    $status = headas_main(\&batoccultgti);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub batoccultgti {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    $taskname = "batoccultgti";
+    $taskvers = "2.4";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batoccultgti_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+
+# XXX WARNING: duplicated code. If you update this then also update
+# the contents of batfovcalc
+# ==================================================================
+# Partial coding contour levels for BAT field of view
+#
+# Called upon task initialization with no arguments, and sets global variables
+#    $imxcont{NN} - IMX values for the NN % conding level
+#    $imycont{NN} - IMY values for the NN % conding level
+#    @contlevels  - the list of levels NN stored in im{x,y}cont
+#
+sub initcontours {
+  # IMX contours for 1% through 99%
+  $imxcont{1}  = [1.757,1.775,1.526,0.958,0.559,0.26,0,-0.259,-0.558,
+		  -0.957,-1.528,-1.776,-1.762,-1.578,-1.273,-0.906,
+		  -0.544,-0.257,0,0.257,0.543,0.907,1.273,1.581,1.755];
+  $imxcont{5}  = [1.61,1.635,1.353,0.894,0.528,0.246,0,-0.245,-0.527,
+		  -0.892,-1.35,-1.638,-1.609,-1.414,-1.121,-0.809,
+		  -0.487,-0.238,0,0.238,0.487,0.81,1.118,1.415,1.608];
+  $imxcont{10} = [1.493,1.511,1.225,0.831,0.495,0.231,0,-0.231,-0.494,
+		  -0.83,-1.228,-1.515,-1.495,-1.296,-1.026,-0.74,
+		  -0.453,-0.221,0,0.221,0.453,0.741,1.025,1.297,1.492];
+  $imxcont{15} = [1.403,1.411,1.135,0.784,0.468,0.219,0,-0.218,-0.467,
+		  -0.782,-1.136,-1.413,-1.402,-1.202,-0.952,-0.682,
+		  -0.426,-0.209,0,0.209,0.426,0.686,0.954,1.203,1.402];
+  $imxcont{20} = [1.32,1.326,1.062,0.74,0.443,0.207,0,-0.207,-0.443,
+		  -0.74,-1.06,-1.326,-1.318,-1.125,-0.891,-0.635,
+		  -0.403,-0.199,0,0.198,0.404,0.637,0.892,1.121,1.318];
+  $imxcont{50} = [0.918,0.954,0.764,0.528,0.318,0.148,0,-0.148,-0.317,
+		  -0.529,-0.769,-0.958,-0.918,-0.808,-0.627,-0.449,
+		  -0.292,-0.142,0,0.142,0.292,0.45,0.63,0.806,0.917];
+  $imxcont{80} = [0.618,0.656,0.53,0.35,0.207,0.096,0,-0.096,-0.206,
+		  -0.351,-0.535,-0.664,-0.618,-0.541,-0.429,-0.303,
+		  -0.189,-0.09,0,0.09,0.187,0.303,0.428,0.542,0.617];
+  $imxcont{85} = [0.56,0.603,0.488,0.318,0.187,0.087,0,-0.087,-0.187,
+		  -0.319,-0.493,-0.614,-0.56,-0.495,-0.392,-0.276,
+		  -0.172,-0.082,0,0.081,0.171,0.275,0.391,0.493,0.559];
+  $imxcont{90} = [0.498,0.535,0.446,0.287,0.168,0.078,0,-0.078,-0.169,
+		  -0.288,-0.451,-0.544,-0.5,-0.448,-0.35,-0.248,-0.154,
+		  -0.073,0,0.072,0.153,0.249,0.348,0.443,0.497];
+  $imxcont{95} = [0.42,0.458,0.386,0.254,0.149,0.069,0,-0.069,-0.15,
+		  -0.256,-0.393,-0.472,-0.426,-0.387,-0.297,-0.21,
+		  -0.134,-0.063,0,0.061,0.128,0.205,0.29,0.382,0.419];
+  $imxcont{99} = [0.343,0.374,0.301,0.202,0.117,0.055,0,-0.056,-0.122,
+		  -0.209,-0.315,-0.393,-0.345,-0.317,-0.237,-0.161,
+		  -0.096,-0.043,0,0.041,0.094,0.159,0.235,0.314,0.342];
+
+  # IMY contours for 1% through 99%
+  $imycont{1}  = [0.002,0.476,0.881,0.958,0.967,0.969,0.968,0.968,0.967,
+		  0.957,0.882,0.476,0,-0.423,-0.735,-0.906,-0.942,
+		  -0.958,-0.965,-0.958,-0.94,-0.907,-0.735,-0.424,-0.002];
+  $imycont{5}  = [0.002,0.438,0.781,0.894,0.915,0.917,0.916,0.916,0.913,
+		  0.892,0.78,0.439,0,-0.379,-0.647,-0.809,-0.843,-0.887,
+		  -0.902,-0.888,-0.844,-0.81,-0.645,-0.379,-0.002];
+  $imycont{10} = [0.002,0.405,0.707,0.831,0.858,0.863,0.861,0.861,0.856,
+		  0.83,0.709,0.406,0,-0.347,-0.592,-0.74,-0.784,-0.823,
+		  -0.837,-0.824,-0.785,-0.741,-0.592,-0.347,-0.001];
+  $imycont{15} = [0.002,0.378,0.655,0.784,0.811,0.815,0.814,0.813,0.809,
+		  0.782,0.656,0.379,0,-0.322,-0.549,-0.682,-0.738,-0.781,
+		  -0.792,-0.78,-0.738,-0.686,-0.551,-0.322,-0.002];
+  $imycont{20} = [0.002,0.355,0.613,0.74,0.768,0.773,0.771,0.771,0.767,
+		  0.74,0.612,0.355,0,-0.301,-0.514,-0.635,-0.698,-0.742,
+		  -0.751,-0.74,-0.699,-0.637,-0.515,-0.3,-0.002];
+  $imycont{50} = [0.002,0.256,0.441,0.528,0.551,0.553,0.55,0.551,0.549,
+		  0.529,0.444,0.257,0,-0.217,-0.362,-0.449,-0.505,-0.531,
+		  -0.53,-0.529,-0.506,-0.45,-0.364,-0.216,-0.002];
+  $imycont{80} = [0.002,0.176,0.306,0.35,0.358,0.357,0.355,0.358,0.358,
+		  0.351,0.309,0.178,0,-0.145,-0.248,-0.303,-0.327,-0.337,
+		  -0.333,-0.335,-0.325,-0.303,-0.247,-0.145,-0.002];
+  $imycont{85} = [0.002,0.162,0.282,0.318,0.324,0.324,0.321,0.325,0.324,
+		  0.319,0.285,0.165,0,-0.133,-0.226,-0.276,-0.298,-0.305,
+		  -0.301,-0.303,-0.296,-0.275,-0.226,-0.132,-0.002];
+  $imycont{90} = [0.002,0.143,0.257,0.287,0.291,0.291,0.289,0.292,0.292,
+		  0.288,0.26,0.146,0,-0.12,-0.202,-0.248,-0.267,-0.271,
+		  -0.266,-0.269,-0.264,-0.249,-0.201,-0.119,0];
+  $imycont{95} = [0.002,0.123,0.223,0.254,0.258,0.257,0.255,0.259,0.259,
+		  0.256,0.227,0.126,0,-0.104,-0.171,-0.21,-0.233,-0.235,
+		  -0.224,-0.228,-0.222,-0.205,-0.168,-0.102,-0.002];
+  $imycont{99} = [0.002,0.1,0.174,0.202,0.203,0.206,0.197,0.21,0.211,
+		  0.209,0.182,0.105,0,-0.085,-0.137,-0.161,-0.167,-0.162,
+		  -0.152,-0.154,-0.162,-0.159,-0.136,-0.084,-0.002];
+
+  @contlevels = (1,5,10,15,20,50,80,85,90,95,99);
+  $ncontlevels = $#contlevels + 1;
+}
+
+# ==================================================================
+#
+# Request a particular coding level
+# USAGE: findcont($percent,$x,$y)
+# Upon return, $x and $y are references to arrays
+#
+sub findcont {
+    my ($pct) = (@_);
+
+    if ($pct <= $contlevels[0]) {
+	$_[1] = $imxcont{$contlevels[0]};
+	$_[2] = $imycont{$contlevels[0]};
+	return;
+    }
+    if ($pct >= $contlevels[$ncontlevels-1]) {
+	$_[1] = $imxcont{$contlevels[$ncontlevels-1]};
+	$_[2] = $imycont{$contlevels[$ncontlevels-1]};
+	return;
+    }
+    foreach $i (0 .. $ncontlevels-1) {
+	if ($pct >= $contlevels[$i] && $pct < $contlevels[$i+1]) {
+	    $lev1 = $contlevels[$i];
+	    $lev2 = $contlevels[$i+1];
+	    $fr2 = (0.0 + $pct - $lev1)/($lev2-$lev1);
+	    $fr1 = 1.0 - $fr2;
+
+	    @xcont1 = @{$imxcont{$lev1}};
+	    @xcont2 = @{$imxcont{$lev2}};
+	    @ycont1 = @{$imycont{$lev1}};
+	    @ycont2 = @{$imycont{$lev2}};
+
+	    @xx = (); @yy = ();
+	    foreach $j (0 .. $#xcont1) {
+		push @xx, ($fr1*$xcont1[$j] + $fr2*$xcont2[$j]);
+		push @yy, ($fr1*$ycont1[$j] + $fr2*$ycont2[$j]);
+	    }
+	    
+	    $_[1] = \@xx;
+	    $_[2] = \@yy;
+
+
+	    return;
+	}
+    }
+}
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+$globalstatus = 0;
+eval {
+    $globalstatus = headas_main(\&batoccultgti);
+};
+
+# Remove scratch files if needed
+unlink($regfile)  if (defined($regfile)  && -f "$regfile"  && $delregion);
+unlink($exprfile) if (defined($exprfile) && -f "$exprfile" && $delexpr);
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($globalstatus == 0) { $globalstatus = -1; }
+    warn $@;
+    exit $globalstatus;
+}
+exit 0;
+
+
+# ==================================================================
+sub batoccultgti_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # ===== 
+    # Initialization
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($auxtime,$auxpcodefr,$auxmskwtsqf);
+    my ($fits_aux, $fits_spec, $dir, $fptr);
+
+    # ===== 
+    # Retrieve parameters
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+
+    ($status = PILGetReal('ra', $ra)) == 0 || die "error getting 'ra' parameter";
+    ($status = PILGetReal('dec', $dec)) == 0 || die "error getting 'dec' parameter";
+
+
+    ($status = PILGetReal('atmdepth', $atmdepth)) == 0 || die "error getting 'atmdepth' parameter";
+    ($status = PILGetReal('rearth', $rearth)) == 0 || die "error getting 'rearth' parameter";
+    ($status = PILGetReal('rmoon', $rmoon)) == 0 || die "error getting 'rmoon' parameter";
+    ($status = PILGetReal('rsun', $rsun)) == 0 || die "error getting 'rsun' parameter";
+    ($status = PILGetString('constraints', $body_str)) == 0 || die "error getting 'constraints' parameter";
+
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    ($status = PILGetReal('prefr', $prefr)) == 0 || die "error getting 'prefr' parameter";
+    ($status = PILGetReal('postfr', $postfr)) == 0 || die "error getting 'postfr' parameter";
+    ($status = PILGetBool('clobber', $clobberflag)) == 0 || die "error getting 'clobber' parameter";
+    ($status = PILGetBool('unocculted', $unocculted)) == 0 || die "error getting 'unocculted' parameter";
+    ($status = PILGetString('calcfile', $debugfile)) == 0 || die "error getting 'calcfile' parameter";
+
+    ($status = PILGetString('imxmin', $imxmin)) == 0 || die "error getting 'imxmin' parameter";
+    ($status = PILGetString('imxmax', $imxmax)) == 0 || die "error getting 'imxmax' parameter";
+    ($status = PILGetString('imymin', $imymin)) == 0 || die "error getting 'imymin' parameter";
+    ($status = PILGetString('imymax', $imymax)) == 0 || die "error getting 'imymax' parameter";
+
+    ($status = PILGetString('thetamin', $thetamin)) == 0 || die "error getting 'thetamin' parameter";
+    ($status = PILGetString('thetamax', $thetamax)) == 0 || die "error getting 'thetamax' parameter";
+
+    ($status = PILGetString('att_type', $att_type)) == 0 || die "error getting 'att_type' parameter";
+
+
+    $do_imgcut = 0;
+    if ("$imxmin" =~ m/^indef$/i) { undef($imxmin); } else { $do_imgcut = 1; }
+    if ("$imxmax" =~ m/^indef$/i) { undef($imxmax); } else { $do_imgcut = 1; }
+    if ("$imymin" =~ m/^indef$/i) { undef($imymin); } else { $do_imgcut = 1; }
+    if ("$imymax" =~ m/^indef$/i) { undef($imymax); } else { $do_imgcut = 1; }
+    if ("$thetamin" =~ m/^indef$/i) { undef($thetamin); } else { $do_imgcut = 1; }
+    if ("$thetamax" =~ m/^indef$/i) { undef($thetamax); } else { $do_imgcut = 1; }
+
+    @constraints = split(/,/,"$body_str");
+
+    # ===== 
+    # Parse out the individual constraints
+    foreach $body (@constraints) {
+	if ($body =~ m/^ *earth */i) { $do_earth = 1; }
+	if ($body =~ m/^ *moon */i)  { $do_moon = 1; }
+	if ($body =~ m/^ *sun */i)   { $do_sun = 1; }
+	if ($body =~ m/^ *fov */i)   { $do_fov = 1; }
+    }
+    
+    # Parameter checking on att_type
+    if ("$att_type" eq "SAO") {
+      # Names of the RA/Dec/Roll columns in prefilter file
+      $RA   = "RA";
+      $DEC  = "DEC";
+      $ROLL = "ROLL";
+    } elsif ("$att_type" eq "ATT") {
+      # Names of the RA/Dec/Roll columns in attitude file
+      if ($do_earth || $do_moon || $do_sun) {
+	die "ERROR: you must have a prefilter (SAO) file to do occultation checking";
+      }
+      $RA   = "POINTING[1]";
+      $DEC  = "POINTING[2]";
+      $ROLL = "POINTING[3]";
+      
+    } else {
+      die "ERROR: att_type must be either SAO or ATT";
+    }      
+      
+
+    # ===== 
+    # More parameter retrieval
+    if ($do_fov || $do_imgcut) {
+	($status = PILGetReal('pcodethresh', $pcodethresh)) == 0 || die "error getting 'pcodethresh' parameter";
+	($status = PILGetString('tempregionfile', $regfile)) == 0 || die "error getting 'tempregionfile' parameter";
+	($status = PILGetString('tempexprfile', $exprfile)) == 0 || die "error getting 'tempexprfile' parameter";
+	
+	$pcodethresh *= 100.0;  # Convert fraction to percent
+
+	# Default value for region file
+	if ($regfile =~ m/^indef$/i) {
+	    $regfile = "$outfile".".reg";
+	    $delregion = 1;
+	}
+
+	if ($regfile =~ m/^none$/i) {
+	    die "ERROR: tempregionfile cannot be NONE if requesting a FOV check";
+	}
+
+	# Default value for expression file
+	if ($exprfile =~ m/^indef$/i) {
+	    $exprfile = "$outfile".".expr";
+	    $delexpr = 1;
+	}
+
+	if ($exprfile =~ m/^none$/i) {
+	    die "ERROR: tempexprfile cannot be NONE if requesting a FOV check";
+	}
+
+	if ($do_fov) {
+	  # ===== 
+	  # FOV cuts: make a region file containing a partial coding contour
+	  initcontours();
+	  findcont($pcodethresh,$x,$y);
+	  @x = @$x; @y = @$y;
+	  
+	  open(REGION,">$regfile") or die "ERROR: could not create '$regfile'";
+	  $nowstr = localtime();
+	  print REGION "# batoccultgti v$taskvers $nowstr\n";
+	  print REGION "# BAT partial coding contour: $pcodethresh %\n";
+	  print REGION "# Coordinate system: tangent plane (IMX,IMY) [unitless]\n";
+	  print REGION "# NOTE: coordinates are not in 'image' system, but this is required\n";
+	  print REGION "# to allow the region parser to work.\n";
+	  @vec = ();
+	  
+	  
+	  foreach $i (0 .. $#x) {
+	    push @vec, sprintf("%.3f,%.3f",$x[$i],$y[$i]);
+	  }
+	  $vecstr = join(",",@vec);
+	  print REGION "linear;POLYGON($vecstr)\n";
+	  close(REGION);
+	}
+    }
+
+
+    # ===== 
+    # Task banner
+    $clobber = $clobberflag ? "YES" : "NO";
+
+    if ($chatter >= 2) { print "***********************************************\n"; }
+    if ($chatter >= 1) { print "#    $taskname $taskvers\n"; }
+    if ($chatter >= 2) { print "-----------------------------------------------\n"; }
+    if ($chatter >= 2) { print "  Input SAO File: $infile\n"; }
+    if ($chatter >= 2) { print " Output GTI File: $outfile\n"; }
+    if ($chatter >= 2) { printf "   Target Coords: (R.A.,Dec.) = (%12.4f,%12.4f)\n",$ra,$dec; }
+    if ($do_earth) {
+	if ($chatter >= 2) { printf "           Earth: YES (rearth = %9.2f km)\n", $rearth; }
+    } else {
+	if ($chatter >= 2) { printf "           Earth: NO\n"; }
+    }
+    if ($do_moon) {
+	if ($chatter >= 2) { printf "            Moon: YES (rmoon  = %9.2f arcmin)\n", $rmoon; }
+    } else {
+	if ($chatter >= 2) { printf "            Moon: NO\n"; }
+    }
+    if ($do_sun) {
+	if ($chatter >= 2) { printf "             Sun: YES (rsun   = %9.2f arcmin)\n", $rsun; }
+    } else {
+	if ($chatter >= 2) { printf "             Sun: NO\n"; }
+    }
+    if ($do_fov) {
+	if ($chatter >= 2) { printf "   Field of View: YES (pcodethresh = %6.2f)\n", $pcodethresh / 100.0; }
+    } else {
+	if ($chatter >= 2) { printf "   Field of View: NO\n"; }
+    }
+    if ($chatter >= 2) { printf "Atmosphere depth: %4.2f [km]\n", $atmdepth; }
+    if ($chatter >= 2) { printf "     Un-occulted: %s\n", $unocculted ? "YES" : "NO"; }
+    if ($chatter >= 2) { print "-----------------------------------------------\n"; }
+
+    #  Verify that two files exist 
+    die "ERROR: Prefilter (SAO) file $infile does not exist" if (!-e $infile);
+
+    # ===== 
+    # Go for either the occulted or unocculted data
+    if ($unocculted) {
+	$gt = ">=";
+    } else {
+	$gt = "<=";
+    }
+
+    @exprlist = ();
+
+    # ===== 
+    # Moon Check
+    if ($do_moon) {
+	push(@exprlist, "(ANGSEP(MOON_RA,MOON_DEC,$ra,$dec)*60 $gt $rmoon)");
+    }
+
+    # ===== 
+    # Sun Check
+    if ($do_sun) {
+	push(@exprlist, "(ANGSEP(SUN_RA,SUN_DEC,$ra,$dec)*60 $gt $rsun)");
+    }
+
+    $rtod = 57.295780;
+
+    # ===== 
+    # Earth limb check
+    if ($do_earth) {
+	$frearth = $rearth + $atmdepth;
+	push(@exprlist, "(ANGSEP(EARTH_RA,EARTH_DEC,$ra,$dec) $gt arcsin($frearth/SAT_ALT)*$rtod)");
+    }
+
+
+    # ===== 
+    # Field-of-view check
+    #  This involves transforming into the BAT image coordinates and
+    #  then making a region-filter cut
+    if ($do_fov || $do_imgcut) {
+	
+
+	# ===== 
+	# Compute the position of the target in instrument coordinates
+	# Target unit vector (celestial)
+	$utarg0 = cos($ra/$rtod)*cos($dec/$rtod);
+	$utarg1 = sin($ra/$rtod)*cos($dec/$rtod);
+	$utarg2 =                sin($dec/$rtod);
+	push @calclist, "UTARG_SKY = {$utarg0,$utarg1,$utarg2};";
+
+	# ===== 
+	# Precalculations for attitude matrix
+	push @calclist, "CDB = cos( -$DEC*#deg); SDB = sin( -$DEC*#deg);";
+	push @calclist, "CAB = cos(   $RA*#deg); SAB = sin(   $RA*#deg);";
+	push @calclist, "CRB = cos(-$ROLL*#deg); SRB = sin(-$ROLL*#deg);";
+
+	# ===== 
+	# Compute attitude matrix
+	# Each variable is one row of the matrix
+	push @calclist, "ATTMAT0 = {CDB*CAB,CDB*SAB,-SDB};";
+	push @calclist, "ATTMAT1 = {SRB*SDB*CAB-CRB*SAB,SRB*SDB*SAB+CRB*CAB,CDB*SRB};";
+	push @calclist, "ATTMAT2 = {CRB*SDB*CAB+SRB*SAB,CRB*SDB*SAB-SRB*CAB,CDB*CRB};";
+
+	# ===== 
+	# Use attitude matrix to compute target unit vector in spcecraft coordinates
+	# This is a matrix multiplication of the rows of ATTMAT by the celestial unit vector
+	push @calclist, "UTARG_SC = {SUM(UTARG_SKY*ATTMAT0),SUM(UTARG_SKY*ATTMAT1),SUM(UTARG_SKY*ATTMAT2)};";
+
+	# ===== 
+	# Transform to instrument tangent plane coordinates
+	push @calclist, "IMX = (UTARG_SC[1] > 0) ? (UTARG_SC[2]/UTARG_SC[1]) : #NULL;";
+	push @calclist, "IMY = (UTARG_SC[1] > 0) ? (UTARG_SC[3]/UTARG_SC[1]) : #NULL;";
+
+	# ===== 
+	# Flight software image coordinates (theta,phi)
+	push @calclist, "THETA = ATAN(SQRT(IMX*IMX+IMY*IMY))*180/#PI;";
+	push @calclist, "PHI = ARCTAN2(IMX,-IMY);";
+
+	# ===== 
+	# Actually apply the region filter
+	if ($do_fov) {
+	    push @exprlist, "(regfilter('$regfile',IMX,IMY))";
+	}
+    }
+
+
+    # ===== 
+    # Apply cuts in image coordinates
+    if ($do_imgcut) {
+	if (defined($imxmin)) { push @exprlist, "(IMX >= $imxmin)"; }
+	if (defined($imxmax)) { push @exprlist, "(IMX <= $imxmax)"; }
+	if (defined($imymin)) { push @exprlist, "(IMY >= $imymin)"; }
+	if (defined($imymax)) { push @exprlist, "(IMY <= $imymax)"; }
+	if (defined($thetamin)) { push @exprlist, "(THETA >= $thetamin)"; }
+	if (defined($thetamax)) { push @exprlist, "(THETA <= $thetamax)"; }
+    }
+
+    warn "WARNING: no constraints were selected; assuming the target is unocculted" 
+	if ($#exprlist == -1);
+
+    # ===== 
+    # Be sure there is valid pointing
+    push (@exprlist, "(NVALID($RA) > 0)");
+    push (@exprlist, "(NVALID($DEC) > 0)");
+    push (@exprlist, "(NVALID($ROLL) > 0)");
+
+    # XXX - uncomment for testing the "no good time" scenario
+    # push (@exprlist, "0 == 1");
+
+    # ===== 
+    # Combine all the expressions
+    $gtiexpr = join("&&", @exprlist);
+
+    # ===== 
+    # If there are calculations to be done, apply them to the 
+    # input file
+    if ($#calclist >= 0) {
+	open(EXPRFILE,">$exprfile") or die "ERROR: could not create '$exprfile'";
+	$nowstr = localtime();
+	print EXPRFILE "// batoccultgti v$taskvers $nowstr\n";
+	print EXPRFILE "// BAT field of view expression file\n\n";
+	print EXPRFILE "// First, include all columns\n";
+	print EXPRFILE "*;\n\n";
+	print EXPRFILE "// Now, the coordinate computations\n";
+	foreach $str (@calclist) {
+	    print EXPRFILE "$str\n";
+	}
+	close(EXPRFILE);
+
+	$infile .= "[col @".$exprfile."]";
+
+	if ($debugfile !~ m/none/i ) {
+	    $cmd = "ftcopy infile='$infile' outfile='$debugfile' clobber=$clobber";
+	    
+	    if ($chatter >= 5) { print "$cmd\n"; }
+	    $status = system($cmd);
+	    
+	    if ($status != 0 || ! -f "$debugfile") { 
+		die "ERROR: debug calculations failed";
+	    }
+	    $infile = "$debugfile";
+	}
+    }
+
+
+    # ===== 
+    # Make the GTI file using the 'maketime' command
+    if (-f "$outfile") {
+	if ($clobber eq "YES") {
+	    unlink("$outfile");
+	} else {
+	    die "ERROR: file $outfile exists and clobber=NO";
+	}
+    }
+    $cmd = "maketime infile='$infile' outfile='$outfile' expr=\"$gtiexpr\" ".
+	"name=NAME value=VALUE time=TIME start=START stop=STOP compact=NO ".
+	"copykw=YES histkw=YES prefr=$prefr postfr=$postfr clobber=$clobber";
+
+
+    if ($chatter >= 5) { print "$cmd\n"; }
+    $status = system($cmd);
+
+    # ===== 
+    # Check for success
+    if ($status == 0) {
+	if ($chatter >= 2) { print "DONE\n"; } 
+	
+	$fits = SimpleFITS->open("+<$outfile")->move("STDGTI");
+	$status = $fits->status();
+	die "ERROR: Could not verify contents of $outfile" if $status;
+
+	# ===== 
+	# If no good times exist, write a one-row table with bogus
+	# times so that no software assumes that all times are good.
+	$nrows = $fits->nrows();
+	if ($nrows == 0) {
+	    warn "WARNING: number of GTI rows is zero; adding an empty row";
+	    $data = -1e99;
+	    $fits->writecol("START",{rows=>1},$data);
+	    $fits->writecol("STOP", {rows=>1},$data);
+	}
+
+	# ===== 
+	# Write history keywords
+	HDpar_stamp($fits->handle(), 0, $status);
+	$fits->close();
+    } else {
+	warn "WARNING: maketime task failed with status $status\n";
+    }
+    if ($chatter >= 2) { print "-----------------------------------------------\n"; }
+
+    return $status;
+}
+
+
+
+# Consider the example,
+#   (RA_BORE, DEC_BORE, ROLL_BORE)  = [25,5,27]   degrees
+#   (RA_TARG, DEC_TARG)             = [34,-17]    degrees
+# 
+# 
+# Step 1. Convert celestial target position to a celestial unit vector,
+#   usky = angunitvec(RA_TARG, DEC_TARG)
+#        = [0.79281257,      0.53475883,     -0.29237170]
+# This is an absolutely trivial function.
+# 
+# Step 2. Compute Swift attitude matrix
+#   att = swift_attmat(RA_BORE, DEC_BORE, ROLL_BORE)
+# This matrix function has a bunch of cosines and sines, but no
+# complex logic or branching.
+# 
+# Step 3. Convert celestial unit target vector to spacecraft target vector,
+#   USC = transpose(att) ## USKY
+#       = [0.91545496,      0.30289568,     -0.26494608]
+# 
+# Step 4. Convert to BAT imaging coordinates,
+#   IMX = USC(1) / USC(0) = 0.33086901
+#   IMY = USC(2) / USC(0) = -0.28941465
+# 
+# For now, assume that the BAT field of view is an ellipse in (IMX,IMY)
+# space, with SEMImajor axes 1.7 (IMX) and 0.9 (IMY).
+# ; ANGUNITVEC - convert from target RA/DEC to unit vector
+# ;   A0 - right ascension (scalar degrees)
+# ;   D0 - declination (scalar degrees)
+# ; RETURNS: target unit vector in celestial coordinates
+# function angunitvec, a0, d0
+# 
+#   dtor = !dpi/180D
+#   d = double(90D - d0)*dtor
+#   a = a0*dtor
+# 
+#   return, [cos(a)*sin(d), sin(a)*sin(d), cos(d)]
+# end
+# 
+# ;; SWIFT_ATTMAT - compute Swift attitude matrix
+# ;;   RAB - boresite right ascension (scalar degrees)
+# ;;   DECB - boresite declination (scalar degrees)
+# ;;   ROLLB - boresite roll angle (scalar degrees)
+# ;; RETURNS: attitude matrix (see below for use)
+# function swift_attmat, rab, decb, rollb
+# 
+#   dtor = !dpi/180d
+#   cdb = cos(-decb*dtor)
+#   sdb = sin(-decb*dtor)
+#   cab = cos(rab*dtor)
+#   sab = sin(rab*dtor)
+#   crb = cos(-rollb*dtor)
+#   srb = sin(-rollb*dtor)
+#   
+#   amat = transpose([[cdb*cab,cdb*sab,-sdb], $
+#                     [srb*sdb*cab-crb*sab, srb*sdb*sab+crb*cab, cdb*srb], $
+#                     [crb*sdb*cab+srb*sab, crb*sdb*sab-srb*cab, cdb*crb]])
+# 
+#   ;; skyunit = amat ## scunit
+#   ;; scunit = transpose(amat) ## skyunit
+#   ;;   skyunit = vector, components expressed in sky coordinate system
+#   ;;   scunit  = same vector, components expressed in S/C coordinate system
+# 
+#   return, amat
+# end

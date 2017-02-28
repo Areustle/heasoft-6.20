@@ -1,0 +1,1367 @@
+\documentclass[11pt]{book}
+\input{html.sty}
+\htmladdtonavigation
+   {\begin{rawhtml}
+ <A HREF="http://heasarc.gsfc.nasa.gov/docs/software/lheasoft">HEAsoft Home</A>
+    \end{rawhtml}}
+\oddsidemargin=0.00in
+\evensidemargin=0.00in
+\textwidth=6.5in
+\topmargin=0.0in
+\textheight=8.5in
+\parindent=0cm
+\parskip=0.2cm
+\begin{document}
+
+\begin{titlepage}
+\normalsize
+\vspace*{4.0cm}
+\begin{center}
+{\Huge \bf HEAdas Developer's Guide}\\
+\end{center}
+\medskip
+\medskip
+\begin{center}
+{\Large Version 1.2 \\}
+\end{center}
+\bigskip
+\vskip 2.5cm
+\begin{center}
+{HEASARC\\
+Code 662\\
+Goddard Space Flight Center\\
+Greenbelt, MD 20771\\
+USA}
+\end{center}
+
+\vfill
+\bigskip
+\begin{center}
+{\Large Feb 2011\\}
+\end{center}
+\vfill
+\end{titlepage}
+
+\begin{titlepage}
+\vspace*{7.6cm}
+\vfill
+\end{titlepage}
+
+\pagenumbering{roman}
+
+\tableofcontents
+\pagenumbering{arabic}
+\chapter{Introduction}
+HEAdas refers to a new component in HEASoft, the LHEA software
+suite which currently encompasses FTOOLS and XANADU (ie, XSPEC,
+XRONOS, and XIMAGE). HEAdas tasks are virtually identical in
+look-and-feel to FTOOLS from a user's perspective but are, in
+fact, built around a completely distinct core (with the exception
+of the CFITSIO library). This new package is intended to be simpler
+and leaner than FTOOLS, as well as more portable, stable and extensible.
+
+HEAdas is composed of two basic parts: a mission-independent
+set of general FITS utilities (HEAtools) which is being developed
+within the HEASARC, as well as a set of mission-specific
+packages developed and maintained (in whole or in part) by
+outside groups. The HEAdas core (including the HEAtools) is
+written entirely in ANSI C for maximum portability. Missions are,
+however, free to use any language they wish within their own
+package, bearing in mind that certain choices may limit the
+platforms and/or compilers on which their tasks will build and run.
+
+Until HEAdas has fully matured it is likely that tasks (eg, Perl
+scripts) in the mission-specific packages will call tasks which still
+reside in the FTOOLS portion of HEASoft and software
+distributions by the HEASARC will generally include all
+necessary components in a single tar file to make things as easy
+for users as possible. However, in keeping with a modular
+approach (as well as to avoid incompatibility due to different
+release schedules) it is important that mission-specific tasks not
+link against FTOOLS libraries (eg, xanlib). If mission developers
+find that they require those subroutines in their tasks then they
+should be migrated to the appropriate HEAdas library. Whether
+that would be more appropriate to a core library versus a
+mission-specific library may require coordination and/or
+consultation with the HEASARC programming staff.
+
+\section{Configuration Management and HEAdas Setup.}
+
+All configuration management of HEAdas will be handled by the
+HEASARC, including such things as Makefiles and configure
+scripts. Code revision control will be handled via a central CVS
+repository resident on HEASARC servers. Developers of
+mission-specific software will only have write access in the
+relevant portions of the repository but will have read access to the
+entire package so that they can check-out as much of it as they
+wish for local testing. However, a limited number of HEASARC
+programmers will have global write access to enable necessary
+configuration modifications. CVS includes automatic email
+notification of new check-ins so that developers will be informed
+of any changes to their portion of the repository as they occur.
+
+The directory structure for any given subpackage will be
+reasonably flexible so that mission software developers can
+arrange things to suit their own needs and/or preferences. Certain
+constraints may, however, be required to accomodate the overall
+HEAdas build paradigm.
+
+Full, top-down builds are started from the headas/BUILD\_DIR
+directory using the typical steps of ./configure followed by make
+and then finally make install. Internally, however, builds will be
+managed by hmake, exactly as in the current FTOOLS package.
+This utility is designed to also make it easy to build all or part of the
+distribution on any supported platform without having to make
+modifications by hand specifying the location and/or names of
+necessary flags and libraries. That is, once a full build and install
+have been performed, a developer may simply checkout a copy of
+a particular tool and build it via the command hmake. Before using
+hmake (assuming a cshell environment) one simply needs to
+source the file \$HEADAS/BUILD\_DIR/hdevinit.csh, where
+\$HEADAS is the environment variable which points to the location of
+the relevant HEAdas installation, eg,
+/usr/local/src/headas/i686-pc-linux-gnu. Similarly, to set
+oneself up to use installed HEAdas tasks one would source
+\$HEADAS/headas-init.csh. Note that Bourne shell/bash variants
+are also provided for people who prefer those shell environments.
+These are identical except that the file suffixes are .sh instead of
+.csh and they would, of course, be invoked according to the usual
+shell syntax.
+
+NOTE: For the time being the hmake utility from a HEASoft
+installation is NOT interchangable with the one from a HEAdas
+installation. This is currently being revised and ultimately it will not
+matter which version comes first in one's search path. Until then,
+caveat developer...
+
+\section{Input and Output}
+\subsection{Input}
+
+All input to HEAdas tasks is controlled by the Parameter
+Interface Library (PIL) which is developed and maintained by the
+INTEGRAL Science Data Center. PIL has a very similar look
+and feel to XPI (the parameter interface used in FTOOLS) but
+includes such additional features as enumerated values,
+minimum-maximum range checking, the ability to use
+environment variables in parameters and a dedicated "filename"
+type. PIL is callable by C, C++, f77 and f90 tasks. Full
+documentation for PIL is available in the source tree under
+headas/heacore/pil/doc.
+
+There are three commonly-used parameters which are handled
+intrinsically by the internal HEAdas initialization routines and thus
+developers do not need to explicitly read them at the individual
+task level. (A fourth parameter, "mode", is a PIL internal and
+operates exactly as in XPI). The standard HEAdas parameters
+are:
+
+\begin{itemize}
+\item CHATTER
+The (integer) "chatter" parameter may be used to control
+the verbosity of a HEAdas task. (This is similar to the
+"verbose" parameter used in CIAO, however, since a
+number of FTOOLS tasks, especially in the caltools
+subpackage, use "chatter" we have chosen to keep the
+same name for consistency across the HEAsoft suite.)
+Developers are free to specify any range (via the
+parameter min/max) but we recommend the following
+(0-5):
+
+0 suppresses all but absolutely essential output
+
+1-4 normal levels. The different levels can be used
+on a task by task basis to control the amount of
+output information. The distinction between the
+different chatter levels (if any) must be documented
+in the task's help file. For many tasks, all 4 chatter
+levels might produce exactly the same output.
+
+5 debug mode: prints detailed messages about each
+step in the program
+
+The desired chatter value will be specified by the user at
+runtime and read automatically during the initialization
+phase. The task developer may then funnel diagnostic
+output through the supplied routines (see output section
+below) which take as their first argument a threshold
+chatter level below which the output will be suppressed. A
+chatter parameter is not required for any task, however,
+calling headas\_chat()/hdchat() in a task having no
+chatter parameter will result in an error.
+
+\item CLOBBER
+
+If a (boolean) "clobber" parameter is present for a given
+task it will be read during the initialization phase.
+Developers may then call headas\_clobberfile(filename)
+which will delete the specified file if it exists and if the
+"clobber" parameter was set to "yes". Note that an
+alternative to clobber exists for FITS files since CFITSIO
+will clobber any file which begins with the "!" character.
+
+\item HISTORY
+
+The (boolean) "history" parameter controls whether or not
+the user wishes to allow a set of HISTORY keywords
+listing the runtime values of all task parameters to be
+written into any FITS file header. The developer simply
+calls HDpar\_stamp() specifying the desired FITS file
+and extension and, if the history parameter value at runtime
+permits it, the HISTORY block will be written. If the task
+has no history parameter then a call to
+HDpar\_stamp() will return an error. Each HISTORY
+keyword block will be clearly delimited and will include the
+task name/version and a timestamp. Use of
+HDpar\_stamp() is not required, but is recommended
+both as a means of documenting the runtime conditions and
+as input for a planned utility which can rerun any task using
+the information recorded in the HISTORY block.
+\end{itemize}
+
+\subsection{Output}
+
+Diagnostic output and other text messages must be able to be
+separated from the standard output stream to enable, eg, piping
+FITS files between tasks. Developers should never write directly
+to stdout but should instead funnel screen output through the
+dedicated HEAdas streams. These streams are set up during task
+initialization and are controlled by environment variables. Task
+developers should never have to read or otherwise deal with these
+variables. The following methods for diagnostic output are
+currently available to developers writing tasks in C:
+
+      headas\_printf(char *, ...)
+      Operates exactly like the stdio version of printf but the
+      stream will be directed to the location specified by the
+      environment variable HEADASOUTPUT (if present).
+
+      headas\_chat(int, char *, ...)
+      Identical to headas\_printf() except for an additional
+      integer argument which specifies the threshold "chatter"
+      level below which the message will be suppressed
+      (depending on the runtime value of the chatter parameter,
+      see discussion of "chatter" above).
+
+      fprintf(heaout, char *, ...)
+      The "heaout" stream (which replaces stdout in HEAdas)
+      may be written to directly, as shown.
+
+      printf(char *, ...)
+      The usual stdio printf() routine can still be used (eg, in
+      legacy code) but will be dynamically replaced by
+      headas\_printf() during compilation.
+
+Fortran tasks should use the dedicated routines hdecho() and
+hdchat(). The former is exactly equivalent to the fcecho()
+routine in the FTOOLS package while the latter adds the chatter
+threshold argument as in headas\_chat() above. Note that unlike
+the C versions above, formatting of the output strings must be
+done prior to calling hdecho()/hdchat(), eg, via an internal write.
+
+Future GUI development and/or other enhancements to HEAdas
+will likely require that the standard error stream and parameter
+prompts be monitored and/or redirected as well. The environment
+variables HEADASERROR and HEADASPROMPT,
+respectively, control these but developers should not need to deal
+with them directly. C tasks may simply use fprintf(stderr,
+...) to print error messages as usual, while Fortran tasks should
+use hderr() (which is exactly like the FTOOLS fcerr()
+routine). As with hdecho(), the output error message must be
+constructed internally prior to calling hderr().
+
+\section{General Notes}
+All tasks should:
+\begin{itemize}
+
+\item Follow ANSI standards (ie, C89 and X3J3/90.4 for C and
+Fortran77, respectively) for maximum portability.
+
+\item Be written as a subprogram (not a main) which returns an
+integer status value.
+
+\item (for C only) Contain the following block of code near the
+top of the task subroutine:
+
+\begin{verbatim}
+        #include "fitsio.h" /* assuming CFITSIO routines will be called */
+        #include "pil.h" /* assuming PIL routines will be called */
+        #include "headas.h"
+
+        #define TOOLSUB my_task_subroutine_name /* use actual subroutine name here */
+        #include "headas_main.c"
+\end{verbatim}
+
+\item Check return status after all CFITSIO and PIL calls and
+use the relevant error reporting routine if status is
+non-zero.
+
+\item Register a task name and version number (see below).
+
+\end{itemize}
+
+\section{Task Name and Version}
+
+Every HEAdas task should register its name and version number
+so that the information is available to other routines which may
+need it. A set of routines in the heautils library (see
+headas\_toolname.c in the library inventory section, below) has
+been provided for this purpose. Each task should call
+set\_toolname() and set\_toolversion() to record the
+information and developers may retrieve the information via
+get\_toolname()/get\_toolversion() or by the simpler
+get\_toolnamev() which returns both in a single string with name
+and version joined with an underscore. The Fortran equivalents
+are hdnameset(), hdverset(), hdnameget(), hdverget() and
+hdnamevget(). Note that a default name is recorded during task
+initialization based on the executable name. A default version
+number of "0.0" will likewise be used. These defaults will be
+superceded via calls at the task level to set\_toolname() and
+set\_toolversion().
+
+\section{CALDB Access}
+
+The HEASARC Calibration Database (CALDB) will be
+accessible to HEAdas tasks exactly as it is to FTOOLS and
+missions choosing to use HEAdas should plan on submitting their
+FITS calibration files for inclusion in the CALDB. However,
+because the main CALDB access routine, gtcalf(), is written in
+f77, however, it is being rewritten in ANSI C in keeping with the
+requirements of the HEAdas core. The method in which it is used
+will be exactly the same, making code migration from the
+FTOOLS system trivial. As in most of the routines discussed
+here, a Fortran wrapper will be provided so that they may be
+called from Fortran tasks too.
+
+\section{Scripting}
+All scripting should be done using Perl5. The HEASARC will
+provide Perl utilities to make it easy and convenient for scripts to
+call HEAdas and/or FTOOLS tasks, for example, to trap any
+runtime errors which may occur. We also expect to include the
+CFITSIO Perl module (CFITSIO.pm) in the distribution to allow for
+Perl scripts to directly call CFITSIO routines as well.
+
+\section{Expected Enhancements}
+In addition to the components already mentioned, the following are
+being evaluated for inclusion with the HEAdas package:
+
+\begin{itemize}
+\item CCfits: an object-oriented interface to the CFITSIO
+library designed to make the capabilities of CFITSIO
+available to programmers working in C++.
+\end{itemize}
+
+\chapter{Overview of HEAdas Libraries}
+
+The "heacore" directory contains source code for a number of
+libraries which are expected to be generally useful and
+mission-independent. These core libraries will automatically be
+built and available for linking by any or all of the tool
+packages (eg, heatools, swift) via the normal hmake build
+process. Some of these libraries are developed at the HEASARC,
+while others are external packages which are simply redistributed
+as part of HEAdas. Documentation for each library component may
+be found under the directory containing that component.
+
+The software components of the directory "heacore" are:
+\begin{itemize}
+
+\item cfitsio: a standard FITS file I/O library developed at
+the HEASARC. http://heasarc.gsfc.nasa.gov/docs/software/fitsio
+\begin{rawhtml}
+ <A HREF="http://heasarc.gsfc.nasa.gov/docs/software/fitsio">CFITSIO home page</A>
+\end{rawhtml}
+
+\item pil: an IRAF-style parameter interface library, developed for
+the INTEGRAL mission at the Integral Science Data Center (ISDC).
+http://isdc.unige.ch
+\begin{rawhtml}
+<A HREF="http://isdc.unige.ch">the ISDC home page</A>
+\end{rawhtml}
+
+\item readline: a standard input library which supports shell-style
+tab completion and command recall functions.
+http://cnswww.cns.cwru.edu/php/chet/readline/rltop.html
+\begin{rawhtml}
+<A HREF="http://cnswww.cns.cwru.edu/php/chet/readline/rltop.html">the READLINE home page</A>
+\end{rawhtml}
+
+\item atFunctions: library of attitude-related routines developed
+at the Institute of Space and Astronautical Science (ISAS).
+\begin{rawhtml}
+<A HREF="http://www.isas.ac.jp/e">the ISAS home page</A>
+\end{rawhtml}
+
+\item coord/coordfits: additional routines for attitude, coordinate
+transformations, etc.
+
+\item Astro-FITS-CFITSIO: a CFITSIO Perl module, distributed by
+Pete Ratzlaff (CfA). http://hea-www.harvard.edu/~rpete/cfitsio
+\begin{rawhtml}
+<A HREF="http://hea-www.harvard.edu/~rpete/cfitsio">the Astro::FITS::CFITSIO home page</A>
+\end{rawhtml}
+
+\item heainit: HEAdas Initialization functions callable at global scope
+
+\item heaio: HEAdas Input/output library
+
+\item heautils: Assorted HEAdas utilities
+
+\item heasp: HEAdas utilities for spectra and responses
+\end{itemize}
+
+More detailed documentation for the last four (HEAdas native)
+libraries follows below.
+
+\section{heainit}
+
+\begin{itemize}
+\item            \begin{verbatim} headas.h \end{verbatim}
+            Header file containing function prototypes, etc.
+
+\item            \begin{verbatim} headas_init.c \end{verbatim} 
+            Contains routines called internally -- developers
+            should not ever need to call these explicitly:
+	    \begin{itemize}
+            \item      \begin{verbatim} int headas_init(int, char **) \end{verbatim}
+                  Calls routines to initialize PIL and output
+                  streams. It also deals with standard HEAdas
+                  parameters (chatter, clobber, history).
+
+            \item      \begin{verbatim} int headas_close() \end{verbatim} 
+                  Closes output streams and PIL.
+
+            \item      \begin{verbatim} int hdIOInit() \end{verbatim} 
+                  Checks environment variables (eg,
+                  HEADASOUTPUT, HEADASERROR)
+                  and sets up output streams.
+
+            \item      \begin{verbatim} int hd_pil_err_logger(char *s) \end{verbatim} 
+                  Default PIL error logging routine. Simply
+                  prints to stderr.
+	    \end{itemize}
+
+\item            \begin{verbatim} headas_main.c \end{verbatim}
+            This file comprises the main program unit for every
+            task. It calls headas\_init() followed by the task
+            subroutine itself and then calls headas\_close()
+            after the task completes. This main routine is not
+            part of any library and must be explicitly included by
+            all C tasks (via \#include "headas\_main.c"). For
+            f77 tasks it is automatically compiled and linked in
+            by the Makefile.
+\end{itemize}
+
+\section{heaio}
+
+\begin{itemize}
+\item            \begin{verbatim} headas_stdio.c \end{verbatim}
+            Contains routines used to write diagnostic and error
+            output to the standard HEAdas output/error streams
+            (replacing C stdio routines):
+            \begin{itemize}
+
+            \item      \begin{verbatim} int headas_printf(const char *, ...) \end{verbatim} 
+                  Replaces the stdio printf() with identical
+                  arguments. Text is written to the location
+                  specified by the HEADASOUTPUT
+                  environment variable (if present) instead of
+                  to stdout.
+
+            \item      \begin{verbatim} int headas_chat(int, const char *, ...) \end{verbatim} 
+                  Same as headas\_printf() but takes an
+                  integer argument which specifies the
+                  threshold chatter level below which the text
+                  will not be output.
+
+            \item      \begin{verbatim} int pil_printf(const char *, ...) \end{verbatim} 
+                  A substitute for printf() for internal use by
+                  PIL only. Should not be called by tasks
+                  directly. NOT CURRENTLY USED.
+
+            \item      \begin{verbatim} void headas_f77echo(const char *) \end{verbatim} 
+                  A f77-callable version of headas\_printf().
+                  It is called hdecho() from Fortran programs.
+
+            \item      \begin{verbatim} void headas_f77err(const char *) \end{verbatim} 
+                  A f77-callable version of fprintf(stderr,
+                  ...). Called hderr() from Fortran. This
+                  routine will write to the stderr stream (which
+                  may have been redirected via the
+                  HEADASERROR environment variable).
+
+            \item      \begin{verbatim} void headas_f77chat(int, const char *) \end{verbatim} 
+                  A f77-callable version of headas\_chat(). It
+                  is called hdchat() from Fortran.
+	    \end{itemize}
+
+\end{itemize}
+
+\section{heautils}
+
+\begin{itemize}
+
+\item            \begin{verbatim} headas_utils.c \end{verbatim}
+            Contains utility routines:
+
+            \begin{itemize}
+            \item      \begin{verbatim} int headas_parstamp(fitsfile *, int) \end{verbatim} 
+                  Writes a block of HISTORY keywords into a
+                  FITS file header listing all the runtime
+                  parameter values. Arguments are a FITS file
+                  pointer and extension number. Callable from
+                  Fortran as hdparstamp(). *** DEPRECATED *** 
+                  PLEASE USE HDpar\_stamp (see below) INSTEAD ***
+
+            \item      \begin{verbatim} int HDpar_stamp(fitsfile *, int, int *) \end{verbatim} 
+                  Writes a block of HISTORY keywords into a
+                  FITS file header listing all the runtime
+                  parameter values. Arguments are a FITS file
+                  pointer, extension number, and status pointer. 
+                  Callable from Fortran as hdpar\_stamp().
+
+            \item      \begin{verbatim} char *hdbasename(char *) \end{verbatim} 
+                  Equivalent to the basename() function
+                  (returns the filename portion of an input
+                  pathname).
+
+            \item      \begin{verbatim} int headas_clobberfile(char *) \end{verbatim} 
+                  Deletes the specified file if it already exists
+                  and if the clobber parameter for the current
+                  task is set to "yes". Callable from Fortran as
+                  hdclobber().
+
+            \item      \begin{verbatim} float hd_ran2(long *) \end{verbatim} 
+                  Random number generator based on ran2()
+                  from Numerical Recipes in C, 2nd ed., p282.
+                  Returns a uniform random deviate between
+                  0.0 and 1.0 (exclusive of the endpoint values).
+                  Call with a negative integer argument to
+                  initialize. Callable from Fortran as
+                  hd\_ran2().
+            \end{itemize}
+
+\item            \begin{verbatim} headas_toolname.c \end{verbatim}
+            Contains routines to get/set the name/version of the
+            current task:
+            \begin{itemize}
+
+            \item      \begin{verbatim} void set_toolname(const char *) \end{verbatim} 
+                  Use this to register the task's name. The
+                  Fortran version is hdnameset().
+
+            \item      \begin{verbatim} void get_toolname(char *) \end{verbatim} 
+                  Use this to retrieve the task's name. If it
+                  hasn't been set (via set\_toolname()) a
+                  default name is determined from the name of
+                  the executable file. The Fortran version is
+                  hdnameget().
+
+            \item      \begin{verbatim} void set_toolversion(const char *) \end{verbatim} 
+                  Use this to register a version number string
+                  for a task. The Fortran version is
+                  hdverset().
+
+            \item      \begin{verbatim} void get_toolversion(char *) \end{verbatim} 
+                  Use this to retrieve a string containing the
+                  task's version number. If it hasn't been set
+                  (via set\_toolversion()) a default version
+                  number string of "0.0" is returned. The
+                  Fortran version is hdverget().
+
+            \item      \begin{verbatim} void get_toolnamev(char *) \end{verbatim} 
+                  Use this to retrieve a single string containing
+                  both the task's name and version number
+                  (joined by a "\_"). The Fortran version is
+                  hdnamevget().
+            \end{itemize}
+
+\item            \begin{verbatim} headas_history.c \end{verbatim}
+            Contains routines to get/set the value of the history
+            parameter. Designed primarily for internal use and
+            under normal circumstances should not be called by
+            tasks explicitly.
+            \begin{itemize}
+
+            \item      \begin{verbatim} void get_history(int *) \end{verbatim} 
+                  This routine returns the value of the history
+                  parameter (if present) or "-1" if unspecified.
+                  Called by headas\_parstamp(). Fortran
+                  version is hdghis().
+
+            \item      \begin{verbatim} void set_history(int) \end{verbatim} 
+                  This registers the value of the history
+                  parameter. If it is called explicitly from a task
+                  it will override the user-specified value.
+                  Fortran version is hdphis().
+            \end{itemize}
+
+\item            \begin{verbatim} headas_copykeys.c \end{verbatim}
+            Contains routine to copy non-critical keywords from one
+            HDU to another..
+	    \begin{itemize}
+            \item   \begin{verbatim} int HDcopy_keys(fitsfile *inptr, fitsfile *outptr, int docomments, int dohistory, int *status) \end{verbatim}
+                  Both the input and output FITS files should be
+                  positioned at the correct HDU. If docomments is true
+                  then COMMENT records will be copied and if dohistory
+                  is true then HISTORY records will be copied.
+            \end{itemize}
+
+\item            \begin{verbatim} headas_polyfit.c \end{verbatim}
+            Contains routine to do a least-square polynomial fit.
+	    \begin{itemize}
+            \item   \begin{verbatim} void HDpoly_fit(double * x, double * y, double * c, int n, int degree) \end{verbatim}
+                  where x is the input n-element array of independent variables,
+                  y is the input n-element array of dependent variables,
+                  degree is the degree of the polynomial, and c is
+                  the output  degree+1-element array of coefficients.
+            \end{itemize}
+
+\item            \begin{verbatim} headas_sort.c \end{verbatim}
+            Contains routine to do a quick sort on the input array,
+            returning sorted index (instead of data as with C qsort). 
+	    \begin{itemize}
+            \item \begin{verbatim} void HDsort(float * base, int * index, int n) \end{verbatim}
+                  where base is the input n-element unsorted data
+                  array and index is the input/output n-element array index.
+            \end{itemize}
+
+\item            \begin{verbatim} headas_smooth.c \end{verbatim}
+            Contains routine to do a boxcar average on input data:
+	    \begin{itemize}
+            \item  \begin{verbatim} void HDsmooth(float * input, float * output, int num, int width) \end{verbatim}
+	          where input is the num-element unsmoothed array,
+	          output is the num-element smoothed array, and width
+	          is the width of the boxcar.
+            \end{itemize}
+
+\item            \begin{verbatim} headas_svdfit.c \end{verbatim}
+            Contains routines used by HDpoly\_fit (slightly modified
+            versions of routines from Press, William H., Brian P. Flannery,
+            Saul A Teukolsky and William T. Vetterling, 1986,
+            "Numerical Recipes: The Art of Scientific Computing" (Fortran),
+            Cambridge University Press.
+
+\item	         \begin{verbatim} headas_rand.c \end{verbatim}
+	    Contains routines to generate (0,1) uniformly distributed
+	    pseudo-random numbers.
+            \begin{itemize}
+
+	    \item      \begin{verbatim} void HDmtInit(unsigned long int seed) \end{verbatim} 
+		  Initialize the algorithm. Must be called first.
+
+	    \item      \begin{verbatim} void HDmtFree() \end{verbatim} 
+		  Clear the algorithm.
+
+	    \item      \begin{verbatim} double HDmtRand() \end{verbatim} 
+		  Return a pseudo-random number.
+            \end{itemize}
+\end{itemize}
+
+\section{heasp}
+
+HEASP is a C/C++/Python library to manipulate files related to
+spectroscopic analysis ie. PHA, RMF, ARF, and table model files. The
+library is described more fully in its own document. The C
+interface routines are summarized below. To use any of these include the
+Cheasp.h file which should be consulted for descriptions of the
+structs defined.
+
+\subsection{PHA files}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int ReadPHAtypeI(char *filename, long PHAnumber, struct PHA *phastruct)\end{verbatim}
+
+               Read the type I PHA extension from a FITS file -
+               if there are multiple PHA extensions then read the
+               PHAnumber instance.
+
+\item      \begin{verbatim} int ReadPHAtypeII(char *filename, long PHAnumber, long NumberSpectra,
+                   long *SpectrumNumber, struct PHA **phastructs)\end{verbatim}
+
+               Read the type II PHA extension from a FITS file - 
+               if there are multiple PHA extensions then read the
+               PHAnumber instance - within the typeII extension reads the
+               spectra listed in the SpectrumNumber vector.
+
+\item      \begin{verbatim} int WritePHAtypeI(char *filename, struct PHA *phastruct)\end{verbatim}
+
+               Write the type I PHA extension to a FITS file.
+
+\item      \begin{verbatim} int WritePHAtypeII(char *filename, long NumberSpectra, 
+                   struct PHA **phastructs)\end{verbatim}
+
+               Write the type II PHA extension to a FITS file.
+
+\item      \begin{verbatim} int ReturnPHAtype(char *filename, long PHAnumber)\end{verbatim}
+
+               Return the type of a PHA extension.
+
+\item      \begin{verbatim} void DisplayPHAtypeI(struct PHA *phastruct)\end{verbatim}
+
+               Write information about spectrum to stdout.
+
+\item      \begin{verbatim} void DisplayPHAtypeII(long NumberSpectra, struct PHA **phastructs)\end{verbatim}
+
+               Write information about spectra to stdout.
+
+\item      \begin{verbatim} int RebinPHA(struct PHA *phastruct, struct BinFactors *bin)\end{verbatim}
+
+               Rebin spectrum.
+
+\item      \begin{verbatim} int CheckPHAcounts(char *filename, long PHAnumber)\end{verbatim}
+
+               Return 0 if COUNTS column exists and is integer 
+               or COUNTS column does not exist.
+
+\item      \begin{verbatim} long ReturnNumberofSpectra(char *filename, long PHAnumber)\end{verbatim}
+
+               Return the number of spectra in a type II PHA extension.
+
+\end{itemize}
+
+\subsection{RMF files}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int ReadRMFMatrix(char *filename, long RMFnumber, struct RMF *rmf)\end{verbatim}
+
+               Read the RMF matrix from a FITS file - if there are 
+               multiple RMF extensions then read the RMFnumber instance.
+
+\item      \begin{verbatim} int WriteRMFMatrix(char *filename, struct RMF *rmf)\end{verbatim}
+
+               Write the RMF matrix to a FITS file.
+
+\item      \begin{verbatim} int ReadRMFEbounds(char *filename, long EBDnumber, struct RMF *rmf).\end{verbatim}
+
+               Read the RMF ebounds from a FITS file - if there
+               are multiple EBOUNDS extensions then read the EBDnumber instance.
+
+\item      \begin{verbatim} int WriteRMFEbounds(char *filename, struct RMF *rmf)\end{verbatim}
+
+               Write the RMF ebounds to a FITS file.
+
+\item      \begin{verbatim} void DisplayRMF(struct RMF *rmf)\end{verbatim}
+
+               Write information about RMF to stdout.
+
+\item      \begin{verbatim} void ReturnChannel(struct RMF *rmf, float energy, int NumberPhotons, 
+                   long *channel)\end{verbatim}
+ 
+               Return the channel for a photon of the given input 
+               energy - draws random numbers to return NumberPhotons 
+               entries in the channel array.
+
+\item      \begin{verbatim} void NormalizeRMF(struct RMF *rmf)\end{verbatim}
+
+               Normalize the response to unity in each energy.
+
+\item      \begin{verbatim} void CompressRMF(struct RMF *rmf, float threshold)\end{verbatim}
+
+               Compress the response to remove all elements 
+               below the threshold value.
+
+\item      \begin{verbatim} int RebinRMFChannel(struct RMF *rmf, struct BinFactors *bins)\end{verbatim}
+
+               Rebin the RMF in channel space.
+
+\item      \begin{verbatim} int RebinRMFEnergy(struct RMF *rmf, struct BinFactors *bins)\end{verbatim}
+
+               Rebin the RMF in energy space.
+
+\item      \begin{verbatim} void TransposeRMF(struct RMF *rmf, struct RMFchan *rmfchan)\end{verbatim}
+
+               Transpose the matrix.
+
+\item      \begin{verbatim} float ReturnRMFElement(struct RMF *rmf, long channel, long energybin)\end{verbatim}
+
+               Return a single value from the matrix.
+
+\item      \begin{verbatim} float ReturnRMFchanElement(struct RMFchan *rmfchan, long channel, 
+                   long energybin)\end{verbatim}
+
+               Return a single value from the transposed matrix.
+
+\item      \begin{verbatim} int AddRMF(struct RMF *rmf1, struct RMF *rmf2)\end{verbatim}
+
+               Add rmf2 onto rmf1.
+
+\end{itemize}
+
+\subsection{ARF}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int ReadARF(char *filename, long ARFnumber, struct ARF *arf)\end{verbatim}
+
+               Read the effective areas from a FITS file - if there
+               are multiple SPECRESP extensions then read the ARFFnumber instance.
+
+\item      \begin{verbatim} int WriteARF(char *filename, struct ARF *arf)\end{verbatim}
+
+               Write the ARF to a FITS file.
+
+\item      \begin{verbatim} void DisplayARF(struct ARF *arf)\end{verbatim}
+
+               Write information about ARF to stdout.
+
+\item      \begin{verbatim} int AddARF(struct ARF *arf1, struct ARF *arf2)\end{verbatim}
+
+               Add arf2 onto arf1.
+
+\item      \begin{verbatim} long MergeARFRMF(struct ARF *arf, struct RMF *rmf)\end{verbatim}
+
+               Multiply the ARF into the RMF.
+
+\end{itemize}
+
+\subsection{Utility routines}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int SPReadBinningFile(char *filename, struct BinFactors *binning)\end{verbatim}
+
+               Read an ascii file with binning factors and load the binning array.
+
+\item      \begin{verbatim} int SPSetGroupArray(int inputSize, struct BinFactors *binning, 
+                   int *groupArray)\end{verbatim}
+
+               Set up a grouping array using the BinFactors structure.
+
+\item      \begin{verbatim} int SPBinArray(int inputSize, float *input, int *groupArray, int mode, 
+                   float *output)\end{verbatim}
+
+               Bin an array using the information in the grouping array.
+
+\item      \begin{verbatim} void SPsetCCfitsVerbose(int mode)\end{verbatim}
+
+               Set the CCfits verbose mode.
+
+\item      \begin{verbatim} int SPcopyExtensions(char *infile, char *outfile)\end{verbatim}
+
+               Copy all HDUs which are not manipulated by this library.
+
+\item      \begin{verbatim} int SPcopyKeywords(char *infile, char *outfile, char *hduname, int hdunumber)\end{verbatim}
+
+               Copy all non-critical keywords for the hdunumber
+               instance of the extension hduname.
+
+\end{itemize}
+
+
+\chapter{HEAdas Makefiles}
+
+\section{Introduction}
+HEAdas Makefiles are designed so that the most
+common steps needed to build and install software
+can be accomplished with minimal effort, but the
+flexibility exists to override and extend standard
+behavior. This is accomplished by including a "standard
+Makefile" in every HEAdas Makefile. In this way,
+developers can perform most functions simply by filling
+in definitions for a standard set of macros before the
+standard Makefile is included. Most of the time,
+there is no need to add explicit targets. In fact,
+explicit targets should be avoided whenever possible
+because it increases the possibility for breakage
+if/when the standard Makefile is changed.
+
+Before giving a full exposition of all the features
+available through the standard Makefile, it will be
+useful to give a simple example. The most common situation
+for a developer is that he/she would like to add a new
+standalone compiled task to an existing (probably mission-specific)
+component. If this is the reader's need, understanding
+this example should suffice, and there will be no need for
+a deeper understanding of the more general options which
+are available.
+
+\section{Simplest case: A Makefile for a single task}
+
+Suppose one wishes to build a task called sample for
+the swift mission from the files sample1.c and
+sample2.c. This task has a help file called sample.html,
+and a parameter file called sample.par. Furthermore,
+this task has a unit test in the form of a perl script
+named ut-sample, which produces a FITS file ut-sample.fits.
+The following Makefile would supply all
+the necessary targets and macros to make the task behave
+(build, install, clean, test, etc.) like all other HEAdas
+tasks:
+
+\begin{verbatim}
+# Component (mission) name. Developers need not change/delete this.
+HD_COMPONENT_NAME	= swift
+
+# Software release version number. Developers need not change/delete this.
+HD_COMPONENT_VERS	=
+
+# If this directory needs to build a task, list its name here.
+HD_CTASK		= sample
+
+# C language source files (.c) to use for the task.
+HD_CTASK_SRC_c		= sample1.c sample2.c
+
+# C flags to use in every compilation.
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+# Library flags to use when linking C task.
+HD_CLIBS		= ${HD_STD_CLIBS}
+
+# Task(s) to be installed.
+HD_INSTALL_TASKS	= ${HD_CTASK}
+
+# Help file(s) to install.
+HD_INSTALL_HELP		= ${HD_CTASK}.html
+
+# Parameter file(s) to install.
+HD_INSTALL_PFILES	= ${HD_CTASK}.par
+
+# Perl unit test script(s) to install.
+HD_TEST_PERL_SCRIPTS	= ut-sample
+
+# Extra item(s) to remove during a clean or distclean.
+HD_CLEAN		= ut-sample.fits
+
+# Include the standard HEADAS Makefile to do the real work.
+include ${HD_STD_MAKEFILE}
+\end{verbatim}
+
+Note that, as in all UNIX Makefiles, macro definitions
+must start at the beginning of a line, with no whitespace
+of any kind before the macro name.
+
+This Makefile will in effect provide the following targets,
+which will have the stated behaviors:
+
+\begin{itemize}
+\item default: Build each source file to produce an object file,
+then link the object files to create the compiled task. This
+is also the target which will be "maked" if one invokes make
+with no explicit target.
+
+\item all: Perform the same actions as the default target, and in
+addition, "publish" the compiled task into the local "build" area.
+
+\item clean: Remove all object files and other build by-products,
+as well as the FITS file created by the unit test script.
+
+\item distclean: Remove the compiled task as well as the items
+removed by the clean target.
+
+\item install: Install the compiled task into the proper destination
+in the "installed" location.
+
+\item install-test: Install the test script into the proper destination
+in the "installed" location.
+\end{itemize}
+
+In general the best way to create a new Makefile for a directory
+is to copy a Makefile from the most similar example possible.
+This way, if there are component-specific features which are
+present in one component's Makefiles and not others, the new
+Makefile will remain as similar as possible to others in its
+same component group. In other words, when
+starting a new task for the SWIFT mission, start with another
+SWIFT task Makefile. For a new library for ASTRO-E2, start with
+an existing ASTRO-E2 library Makefile, etc.
+
+\section{Standard Macros}
+Most if not all actions a Makefile needs to perform can be
+controlled entirely by setting one or more standard macros.
+In general, defining a macro to have a (non-trivial) body
+enables a particular behavior, while omitting a macro or defining
+it to have a trivial body (i.e. an empty definition) disables
+that behavior. This way, a single Makefile can in principle
+control many distinct bulid actions. Note that it is not
+always a good idea to structure Makefiles this way, but this
+flexibility exists to allow individual mission teams to lay
+out their directories in the way they choose.
+
+\subsection{Macros Pertaining To All Build Actions}
+\begin{itemize}
+\item HD\_CFLAGS: Compiler flags used in every C compilation,
+regardless of whether the object file is included in a library or
+a task. Usually this should be defined to be equal to
+\$\{HD\_STD\_CFLAGS\}, which is set by hmake to be the correct
+flags for the current component, architecture and compiler.
+\item HD\_CLIBS: Flags specifying the libraries in the link
+line for tasks linked with C. This includes path information
+(-L flags) to find the
+libraries as well as the library names themselves (-l flags).
+Usually this should be defined to be equal to \$\{HD\_STD\_CLIBS\},
+which is set by hmake to be the standard C link information for
+the given software component.
+\item HD\_CXXFLAGS: Compiler flags used in every C++ compilation,
+regardless of whether the object file is included in a library or
+a task. Usually this should be defined to be equal to
+\$\{HD\_STD\_CFLAGS\}, which is set by hmake to be the correct
+flags for the current component, architecture and compiler.
+\item HD\_CXXLIBS: Flags specifying the libraries in the link
+line for tasks linked with C++. This includes path information
+(-L flags) to find the
+libraries as well as the library names themselves (-l flags).
+Usually this should be defined to be equal to \$\{HD\_STD\_CXXLIBS\},
+which is set by hmake to be the standard C++ link information for
+the given software component.
+\end{itemize}
+
+Linking Fortran 77 code with C or C++ usually requires some
+additional libraries to be included at link time. The macro
+\$\{F77LIBS4C\} is defined by hmake to hold this information
+for the current architecture and compiler. If Fortran 77 code
+is involved in a task, it may be necessary to add this macro
+to the definition of HD\_CLIBS and/or HD\_CXXLIBS. Of course,
+if this ends up being a component-wide requirement, it is also
+possible for hmake to include the contents of the F77LIBS4C
+macro directly in HD\_STD\_CLIBS and/or HD\_STD\_CXXLIBS.
+
+\subsection{Macros Pertaining To Tasks}
+The standard Makefile provides direct support for
+building tasks which have source files in C, C++,
+and/or Fortran 77. In principle a task may arbitrarily
+blend these languages.
+
+At present, it is required that a C or C++ "main" function
+be used, rather than a Fortran 77 "program" statement.
+Consistent with this is the fact that the standard Makefile
+only supports linking using a supported C or C++ compiler.
+This is controlled with two families of macros. The
+first family controls tasks which are linked with C:
+
+\begin{itemize}
+\item HD\_CTASK: The name of the executable which
+will be produced.
+\item HD\_CTASK\_SRC\_c: A list of C source files with the
+suffix .c.
+\item HD\_CTASK\_SRC\_f: A list of Fortran 77 source files
+with the suffix .f.
+\end{itemize}
+
+Note that there are no macros associated with C++ in this
+group. This is because if C++ code is mixed with C, it is
+required that the task be linked with a supported C++ compiler.
+Tasks linked with the C++ compiler are controlled with
+a second family of macros:
+
+\begin{itemize}
+\item HD\_CXXTASK: The name of the executable which
+will be produced.
+\item HD\_CXXTASK\_SRC\_C: A list of C++ source files with the
+suffix .C.
+\item HD\_CXXTASK\_SRC\_cc: A list of C++ source files with the
+suffix .cc.
+\item HD\_CXXTASK\_SRC\_cpp: A list of C++ source files with the
+suffix .cpp.
+\item HD\_CXXTASK\_SRC\_cxx: A list of C++ source files with the
+suffix .cxx.
+\item HD\_CXXTASK\_SRC\_c: A list of C source files with the
+suffix .c.
+\item HD\_CXXTASK\_SRC\_f: A list of Fortran 77 source files
+with the suffix .f.
+\end{itemize}
+
+For C and Fortran 77 source files, it is a very widespread
+convention to use .c and .f as the suffix, respectively.
+For C++ a number of different conventions
+are in use, which is why there are a number of macros whose
+names are distinguished by the suffix of the source files
+each macro includes.
+
+If the HD\_CTASK macro is defined, the HD\_CTASK\_SRC\_c
+macro must contain at least one source file. If the HD\_CXXTASK
+macro is defined, at least one of the HD\_CXXTASK\_SRC* macros
+which contain C or C++ source files must contain at least
+one source file.
+
+When one or both of these macro families are properly defined,
+the standard Makefile will build the task(s) as part of the default
+target. First, all the source files in all the macros will be
+compiled, using the flags specified in the relevant HD\_*FLAGS
+macro. Then the resulting object files will be linked to the
+libraries specified in the relevant HD\_*LIBS macro.
+
+\subsection{Macros Pertaining To Libraries}
+The standard Makefile provides direct support for building
+shared and/or static libraries which have source files in C,
+C++ and/or Fortran 77. The following family of macros controls
+this process:
+
+\begin{itemize}
+\item HD\_LIBRARY\_ROOT: The root name of the library, without
+the prefix lib and without any suffix. For example, to build
+libmylib.so this macro would be simply mylib.
+\item HD\_LIBRARY\_SRC\_c: A list of C source files with the
+suffix .c.
+\item HD\_LIBRARY\_SRC\_C: A list of C++ source files with the
+suffix .C.
+\item HD\_LIBRARY\_SRC\_cc: A list of C++ source files with the
+suffix .cc.
+\item HD\_LIBRARY\_SRC\_cpp: A list of C++ source files with the
+suffix .cpp.
+\item HD\_LIBRARY\_SRC\_cxx: A list of C++ source files with the
+suffix .cxx.
+\item HD\_LIBRARY\_SRC\_f: A list of Fortran 77 source files
+with the suffix .f.
+\end{itemize}
+
+At least one of the source macros must contain at least one
+file if the HD\_LIBRARY\_ROOT macro is defined. With these
+macros properly defined, the standard Makefile will build
+the library as part of the default target. First all the
+source files listed in the source macros will be compiled,
+then they will be placed into the relevant shared or static
+library.
+
+\subsection{Macros Pertaining To Installation}
+Another family of macros determine which items will be installed
+during the "install" step. For maximum flexibility, no items
+are ever installed automatically. In order to install
+say a binary which was built by the current Makefile, it is
+necessary to list that binary explicitly in the list of binaries
+to install. In addition, a variation on install, called publish,
+is supported, in which items will be installed into the local
+build area by the "all" target, but not installed into the
+final installed area given by the configure prefix. The
+macros which control installation are:
+
+\begin{itemize}
+\item HD\_INSTALL\_EXTRA: Explicit targets which will
+be "maked" at install time, which take custom actions which do
+not fit into any category. This should be used sparingly.
+\item HD\_INSTALL\_HEADERS: C and/or C++ header files to
+be installed into the top-level include/ directory. Not
+every header file necessarily needs to be installed. It
+is recommended that some care go into designing header
+files so that no more are installed than necessary.
+\item HD\_INSTALL\_HELP: Help/documentation files to
+be installed into the top-level help/ directory.
+\item HD\_INSTALL\_LIBRARIES: Libraries to be installed
+into the top-level lib/ directory.
+\item HD\_INSTALL\_PERL\_LIBS: Perl libraries to be installed
+into the top-level lib/perl directory.
+\item HD\_INSTALL\_PERL\_SCRIPTS: Perl scripts to be installed
+into the top-level scripts directory (currently the same as the top-level
+bin/ directory). At install
+time, Perl scripts will be edited to make sure that they use
+the version of Perl specified in the LHEA\_PERL environment
+variable.
+\item HD\_INSTALL\_PFILES: Parameter files to be installed
+into the top-level syspfiles/ directory.
+\item HD\_INSTALL\_REFDATA: Data files to be installed
+into the top-level refdata/ directory.
+\item HD\_INSTALL\_TASKS: Compiled tasks to be installed
+into the top-level bin/ directory.
+\item HD\_INSTALL\_SHELL\_SCRIPTS: Shell scripts to be installed
+into the top-level scripts directory (currently the same as the top-level
+/bin directory).
+\end{itemize}
+
+All items specified in the above macros will also be
+installed automatically as part of the "publish" step. In
+addition, the publish step publishes the items listed in
+the following macros:
+
+\begin{itemize}
+\item HD\_PUBLISH\_HEADERS: C and/or C++ header files to
+be published into the local build include/ directory. Not
+every header file necessarily needs to be published.
+\item HD\_PUBLISH\_HELP: Help/documentation files to
+be published into the local build help/ directory.
+\item HD\_PUBLISH\_LIBRARIES: Libraries to be published
+into the local build lib/ directory.
+\item HD\_PUBLISH\_PERL\_LIBS: Perl libraries to be published
+into the local build lib/perl directory.
+\item HD\_PUBLISH\_PERL\_SCRIPTS: Perl scripts to be published
+into the local build scripts directory (same as the local build
+tasks directory). At publish
+time, Perl scripts will be edited to make sure that they use
+the version of Perl specified in the LHEA\_PERL environment
+variable.
+\item HD\_PUBLISH\_PFILES: Parameter files to be published
+into the local build syspfiles/ directory.
+\item HD\_PUBLISH\_REFDATA: Data files to be published
+into the local build refdata/ directory.
+\item HD\_PUBLISH\_TASKS: Compiled tasks to be published
+into the local build bin/ directory.
+\item HD\_PUBLISH\_SHELL\_SCRIPTS: Shell scripts to be published
+into the local build scripts directory (same as the local build
+tasks directory).
+\end{itemize}
+
+\subsection{Macros Pertaining To Subdirectories}
+Subdirectories into which the current Makefile should recurse
+when performing all standard actions (default, all, install,
+publish, clean, distclean) can be specified in
+the HD\_SUBDIRS macro.
+
+\chapter{HEAdas Error Handling Facility}
+
+\section{Introduction}
+
+The heautils library contains the HEAdas error handling
+functions, which provide a means by which calling code
+can set and clear error conditions, as well as manage
+supporting information about errors. When an error condition
+is first encountered, a call to the HDerror\_throw function
+sets the error state of the error handler, and adds an
+optional message. Subsequent calls to the HDerror\_hint
+function can be used to place additional messages on the
+error stack. Each of these can produce an error message
+containing the file name and line number where the error
+occurred. When used, this feature in effect provides a
+stack trace of the error, but without using a debugger.
+The HDerror\_reset function can be used to reset the error
+handler to a non-error condition. In this case, the stack
+is erased, and no error code is retained by the stack.
+
+In addition, the HEAdas error facility provides a means
+of establishing default error messages for error codes.
+Several error ranges already exist within HEAdas. For example,
+error numbers between 1 and 999 are associated with Cfitsio
+errors, while -3999 to -3000 are associated with PIL.
+Each of these error codes has an associated standard error
+message. The HEAdas error handler contains a map of each
+error code to its message. Also there is a means to add new
+error maps, in order to provide standard error messsages
+for new software components within different numeric code
+ranges. These maps may be used as a task exits to print the
+standard message if no custom message is available.
+
+For convenience, several macros which wrap these functions
+are also provided. The
+macros HD\_ERR\_SET, HD\_ERR\_THROW, and HD\_ERR\_HINT use the
+functions HDerror\_throw and HDerror\_hint to do their work.
+There were two reasons for defining these macros. One is that
+the macros can check their status arguments before calling
+their underlying functions, thus eliminating the overhead of
+a function call unless an error actually occurs. The second
+is that the functions HDerror\_throw and HDerror\_hint have
+arguments which can be used to give the location
+(source file and line number) of the error. The macros listed
+above do not take these arguments, but use the \_\_FILE\_\_
+and \_\_LINE\_\_ macros to create them when they call the
+appropriate error function.
+
+\section{HEAdas Error Handling API}
+
+The HEAdas Error Handling API contains a number of
+functions and macros. The functions are described first,
+but in practice the macros should be used whenever possible,
+because they are easier to use and offer performance advantages.
+Central concepts are that each error message has an associated
+integer error number, and that the error handler as a whole
+also has an error number, which corresponds to the first error
+which was encountered.
+
+\begin{itemize}
+
+\item[1] int HDerror\_get(void)
+
+Returns the current value of the error handler's
+integer error status variable.
+
+\item[2] int HDerror\_throw(const char * msg, const char * fileName, int line, int errNum)
+
+This function uses the errNum argument to determine if an
+error has occurred, and if one has, changes the state of the error
+handler as appropriate to include the given information about the
+error. The argument msg is a string describing the error. If it
+is NULL no text message will be added. Arguments fileName and
+line are the file name and line number where the error was thrown.
+If fileName is NULL this information will not be included. The
+argument errNum is used in conjunction with the error handler's
+internal error status as follows: if either errNum or the error
+handler's internal status is non-zero, the information about the
+error will be added to the error handler's error message stack.
+If the error handler's internal status is zero, it will be set
+equal to errNum. Otherwise, the error handler's internal status
+will not be changed.
+
+This function cannot be used to reset the error handler's internal
+status to zero after an error. To do this, use HDerror\_reset().
+
+\item[3] int HDerror\_hint(const char * msg, const char * fileName, int line, int errNum)
+
+This function is similar to HDerror\_throw, described above.
+The arguments given may be used to add to the description of
+an error. The difference between the two functions is that
+HDerror\_hint never affects the overall error status of the
+error handler. HDerror\_hint may thus not be used to create
+an error condition, only to comment on an existing error
+condition.
+
+\item[4] int HDerror\_reset(void)
+
+Resets the error handler's status to HD\_OK and clears the error
+message stack.
+
+\item[5] int HDerror\_get\_stack(const char** stack)
+
+This function returns a NULL-terminated array of const char*
+pointers which contains the current stack of messages. The
+standard HEAdas shutdown code which executes just before
+a task exits will print this stack to stderr if the task
+exits with non-zero status.
+
+\item[6] void HDerror\_dump\_silence(int silent)
+
+Sets a silent mode which suppresses all reporting of
+errors. Calling it with a non-0 argument activates silent
+mode, while calling it with an argument of 0 sets non-silent
+(normal) mode. Note that silencing error reporting does not
+prevent error messages from being added to the error stack;
+rather it merely prevents these messages from being displayed.
+
+This function should not be used in general. It is present
+only for the benefit of very unusual tools which return
+a non-0 exit status to indicate something other than an
+error. For example, ftdiff uses a non-0 status to
+indicate that it detected differences between the two
+input files.
+
+\item[7] int HDerror\_dump\_is\_silent(void)
+
+Returns the current silent mode of the error reporting
+mechanism. A non-0 value indicates errors are silenced,
+while a value of 0 indicates errors will be reported.
+
+\item[8] HD\_OK
+
+Macro whose value is 0, used throughout HEAdas software
+to indicate normal (non-error) status.
+
+\item[9] HD\_ERROR\_GET()
+
+Macro which simply calls HDerror\_get(). This is provided
+mainly for completeness and to allow a consistent look and
+feel if other similar macros are used.
+
+\item[10] HD\_ERROR\_THROW(MSG, STATUS)
+
+This macro is provided for more convenient access to the function
+HDerror\_throw(). This macro simply calls the function, using
+MSG for the input argument msg, STATUS for the input argument
+errNum, and filling in the fileName and line arguments using
+ANSI C's \_\_FILE\_\_ and \_\_LINE\_\_ macros.
+
+\item[11] HD\_ERROR\_SET(STATUS)
+
+This macro is provided for more convenient access to the function
+HDerror\_throw(). This macro simply calls the function, using
+NULL for the input argument msg, STATUS for the input argument
+errNum, and filling in the fileName and line arguments using
+ANSI C's \_\_FILE\_\_ and \_\_LINE\_\_ macros.
+
+\item[12] HD\_ERROR\_HINT(MSG, STATUS)
+
+This macro is provided for more convenient access to the function
+HDerror\_hint(). This macro simply calls the function, using
+MSG for the argument msg, STATUS for the argument errNum, and
+filling in the fileName and line arguments using ANSI C's
+\_\_FILE\_\_ and \_\_LINE\_\_ macros.
+
+\end{itemize}
+
+\end{document}

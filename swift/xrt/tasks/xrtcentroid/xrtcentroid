@@ -1,0 +1,1140 @@
+#!/usr/bin/perl
+# File name: xrtcentroid
+# 
+# Task name: xrtcentroid
+# 
+# Description:  
+#                  
+# 
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 :  CS 21/07/2004 - First version
+#      0.1.1 :                  Bug fixed
+#      0.1.2 :  CS 27/07/2004 - Added:
+#                                      input parameter: posfile
+#                                      check if X and Y coord are computed
+#                                      error accurancy calculate
+#      0.1.3 :  CS 28/07/2004 - set precision X and Y tcl
+#                               set precision Error Radius
+#                               round + 0.5
+#                               GetPar return correct val if set from cmd line
+#      0.1.4 :  CS 30/07/2004 - exit from ximage if an error occurs
+#      0.1.5 :  BS 09/08/2004 - Bug fixed on LoadBintable call
+#      0.1.6 :                - bug fixed
+#      0.1.7 :                - bug fixed
+#      0.1.8 :                - bug fixed ExecXimage
+#      0.1.9 :  CS 20/08/2004 - Print Caldb file and output directory
+#      0.2.0 :  CS 30/08/2004 - Only error calculation
+#      0.2.1 :  BS 31/08/2004 - Added check on LoadBintable routine output status
+#                               when process CALDB position error file
+#      0.2.2 :  BS 01/09/2004 - Used ExecXimage2 instead of ExecXimage
+#      0.2.3 :     23/09/2004 - Modified some displayed messages
+#                             - Added check on output dir existence
+#      0.2.4 :  RP 30/09/2004 - Added check on keywork TCTYP(x,y) for photon counting
+#                               Bug fixed on createTclFileInteract ,createTlFile,countHduIMG
+#                               and futlReportError
+#                               Delete function getKeyVal (use GetKeyword)
+#      0.2.5 :  BS 01/02/2005 - Added processing of the input specified extension.
+#                             - Bug Fixed
+#      0.2.6 :  BS 02/02/2005 - Displayed on screen message with calculated error radius
+#                            
+# 
+#      0.2.7 :  BS 03/02/2005 - Added routine to Delete tmp files if exist
+#      0.2.8 :  NS 22/10/2007 - Query to CALDB for posfile with 'DATE-OBS' and 'TIME-OBS' of input file
+#      0.2.9 :  NS 12/03/2008 - New input parameters 'dateobs' and 'timeobs'
+#
+# Notes:        
+# 
+#   type "fhelp xrtcentroid" for parameters description
+#
+# Usage:     
+# 
+#   xrtcentroid  
+#
+# Input files:  
+#
+#   
+# Output files: 
+#
+#
+#
+# HEADAS tasks needed:
+#        pquery2 
+#
+# LHEASOFT tasks needed:
+#        ximage
+#        fimgextract
+#        fimgstat
+#        fselect
+#        fstatistic
+#
+#
+#
+#============================================================#
+
+require "libswxrtperl.pl";
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+use strict;
+
+use vars qw(%Task %Default @Par %Ind);
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use File::Basename;
+
+$Task{status} = 0;
+
+#
+# Specific of the task
+#
+%Task = (
+         start   => `date`,
+         name    => "xrtcentroid",
+         version => "0.2.9",
+         releasedate => "2008-03-12",
+         stem    => "xrtcentroid_0.2.9",
+         clobber => 0,
+         chatter => 3,
+         status  => 0,
+         errmess => "",
+	 );
+#
+#
+#  Defaults
+#
+#
+
+%Default = (
+	    DEFAULT => "DEFAULT",
+	    NONE    => "NONE",
+	    NOTVALDPARNUMB => -999999999
+            );
+#
+&RunningTask;
+#
+
+#############################
+# Get input parameter
+#############################
+if ( ! &GetInputParameters ) {
+    $Task{errmess} = "Error parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+#print "Check  " . &GetValPar("boxra") . " -- " . &GetValPar("boxdec") . "\n";
+
+if (&GetValPar("boxra","set") != 0 )
+{
+
+  if (!&CheckRa("RA",&GetValPar("boxra")))
+  {
+     goto EXITWITHERROR;
+  }
+
+}
+
+if (&GetValPar("boxdec","set") != 0 )
+{
+  if (!&CheckDec("DEC",&GetValPar("boxdec")))
+  {
+     goto EXITWITHERROR;
+  }
+}
+
+#
+# Get directory for output
+#
+
+my $outdir = &GetValPar("outdir");
+
+if ( !-d  $outdir ) 
+{
+    &PrntChty(0,"$Task{stem}: Error: Unable to find '$outdir' directory for output\n");
+    $Task{errmess} = "'$outdir' directory not found"; 
+   goto EXITWITHERROR;
+     
+}
+else
+{
+&PrntChty(0,"$Task{stem}: Info: Output Directory: '$outdir'\n");
+}
+
+$Task{chatter} = &GetValPar("chatter");
+
+#############################
+# File name
+#############################
+# Set Input File Name
+
+my $infile;
+my $all_hdu=1;
+
+my $r_hdu=1;
+
+$infile = &GetValPar("infile");
+
+# File without extension
+my @no_ext = split(/\./, basename($infile));
+
+my @n_hdu = split(/\+/, basename($infile));
+
+
+#
+# Check how many hdu processing
+#
+
+if($#n_hdu )
+{
+
+    $infile=$n_hdu[0];
+    $all_hdu = 0;
+#   print "STO PROCESSANDO SOLAMENTE L'HDU: $n_hdu[1]\n";
+    
+}
+else
+{
+#   print "STO PROCESSANDO TUTTI GLI HDU\n";
+    $all_hdu = 1;
+}
+
+#
+# Set Output File Name
+#
+
+my $outfile = &GetValPar("outfile");
+
+if ( CompUL ($outfile, "DEFAULT") )
+{
+    if ( CompUL (&GetValPar("calcpos"), "no") )
+    {
+	&PrntChty(0,"$Task{stem}: Error: outfile == $outfile, but calcpos set to no\n");
+	$Task{errmess} = "Unable to build output filename"; 
+	goto EXITWITHERROR;
+    }
+    
+    $outfile = $outdir. "/" . $no_ext[0] . ".txt";
+}
+else
+{
+    $outfile = $outdir. "/" . $outfile;
+}
+
+#if (&GetValPar("outfile") eq "prova1.txt"  && &GetValPar("outdir") eq "outdir")
+#{
+#   $outfile = &GetValPar("outdir") . "/" . "outdirprova1.txt";
+#}
+
+if ( CompUL (&GetValPar("clobber"), "no") && -e $outfile)
+{
+  &PrntChty(3,"$Task{stem}: Info: '$outfile' file exists\n");
+  &PrntChty(2,"$Task{stem}: Error: cannot overwrite '$outfile' file\n");
+  &PrntChty(2,"$Task{stem}: Error: Please set the parameter 'clobber' to yes to overwrite it\n");
+   $Task{errmess} = "Error: '$outfile' file exists";
+   goto EXITWITHERROR;
+}
+elsif ( &CompUL (&GetValPar("clobber"), "yes")  &&  -e $outfile) 
+{ 
+   	&PrntChty(3,"$Task{stem}: Info: '$outfile' file exists\n");
+	if (!unlink($outfile) ) 
+	{
+	    &PrntChty(2,"$Task{stem}: Error: Unable to remove '$outfile' file. $!\n");
+	    $Task{errmess} = "Error: Unable to remove '$outfile' file. $!";
+	    goto EXITWITHERROR;
+	}
+	&PrntChty(3,"$Task{stem}: Warning: and parameter 'clobber' set\n");
+	&PrntChty(3,"$Task{stem}: Warning: the '$outfile' file will be overwritten.\n");
+}
+
+# Set TCL File Name
+#@no_ext = split(/\./, basename($outfile));
+
+
+my $tclfile = $outdir. "/" . $no_ext[0] . ".tcl";
+
+#############################
+# CALCPOS = NO
+#############################
+my $sum = 0;
+my $key;
+
+if ( CompUL (&GetValPar("calcpos"), "no") )
+{
+   if ( CompUL (&GetValPar("unit"), "DN") )
+   {
+      $key = "SHORTIMA";
+   }
+   elsif ( CompUL (&GetValPar("unit"), "COUNTS") )
+   {
+      $key = "PHOTON";
+   }
+   else
+   {
+       &PrntChty(2,"$Task{stem}: Error: 'unit' input parameter value not allowed\n");       
+       &PrntChty(2,"$Task{stem}: Error: values allowed are 'COUNTS' and 'DN'\n");       
+       $Task{errmess} = "Error: 'unit' input parameter value not allowed";
+       goto EXITWITHERROR;
+   }
+   $sum = &GetValPar("totalint");
+   if ( $sum !~ /^([-|+])?[0-9]*([.|,]([0-9]+))?((e|E)([-|+])?[0-9]+)?$/ )
+   {
+      $Task{errmess} = "Error: 'totalint' parameter isn't numeric value";
+      goto EXITWITHERROR;
+   }
+
+   goto CALCPOS_NO;
+}
+
+#############################
+# Check key
+#############################
+
+my $flag_img = 1;
+my $fptr = &GetFitsPointer ($infile );
+if ($Task{status}) { 
+    &PrntChty(2, "$Task{stem}: Error: Unable to open file $infile\n");
+    goto EXITWITHERROR;
+}
+
+my $status=0;
+
+#print " ALL_HDU  == $all_hdu\n";
+
+if($all_hdu) 
+{
+    my $naxis= 0;
+    &GetKeyword(undef,undef,$fptr,"NAXIS",\$naxis);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    if ($naxis == 0 ) {
+	fits_movabs_hdu($fptr,2,ANY_HDU,$status);
+	if ($status) {
+	    $Task{errmess} = "Running movabs_hdu (num extension: 2) in $infile";
+	    &PrntChty(2,"$Task{stem}: Error: Unable to move in HDU 2 in $infile\n");
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	}
+    }
+}
+else
+{
+    $r_hdu=$n_hdu[1]+1;
+#    print " MI STO SPOSTANDO IN $r_hdu\n";
+    fits_movabs_hdu($fptr,$r_hdu,ANY_HDU,$status);
+    if ($status) {
+	$Task{errmess} = "Running movabs_hdu (num extension: $r_hdu) in $infile";
+	&PrntChty(2,"$Task{stem}: Error: Unable to move in HDU $r_hdu in $infile\n");
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+}
+
+my $hdutype = 0;
+fits_get_hdu_type($fptr,$hdutype, $status);
+
+#print "HDUTYPE == $hdutype\n";
+
+&GetKeyword(undef,undef,$fptr,"DATAMODE",\$key);
+
+
+
+if ($hdutype == BINARY_TBL)
+{
+    $flag_img = 0;
+
+    if (&CompUL($key, "PHOTON") ) 
+    {
+	my ($numcol,$val);
+	
+	fits_get_colnum($fptr,0,"X",$numcol,$status);
+	if ($status) { 
+	    &PrntChty(2,"$Task{stem}: Error: Cannot get the 'X' column number\n");
+	    &PrntChty(2,"$Task{stem}: Error: CFITSIO error: $status\n");
+	    $Task{status} = 1;
+	    $Task{errmess} = "Column X not found";
+	    goto EXITWITHERROR;
+	}
+
+	&GetKeyword(undef,undef,$fptr,"TCTYP$numcol",\$val);
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	if ($val ne "RA---TAN") {
+	    &PrntChty(2,"$Task{stem}: Error: Expected value of keyword TCTYP$numcol = RA---TAN on file '$infile'\n");
+	    $Task{errmess} = "Not expected value of TCTYP$numcol on '$infile' file";
+	    goto EXITWITHERROR;
+	}
+	
+	fits_get_colnum($fptr,0,"Y",$numcol,$status);
+	if ($status) { 
+	    &PrntChty(2,"$Task{stem}: Error: Cannot get the 'Y' column number\n");
+	    &PrntChty(2,"$Task{stem}: Error: CFITSIO error: $status\n");
+	    $Task{status} = 1;
+	    $Task{errmess} = "Column Y not found";
+	    goto EXITWITHERROR;
+	}
+
+
+	&GetKeyword(undef,undef,$fptr,"TCTYP$numcol",\$val);
+	if ( $Task{status} ) 
+	{ goto EXITWITHERROR; }
+
+	if ($val ne "DEC--TAN") {
+	    &PrntChty(2,"$Task{stem}: Error: Expected value of keyword TCTYP$numcol = DEC--TAN on file '$infile'\n");
+	    $Task{errmess} = "Not expected value of TCTYP$numcol on '$infile' file";
+	    goto EXITWITHERROR;
+	}
+
+    }
+    else
+    { 
+	&PrntChty(2,"$Task{stem}: Error: $key DATAMODE not allowed\n");
+	$Task{status} = 1;
+	$Task{errmess} = "$key DATAMODE not allowed";
+	goto EXITWITHERROR;
+    }
+
+}
+
+
+fits_close_file($fptr,$status);
+
+#############################
+# File
+#############################
+my $sumimg;
+my $extrimg;
+my $sumfits;
+
+if ( $flag_img )
+{
+    
+   $sumimg = $outdir. "/" . $no_ext[0] . "tmp.img";
+   $extrimg = $outdir. "/" . $no_ext[0] . "extr.img";
+   if ( -e $sumimg)
+   {
+       unlink($sumimg);
+   }
+   if ( -e $extrimg)
+   {
+       unlink($extrimg);
+   }
+
+}
+else
+{
+   $sumfits = $outdir. "/" . $no_ext[0] . "tmp.fits";
+   if ( -e $sumfits)
+   {
+       unlink($sumfits);
+   }
+
+
+}
+
+
+#############################
+# Count Image
+#############################
+#my $countImg = -1;
+my @img_list;
+
+if ( $flag_img)
+{
+   #@img_list = &getArrayExtensionImag(&GetValPar("infile"));
+   #if ($Task{status})
+   #{
+   #   goto EXITWITHERROR;
+   #}
+
+   @img_list = countHduIMG($infile, IMAGE_HDU, $all_hdu, $r_hdu);
+
+#   print "Ho trovato $#img_list record\n";
+
+   if ($#img_list < 0)
+   {
+       $Task{errmess} = "Error: No Image extension to process";
+       goto EXITWITHERROR;
+   }
+}
+else 
+{
+    if (&CheckCol($infile,"EVENTS","X",undef))
+    {
+	$Task{errmess} = "Error: X column is empty";
+	goto EXITWITHERROR;
+    }
+    if (&CheckCol($infile,"EVENTS","Y",undef))
+    {
+	$Task{errmess} = "Error: Y column is empty";
+	goto EXITWITHERROR;
+    }
+}
+
+#else
+#{
+
+#print "Dobbiamo processare solamente l'ext indicata $r_hdu\n";
+
+#}
+#############################
+# 
+#############################
+my $ra = Ra2Deg(&GetValPar("boxra"));
+my $dec = Dec2Deg(&GetValPar("boxdec"));
+my $boxradius = &GetValPar("boxradius");
+
+my $hist_deriv = getHistDeriv(&GetValPar("hist"), &GetValPar("deriv"));
+if (&GetValPar("interactive") eq "yes")
+{
+#    print "image_list == $#img_list\n";
+   &createTclFileInteract($tclfile,$infile,$outfile,$ra,$dec,$boxradius,
+                         $hist_deriv, $flag_img,  $all_hdu, $r_hdu,@img_list);
+}
+else
+{
+#    print "image_list == $#img_list\n";
+   &createTclFile($tclfile,$infile,$outfile,$ra,$dec,$boxradius,
+                 $hist_deriv, $flag_img,  $all_hdu, $r_hdu,@img_list);
+}
+
+&PrntChty(0,"$Task{stem}: Info: $tclfile successfully written\n");
+
+my $cmd = "source $tclfile;mycentroid;quit";
+my $err = ExecXimage2($cmd);
+if ($err || ! -e $outfile)
+{
+   &PrntChty(5,"$Task{stem}: Error: ximage $cmd\n");
+   $Task{errmess} = "Error: Running ximage";
+   goto EXITWITHERROR;
+}
+
+
+
+
+#############################
+# Ximage
+#############################
+$sum = 0;
+
+my @str_a = split(/ /, `grep "^X = " $outfile`);
+my $x = $str_a[2];
+
+@str_a = split(/ /, `grep "^Y = " $outfile`);
+my $y  = $str_a[2];
+my $intx = int($x + 0.5);
+my $inty = int($y + 0.5);
+
+my $Xstart = $intx - 25;
+my $Xstop  = $intx + 25;
+my $Ystart = $inty - 25;
+my $Ystop  = $inty + 25;
+
+#if ( CompUL($key, "SHORTIMA") || CompUL($key, "LONGIMA") )
+if ( $flag_img)
+{
+   system("fimgextract infile=$sumimg outfile=$extrimg cols=$Xstart-$Xstop rows= $Ystart-$Ystop clobber=yes");
+   system("fimgstat infile=$extrimg threshlo=0 threshup=INDEF clobber=yes 2>&1 > /dev/null");
+   chop($sum = `pquery2 fimgstat sum`);
+}
+else
+{
+   system("fselect infile=$infile outfile=$sumfits expr=\"X<=$Xstop&&X>=$Xstart&&Y<=$Ystop&&Y>=$Ystart\" clobber=yes");
+   system("fstatistic infile=$sumfits maxval=INDEF minval=INDEF colname=pha rows=- clobber=yes 2>&1 > /dev/null");
+   chop($sum = `pquery2 fstatistic numb`);
+}
+
+#############################
+# CLAC POS = NO
+#############################
+CALCPOS_NO:
+
+#############################
+# CalDB file
+#############################
+my $key_db = "datamode.eq.$key";
+my $posfile;
+my @table;
+my @columns;
+
+push @columns, {name => "ERRMIS"};
+push @columns, {name => "ERRATT"};
+push @columns, {name => "ERRSYS"};
+push @columns, {name => "PAR1"};
+push @columns, {name => "PAR2"};
+my $ext=0;
+
+$posfile=&GetValPar("posfile");
+if ( ! &CompUL ($posfile, "CALDB") )
+{
+    if ($flag_img == 1)
+   {
+      @table = &LoadBinTable($posfile,"IMPOSERR",undef,@columns);
+   }
+   else
+   {
+      @table = &LoadBinTable($posfile,"PCPOSERR",undef,@columns);
+   }
+}
+else
+{
+   my ( $StartDate, $StartTime );
+
+   if ( CompUL (&GetValPar("calcpos"), "no") && CompUL (&GetValPar("infile"), "NONE") )
+   {
+       $StartDate = &GetValPar("dateobs");
+       $StartTime = &GetValPar("timeobs");
+   }
+   else
+   {
+       &GetEventStartDate($infile ,\$StartDate, \$StartTime);
+   }
+
+
+   my ($tmpfile,$tmpext) = &CallQuzcif ("POSERR", $StartDate, $StartTime, $key_db, 1);
+   if(!$Task{status})
+   {
+       my @posfiletmp = @{$tmpfile};
+       my @extfiletmp = @{$tmpext};
+       $posfile = $posfiletmp[0];
+       $ext     = $extfiletmp[0];
+       @table = &LoadBinTable($posfile,"",$ext,@columns);
+   }
+}
+
+
+if($Task{status})
+{
+    
+
+    if ( CompUL (&GetValPar("calcpos"), "no") )
+    {
+	&PrntChty(0,"$Task{stem}: Error: Unable to open '$posfile' CALDB file.\n");
+	&PrntChty(0,"$Task{stem}: Error: Unable to calculate error radius\n");
+	$Task{errmess} = "Unable to write $outfile, nothing has been done";
+	goto EXITWITHERROR;
+    }
+    else
+    {
+	&PrntChty(0,"$Task{stem}: Warning: Unable to open '$posfile' CALDB file.\n");
+	&PrntChty(0,"$Task{stem}: Warning: Unable to calculate error radius\n");
+	&PrntChty(0,"$Task{stem}: Warning: $outfile contains centroid position only\n");
+    }
+}
+else
+{
+    &PrntChty(0,"$Task{stem}: Info: processing '$posfile' CALDB file\n");
+    my $accurancy = $table[0]->{PAR1} * $sum ** (- $table[0]->{PAR2});
+    my $error = sqrt($table[0]->{ERRMIS} ** 2 + $table[0]->{ERRATT} ** 2 + $table[0]->{ERRSYS} ** 2 + $accurancy ** 2);
+    
+    &PrntChty(0,"$Task{stem}: Info: Error radius (arcsec) = $error\n");
+    open (OUT, ">> $outfile");
+    printf OUT ("Error radius (arcsec) = %.2f \n", $error);
+    close (OUT);
+
+ 
+}
+
+&PrntChty(0,"$Task{stem}: Info: $outfile successfully written\n");
+# remove tcl file
+rmTempFiles($tclfile, $sumimg, $extrimg, $sumfits);
+&Success;
+exit (0);
+
+EXITWITHERROR:
+
+if(-e $tclfile)
+{
+    rmTempFiles($tclfile);
+}
+
+if(-e $sumimg)
+{
+    rmTempFiles($sumimg);
+}
+
+if(-e $extrimg)
+{
+    rmTempFiles($extrimg);
+}
+
+if(-e $sumfits)
+{
+   rmTempFiles($sumfits);
+}
+&Error;
+exit (1);
+
+#------------------------------------------------------------
+# Exec Ximage
+#-----------------------------------------------------------
+sub ExecXimage2
+{
+   my ($cmd) = @_;
+
+   my $err = system("ximage \"$cmd\"");
+   return $err;
+}
+#------------------------------------------------------------
+# Remove temp files
+#-----------------------------------------------------------
+#
+sub rmTempFiles
+{
+   my (@filelist) = @_;
+
+   if ( CompUL(&GetValPar("cleanup"), "yes") )
+   {
+       my $file;
+       foreach $file (@filelist) {
+	   if ( defined($file) && !unlink($file))
+	   {
+	       &PrntChty(5,"$Task{stem}: Warning: cannot delete $file\n");
+	   }
+       }
+   }
+}
+#------------------------------------------------------------
+# TCL File
+#-----------------------------------------------------------
+#
+sub createTclFile
+{
+   my ($tclfile,$infile,$outfile,$ra,$dec,$boxradius,$hist_deriv,
+       $flag_ima,  $all_hdu, $r_hdu,@img_list) = @_;
+
+   if (!  (open F, "> $tclfile"))
+   {
+      $Task{errmess} = "TCL File: '$tclfile' not open";
+      goto EXITWITHERROR;
+   }
+   print F "proc mycentroid {} {\n";
+
+   print F "   cey 2000\n";
+
+#   print "image_list == $#img_list\n";
+   if ($#img_list >= 0)
+   {
+      #print F "   read \"$infile+1\";save_ima\n";
+
+      #print F "for {set i 2} {\$i < $count} {incr i} {\n";
+      #print F "read \"$infile+\$i\";sum_ima;save_ima\n";
+      #print F "}\n";
+
+
+       for (my $i=0; $i <= $#img_list; $i++)
+       {
+#	   print " $i <= $#img_list\n";
+	   if ( $i == 0 ) { print F "   read \"$infile+$img_list[$i]\";save_ima\n"; }
+	   else { print F "   read \"$infile+$img_list[$i]\";sum_ima;save_ima\n"; }
+       }
+       print F "   write_ima/file=\"$sumimg\"\n";
+       
+   }
+   elsif(!$all_hdu)
+   {
+      print F "   read/size=1000 \"$infile+$r_hdu\"\n";
+   }
+   else
+   {
+      print F "   read/size=1000 \"$infile\"\n";
+   }
+
+   print F "   coord/ra=$ra/dec=$dec\n";
+
+   if (!defined($hist_deriv)){$hist_deriv="";}
+   print F "   centroid/xpix=\"\$coord(xpix)\"/ypix=\"\$coord(ypix)\"/boxradius=$boxradius$hist_deriv\n";
+   print F "   set fileout [open \"$outfile\" w]\n";
+
+   print F "   puts \$fileout \"Calculated Centroid\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   puts \$fileout \"RA(degrees) = \$centroid(ra)\"\n";
+   print F "   puts \$fileout \"Dec(degrees) = \$centroid(dec)\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   coord/ra=\$centroid(ra) dec=\$centroid(dec)\n";
+   print F "   puts \$fileout \"RA(hh mm ss.s) = \$coord(xsfmt)\"\n";
+   print F "   puts \$fileout \"Dec(dd mm ss.s) = \$coord(ysfmt)\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   puts \$fileout \"LII(degrees) = \$coord(lii)\"\n";
+   print F "   puts \$fileout \"BII(degrees) = \$coord(bii)\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   puts \$fileout \"X = [format %.2f \$coord(xpix)]\"\n";
+   print F "   puts \$fileout \"Y = [format %.2f \$coord(ypix)]\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   close \$fileout\n";
+   print F "}\n";
+   close F;
+}
+sub createTclFileInteract
+{
+   my ($tclfile,$infile,$outfile,$ra,$dec,$boxradius,$hist_deriv,
+       $flag_ima,  $all_hdu, $r_hdu,@img_list) = @_;
+
+   if (!  (open F, "> $tclfile"))
+   {
+      $Task{errmess} = "TCL File: '$tclfile' not open";
+      goto EXITWITHERROR;
+   }
+   print F "proc mycentroid {} {\n";
+
+#   print "image_list == $#img_list\n";
+
+   if ($#img_list >= 0)
+   {
+      #print F "   read \"$infile+1\";save_ima\n";
+
+      #print F "for {set i 2} {\$i < $count} {incr i} {";
+      #print F "read \"$infile+\$i\";sum_ima;save_ima";
+      #print F "}\n";
+       
+       
+      for (my $i=0; $i <= $#img_list; $i++)
+      {
+#	  print " $i <= $#img_list\n";
+	  if ( $i == 0 ) { print F "   read \"$infile+$img_list[$i]\";save_ima\n"; }
+	  else { print F "   read \"$infile+$img_list[$i]\";sum_ima;save_ima\n"; }
+      }
+
+      print F "   write_ima/file=\"$sumimg\"\n";
+      
+  }
+   elsif(!$all_hdu)
+   {
+      print F "   read/size=1000 \"$infile+$r_hdu\"\n";
+   }
+   else
+   {
+       print F "   read/size=1000 \"$infile\"\n";
+   }
+
+   print F "   cpd /xtk\n";
+   print F "   disp\n";
+
+   if (!defined($hist_deriv)){$hist_deriv="";}
+   print F "   centroid/cur$hist_deriv\n";
+
+   print F "   set fileout [open \"$outfile\" w]\n";
+
+   print F "   puts \$fileout \"RA(degrees) = \$centroid(ra)\"\n";
+   print F "   puts \$fileout \"Dec(degrees) = \$centroid(dec)\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   coord/ra=\$centroid(ra) dec=\$centroid(dec)\n";
+   print F "   puts \$fileout \"RA(hh mm ss.s) = \$coord(xsfmt)\"\n";
+   print F "   puts \$fileout \"Dec(dd mm ss.s) = \$coord(ysfmt)\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   puts \$fileout \"LII(degrees) = \$coord(lii)\"\n";
+   print F "   puts \$fileout \"BII(degrees) = \$coord(bii)\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   puts \$fileout \"X = [format %.2f \$coord(xpix)]\"\n";
+   print F "   puts \$fileout \"Y = [format %.2f \$coord(ypix)]\"\n";
+   print F "   puts \$fileout \" \"\n";
+
+   print F "   close \$fileout\n";
+   print F "}\n";
+   close F;
+}
+sub getHistDeriv
+{
+   my ($h, $d) = @_;
+
+   my $hist_deriv;
+   if ( CompUL(&GetValPar("hist"), "yes") )
+   {
+      $hist_deriv = "/hist";
+   }
+   if (CompUL(&GetValPar("deriv"), "yes"))
+   {
+      $hist_deriv = $hist_deriv . "/deriv";
+   }
+   return $hist_deriv;
+}
+#
+#------------------------------------------------------------
+# Get Input Parameter
+#-----------------------------------------------------------
+#
+sub GetPar
+{
+   my ($key) = @_;
+   my $file = "xrtcentroid";
+   my $val = "";
+
+   if (&GetValPar($key,"set") == 0 )
+   {
+      chop($val = `pquery2 xrtcentroid $key`);
+#      if (!$val && $val != 0)
+      if ($val eq "")
+      {
+         &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 $file $key'\n");
+         goto EXITWITHERROR;
+         #return 1;
+      }
+      &SetValPar($key,$val);
+      &SetValPar($key,2,"set");
+   }
+   else
+   {
+      $val = &GetValPar($key);
+   }
+   return $val;
+}
+sub GetInputParameters {
+
+   use vars qw( %Task $datamode @Par %Ind);
+ 
+   my ( $name, $indref, $p, $r);
+
+   ($indref,@Par) = &GetParameterList();
+
+   $Task{chatter} = 3;
+
+   if ($Task{status})
+   {
+      goto EXITWITHERROR;
+   }
+   
+   %Ind = %$indref;
+
+   if (! &LoadParameterFromCmdLine(@ARGV))
+   {
+       $Task{errmess} = "Error parsing input parameters";
+#       &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+       goto EXITWITHERROR;
+       #return 1;
+   }
+
+   GetPar("outfile");
+   GetPar("outdir");
+   GetPar("posfile");
+   $r = GetPar("calcpos");
+   if ( CompUL($r, 'no') )
+   {
+       GetPar("unit");
+       GetPar("totalint");
+       
+       if ( CompUL(GetPar("posfile"),'CALDB') )
+       {
+	   $r = GetPar("infile");
+	   
+	   if ( CompUL($r, 'NONE') )
+		{
+		    GetPar("dateobs");
+		    GetPar("timeobs");
+		}
+	    }   
+   }
+   else
+   {
+      GetPar("infile");
+   
+      $r = GetPar("interactive");
+      if ( CompUL($r, 'no') )
+      {
+         GetPar("boxra");
+         GetPar("boxdec");
+         GetPar("boxradius");
+      }
+   }
+   GetPar("hist");
+   GetPar("deriv"); 
+   GetPar("clobber");
+   GetPar("chatter");
+   GetPar("cleanup");
+
+   return 1;
+}
+   
+sub countHduIMG
+{
+   my ($file, $type, $all_hdu, $r_hdu) = @_;
+
+   my ($ffp);
+   $ffp = fwrpOpen($file, READONLY);
+   if (! $ffp)
+   {
+      $Task{errmess} = "Error: Unable to find '$file' file";
+      goto EXITWITHERROR;
+   }
+
+   my ($type1, $type2, $rem);
+   my $count = 0;
+   my @hdu_list ;
+   my $hdun = 1;
+   my ($err_1, $err_2);
+ 
+   if($all_hdu)
+   {
+       while (!fwrpMovabs($ffp, $hdun))
+       {
+	   $err_1 = fwrpReadKey ($ffp, TSTRING, "CTYPE1", \$type1, \$rem);
+#	   if (($err != 0) && ($hdun != 1))
+#	   {
+#	       $Task{errmess} = "Error: Unable to read CTYPE1 keyword in '$file' file";
+#	       next;
+#	   }
+	   
+	   $err_2 = fwrpReadKey ($ffp, TSTRING, "CTYPE2", \$type2, \$rem);
+#	   if (($err != 0) && ($hdun != 1))
+#	   {
+#	       $Task{errmess} = "Error: Unable to read CTYPE2 keyword in '$file' file";
+#	       goto EXITWITHERROR;
+#	   }
+	   
+	   if ($type1 eq "RA---TAN" && $type2 eq "DEC--TAN" && $err_1 == 0 && $err_2 == 0)
+	   {
+	       $hdu_list[$count] = $hdun-1;
+	       $count ++;
+	   }
+
+#	   print " count == $count hdu == $hdu_list[0]\n";
+
+	   $hdun ++;
+       }
+
+       
+       &PrntChty(5,"$Task{stem}: Info: $file contains $count image(s)\n");
+   }
+   else
+   {
+#       printf "STO CONTROLLANDO L'HDU $r_hdu\n";
+       fwrpMovabs($ffp, $r_hdu);
+       $err_1 = fwrpReadKey ($ffp, TSTRING, "CTYPE1", \$type1, \$rem);
+       if (($err_1 != 0))
+       {
+	   $Task{errmess} = "Error: Unable to read CTYPE1 keyword in '$file' file";
+       }
+ 
+       $err_2 = fwrpReadKey ($ffp, TSTRING, "CTYPE2", \$type2, \$rem);
+       if (($err_2 != 0))
+       {
+	   $Task{errmess} = "Error: Unable to read CTYPE2 keyword in '$file' file";
+       }
+ 
+#       print"err_1 = $err_1  * err_2 == $err_2 * $type1 * $type2\n";
+
+       if ($type1 eq "RA---TAN" && $type2 eq "DEC--TAN" && $err_1 == 0 && $err_2 == 0 )
+       {
+	   $hdu_list[0] = $r_hdu - 1;
+	   $count++;
+       }
+       else
+       {
+	   &PrntChty(0,"$Task{stem}: Error: Unable to process '$file' file.\n");
+	   &PrntChty(4,"$Task{stem}: Error: 'CTYPE1' = $type1 and 'CTYPE2' = $type2.\n");
+
+	   $Task{errmess} = "Error: Problem with CTYPEn keyword in '$file' file";
+	   goto EXITWITHERROR;
+       }  
+       
+       &PrntChty(5,"$Task{stem}: Info: $file contains $count image(s)\n");
+   }
+
+
+
+   fwrpClose($ffp);
+   
+   return @hdu_list;
+}
+#
+#------------------------------------------------------------
+# Fits I/O Utility
+#-----------------------------------------------------------
+#
+sub futlReportError {
+   my ($funz, $ffp, $status) = @_;
+
+   if (&GetValPar("chatter") == 5)
+   {
+      if ($status)
+      {
+         fits_report_error(*STDERR, $status);
+         #exit($status);
+      }
+   }
+}
+#
+#------------------------------------------------------------
+# Fits I/O Wrapper
+#-----------------------------------------------------------
+#
+sub fwrpOpen {
+   my ($name, $mode) = @_;
+   my $ffp = 0;
+   my $status = 0;
+
+   fits_open_file($ffp, $name, $mode, $status);
+   futlReportError("open", $ffp, $status);
+   return $ffp;
+}
+sub fwrpClose
+{
+   my ($ffp) = @_;
+   my $status=0;
+
+   fits_close_file($ffp, $status);
+   futlReportError("close", $ffp, $status);
+   return $status;
+}
+sub fwrpReadCol
+{
+   my ($ffp, $type, $key, $val, $rem) = @_;
+   my $status=0;
+
+   #fits_read_col($ffp, $type, col, 1, 1, nrows, 0, val, 0, &status);
+   #fits_read_key($ffp, $type, $key, $$val, $$rem, $status);
+   futlReportError("read key", $ffp, $status);
+   return $status;
+}
+sub fwrpReadKey
+{
+   my ($ffp, $type, $key, $val, $rem) = @_;
+   my $status=0;
+
+   fits_read_key($ffp, $type, $key, $$val, $$rem, $status);
+   futlReportError("read key", $ffp, $status);
+   return $status;
+}
+sub fwrpMovnam
+{
+   my  ($ffp, $name) = @_;
+   my $status=0;
+   my $hdutype;
+   my $extver = 0;
+
+   fits_movnam_hdu($ffp, ANY_HDU, $name, $extver, $status);
+   return $status;
+}
+sub fwrpMovabs
+{
+   my  ($ffp, $hdunum) = @_;
+   my $status=0;
+   my $hdutype;
+   my $end = 1;
+
+   fits_movabs_hdu($ffp, $hdunum, $hdutype, $status);
+
+#   print "STATUS == $status\n";
+   return $status;
+}
+sub fwrpGetHduType
+{
+   my  ($ffp, $hdunum) = @_;
+
+   my $status=0;
+   my $type;
+
+   fits_get_hdu_type($ffp, $type, $status);
+   futlReportError("move", $ffp, $status);
+   return $type;
+}

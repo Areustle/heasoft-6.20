@@ -1,0 +1,466 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+sxiflagpix -- Flag pixel STATUS for SXI event data
+
+
+<h2>USAGE</h2>
+
+<tt>sxiflagpix infile outfile outbadimg hotpixfile flickpixfile </tt> 
+
+
+<h2>DESCRIPTION</h2>
+
+<p>
+'sxiflagpix' flags SXI events that may be unsuitable to use in data
+analysis, such as those that fall on defective or non-sensitive pixels;
+those that might have missing or compromised telemetry; and those for which
+processing has encountered certain errors.   The STATUS column is updated,
+encoding the flagging condition for each event.  This tool does not
+actually filter or remove events, however the STATUS column can be used for
+later filtering.  An image in DET coordinates showing the location of
+unsuitable pixels is also output for later use in constructing an ARF or
+flat field image.
+</p>
+
+<p>
+The tool uses several input files to assign STATUS: a list of bad or dead
+pixels or columns that don't change ("badpixfile"); a list of hot pixels,
+which can change on short timescales and are observation-specific
+("hotpixfile"); a list of flickering pixels, which can be produced by the
+task searchflickpix ("flickpixfile"); and a mask file that encodes the
+location of CCD boundaries, segments, calibration source regions, and other
+regions that don't change ("maskfile").  The locations of the charge
+injection rows are read from the input event list header, as are settings
+for window mode and area discrimination.  
+</p>
+
+<p>
+In addition to an output event list with updated STATUS column, sxiflagpix
+optionally outputs a bad pixel list (specified by the parameter
+'outbadpix') containing the events that have any STATUS flag set by the
+tool.  Also output is an image (specified by the parameter 'outbadimg') in
+SXI DET coordinates containing a value for each pixel corresponding to its
+STATUS.  The values in these files are, in order of increasing precedence:
+</p>
+
+<p>
+0: a good pixel  <br>
+1: a pixel inside the calibration source region  <br>
+2: a bad pixel set by the parameter "bad_status"  <br>
+-1: a pixel out of the CCD, window, or area discrimination region
+</p>
+
+<p>
+For example, a pixel inside the calibration region but flagged as bad 
+has value 2 in the output image.  Flickering pixels are not included in
+this map because they can depend on time.  Note that the output bad pixel
+list contains only those pixels for which events are found in the input
+file, while the output image contains all pixels.
+</p>
+
+<p>
+Below is a table mapping flag bit position in the STATUS column to
+particular flagging conditions.  If the flag is set to 1, that condition is
+flagged.  Unless otherwise noted, the STATUS values apply to the central
+pixel of an event.  Tools other than sxiflagpix that set STATUS values are
+noted in parentheses.  "CI" indicates "charge injection."
+</p>
+
+<pre>
+===========================================================================
+flag   description
+===========================================================================
+1      All bad events set by "bad_status" parameter
+2      Inside the calibration source region
+---------------------------------------------------------------------------
+3      Out of CCD                                             (Out of area)
+4      Out of window
+5      Out of area discrimination
+---------------------------------------------------------------------------
+6      CI row                                                      (Pixels)
+7      Bad pixel from CALDB
+8      Bad column from CALDB
+9      Hot pixel from pre-pipeline
+10     Flickering pixel
+---------------------------------------------------------------------------
+11     CCD boundary                                            (Boundaries)
+12     Window boundary
+13     Segment boundary
+14     Area discrimination boundary
+15     At least one 3x3 surrounding pixel has a bad status
+---------------------------------------------------------------------------
+16     CI trailing row                                          (Neighbors)
+17     CI preceding row
+18     Preceding/following of bad column
+19     Neighbors of bad/hot pixel and bad column
+20     Neighbors of flickering pixel
+21     Neighbors of preceding/following of bad column
+22     Neighbors of CCD/window boundary
+23     Neighbors of segment boundary
+---------------------------------------------------------------------------
+24     (sxiphas) 3x3 info is present but 5x5 is absent             (Others)
+25     (sxiphas) 3x3 is absent
+26     (sxipi - general) PHAS[0] &lt; event threshold
+27     (sxipi - vtevnodd) Video temperature is out of range
+28     (sxipi - vtevnodd) Lack of video temp HK at time close to the event
+29     (sxipi - chtrail/CTI) Correction value is negative
+30     (sxipi - general) Null value by correction process
+---------------------------------------------------------------------------
+31     1st trailing row of the CI rows                        (Diagnostics)
+32     1st preceding row of the CI rows
+33     2nd trailing row of the CI rows
+34     2nd preceding row of the CI rows
+35     3rd trailing row of the CI rows
+36     3rd preceding row of the CI rows
+---------------------------------------------------------------------------
+37     Cosmic ray echo pixel                                  (Cosmic Rays)
+---------------------------------------------------------------------------
+38-48  Reserved
+===========================================================================
+</pre>
+
+<p>
+The special STATUS flag 1 is set for any event that has a STATUS flag
+listed in the "bad_status" parameter.  This is to enable easy filtering
+syntax later in the processing, since good events can be extracted with a
+simple filter expression.
+</p>
+
+<p>
+Several STATUS conditions apply to events where neighboring pixels are
+flagged.  Because an event is composed of a 3x3 pixel island, the quality
+of the region immediately surrounding the event center must be taken into
+account.  For example, a bad pixel in the outer ring of a 3x3 island does not 
+produce a valid pulse height, and this could result in a event with an
+otherwise unacceptable grade being accepted as a good event.  The
+parameters 'npixnbr' and 'nboundnbr' can be used to set the maximum
+distance away from a bad pixel or boundary to flag further pixels and
+events.  In addition, for more flexibility, sxiflagpix writes a new column
+PHAS_MASK to the output event list.  This is a 9-element mask of the PHAS
+column, with each element indicating whether the corresponding pixel i in
+PHAS is good (PHAS_MASK[i]=0) or bad (PHAS_MASK[i]=1).  PHAS_MASK can be
+used later in sxipi to determine how to grade the event and calculate the
+summed PHA, using the sxipi 'badpixopt' parameter.  Since sxipi can
+overwrite the PHAS column, the ability to reset it to the original
+telemetry values is provided here with the 'copyphas' parameter.
+Similarly, 'resetflags' can be used to reset all the sxiflagpix STATUS
+flags and the elements of PHAS_MASK to zero. Using 'resetflags=yes' does
+not change the flags shown above that are set by sxipi or sxiphas.
+</p>
+
+<p>
+Some pixels are affected by cosmic ray echo, in which a cosmic ray
+detected during an SXI dark frame can cause an echo in a different
+readout segment.  This echo then causes those pixels to have a pulse
+height above the split threshold for the duration of the observation,
+leading to incorrect grades for events centered in neighboring pixels.
+Specifying 'echoflag=yes' causes 'sxiflagpix' to search for such
+pixels in all SXI segments except the aimpoint segment (CCD_ID==1,
+SEGMENT==1), which is free of this effect.  If at least 'echofrac' of
+the events containing a given pixel have a pulse height greater than
+or equal to 'echospth' in that pixel, then the pixel is considered a
+cosmic ray echo pixel.  Any events centered 'echonbr' pixels from
+such pixels have STATUS flag 37 set, and if flag 37 is specified in
+'bad_status', any pixels within 'echonbr' of that pixel will be
+marked as bad in the 'outbadimg'.  For SXI, 'echonbr=2' is the
+recommended value, which will flag a 5x5 area of pixels around any
+cosmic ray echo pixel.  Only pixels that have data from at least
+'echomin' events are considered.  An image of the echo fraction can
+be written out as an extension to 'outbadimg' if 'echomap=yes', and
+used for diagnostic purposes.
+</p>
+
+<p>
+Charge trailed or leaked from charge injection rows can produce spurious
+events in several rows immediately surrounding the injected rows,
+manifesting as noise at soft energies.  The parameters 'citrailnbr' and
+'ciprenbr' can be used to tune a compromise between lower noise and higher
+efficiency, since flagging additional rows reduces the effective area.  
+</p>
+
+<p>
+Some examples of how to use the STATUS flags in filtering and extracting
+events are shown below in the "Examples" section.  Also see the help for
+'calc_express' for proper filtering syntax.
+</p>
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<p>
+<dt>infile [filename]</dt>
+<dd>Name of input SXI FITS event list.</dd>
+</p>
+
+<p>
+<dt>outfile [filename]</dt>
+<dd>Name of output SXI FITS event list.</dd>
+</p>
+
+<p>
+<dt>(outbadpix) [filename]</dt>
+<dd>Name of output list of events with bad pixels.  If set to NONE, the
+task does not output this file.</dd>
+</p>
+
+<p>
+<dt>outbadimg [filename]</dt>
+<dd>Name of output image containing the bad pixel status.  If set to NONE,
+the task does not output this file.  If 'echoflag=yes' and
+'echomap=yes', then this output file also contain a map of the
+fraction of cosmic ray echo pixels in the first image extension.</dd>
+</p>
+
+<p>
+<dt>(badpixfile = CALDB) [filename]</dt>
+<dd>Name of input bad pixel list.  If set to CALDB, the file is read from
+the calibration database.  If set to NONE, the task does not use this
+calibration information.</dd>
+</p>
+
+<p>
+<dt>hotpixfile [filename]</dt>
+<dd>Name of observation-specific input hot pixel list.  If set to NONE, the
+task does not use this information.</dd>
+</p> 
+
+<p>
+<dt>flickpixfile [filename]</dt>
+<dd>Name of observation-specific input flickering pixel list.  If set to
+NONE, the task does not use this information.</dd>
+</p> 
+
+<p>
+<dt>(maskfile = CALDB) [filename]</dt>
+<dd>Name of input mask file for the calibration sources and boundary
+regions.  If set to CALDB, the file is read from the calibration
+database.</dd>
+</p> 
+
+<p>
+<dt>(npixnbr = 1) [integer]</dt>
+<dd>Distance in pixels from a hot pixel, bad pixel, or bad column
+to flag a neighbor pixel.</dd>
+</p>
+
+<p>
+<dt>(nboundnbr = 1) [integer]</dt>
+<dd>Distance in pixels from a boundary to flag a neighbor pixel.</dd>
+</p>
+
+<p>
+<dt>(citrailnbr = 2) [integer]</dt>
+<dd>Distance in pixels trailing a charge injection (CI) row to flag a
+neighbor pixel.</dd>
+</p>
+
+<p>
+<dt>(ciprenbr = 1) [integer]</dt>
+<dd>Distance in pixels preceding a charge injection (CI) row to flag a
+neighbor pixel.</dd>
+</p>
+
+<p>
+<dt>(echoflag = yes) [boolean]</dt>
+<dd>If set to yes, cosmic ray echo pixels are flagged ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(echonbr = 2) [integer]</dt>
+<dd>Distance in pixels from a cosmic ray echo pixel to flag a neighbor
+pixel. If 'echoflag=no', this parameter is ignored.</dd>
+</p>
+
+<p>
+<dt>(echomin = 6) [integer]</dt>
+<dd>Minimum number of events for the cosmic ray echo fraction
+calculation. If 'echoflag=no', this parameter is ignored.</dd>
+</p>
+
+<p>
+<dt>(echospth = 15) [integer]</dt>
+<dd>Split threshold for cosmic ray echo fraction calculation. If
+'echoflag=no', this parameter is ignored.</dd>
+</p>
+
+<p>
+<dt>(echofrac = 0.7) [float]</dt>
+<dd>Minimum fraction of hits defining a cosmic ray echo pixel.  For any
+pixel contained in at least 'echomin' events, if at least 'echofrac' of
+those events have a pulse height above 'echospth', then the pixel is
+considered a cosmic ray echo pixel. If 'echoflag=no', this parameter is
+ignored.</dd>
+</p>
+
+<p>
+<dt>(echomap = no) [boolean]</dt>
+<dd>If set to yes, the cosmic ray echo pixel fraction map is output
+(yes/[no]).  This is an image in DET coordinates that shows the fraction of
+pixels with pulse height above 'echospth' and can be used for diagnostic
+purposes.  The image is saved as the first extension in 'outbadimg'.
+If 'outbadimg=NONE' or 'echoflag=no', this parameter is ignored.</dd>
+</p>
+
+<p>
+<dt>(gtifile = NONE) [filename]</dt>
+<dd>Name of input GTI file for cosmic ray echo fraction calculation. If
+a file is specified, only events within the GTI are used to determine
+which pixels are affected by cosmic ray echo.  If set to NONE, all
+events in 'infile' are used.</dd>
+</p>
+
+<p>
+<dt>(bad_status = "3:12,16:20,25:28,30,37") [string] </dt>
+<dd>List of status flags which are considered "bad".  These is used to set 
+STATUS flag 1 and in the output bad pixel image.  Colons can be used to
+specify a range (e.g., 3:5,7 = 3,4,5,7).</dd>
+</p>
+
+<p>
+<dt>(copyphas = yes) [boolean]</dt>
+<dd>If set to yes, the task copies the original PHAS column before
+processing ([yes]/no).  This overwrites the PHAS column with the contents
+of PHAS_INNER3X3, which is the original telemetered pixel pulse heights of
+the 3x3 event island.
+</dd>
+</p>
+
+<p>
+<dt>(resetflags = yes) [boolean]</dt>
+<dd>If set to yes, the task resets all sxiflagpix STATUS flags (i.e., flags
+1-23) ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(buffer = -1) [integer] </dt>
+<dd>Rows to buffer (-1=auto, 0=none, >0=numrows). </dd>
+</p>
+
+<p>
+<dt>(clobber = no) [boolean]</dt>
+<dd>Overwrites the existing output file if set to yes (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(chatter = 1) [integer] </dt>
+<dd>Chatter level for output. Set to 0 to suppress output,
+or to 1, 2, or 3 for increasing the chatter of the output.</dd>
+</p>
+
+<p>
+<dt>(logfile = !DEFAULT) [string]</dt>
+<dd>Log filename. If set to DEFAULT uses the name of the task and, if
+preceded by '!', overwrite the file if it exists. If set to NONE no
+log file is created.</dd>
+</p>
+
+<p>
+<dt>(debug = no) [boolean]</dt>
+<dd>Diagnostic output is printed out on the screen if set to yes
+(yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(history = yes) [boolean]</dt>
+<dd>Records tool parameters in HISTORY if set to yes ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(mode = ql) [string ql|hl|q]</dt>
+<dd>Mode to query the parameter file.
+Acceptable values include: "ql" (query and learn/remember), "hl" (hidden and learn/remember), "q" (query but don't remember), "h" (hidden).</dd>
+</p>
+
+</dl>
+
+<h2>EXAMPLES</h2>
+
+<ol>
+
+<li> Run sxiflagpix with default parameters.
+<pre>
+sxiflagpix infile="input.evt" outfile="output.evt" outbadimg="outbadimg.fits" \
+     hotpixfile="hotpix.fits" flickpixfile="flickpix.fits"
+</pre>
+</li>
+
+<li> Run sxiflagpix without bad pixel file and flickering pixel file.
+<pre>
+sxiflagpix infile="input.evt" outfile="output.evt" outbadimg="outbadimg.fits" \
+     hotpixfile="hotpix.fits" flickpixfile=NONE badpixfile=NONE
+</pre>
+</li>
+
+<li> Run sxiflagpix with more restrictive flagging of rows neighboring the
+     charge injection rows.
+<pre>
+sxiflagpix infile="input.evt" outfile="output.evt" outbadimg="outbadimg.fits" \
+     hotpixfile="hotpix.fits" flickpixfile="flickpix.fits" \
+     citrailnbr=4 ciprenbr=2
+</pre>
+</li>
+
+<li> Run sxiflagpix with non-default bad_status setting.
+<pre>
+sxiflagpix infile="input.evt" outfile="output.evt" outbadimg="outbadimg.fits" \
+     hotpixfile="hotpix.fits" flickpixfile="flickpix.fits" \
+     bad_status="3:9,11:12,16"
+</pre>
+</li>
+
+<li> (After running sxiflagpix) extract only those events from the output, 
+which are "good", i.e. which have STATUS flag 1 set to 0.  Note the use of
+a vector element, which in this case is STATUS[1] to get flag 1.  Also note
+the bit mask "b0".
+<pre>
+ftcopy "output.evt[events][STATUS[1]==b0]" output_filtered.evt
+</pre>
+</li>
+
+<li> (After running sxiflagpix) extract good events (STATUS flag 1 = 0)
+only in the calibration source regions (STATUS flag 2 = 1). 
+<pre>
+ftcopy "output.evt[events][STATUS[1]==b0 && STATUS[2]==b1]" output_filtered.evt
+</pre>
+Another way to do the same filtering, using the "bxxx" bit mask notation,
+which is explained fully under "calc_express".  The wild card "x" indicates
+any value is allowed.
+<pre>
+ftcopy \
+     "output.evt[events][STATUS==b01xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]" \
+     output_filtered.evt
+</pre>
+</li>
+
+</ol>
+
+<h2>SEE ALSO</h2>
+
+<p>
+searchflickpix, sxiphas, sxipi, calc_express
+</p>
+
+<h2>LAST MODIFIED</h2>
+
+<p>
+November 2016
+</p>
+
+</body>
+</html>
+
+

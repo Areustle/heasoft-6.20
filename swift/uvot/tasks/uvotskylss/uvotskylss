@@ -1,0 +1,464 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotskylss/uvotskylss,v $
+# $Revision: 1.3 $
+# $Date: 2010/11/09 23:04:31 $
+#
+#	Given a FITS file containing UVOT (raw or sky) images, create a FITS file
+#	containing corresponding raw LSS maps.  If an attitude file is provided,
+#	project the raw LSS maps onto the sky.  If requested, sum the sky LSS maps.
+#
+#	Specifying an infile with filtering is not handled.
+#
+# $Log: uvotskylss,v $
+# Revision 1.3  2010/11/09 23:04:31  rwiegand
+# Clean strings in FITS headers when reading them to fix a problem Wayne
+# reported where specifying a filename without an extension results in trying
+# to move to a bogus extension like LSSENS'UVM2    '.
+#
+# Revision 1.2  2010/03/03 21:58:41  rwiegand
+# Include an HDU name in the LSS sub-image.
+#
+# Revision 1.1  2009/12/04 19:45:51  rwiegand
+# New tool for creating and summing large scale sensitivity maps.
+#
+
+use strict;
+
+package UVOT::SkyLSS;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+
+
+
+{
+	my $task = __PACKAGE__->new;
+	$task->run;
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			iterateInput
+			sumOutput
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	# sum=boolean
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file attfile=file
+				teldeffile=file alignfile=file lssfile=file
+				rawfile=file sumfile=file
+				exclude=string maskfile=file
+				cleanup=boolean history=boolean clobber=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	foreach my $par (qw(outfile sumfile rawfile)) {
+		my $value = $args->{$par} || 'NONE';
+		next if (uc($value) eq 'NONE' or not -e $value);
+		if ($args->{clobberFlag}) {
+			unlink($value)
+				or $self->error(BAD_OUTPUT,
+						"unable to clobber $par $value [$!]");
+		}
+		else {
+			$self->error(BAD_OUTPUT,
+					"$par $value exists and clobber not set");
+		}
+	}
+
+	$self->{LSSFILE} = $self->parseInputURL($args->{lssfile});
+
+	$self->{ALL_RAW_LSS} = $self->temporary('rawlss', ext => '.img');
+
+	$self->{ALL_SKY_LSS} = $self->temporary('skylss', ext => '.img');
+
+}
+
+
+sub iterateInput
+{
+	my ($self) = @_;
+
+	my $infile = $self->args->{infile};
+
+	my $status = 0;
+	my $fits = SimpleFITS->readonly($infile);
+	if ($fits) {
+		$status = $fits->status;
+	}
+	if (not $fits or $status) {
+		$self->error(BAD_INPUT, "unable to open $infile [$status]");
+		return;
+	}
+
+	my $spec = $self->parseInputURL($infile);
+
+	my $nhdu = $fits->nhdu;
+
+	for (my $i = 0; $self->isValid and $i < $nhdu; ++$i) {
+		$status = $fits->move($i + 1)->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to move to HDU $i +1 [$status]");
+			last;
+		}
+
+		my $header;
+		$status = $fits->readheader($header, clean => 1)->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to read HDU $i +1 header [$status]");
+			last;
+		}
+
+		my $type;
+		$status = $fits->handle->get_hdu_type($type, $status);
+
+		$header->{INPUT_FITSEXT} = $infile . "[$i]";
+
+		my @rawCard;
+		my @skyCard;
+
+		$header->{RAW_CARDS} = \@rawCard;
+		$header->{SKY_CARDS} = \@skyCard;
+
+		$header->{name} = $header->{EXTNAME} || $header->{HDUNAME} || 'UNKNOWN';
+		$header->{isSky} = $header->{CTYPE1} =~ /SKY/;
+
+		my $ncards;
+		my $more;
+		$fits->handle->get_hdrspace($ncards, $more, $status);
+
+		for (my $i = 1; $i <= $ncards; ++$i) {
+
+			my $card;
+			my $key;
+			my $length;
+			$fits->handle->read_record($i, $card, $status);
+
+			my $type = Astro::FITS::CFITSIO::fits_get_keyclass($card);
+			if ($type == TYP_STRUC_KEY) {
+				# do not replace structural keywords
+			}
+			elsif ($type == TYP_COMM_KEY) {
+				# do not duplicate COMMENT and HISTORY keywords
+			}
+			else {
+				if ($type == TYP_WCS_KEY) {
+					push(@skyCard, $card);
+				}
+				else {
+					push(@rawCard, $card);
+				}
+			}
+        }
+
+		# check attitude file keyword
+		if ($self->{ATTNAME} and $header->{ATTFILE} ne $self->{ATTNAME}) {
+			$self->warning("attitude file mismatch [$self->{ATTNAME} <> $header->{ATTFILE}]");
+			undef($self->{ATTNAME});
+		}
+
+		# check {RA,DEC,PA}_PNT keywords
+		my @pnt = qw(RA_PNT DEC_PNT PA_PNT);
+		foreach my $key (@pnt) {
+			if (not defined($header->{$key})) {
+				$self->error(BAD_INPUT, "HDU $i +1 header missing $key [$status]");
+				last;
+			}
+		}
+
+		if ($type == Astro::FITS::CFITSIO::IMAGE_HDU
+				and $header->{NAXIS} == 2
+				and $header->{NAXIS1} * $header->{NAXIS2} > 0) {
+			$self->processImage($header);
+		}
+		else {
+			$self->transferHDU($header->{INPUT_FITSEXT}, $self->{ALL_RAW_LSS});
+			$self->transferHDU($header->{INPUT_FITSEXT}, $self->{ALL_SKY_LSS});
+		}
+
+	}
+
+	undef($fits);
+}
+
+
+# Extract a raw LSS image of the same dimensions and binning as the current
+# HDU.  We don't bother binning up LSS values because that would require
+# another temporary file and code
+
+sub processImage
+{
+	my ($self, $header) = @_;
+
+	foreach my $step (qw(
+			determineCalibration
+			extractLSSSubimage
+			projectRawToSky
+			finishImageHDU
+			)) {
+		$self->$step($header);
+		last if not $self->isValid;
+	}
+}
+
+
+sub determineCalibration
+{
+	my ($self, $header) = @_;
+
+	my $args = $self->args;
+
+	# determine the calibration for this HDU
+	my $path;
+	if ($args->{lssfile} =~ /^CALDB/i) {
+		$path = $self->queryCALDB('SKYFLAT',
+				header => $header,
+				qualifiers => $args->{lssfile},
+				asString => 1, withExt => 1, 
+				); 
+	}
+	else {
+		if (length($self->{LSSFILE}{extspec}) > 0) {
+			$path = $args->{lssfile};
+		}
+		else {
+			# assume standard extension naming convention
+			$path = $args->{lssfile} . "[LSSENS$header->{FILTER}]";
+		}
+	}
+
+	$self->{LSS_FITSEXT} = $path;
+}
+
+
+sub extractLSSSubimage
+{
+	my ($self, $header) = @_;
+
+	# Extract the (subsampled) LSS subimage
+	# This subsampling does not average LSS values, just chooses one.
+	# Since LSS varies slowly, nobody cares.
+
+	my $rawlss = $self->temporary('rawlss', ext => '.img');
+
+	# create a blank image with the non-WCS keywords
+	my $binning = $header->{BINX} || 1;
+	{
+		my $keyfile = $self->temporary('keys', ext => '.txt');
+		my $fh = FileHandle->new($keyfile, 'w');
+		$self->writeCardsToHandle($header->{RAW_CARDS}, $fh);
+
+		my $crval1 = $header->{WINDOWX0} + $binning / 2 - 0.5;
+		my $crval2 = $header->{WINDOWY0} + $binning / 2 - 0.5;
+		$fh->print("
+HDUNAME = $header->{name}
+
+CTYPE1 = RAWX
+CRVAL1 = $crval1
+CRPIX1 = 1.0
+CDELT1 = $binning
+CTYPE2 = RAWY
+CRVAL2 = $crval2
+CRPIX2 = 1.0
+CDELT2 = $binning
+");
+		$fh->close;
+
+		my $width = $header->{WINDOWDX} / $binning;
+		my $height = $header->{WINDOWDY} / $binning;
+		my $command = $self->buildCommand('ftimgcreate',
+				outfile => $rawlss,
+				bitpix => -32,
+				naxes => "$width,$height",
+				datafile => 'NONE',
+				headfile => $keyfile,
+				);
+		$self->shell($command);
+		return if not $self->isValid;
+	}
+
+	my $xstart = $header->{WINDOWX0} + 1;
+	my $xend = $header->{WINDOWX0} + $header->{WINDOWDX};
+	my $ystart = $header->{WINDOWY0} + 1;
+	my $yend = $header->{WINDOWY0} + $header->{WINDOWDY};
+
+	my $imfilter = "$xstart:$xend:$header->{BINX}"
+			. ",$ystart:$yend:$header->{BINY}";
+
+	$self->{SINGLE_RAW_LSS} = $self->temporary('rawlss', ext => '.img');
+	{
+		my $command = $self->buildCommand('ftpixcalc',
+				outfile => $self->{SINGLE_RAW_LSS},
+				expr => 'b',
+				a => $rawlss,
+				b => $self->{LSS_FITSEXT} . "[$imfilter]",
+				c => 'NONE',
+				bitpix => -32,
+				);
+		$self->shell($command);
+	}
+
+}
+
+
+sub projectRawToSky
+{
+	my ($self, $header) = @_;
+
+	my $args = $self->args;
+
+	$self->{SINGLE_SKY_LSS} = $self->temporary('skylss', ext => '.img');
+
+	my $command = $self->buildCommand('swiftxform',
+			infile => $self->{SINGLE_RAW_LSS},
+			outfile => $self->{SINGLE_SKY_LSS},
+			attfile => $args->{attfile},
+			teldeffile => $args->{teldeffile},
+			method => 'INTERPOLATE',
+			alignfile => $args->{alignfile},
+			to => 'SKY',
+			ra => $header->{RA_PNT},
+			dec => $header->{DEC_PNT},
+			roll => $header->{PA_PNT},
+			chatter => $args->{chatter},
+			);
+
+	$self->shell($command);
+}
+
+
+sub finishImageHDU
+{
+	my ($self, $header) = @_;
+
+	if ($header->{isSky}) {
+		my $new;
+		my $status = SimpleFITS->readonly($self->{SINGLE_SKY_LSS})
+				->readheader($new)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_OUTPUT,
+					"unable to load $self->{SINGLE_SKY_LSS} [$status]");
+		}
+
+		foreach my $key (qw(NAXIS NAXIS1 NAXIS2)) {
+			if ($new->{$key} ne $header->{$key}) {
+				$self->error(BAD_OUTPUT,
+					"sky projection $key mismatch [$new->{$key} <> $header->{$key}]");
+			}
+		}
+	}
+
+	# update the SKY keywords
+	my $keyfile = $self->temporary('keys', ext => '.txt');
+	my $fh = FileHandle->new($keyfile, 'w');
+	$self->writeCardsToHandle($header->{SKY_CARDS}, $fh);
+
+	$fh->print("
+");
+	$fh->close;
+
+	my $command = $self->buildCommand('fthedit',
+			infile => $self->{SINGLE_SKY_LSS},
+			keyword => '@' . $keyfile,
+			operation => 'ADD',
+			);
+	$self->shell($command);
+
+	$self->transferHDU($self->{SINGLE_RAW_LSS}, $self->{ALL_RAW_LSS});
+
+	$self->transferHDU($self->{SINGLE_SKY_LSS}, $self->{ALL_SKY_LSS});
+}
+
+
+sub transferHDU
+{
+	my ($self, $infile, $outfile) = @_;
+
+	# copy / append infitsext to output
+	my $command;
+
+	if (-e $outfile) {
+		$command = $self->buildCommand('ftappend',
+				infile => $infile,
+				outfile => $outfile,
+				);
+	}
+	else {
+		$command = $self->buildCommand('ftcopy',
+				infile => $infile,
+				outfile => $outfile,
+				copyall => 'NO',
+				);
+	}
+
+	$self->shell($command);
+}
+
+
+sub sumOutput
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (uc($args->{sumfile}) eq 'NONE') {
+		return;
+	}
+
+	my $command = $self->buildCommand('uvotimsum',
+			infile => $self->{ALL_SKY_LSS},
+			outfile => $args->{sumfile},
+			method => 'LSSMAP',
+			exclude => $args->{exclude},
+			maskfile => $args->{maskfile},
+			chatter => $args->{chatter},
+			);
+
+	$self->shell($command);
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		if (uc($args->{outfile}) ne 'NONE') {
+			$self->moveFile($self->{ALL_SKY_LSS}, $args->{outfile});
+		}
+
+		if (uc($args->{rawfile}) ne 'NONE') {
+			$self->moveFile($self->{ALL_RAW_LSS}, $args->{rawfile});
+		}
+	}
+}
+

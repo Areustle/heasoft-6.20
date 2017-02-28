@@ -1,0 +1,251 @@
+#! /usr/bin/perl
+#
+# Swift time conversion tool
+#
+# M.Tripicco - June 2005
+#
+# This is a wrapper to run the standalone tool sTime2 which
+#  is based on the program "xTime2" (A.Rots) and is the basis
+#  for the xTime HEASARC web utility
+#
+# 22 July 2005: v1.1 - enabled CALDB option and made sCC.c more robust
+#                      against times prior to start of (ascii) file
+#
+# 18 Nov 2005: v1.2 - fixed leapsec handling in SwiftTime.C and decoupled
+#                     stderr when running sTime2
+#
+# 06 Feb 2006: v1.3 - corrected expression in SwiftTime.C to be completely
+#                     general (does not change results for Swift).
+#
+# 05 Dec 2006: v1.4 - allow for CALDB of the form "http:" or "ftp:"
+#                     fix bug that prevented correction from ascii file near
+#                       block transitions.
+#
+# 06 Dec 2006: v1.5 - changes to SwiftTime.C to add millisecond precision in
+#                       output and to warn if tai-utc.dat is not opened.
+#
+# 08 Feb 2007: v1.6 - nearly complete rewrite to fix handling of leapseconds
+#                       (which are applied by sTime2 itself and so must be
+#                        pulled out of the UTCF that is derived from swco.dat)
+#                     NOTE this also involved changes to Clock/SwiftClock.pm
+#                          and to sTime.C (as well as to swco.dat itself)
+#                     (16Feb2007) tightened error checking
+#
+# 09 Sep 2015: v1.7 - revised extraolation method and coefficients to better
+#                     model current clock drift behavior
+
+$sign = '[-+]?';
+$digits = '\d+';
+$decimal = '\.?';
+$more_digits = '\d*';
+$exponent = '(?:[eE][-+]\d+)?';
+$number = "$sign$digits$decimal$more_digits$exponent";
+
+$SIG{INT} = \&sigtrap;
+$SIG{TERM} = \&sigtrap;
+$SIG{KILL} = \&sigtrap;
+
+use HEACORE::HEAINIT;
+#use lib "./"; #TEMPORARY TEMPORARY TEMPORARY!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+use Clock::SwiftClock qw(sLeap sCC);
+$ep_mjd_ut = 51910; # Swift epoch (2001.0 UTC)
+
+exit headas_main(\&swifttime);
+
+sub swifttime{
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+
+  use Task qw(:codes);
+  my $tool = bless({
+                    tool => 'swifttime',
+                    code => 0,
+		   }, "Task");
+
+  my $tname = 'swifttime';
+  my $tvers = '1.7';
+  my $status = 0;
+  my $engine = 'sTime2';
+  my $utcf = -9999;
+
+  # Clock drift rate coefficients (from 2015 data)
+  my $a0=799.39929;
+  my $a1=-9.0770826e-07;
+
+  set_toolname($tname);
+  set_toolversion($tvers);
+
+  ($status = PILGetString('intime', my $intime)) == 0 ||
+    &bailout("error getting intime parameter");
+
+  ($status = PILGetString('insystem', my $insys)) == 0 ||
+    &bailout("error getting insystem parameter");
+  $insys = uc(substr($insys,0,1));
+
+  ($status = PILGetString('informat', my $infmt)) == 0 ||
+    &bailout("error getting informat parameter");
+  $infmt = uc($infmt);
+
+  ($status = PILGetString('outsystem', my $outsys)) == 0 ||
+    &bailout("error getting outsystem parameter");
+  $outsys = uc(substr($outsys,0,1));
+
+  ($status = PILGetString('outformat', my $outfmt)) == 0 ||
+    &bailout("error getting outformat parameter");
+  $outfmt = uc($outfmt);
+
+  ($status = PILGetBool('allowcorr', my $allowcorr)) == 0 ||
+    &bailout("error getting allowcorr parameter");
+
+  ($status = PILGetString('swcofile', my $swcofile)) == 0 ||
+    &bailout("error getting swcofile parameter");
+
+  ($status = PILGetReal('extrapolate', my $extrapolate)) == 0 ||
+    &bailout("error getting extrapolate parameter");
+
+  ($status = PILGetInt('chatter', $chatter)) == 0 ||
+    &bailout("error getting chatter parameter");
+  if ($chatter > 0) {print "**** Running $tname v$tvers ****\n"}
+
+  if (uc($swcofile) eq "CALDB"){
+    if ($chatter >= 4) {print "Querying CALDB for Swift clock correction file\n"};
+    HDgtcalf("swift", "SC", "-", "-", "CLOCK", "now", "now", "now", "now", "", 1, 1024, $s1, $s2, $s3, $nret, $nfound, $status);
+    if (! $status and $nfound == 1 and $s3->[0] eq "ONLINE"){
+      $caldbfile = "$s1->[0]+$s2->[0]";
+      if ($chatter >=4) {print "got clock file: $caldbfile\n"}
+      $swcofile=$caldbfile;
+    }else{ &bailout("problem querying CALDB") }
+  }
+  $ENV{"SWCOFILE"}=$swcofile;
+
+  if ($infmt eq "M" && $intime < 51910){&bailout("$intime (MJD) preceeds the Swift Epoch (2001.0)")}
+  if ($infmt eq "J" && $intime < 2451910){&bailout("$intime (JD) preceeds the Swift Epoch (2001.0)")}
+  if ($infmt =~ /SNF/ && $intime < 0){&bailout("$intime invalid\n")}
+  if ($infmt eq "C"){
+    uc($intime) =~ /($number)[A-Z][A-Z][A-Z][0-9][0-9] AT $number:$number:$number/;
+    if (defined $1){
+      if ($1 < 2001){&bailout("calendar date $intime preceeds the Swift Epoch (2001.0)")}
+    }else{&bailout("malformed calendar date: $intime (use \"yyyymmmdd at hh:mm:ss\")")}
+  }
+  if ($infmt eq "D"){
+    $intime =~ s/-/:/g; # convert MOC format
+    $intime =~ /($number):($number):$number:$number:$number/;
+    if (defined $1){
+      if ($1 < 2001){&bailout("date: $intime preceeds the Swift Epoch 2001:01:01:00:00:00UTC")}
+      if ($2 > 366){&bailout("malformed date: $intime (use \"YYYY:DOY:HH:MM:SS\")")}
+    }else{&bailout("malformed date: $intime (use \"YYYY:DOY:HH:MM:SS\")")}
+  }
+
+  # record last TTCF and last MET in case extrapolation is required
+  &sCC("last","T",-999,$swcofile,$lasttz,$ttcfus,$lastmet)==0 || die "problem determining last TTCF";
+  $lastttcf = sprintf("%d",$ttcfus);
+  $lastttcf *= 1e-6; #convert to seconds
+  if ($chatter > 3){print "last TTCF from $swcofile is $lastttcf s at $lastmet MET s\n"}
+
+  # run sTime2 as requested
+  $cmd = "$engine $intime $insys $infmt $outsys $outfmt";
+  if ($chatter > 4) {print "---start $engine---\n$cmd\n"}
+  my $result=$tool->doCommand("$cmd");
+  @reslist = @{$result->{lines}};
+  if ($chatter > 4) {
+    foreach my $line (@reslist){print $line,"\n"}
+    print "---finish $engine---\n";
+  }
+  # Assuming that the first line output from sTime2 is converted time
+  $out_orig = shift @reslist;
+
+  # Get leap seconds since 2001.0 to remove them from UTCF
+  $cmd = "$engine $intime $insys $infmt U S ";
+  if ($chatter > 4) {print "Determining leapsecs since 2001.0\n---start $engine---\n$cmd\n"}
+  my $result=$tool->doCommand("$cmd 2>/dev/null"); #suppress errors in this and subsequent runs
+  @reslist = @{$result->{lines}};
+  foreach my $line (@reslist){
+    if ($chatter > 4) {print $line,"\n"}
+    if ($line =~ /^Clock correction: ($number) s/){
+      $utcf = $1;
+      last;
+    }
+  }
+  if ($chatter > 4) {print "---finish $engine---\n"}
+  $utsecs = shift @reslist;
+  $leapsecs = &sLeap($ep_mjd_ut + $utsecs/86400.0);
+  if ($chatter >= 4) {print "Leap seconds since 2001.0: $leapsecs\n"}
+  if ($utcf == -9999){
+    $timedelt = $utsecs - $lastmet;
+    if ($timedelt/86400.0 <= $extrapolate){
+      $rdrift = -1 * ($a0 + $a1*$utsecs); # clock drift in units of s/20us
+      $drift = $timedelt * 2.0e-5 / $rdrift;
+      $clkerr = sprintf("%8.3f",$lastttcf + $drift);
+      printf "Estimated clock offset (extrapolated %-3.1f days):$clkerr s\n",$timedelt/86400.0;
+    }else{
+      if ($chatter > 0){
+	printf "Cannot extrapolate clock correction by %-3.1f days (exceeds parameter value: %-4.1f days)\n",
+	  $timedelt/86400.0,$extrapolate;
+      }
+      $clkerr = "INDEF";
+    }
+  }else{$clkerr = $utcf + $leapsecs}
+
+  $clkapp = 0;
+  unless ($allowcorr == 0 || ($insys eq $outsys) || ($insys ne "M" && $outsys ne "M") || ($clkerr eq "INDEF")) {
+    #apply correction
+    if ($insys eq "M"){ #MET to TT/UTC
+      $utsfixed = $utsecs + $clkerr;
+      $clkapp = 1;
+    } elsif ($outsys eq "M"){ #TT/UTC to MET
+      $utsfixed = $utsecs - $clkerr;
+      $clkapp = 1;
+    } else {$utsfixed = $utsecs} #SC clock not involved - no correction needed
+
+    # Convert corrected utsecs to requested format
+    $cmd = "$engine $utsfixed U S $outsys $outfmt";
+    if ($chatter >= 4) {print "Converting to requested format\n---start $engine---\n$cmd\n"}
+    my $result=$tool->doCommand("$cmd 2>/dev/null");
+    if ($chatter >= 4){
+      foreach my $line (@{$result->{lines}}){
+	print "$line\n";
+      }
+      print "---finish $engine---\n";
+    }
+    @reslist = @{$result->{lines}};
+    $out_final = $reslist[0];
+  }
+
+  if (!defined $out_final){$out_final = $out_orig}
+  return finish($out_final, $clkerr, $clkapp);
+}
+
+sub sigtrap{
+  my $signame = shift;
+  &bailout("\n!Trapped a $signame signal!");
+}
+
+sub bailout{
+  my $errmsg = @_[0];
+  die "$0: $errmsg\nBailing out";
+}
+
+sub finish{
+  my $time = @_[0];
+  my $corr = @_[1];
+  my $corrapp = @_[2];
+
+  if ($chatter >= 3) {
+    print "Converted time: $time\n";
+    if ($corrapp) {$wasit = "was"}else{$wasit = "was NOT"}
+    if ($corr =~ /INDEF/){
+      print "Spacecraft clock correction (INDEF) $wasit applied\n";
+    }else{
+      printf "Spacecraft clock correction (%-7.6f s) $wasit applied\n",$corr;
+    }
+  }
+
+  ($status = PILPutString('outtime', $time)) == 0 ||
+    &bailout("error putting outtime parameter");
+  ($status = PILPutReal('corr', $corr)) == 0 ||
+    &bailout("error putting corr parameter");
+  ($status = PILPutBool('corrapp', $corrapp)) == 0 ||
+    &bailout("error putting corrapp parameter");
+
+  return 0;
+}

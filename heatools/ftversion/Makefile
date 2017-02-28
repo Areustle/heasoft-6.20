@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= heatools
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_SCRIPTS	= ftversion
+
+HD_INSTALL_HELP		= ftversion.html
+
+include ${HD_STD_MAKEFILE}

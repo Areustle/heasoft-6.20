@@ -1,0 +1,491 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+sgdevtid - Reconstruct SGD events
+
+<h2>USAGE</h2>
+
+<tt>sgdevtid infile outfile remapfile fluorefile badpixfile probseqfile probfovfile </tt>
+
+<h2>DESCRIPTION</h2>
+
+<p> 
+'sgdevtid' determines whether the signals in an occurrence constitute a valid event 
+and computes the event energy and the 3-dimensional coordinates of its first interaction. 
+
+The input file to 'sgdevtid' is an SFF file with variable length array 
+columns where each row contains an occurrence with multiple signals 
+recorded at a given time. The output event file, specified by the parameter 'outfile', 
+has a different structure and does not contain columns with variable length arrays.
+Each row in the output file corresponds to a reconstructed event and 
+the columns 'CAMERAX', 'CAMERAY', 'CAMERAZ', and 'PI' contain the 
+reconstructed position and energy of that event along with additional columns 
+containing information related to the number and the type of interactions
+(see below).
+
+'sgdevtid' has many parameters that are used in the event reconstruction.
+These have been optimized and it is advised to use their default settings. 
+
+
+The algorithm uses the different signals in each occurrence to 
+reconstruct an event in a two-step process. 
+The first step is to merge the signals
+according to their location and whether or not are consistent with 
+fluorescence X-ray. 
+The second step is to analyze the remaining signals and determine whether 
+the sequence is consistent with an event.  
+If the algorithm fails, the value of 'PI' is set to 'NULL' and writes
+diagnostic columns the reason to why the occurrence
+could not be reconstructed.
+Below is a more detail description of the algorithm.
+<p>
+
+The merging of the different signals depends on what is considered the maximum
+distance for these signals to be physically related. This critical distance 
+in turn depends on the event geometry.  
+The task first merges the multiple adjacent signals (charge sharing) present 
+in a single detector layer. The parameter 'd10' defines the meaning of "adjacent" 
+and specifies the  critical distance for the merging to occur. 
+The next step of the task consists in merging the fluorescence signals into
+the originating signal. This step depends critically of the event configuration. 
+If both the originating and fluorescence signals
+are in the same CdTe layer, the critical distance is
+specified by the parameter 'd1a1a', if not, the relevant parameter is called 
+ 'd1a1b'. 
+ If the originating signal is in CdTe but the fluorescence signals are detected
+ in a Si layer, the critical distance is now specified by the parameter 'd1a2'. 
+If both are in the Si layers, the relevant parameter for the merging becomes 
+'d1a3'.  These parameters are hidden in the task and a value recommended by the 
+instrument team is assigned by default. 
+
+At this point (one step/merger), the task reconstruction has reached the level 
+of "hit". If there is only one hit, the process is done. 
+Otherwise, the task now reconstructs the different "hits" until the 
+process converges on a single most-likely sequence of hits.
+
+<p> 
+The following step depends on the number of reconstructed hits. If there are 
+more than 4 hits, the entire occurrence, considered consistent with 
+a cosmic ray, is rejected.
+If there are between 2 and 4 hits, all the possible permutations for the 
+sequence of hits are tried and all sequences with 
+non-physical Compton scattering (F-test) are rejected. If only one sequence 
+remains, it is deemed to be the actual reconstructed event.
+If there are more than one sequence at the end of the first test, subsequent tests
+are performed. If the sequences have inconsistent Compton scattering angle and
+geometric scattering angle (for 3 or 4 hits; G test) are rejected. 
+Uncertainties in geometric scattering angle are computed using the method
+specified by the parameter 'delgmethod' (either set to 'analytic' or 'corner').  
+The maximum acceptable discrepancy between geometric and Compton scattering angle 
+is given by the uncertainty in scattering angle (computed with the method 
+specified above) multiplied by the value of the parameter 'b' (set to '1.0' by 
+default). 
+Again, if only one sequence remains, the process is done and the sequence is 
+declared the reconstructed event. 
+If all sequences are rejected, the task calculates the escape energy, the 
+unabsorbed part of the energy of a photon that is able to exit the camera after
+detection, and executes the previous F and G tests (for 3 or 4 hits) again, 
+correcting for that effect.
+<p> 
+A calibration file specified by the 'probseqfile' parameter allows to abandon 
+the low-probability sequences. The probability thresholds for
+2, 3, and 4 hits are given by parameters probaccept2, probaccept3,
+and probaccept4, respectively.
+
+The last step is to rank the remaining sequences by a figure of merit (FOM). 
+ The figure-of-merit is an angular resolution measure comparing the
+calculated kinematic scattering angle to the 
+geometrical scattering angle, which is calculated by assuming that
+the incident direction is the line of sight.   
+The FOM 
+can be tuned using the offset parameters paraoffset0, paraoffset1, paraoffset2,
+ and the weighting parameters weight0, weight1, weight2, and weight3. 
+ The highest-ranking sequence is then declared the reconstructed event. 
+The FOM formulae are given below. 
+<br>
+If M=2, FOM[k] = (paraoffset0 - G[k,0]) * weight0 + Prob[k] * weight3
+<br>
+If M=3, FOM[k] = (paraoffset0 - G[k,0]) * weight0 + (paraoffset1 - G[k,1]) * weight1 + Prob[k] * weight3
+<br>
+If M=4, FOM[k] = (paraoffset0 - G[k,0]) * weight0 + (paraoffset1 - G[k,1]) * weight1 + (paraoffset2 - G[k,2]) * weight2 + Prob[k] * weight3
+<p>
+ M is the number of hits, 
+G[k,n] is the difference between the kinematic angle and the 
+geometric angle for hit n, and Prob[k] is read from the calibration file 
+specified by the 'probseqfile' parameter.  
+
+<p>
+Reconstruction results for each occurrence are in the output file specified
+by the 'outfile' parameter.
+Columns copied from the input SFF are TIME, OCCURRENCE_ID, CATEGORY,
+FLAG_LCHKMIO, FLAG_CCBUSY, FLAG_HITPAT_CC, FLAG_HITPAT, FLAG_FASTBGO, 
+FLAG_SEU, FLAG_LCHK, FLAG_CALMODE, FLAG_TRIGPAT, FLAG_TRIG, 
+LIVETIME, PROC_STATUS, and STATUS.
+<p>
+Output file columns populated by the reconstruction are as follows:<br>
+PI:  pulse invariant<br>
+ENE_TOTAL: sum of EPI per occurrence<br>
+NUMSIGNAL: number of signals in occurrence<br>
+NUMHITS: 5-element array giving hit distribution; default value of
+each element is zero; element N (N=1,2,3, or 4) is populated with 1 
+if there are N or more hits; element 5 is populated with 1 if
+escape energy is calculated<br>
+SEQ_HITS: descriptor for hit mechanism, from CALDB file given by
+'probseqfile' parameter<br>
+DELCOMPTON: value of Delta G (M>2) for first two hit pairs = difference
+between cosines of Compton and kinematic angles <br>
+COMPTON_TH: [deg] Theta_K(0) = Compton scattering angle<br>
+COMPTON_PH: [deg] azimuthal angle of second hit with respect to first hit<br>
+DISTANCE0: [mm] physical distance between first two hits<br>
+OFFAXIS: [deg] difference between Compton and kinematic angles<br>
+CAMERAX, CAMERAY, CAMERAZ: [mm] 3-dimensional coordinates of first hit within the Compton camera<br>
+LIKELIHOOD:  likelihood of the event<br>
+RECO_STATUS: bit flags describing the reconstruction of each occurrence (see below)<br>
+MATTYPE: code for the material where the incident photon is detected = 1 for Si,
+2 for CdT2, or 3 for multiple layers<br>
+
+<p>The bit flags in the RECO_STATUS (reconstruction status) column are as follows:<br>
+<pre>
+ Bit  Description
+ ------(Occurrence mode identification)-------------------------------
+  0    Mode is Am 241
+  1    Mode is PSEUDO
+  2    Mode is CALMODE
+  3    Mode is READALL
+  4    Mode is NOTSURE
+ ------(Event reconstruction skipped for this occurrence)-------------
+  5    Bad PROC_STATUS
+  6    Mode is READALL or CALMODE and SKIPRECO option is YES
+  7    Occurrence has no signals
+  8    FASTBGO or HITPAT flag is set and REJECTBGO option is YES
+ ------(Event reconstruction outcome)---------------------------------
+  9    Event could not be reconstructed
+ Bit  Description
+ ------(Occurrence mode identification)-------------------------------
+  0    not used
+  1    Mode is PSEUDO
+  2    Mode is CALMODE
+  3    Mode is READALL
+  4    Mode is NOTSURE
+ ------(Event reconstruction skipped for this occurrence)-------------
+  5    Bad PROC_STATUS
+  6    Mode is READALL or CALMODE and SKIPRECO option is YES
+  7    Occurrence has no signals
+  8    FASTBGO or HITPAT flag is set and REJECTBGO option is YES
+  9    Occurrence has too many signals to reconstruct
+ 10    All signals in the occurrence are below threshold
+ ------(Event could not be reconstructed)-----------------------------
+ 11    Signal cluster has too many signals
+ 12    Signal cluster has invalid shape
+ 13    Too many signals in a group within Si layers
+ 14    Occurrence has too many hits to reconstruct
+ 15    All hits are bad by F test for Compton scattering (2 or fewer hits)
+ 16    All hits are bad by F test for Compton scattering (3 or more hits)
+ 17    All hits are bad by G test for Compton scattering
+ 18    All hits are bad because they have low probability (2 or fewer hits)
+ 19    All hits are bad because they have low probability (3 or more hits)
+ 20    Singularity in escape energy computation
+ ------(Trivial reconstruction)---------------------------------------
+ 21    One signal above threshold, and one signal in the occurrence
+ 22    One signal above threshold, and multiple signals in the occurrence
+ ------(Complex reconstruction succeeded)-----------------------------
+ ------(  reconstruction by merging signals into one hit)-------------
+ 23    One hit is left after merging signal clusters
+ 24    One hit is left after merging CdTe fluorescence within a CdTe layer
+ 25    One hit is left after merging CdTe fluorescence from a different CdTe layer
+ 26    One hit is left after merging CdTe fluorescence from Si layer
+ 27    One hit is left after merging scattered electron energy from Si layer to Si layer
+ ------(  reconstruction by evaluating possible hit sequences)--------
+ 28    One hit sequence is permitted by F test (cosine of scattering angle valid)
+ 29    One hit sequence is permitted by G test (scattering angle consistent with energies)
+ 30    One hit sequence is permitted by probability threshold
+ 31    One hit sequence is left after tie-breaking based on figure of merit (FOM)
+ 32    not used
+ ------(Reason for escape energy calculation, if one was done)--------
+ 33    Because all sequences initially ruled out by F test
+ 34    Because all sequences initially ruled out by G test
+ 35    Because all sequences initially ruled out by probability test
+ ------(Whether escape energy was calculated)-------------------------
+ 36    Escape energy calculation was done
+ 37    not used
+ 38    not used
+ 39    not used
+</pre>
+
+
+</p>
+
+<h2>PARAMETERS</h2>
+
+<dl>
+
+<p>
+<dt>infile [filename]</dt>
+<dd>Name of the SGD input file. This should be the SFF, output of the 'hxisgdpha' task. </dd>
+</p>
+
+<p>
+<dt>outfile [filename]</dt>
+<dd>Name of the output event file. </dd>
+</p>
+
+<p>
+<dt>remapfile = CALDB [filename]</dt>
+<dd>
+Name of the file containing the remapping of ASIC and READOUT numbers. 
+If the parameter is set to CALDB, the default, the file is read 
+from the calibration database. 
+ </dd>
+</p>
+
+<p>
+<dt>fluorefile = CALDB [filename]</dt>
+<dd>Name of the file containing the energy ranges of fluorescence electrons in
+CdTe and Si. If the parameter is set to CALDB, the default, the file is read from the calibration database. 
+</dd>
+</p>
+
+<p>
+<dt>badpixfile = CALDB [filename]</dt>
+<dd>Name of the file containing the energy threshold defining a real signal
+for each readout. If the parameter is set to CALDB, the default, the file is read from the calibration database. </dd>
+</p>
+
+<p>
+<dt>(probseqfile = CALDB) [filename]</dt>
+<dd>Name of the file assigning the probability of each possible sequence of interactions. 
+If the parameter is set to CALDB, the default, the file is read from the calibration database.
+</dd>
+</p>
+
+<p>
+<dt>(probfovfile = CALDB) [filename]</dt>
+<dd>Name of the file containing the probability for photons to be
+in the SGD camera field of view, based on incident angle. 
+If the parameter is set to CALDB, the default, the file is read from the calibration database.
+</dd>
+<p>
+
+<p>
+<dt>(occurrenceid = -1) [integer]</dt>
+<dd>If greater than zero, the task only expands this single occurrence.</dd>
+</p>
+
+<p>
+<dt>(rejectbgo = NO) [boolean]</dt>
+<dd>Reject events (the default) for which BGO trigger occurred. (yes/[no]) </dd>
+</p>
+
+<p>
+<dt>(skipreco = NO) [boolean]</dt>
+<dd>By default skip the reconstruction of READALL and CALMODE events.(yes/[no]) </dd>
+</p>
+
+<p>
+<dt>(strangepix = 0) [integer] </dt>
+<dd>Treatment of strange pixel ([0]=bad, 1=normal, 2=strange). Option 2 is provisional and not implemented.  </dd>
+<p>
+
+<p>
+<dt>(outtracefile = NONE) [filename]</dt>
+<dd><dd>Output a file containing the reconstruction information for each occurrence
+by detector side.   </dd>
+</p>
+
+
+<p>
+<dt>(numsignal = 48) [integer]</dt>
+<dd>Maximum number of signals to analyze.  Reconstruction is not
+attempted on occurrences with more than this number of signals.  </dd>
+</p>
+
+<p>
+<dt>(d10 = 3.2)  [real]   </dt>       
+<dd> Orthogonal distance (in mm) between two adjacent pixels in the same 
+detector layer; used in identifying charge sharing events.  </dd>
+</p>
+
+<p>
+<dt>(d1a1a = 9.0)   [real]   </dt>       
+<dd> Diagonal distance (in mm) between two adjacent pixels in same detector layer; used in identifying
+possible CdTe-CdTe fluorescence signals in a single layer.  </dd>
+</p>
+
+<p>
+<dt>(d1a1b = 5.0)  [real]   </dt>       
+<dd>  Distance (in mm) between two CdTe layers; used in identifying
+possible CdTe-CdTe fluorescence signals in different layers.  </dd>
+</p>
+
+<p>
+<dt>(d1a2 = 14.0)   [real]   </dt>       
+<dd>  Distance (in mm) between CdTe and Si layers; used in identifying
+possible Si-CdTe fluorescence signals.  </dd>
+</p>
+
+<p>
+<dt>(d1a3 = 5.0)  [real]   </dt>       
+<dd> Distance (in mm) between Si and Si layers; used in identifying
+possible electron scattering signals.  </dd>
+</p>
+
+<p>
+<dt>(b = 1.0)   [real]   </dt>       
+<dd> Acceptance (in mm) tolerance for G test as described above. </dd>
+</p>
+
+<p>
+<dt>(probaccept2 = 0.5)  [real]   </dt>       
+<dd> Probability acceptance threshold for 2 hits as described above. </dd>
+</p>
+
+<p>
+<dt>(probaccept3 = 0.5)    [real]   </dt>            
+<dd>Probability acceptance threshold for 3 hits as described above. </dd>
+</p>
+
+<p>
+<dt>(probaccept4 = 0.5)  [real]   </dt>              
+<dd>Probability acceptance threshold for 4 hits as described above. </dd>
+</p>
+
+<p>
+<dt>(distz = 1000000.0)  [real]   </dt>        
+<dd>[mm] Very large distance for target object as described above.
+The Z-direction is toward the sky, so this distance represents the distance to an 
+object far away from the detector </dd> 
+</p>
+
+<p>
+<dt>(paraoffset0 = 1.6)      [real]   </dt>          
+<dd>Offset parameter combined with G[k,0] for the figure-of-merit (FOM) 
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(paraoffset1 = 1.0)    [real]   </dt>         
+<dd>Offset parameter combined with G[k,1] for the figure-of-merit (FOM)
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(paraoffset2 = 1.0)    [real]   </dt>         
+<dd>Offset parameter combined withG[k,2] for the figure-of-merit (FOM)
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(weight0 = 1.0)    [real]   </dt>         
+<dd>Parameter used in weighting G[k,0] for the figure-of-merit (FOM) 
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(weight1 = 1.0)    [real]   </dt>         
+<dd>Parameter used in weighting G[k,1] for the figure-of-merit (FOM)
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(weight2 = 1.0)    [real]   </dt>         
+<dd>Parameter used in weighting G[k,2] for the figure-of-merit (FOM)
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(weight3 = 1.0)    [real]   </dt>         
+<dd>Parameter used in weighting Prob[k] for the figure-of-merit (FOM)
+discrimination as described above. </dd>
+</p>
+
+<p>
+<dt>(delgmethod = ANALYTIC) [string] </dt>         
+<dd> Method to be used to calculate the error in the
+test of consistency between geometric and kinematic scattering
+angles. ([ANALYTIC]|CORNER)  </dd>
+<p>
+
+<p>
+<dt>(seed = 0) [integer]</dt>
+<dd>Random number generator seed; uses system time for seed=0.</dd>
+</p>
+
+<p>
+<dt>(buffer = -1) [integer] </dt>
+<dd> Rows to buffer (-1=auto, 0=none, >0=numrows). </dd>
+</p>
+
+<p>
+<dt>(clobber = no) [boolean]</dt>
+<dd>Overwrites the existing output file if set to yes (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(chatter = 1) [integer] </dt>
+<dd>Chatter level for output. Set to 0 to suppress output,
+or to 1, 2, or 3 for increasing the chatter of the output. </dd>
+</p>
+
+<p>
+<dt>(logfile = !DEFAULT) [string]</dt>
+<dd>Log filename. If set to DEFAULT uses the name of the task and, if
+preceded by '!', overwrite the file if it exists. If set to NONE no
+log file is created. </dd>
+</p>
+
+<p>
+<dt>(debug = no) [boolean]</dt>
+<dd>Diagnostic output is printed out on the screen if set to yes
+(yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(history = yes) [boolean]</dt>
+<dd>Records tool parameters in HISTORY  ([yes]/no).</dd>
+<p>
+
+<dt>(mode = ql) [string]</dt>
+<dd>Mode to query the parameter file.
+Acceptable values include: "ql (query and learn/remember), "hl" (hidden and learn/remember), "q" (query but don't remember), "h" (hidden). </dd>
+
+
+</dl>
+<h2>EXAMPLES</h2>
+
+
+1. Reconstruct events using the default parameters; Do not output any additional information.
+<pre>
+sgdevtid infile=SGD_FFF.fits outfile=SGD_output.fits remapfile=CALDB fluorefile=CALDB badpixfile=CALDB probseqfile=CALDB probfovfile=CALDB
+</pre>
+
+2. Reconstruct events using some user-defined parameters to override the defaults, output any additional information, and expand output to include one row per signal.
+<pre>
+sgdevtid infile=SGD_FFF.fits outfile=SGD_output.fits remapfile=CALDB fluorefile=CALDB badpixfile=CALDB probseqfile=CALDB probfovfile=CALDB d1a_1a=9.5 prob_accept2=0.6 paraoffset0=2.6 weight2=0.9 outtracefile=SGD_extra_output.fits clobber=yes
+</pre>
+
+
+<h2>SEE ALSO</h2>
+<a href="hxisgdsff.html">hxisgdsff</a>,
+<a href="hxisgdpha.html">hxisgdpha</a>,
+<a href="hxievtid.html">hxievtid</a>,
+
+<p>
+
+<h2>LAST MODIFIED</h2>
+February 2016
+
+</body>
+</html>

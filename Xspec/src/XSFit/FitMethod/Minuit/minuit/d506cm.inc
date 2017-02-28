@@ -1,0 +1,68 @@
+*
+* $Id: d506cm.inc,v 1.2 2013/05/21 19:08:53 irby Exp $
+*
+* $Log: d506cm.inc,v $
+* Revision 1.2  2013/05/21 19:08:53  irby
+* Change character*n to character(n) to silence warnings: "Obsolescent
+* feature: Old-style character length".
+*
+* Revision 1.1.1.1  2003/11/25 22:45:44  dorman
+* Xspec12.0 Export Version 11-25-2003
+*
+* Revision 7.0  2002/07/12 16:03:08  dorman
+*
+* version number change
+*
+* Revision 1.1  2002/06/26 14:52:05  dorman
+*
+*
+* minuit library
+*
+* Revision 1.1  2001/12/28 02:53:57  kaa
+* Added MINUIT source code.
+*
+* Revision 1.1.1.1  1996/03/07 14:31:32  mclareni
+* Minuit
+*
+*
+*
+* d506cm.inc
+*
+      PARAMETER (MNE=100 , MNI=50)
+      PARAMETER (MNIHL=MNI*(MNI+1)/2)
+      character(10) CPNAM
+      COMMON
+     1/MN7NAM/ CPNAM(MNE)
+     2/MN7EXT/ U(MNE)     ,ALIM(MNE)  ,BLIM(MNE)
+     3/MN7ERR/ ERP(MNI)   ,ERN(MNI)   ,WERR(MNI)  ,GLOBCC(MNI)
+     4/MN7INX/ NVARL(MNE) ,NIOFEX(MNE),NEXOFI(MNI)
+     5/MN7INT/ X(MNI)     ,XT(MNI)    ,DIRIN(MNI)
+     6/MN7FX2/ XS(MNI)    ,XTS(MNI)   ,DIRINS(MNI)
+     7/MN7DER/ GRD(MNI)   ,G2(MNI)    ,GSTEP(MNI) ,GIN(MNE) ,DGRD(MNI)
+     8/MN7FX3/ GRDS(MNI)  ,G2S(MNI)   ,GSTEPS(MNI)
+     9/MN7FX1/ IPFIX(MNI) ,NPFIX
+     A/MN7VAR/ VHMAT(MNIHL)
+     B/MN7VAT/ VTHMAT(MNIHL)
+     C/MN7SIM/ P(MNI,MNI+1),PSTAR(MNI),PSTST(MNI) ,PBAR(MNI),PRHO(MNI)
+C
+      PARAMETER (MAXDBG=10, MAXSTK=10, MAXCWD=20, MAXP=30, MAXCPT=101)
+      PARAMETER (ZERO=0.0,  ONE=1.0,   HALF=0.5)
+      COMMON
+     D/MN7NPR/ MAXINT ,NPAR   ,MAXEXT ,NU
+     E/MN7IOU/ ISYSRD ,ISYSWR ,ISYSSA ,NPAGWD ,NPAGLN ,NEWPAG
+     E/MN7IO2/ ISTKRD(MAXSTK) ,NSTKRD ,ISTKWR(MAXSTK) ,NSTKWR
+     F/MN7TIT/ CFROM  ,CSTATU ,CTITL  ,CWORD  ,CUNDEF ,CVRSN ,COVMES
+     G/MN7FLG/ ISW(7) ,IDBG(0:MAXDBG) ,NBLOCK ,ICOMND
+     H/MN7MIN/ AMIN   ,UP     ,EDM    ,FVAL3  ,EPSI   ,APSI  ,DCOVAR
+     I/MN7CNV/ NFCN   ,NFCNMX ,NFCNLC ,NFCNFR ,ITAUR,ISTRAT,NWRMES(2)
+     J/MN7ARG/ WORD7(MAXP)
+     K/MN7LOG/ LWARN  ,LREPOR ,LIMSET ,LNOLIM ,LNEWMN ,LPHEAD
+     L/MN7CNS/ EPSMAC ,EPSMA2 ,VLIMLO ,VLIMHI ,UNDEFI ,BIGEDM,UPDFLT
+     M/MN7RPT/ XPT(MAXCPT)    ,YPT(MAXCPT)
+     N/MN7CPT/ CHPT(MAXCPT)
+     o/MN7XCR/ XMIDCR ,YMIDCR ,XDIRCR ,YDIRCR ,KE1CR  ,KE2CR
+      CHARACTER CTITL*50, CWORD*(MAXCWD), CUNDEF*10, CFROM*8,
+     +          CVRSN*6,  COVMES(0:3)*22, CSTATU*10, CHPT*1
+      LOGICAL   LWARN, LREPOR, LIMSET, LNOLIM, LNEWMN, LPHEAD
+
+

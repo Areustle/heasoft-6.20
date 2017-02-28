@@ -1,0 +1,144 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotflagqual/ut-uvotflagqual,v $
+# $Revision: 1.2 $
+# $Date: 2010/07/06 21:37:38 $
+#
+# $Log: ut-uvotflagqual,v $
+# Revision 1.2  2010/07/06 21:37:38  rwiegand
+# Updated unit test since no longer has a source list input parameter.
+#
+# Revision 1.1  2008/10/17 18:23:05  rwiegand
+# Prepared unit test.
+#
+
+use strict;
+
+package Test::FlagQuality;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			runUvotflagqual
+			checkResults
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string caldb=boolean chatter=int)
+			],
+			get => 1,
+			);
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotflagqual
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		infile    => "$input/raw.img",
+
+		outfile   => "$output/dq.img",
+
+		# cleanup   => 'no',
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	$args{template} = "$input/template.fits";
+	foreach my $key (qw(infile template)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	$self->{ARGS} = \%args;
+
+	{
+		my $command = $self->buildCommand('uvotflagqual', @args);
+		$self->shell($command);
+	}
+
+}
+
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $args = $self->{ARGS};
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args->{infile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args->{outfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => $args->{template},
+			infile2 => $args->{outfile},
+			reltol => 1e-6,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+		$self->shell($command);
+	}
+}
+

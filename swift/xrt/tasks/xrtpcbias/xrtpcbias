@@ -1,0 +1,963 @@
+#! /usr/bin/perl
+#
+# File name: xrtpcbias
+# 
+# Task name: xrtpcbias
+# 
+# Description:	
+#             
+#
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 : NS 24/04/2007 - First version
+#      0.1.1 :    08/05/2007 - Modified 'srcra' 'srcdec' 'ranom' 'decnom' input parameter
+#                              to be input in deg or HH MM SS coordinates
+#      0.1.2 :    17/05/2007 - If PHAS already corrected copy PHASO to PHAS column 
+#                              before xrtpcgrade task call
+#      0.1.3 :    11/07/2007 - xrtflagpix task call with 'bpfile'="CALDB"
+#                            - New input parameter 'thrfile'
+#      0.1.4 :    13/09/2007 - Clean 'XPHASCO' keyword when restore PHAS column
+#                            - Delete 'BIASDIFF' extension from previous run
+#      0.1.5 :    19/12/2007 - New input parameter 'biascorr'
+#                            - Clean evt file from previous bias correction before
+#                              the xrtflagpix task call
+#      0.1.6 :    12/09/2008 - Fixed compatibility problem with new perl 5.10
+#                            - Bug fixed with compressed input files
+#                            
+#
+#                               
+#
+# Notes:
+# 
+#   type "fhelp xrtpcbias" for parameters description
+#
+# Usage:     
+#       xrtpcbias infile=<pc evt file> outdir=<output-dir> [parameter=value ... ]
+# 
+# Input files:  
+#
+#
+# Output files: 
+#
+#               
+# HEADAS tasks needed:
+#
+#
+#
+#============================================================#
+
+
+require "libswxrtperl.pl";
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use strict;
+
+use vars qw( %Task %Default @Par );
+
+
+#
+# Specific of the task
+#
+
+%Task = (
+	 start => `date`,
+	 name  => "xrtpcbias",
+	 version => "0.1.6",
+	 releasedate => "2008-09-12",
+	 stem => "xrtpcbias_0.1.6",
+	 clobber => 0,  # it means 'clobber=no'
+	 chatter => 0,
+	 status => 0,
+	 errmess => "",
+	 history => "",
+	 srcra   => $Default{NOTVALIDRADEC},
+	 srcdec  => $Default{NOTVALIDRADEC},
+	 ranom   => $Default{NOTVALIDRADEC},
+	 decnom  => $Default{NOTVALIDRADEC},
+	 tmpoutfile => "",
+	 );
+
+#
+#  Defaults
+#
+
+%Default = (
+	    DEFAULT        => "DEFAULT",
+	    NONE           => "NONE",
+	    CALDB          => "CALDB",
+	    NOTVALIDRADEC  => -91,
+	    );
+
+#
+# Get Input Parameters 
+#
+
+if ( &GetInputParameters ){
+    $Task{errmess} = "Error: parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+
+&RunningTask;
+
+&PrntChty(2, "$Task{stem}: Info: Name of the Input Event File  '".&GetValPar("infile")."'\n");
+&PrntChty(2, "$Task{stem}: Info: Name of the Output Event File '".&GetValPar("outfile")."'\n");
+&PrntChty(2, "--------------------------------------------------------------\n");
+
+#
+# Check input and output files
+#
+
+
+if (! -f &GetValPar("infile")) {
+    $Task{errmess} = "Input File: '".&GetValPar("infile")."' not found";
+    goto EXITWITHERROR;
+}
+
+
+if ( !&CompUL(&GetValPar("outfile"),$Default{NONE}) ) {
+
+    if ( &CheckExistFile(&GetValPar("outfile")) ) {
+	goto EXITWITHERROR;
+    }
+}
+else{
+    if ( !(&GetValPar("clobber") =~ /[yY]/) ) {
+	&PrntChty(2, "$Task{stem}: Error: input parameter 'clobber' set to 'no'\n");
+	&PrntChty(2, "$Task{stem}: Error: cannot overwrite '".&GetValPar("infile")."' file\n");
+	$Task{errmess} = "Cannot overwrite '".&GetValPar("infile")."' file";
+	goto EXITWITHERROR;
+    }
+
+    if ( &GetValPar("infile") =~ /(.gz|.Z)$/ ) {
+
+	my $infile = &GetValPar("infile");
+
+	if ( system ( "gunzip -fq $infile\n" ) ) {
+	    if($? != 512){
+		&PrntChty(3, "$Task{stem}: Error: running 'gunzip -fq $infile'\n");
+		goto EXITWITHERROR;
+	    }
+	}
+    
+	$infile =~s/(.gz|.Z)$//;
+	&SetValPar("infile",$infile);
+    }
+
+
+    &SetValPar("outfile", &GetValPar("infile"));
+}
+
+#
+# Derive Temporary output file name
+#
+
+my $pid;
+$pid=getppid();
+
+$Task{tmpoutfile}=&GetValPar("outfile").".${pid}out";
+
+if ( -f $Task{tmpoutfile} ) { unlink ($Task{tmpoutfile}); }
+
+
+if ( &GetValPar("infile") =~ /(.gz|.Z)$/ ) {
+
+    my $tmpoutfilezip = $Task{tmpoutfile};
+
+    if(&GetValPar("infile") =~ /(.gz)$/ ){
+	$tmpoutfilezip = $tmpoutfilezip.".gz"
+	}
+    else{
+	$tmpoutfilezip = $tmpoutfilezip.".Z"
+    }
+
+    &PrntChty(2, "$Task{stem}: Info: Decompressing and copying input file to '$Task{tmpoutfile}'\n");
+    if (!copy(&GetValPar("infile"), $tmpoutfilezip)) {
+
+	$Task{errmess} = "Unable to create temporary input file copy. $!";
+	goto EXITWITHERROR;
+    }
+
+    if ( system ( "gunzip -fq $tmpoutfilezip\n" ) ) {
+	if($? != 512){
+	    &PrntChty(3, "$Task{stem}: Error: running 'gunzip -fq $tmpoutfilezip'\n");
+	    goto EXITWITHERROR;
+	}
+    }
+}
+else{
+
+    &PrntChty(2, "$Task{stem}: Info: Copying input file to '$Task{tmpoutfile}'\n");
+    if (!copy(&GetValPar("infile"), $Task{tmpoutfile})) {
+
+	$Task{errmess} = "Unable to create temporary input file copy. $!";
+	goto EXITWITHERROR;
+    }
+}
+
+&PrntChty(2, "$Task{stem}: Info: Cleaning '$Task{tmpoutfile}' file from previous bias correction\n");
+
+#
+# Check if PHAS is already corrected
+#
+
+my $xphasco;
+
+&GetKeyword($Task{tmpoutfile}, "EVENTS" , undef ,"XPHASCO" ,\$xphasco, 1);
+
+if ( $Task{status} && $Task{status} != KEY_NO_EXIST) { 
+    goto EXITWITHERROR; 
+}
+else{
+    $Task{status}=0;
+}
+
+if($xphasco =~ /[tT]/ ){
+
+    &PrntChty(2, "$Task{stem}: Info: PHAS is already corrected, restoring PHASO to PHAS column.\n");
+
+    if ( &RestorePHASColumn($Task{tmpoutfile})) {
+	
+	&PrntChty(4, "$Task{stem}: Error: RestorePHASColumn: $Task{errmess}\n");
+	$Task{errmess} = "Unable to restore PHASO to PHAS column.";
+	goto EXITWITHERROR;
+    }
+
+    my ( $command, $ret );
+
+    &PrntChty(2,"$Task{stem}: Info: Remove the BIASDIFF extension written by a previous run\n");
+    
+    $command = "ftdelhdu infile=\'"."$Task{tmpoutfile}"."\[BIASDIFF\]\' outfile="."$Task{tmpoutfile}"." confirm=no clobber=yes chatter=$Task{chatter}";
+    
+    &RunningComm("$Task{stem}",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    if ( $ret != 0 ) {
+	&PrntChty(3,"$Task{stem}: WARNING: error deleting the BIASDIFF HDU extension\n");
+	&PrntChty(3,"$Task{stem}: WARNING: the "."$Task{tmpoutfile}"." file,\n");
+	&PrntChty(3,"$Task{stem}: WARNING: could not have been previously processed.\n");
+    }
+    
+}
+
+#
+# Skip bias correction if 'biascorr' set to "no"
+#
+if( &GetValPar("biascorr") =~ /[nN]/){
+    goto EXITPCBIAS;
+}
+
+
+if ( !&CompUL(&GetValPar("thrfile"),$Default{NONE}) ) {
+
+    if(&ReadThrFromThrFile()){
+	goto EXITWITHERROR;
+    }
+}
+
+
+if ( &RunXrtflagpix($Task{tmpoutfile}) ) {
+    
+    $Task{errmess} = "Unable to flag CALDB bad pixels.";
+    goto EXITWITHERROR;
+}
+
+
+if ( &RunXrtPcGrade($Task{tmpoutfile}) ) {
+    
+    $Task{errmess} = "Unable to assign event grade.";
+    goto EXITWITHERROR;
+}
+
+
+if ( &RunXrtHotPix($Task{tmpoutfile}) ) {
+ 
+    $Task{errmess} = "Unable to search and flag hot pixels.";
+    goto EXITWITHERROR;
+}
+
+#
+# Perform convertion to degree if needed
+#
+
+$Task{srcra} = &Ra2Deg(&GetValPar("srcra"));
+$Task{srcdec} = &Dec2Deg(&GetValPar("srcdec"));
+
+$Task{ranom} = &Ra2Deg(&GetValPar("ranom"));
+$Task{decnom} = &Dec2Deg(&GetValPar("decnom"));
+
+
+if ( &RunXrtPcCorr($Task{tmpoutfile}) ) {
+ 
+    $Task{errmess} = "Unable to correct PHAS values.";
+    goto EXITWITHERROR;
+}
+
+
+if ( &GetValPar("resetcol") =~ /[yY]/ ){
+
+    if ( &ResetColumns($Task{tmpoutfile})) {
+
+	$Task{errmess} = "Unable to update to zero 'PHA' 'PI' 'GRADE' and 'PixAbove' columns.";
+	goto EXITWITHERROR;
+    }
+}
+
+
+EXITPCBIAS:
+
+
+if ( &RenameFile($Task{tmpoutfile}, &GetValPar("outfile")) ){
+
+    goto EXITWITHERROR;
+}
+
+&PrntChty(2, "$Task{stem}: Info: Output Event File '".&GetValPar("outfile")."' successfully written.\n");
+
+
+&Success;
+exit (0);
+
+
+
+ EXITWITHERROR:
+
+&Error;
+exit(1);
+
+
+#-------------------------------------------------------------
+#  subroutines section
+#-------------------------------------------------------------
+
+
+sub GetInputParameters {
+
+    use vars qw( %Task  @Par  %Ind);
+  
+    my ( $name, $indref, $p);
+
+    # temporary set of chatter to normal
+    $Task{chatter} = 3;
+
+    # get parameter list from parameter file
+    ($indref,@Par) = &GetParameterList();
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    %Ind = %$indref;
+
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+    
+    if (! &LoadParameter()) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+    
+    $Task{chatter} = &GetValPar("chatter");
+    
+    if ( &GetValPar("clobber") =~ /[yY]/ ) {
+	$Task{clobber} = 1;
+    }
+       
+    return 0;
+    
+} #GetInputParameters
+
+
+sub RequestParameter(){
+    return 1;
+}
+
+
+sub DeleteFile(){
+    my ($namefile) = @_;
+    if (-f $namefile && ! unlink($namefile)) {
+    	 $Task{errmess} = "Unable to delete $namefile. $!";
+     $Task{status} = 1;
+    goto EXITWITHERROR;
+     }
+}
+
+
+#Return 1 in case of errors
+sub CheckExistFile {
+    my ($file) = @_;
+    if ( -f $file) {
+	if (!$Task{clobber} ) {
+	    &PrntChty(2, "$Task{stem}: Error: the '$file' exists\n");
+	    &PrntChty(2, "$Task{stem}: Error: please delete '$file' or\n");
+	    &PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Cannot overwrite '$file' file";
+	    $Task{status} = 1;
+	    return 1;
+	} else { 
+	    &DeleteFile($file);
+	    return 0;
+	}
+    }
+    return 0;
+
+}
+
+sub DelAndRename {
+
+    my ( $file1, $file2 ) = @_;
+
+    &PrntChty(4,"$Task{stem}: Info: Renaming $file1 in\n");
+    &PrntChty(4,"$Task{stem}: Info: $file2.\n");
+
+    if ( -f $file1 ) {
+	if ( !unlink ($file2) ) {
+	    &PrntChty(2,"$Task{stem}: Error: Cannot delete '$file2' file: $!\n");
+	    $Task{errmess} = "Cannot overwrite '$file2' file";
+	    $Task{status} = 1;
+	    return 1;
+	}
+    
+	if ( &RenameFile($file1, $file2) ) {
+	    $Task{status} = 1;
+	    return 1;
+	}
+    }
+    else {
+	&PrntChty(4,"$Task{stem}: WARNING: No Output File Generated by the Task\n");
+    }
+
+    return 0;
+
+} # DelAndRename
+
+
+
+sub RunXrtflagpix {
+
+    my ( $evtfile ) = @_;
+    my ( $command, $ret, %xrtflagpix, $par, $pid );
+
+    $pid=getppid();
+
+    my $TmpFile = substr($evtfile,0,rindex($evtfile,'.')).".${pid}tmp";
+    if ( -f $TmpFile ) { unlink ($TmpFile); }
+
+    %xrtflagpix = (
+		   infile       => $evtfile,
+		   bpfile       => $Default{CALDB},
+		   hdfile       => &GetValPar("hdfile"),
+		   srcfile      => $Default{CALDB},
+		   userbpfile   => $Default{NONE},
+		   bptable      => $Default{CALDB},
+		   thrfile      => $Default{NONE},
+		   phas1thr     => &GetValPar("evtthr"),
+		   maxtemp      => 0.0,
+		   outbpfile    => $Default{NONE},
+		   outfile      => $TmpFile,
+		   overstatus   => "yes",
+		   chatter      => &GetValPar("chatter"),
+		   clobber      => &GetValPar("clobber"),
+		   history      => &GetValPar("history"),
+		   );
+
+    
+    $command = "xrtflagpix";
+    for $par ( keys %xrtflagpix ) { $command .= " $par=$xrtflagpix{$par}"; } 
+
+
+    &RunningSub("RunXrtFlagPix","xrtflagpix");
+    &RunningComm("RunXrtFlagPix",$command);
+
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+        $Task{errmess} = "ERROR running 'xrtflagpix'";
+        &PrntChty(2,"$Task{'stem'}: ERROR: running 'xrtflagpix' on '$evtfile'\n");
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if ( &DelAndRename($TmpFile, $evtfile) ) { return 1; }
+
+    &SuccessSub("RunXrtflagpix","xrtflagpix","'$evtfile' updated");
+    return 0;
+
+} # RunXrtflagpix
+
+
+sub RunXrtPcGrade {
+
+    my( $evtfile ) = @_;
+    my ( $command, $ret, %xrtpcgrade, $par, $pid );
+
+    $pid=getppid();
+
+    my $TmpFile = substr($evtfile,0,rindex($evtfile,'.')).".${pid}tmp";
+    if ( -f $TmpFile ) { unlink ($TmpFile); }
+
+    %xrtpcgrade = (
+		 infile    => $evtfile,
+		 outfile   => $TmpFile,
+		 thrfile   => $Default{NONE},
+		 split     => &GetValPar("splitthr"),
+		 gradefile => $Default{CALDB},
+		 ascagrade => "no",
+		 hdfile    => &GetValPar("hdfile"),
+		 clobber   => &GetValPar("clobber"),
+		 history   => &GetValPar("history"),
+		 chatter   => &GetValPar("chatter"),
+		 );
+
+    $command = "xrtpcgrade";
+    for $par ( keys %xrtpcgrade ) { $command .= " $par=$xrtpcgrade{$par}"; } 
+
+    &RunningSub("RunXrtPcGrade","xrtpcgrade","on $evtfile");
+    &RunningComm("RunXrtPcGrade",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXrtPcGrade","xrtpcgrade",$command);
+        $Task{errmess} = "ERROR running 'xrtpcgrade'";
+	&PrntChty(2,"$Task{'stem'}: ERROR: running 'xrtpcgrade' on '$evtfile'\n");
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if ( &DelAndRename($TmpFile, $evtfile) ) { return 1; }
+
+    &SuccessSub("RunXrtPcGrade","xrtpcgrade","'$evtfile' updated");
+
+    return 0;
+    
+} # RunXrtPcGrade
+
+
+sub RunXrtHotPix {
+
+    my( $evtfile) = @_;
+    my ( $command, $ret, %xrthotpix , $par, $pid);
+
+    $pid=getppid();
+
+    my $TmpFile = substr($evtfile,0,rindex($evtfile,'.')).".${pid}tmp";
+    if ( -f $TmpFile ) { unlink ($TmpFile); }
+
+    %xrthotpix = (
+		 infile    => $evtfile,
+		 outfile   => $TmpFile,
+		 outbpfile => $Default{NONE},
+		 overstatus=> "yes",
+		 usegoodevt => "yes",
+		 gradeiterate => "yes",
+		 cellsize  => 3,  
+		 impfac    => 1000.0,    
+		 logpos    => -5.3,    
+		 bthresh   => 3, 
+		 phamin    => 0, 
+		 phamax    => 4095, 
+		 cleanflick=> "yes",
+		 iterate   => "yes",
+		 hotneigh  => "no",
+		 clobber   => &GetValPar("clobber"),
+		 history   => &GetValPar("history"),
+		 chatter   => &GetValPar("chatter"),
+		  );
+
+    $command = "xrthotpix";
+    for $par ( keys %xrthotpix ) { $command .= " $par=$xrthotpix{$par}"; } 
+
+    &RunningSub("RunXrtHotPix","xrthotpix");
+    &RunningComm("RunXrtHotPix",$command);
+
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	$Task{errmess} = "ERROR running 'xrthotpix'";
+	$Task{errmess} = "$Task{'stem'}: Error running 'xrthotpix' on '$evtfile'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if ( &DelAndRename($TmpFile, $evtfile) ) { return 1; }
+
+    &SuccessSub("RunXrtHotPix","xrthotpix","'$evtfile' updated");
+
+    return 0;
+
+} # RunXrtHotPix
+
+
+
+sub RunXrtPcCorr {
+
+    my ( $evtfile) = @_;
+    my ( $command, $ret, %xrtpccorr, $par, $pid );
+
+    $pid=getppid();
+
+    my $TmpFile = substr($evtfile,0,rindex($evtfile,'.')).".${pid}tmp";
+    if ( -f $TmpFile ) { unlink ($TmpFile); }
+
+
+    %xrtpccorr =  (
+		   infile       => $evtfile,
+		   outfile      => $TmpFile,
+		   srcdetx      => &GetValPar("srcdetx"),
+		   srcdety      => &GetValPar("srcdety"),
+		   srcra        => $Task{srcra},
+		   srcdec       => $Task{srcdec},
+		   ranom        => $Task{ranom},
+		   decnom       => $Task{decnom},
+		   teldef       => &GetValPar("teldef"),
+		   aberration   => &GetValPar("aberration"),
+		   attinterpol  => &GetValPar("attinterpol"),
+		   attfile      => &GetValPar("attfile"),
+		   mkffile      => &GetValPar("mkffile"),
+		   subimage     => &GetValPar("subimage"),
+		   subimgsize   => &GetValPar("subimgsize"),
+		   nevents      => &GetValPar("nevents"),
+		   lessevents   => &GetValPar("lessevents"),
+		   biasmethod   => &GetValPar("biasmethod"),
+		   badpix       => &GetValPar("badpix"),
+		   grademin     => &GetValPar("grademin"),
+		   grademax     => &GetValPar("grademax"),
+		   chatter      => &GetValPar("chatter"),
+		   clobber      => &GetValPar("clobber"),
+		   history      => &GetValPar("history"),
+		   );
+
+    
+    $command = "xrtpccorr";
+    for $par ( keys %xrtpccorr ) { $command .= " $par=$xrtpccorr{$par}"; } 
+
+
+    &RunningSub("RunXrtPcCorr","xrtpccorr");
+    &RunningComm("RunXrtPcCorr",$command);
+
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+        $Task{errmess} = "ERROR running 'xrtpccorr'";
+        &PrntChty(2,"$Task{'stem'}: ERROR: running 'xrtpccorr' on '$evtfile'\n");
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if ( &DelAndRename($TmpFile, $evtfile) ) { return 1; }
+
+    &SuccessSub("RunXrtPcCorr","xrtpccorr","'$evtfile' updated");
+
+    return 0;
+
+} # RunXrtPcCorr
+
+
+sub ResetColumns{
+
+    my ( $outfile) = @_;
+    my ($fits, $evtextnum, $status, $tablerows, $j, $hist);
+    my ($pha, $pi, $grade, $pixabove);
+    
+    fits_open_file($fits, $outfile, READWRITE, $status);
+    
+    if (not $fits) {
+	$Task{errmess} = "Unable to open fits file : $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    fits_movnam_hdu($fits, ANY_HDU, "EVENTS", 0, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to move in EVENTS ext of file $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    fits_get_hdu_num($fits,$evtextnum);
+    
+    
+    fits_get_num_rows($fits,$tablerows, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get number of rows in EVENTS ext of $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+    fits_get_colnum($fits, 0, "PHA", $pha, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get colnum of 'PHA' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+    fits_get_colnum($fits, 0, "PI", $pi, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get colnum of 'PI' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    fits_get_colnum($fits, 0, "GRADE", $grade, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get colnum of 'GRADE' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    fits_get_colnum($fits, 0, "PixsAbove", $pixabove, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get colnum of 'PixsAbove' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    
+    for ($j = 1; $j <= $tablerows; $j++){
+
+	fits_write_col($fits, TINT, $pha, $j, 1, 1, -1, $status);
+	if ($status) {
+	    $Task{errmess} = "Error updating 'PHA' column in $outfile";
+	    $Task{status} = 1;
+	    return 1;
+	}
+
+	fits_write_col($fits, TINT, $pi, $j, 1, 1, -1, $status);
+	if ($status) {
+	    $Task{errmess} = "Error updating 'PI' column in $outfile";
+	    $Task{status} = 1;
+	    return 1;
+	}
+
+	fits_write_col($fits, TINT, $grade, $j, 1, 1, -1, $status);
+	if ($status) {
+	    $Task{errmess} = "Error updating 'GRADE' column in $outfile";
+	    $Task{status} = 1;
+	    return 1;
+	}
+
+	fits_write_col($fits, TINT, $pixabove, $j, 1, 1, -1, $status);
+	if ($status) {
+	    $Task{errmess} = "Error updating 'PixsAbove' column in $outfile";
+	    $Task{status} = 1;
+	    return 1;
+	}
+
+    }
+
+
+    fits_close_file($fits,$status);
+    
+
+    &UpdateCheckSum($outfile);
+
+
+    if ( &GetValPar("history") =~ /[yY]/ ){
+    
+	$hist = "File modified by $Task{stem} at " . &getHistoryTime();
+	if(&write_history($outfile, $evtextnum, $hist)){
+	    $Task{errmess} = "Unable to write history in output file $outfile";
+	    $Task{status} = 1;
+	    return 1;
+	}
+	
+	$hist = "PHA PI GRADE PixAbove columns set to -1";
+	if(&write_history($outfile, $evtextnum, $hist)){
+	    $Task{errmess} = "Unable to write history in output file $outfile";
+	    $Task{status} = 1;
+	    return 1;
+	}
+    }
+
+    return 0;
+
+} # ResetColumns
+
+
+sub RestorePHASColumn{
+
+    my ( $outfile) = @_;
+    my ($fits, $status);
+    my ($phas, $phaso);
+
+  
+    fits_open_file($fits, $outfile, READWRITE, $status);
+    
+    if (not $fits) {
+	$Task{errmess} = "Unable to open fits file : $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+   
+    fits_movnam_hdu($fits, ANY_HDU, "EVENTS", 0, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to move in EVENTS ext of file $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    fits_delete_key($fits, "XPHASCO", $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to delete XPHASCO keyword";
+	$Task{status} = 1;
+	return 1;
+    }  
+
+
+    fits_get_colnum($fits, 0, "PHASO", $phaso, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get colnum of 'PHASO' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    fits_get_colnum($fits, 0, "PHAS", $phas, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to get colnum of 'PHAS' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    fits_copy_col($fits, $fits, $phaso, $phas, 0, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to copy column 'PHASO' to 'PHAS' in $outfile";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    fits_close_file($fits,$status);
+
+    &UpdateCheckSum($outfile);
+
+
+    return 0;
+
+} # RestorePHASColumn
+
+
+sub ReadThrFromThrFile{
+    
+    my ($xrtvsub, $thrfile, $thrext, $thr_found);
+    my (@columns, @TableThr, $i, $xrtvsub_in, $pcevtthr_in, $pcsplitthr_in);
+
+    # Get XRTVSUB keyword from input Evt File
+    &GetKeyword ( &GetValPar("infile"), "EVENTS", undef, "XRTVSUB", \$xrtvsub, 1);
+    if ( $Task{status} ) {
+	if ($Task{status} == KEY_NO_EXIST){
+	    $xrtvsub="0";
+	    &PrntChty(2,"$Task{stem}: Warning: 'XRTVSUB' keyword not found in '".&GetValPar("infile")."'\n");
+	    &PrntChty(2,"$Task{stem}: Warning: using default value '0'\n");
+	    $Task{status}=0;
+	}
+	else{
+	    &PrntChty(4,"$Task{stem}: Error: cannot read 'XRTVSUB' keyword in file '".&GetValPar("infile")."'\n");
+	    return 1;
+	}
+    }
+
+
+    if ( &CompUL(&GetValPar("thrfile"),$Default{CALDB}) ) {
+
+	my ( $StartDate, $StartTime );
+
+
+	# Get Observation Start Date from the input Evt File
+
+	&GetEventStartDate(&GetValPar("infile"),\$StartDate,\$StartTime);
+	if ( $Task{status} ) { 
+	    return 1; 
+	}
+
+	
+	# Get Thresholds File Name
+	my ($refa,$refb)  = &CallQuzcif("XRTVSUB", $StartDate, $StartTime, "-", 1);
+	if ( $Task{status} ) {
+	    &PrntChty(4,"$Task{stem}: Error: cannot retieve Thresholds file name from CALDB\n");
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    $Task{errmess} ="found more then 1 Thresholds CALDB file";
+	    $Task{status} = 1;
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    return 1;
+	}
+	else {
+	    $thrfile = @$refa[0];
+	    $thrext  = @$refb[0];
+	}
+    }
+    else {
+	$thrfile = &GetValPar("thrfile");
+    }
+
+
+    &PrntChty(2,"$Task{stem}: Info: Get Thresholds values from\n");
+    &PrntChty(2,"$Task{stem}: Info: '$thrfile' file\n");
+    
+    if ( !-f $thrfile ) {
+	$Task{errmess} ="'$thrfile' file not found";
+	$Task{status} = 1;
+	&PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	return 1;
+    }
+
+    @columns = (
+		{ name => 'XRTVSUB' },
+		{ name => 'PCEVTTHR' },
+		{ name => 'PCSPLITTHR' },
+		);
+
+
+    @TableThr = &LoadBinTable($thrfile,"XRTVSUB",undef,@columns);
+    if ( $Task{status} ) { 
+	return 1; 
+    }
+
+    $thr_found = 0;
+
+    for ( $i = 0; !$thr_found && $i<=$#TableThr ; $i++ ) {
+
+	$xrtvsub_in = $TableThr[$i]->{XRTVSUB};
+
+	if($xrtvsub_in == $xrtvsub){
+
+	    $pcevtthr_in = $TableThr[$i]->{PCEVTTHR};
+	    $pcsplitthr_in = $TableThr[$i]->{PCSPLITTHR};
+
+	    $thr_found = 1;
+	}
+    }
+
+    if($thr_found ){
+
+	&SetValPar("evtthr", $pcevtthr_in);
+	&SetValPar("splitthr", $pcsplitthr_in);
+
+	&PrntChty(2,"$Task{stem}: Info: Event Threshold Level from input thresholds file = $pcevtthr_in\n");
+	&PrntChty(2,"$Task{stem}: Info: Split Threshold Level from input thresholds file = $pcsplitthr_in\n");
+	return 0;
+    }
+    else{
+	&PrntChty(2,"$Task{stem}: Error: threshold values not found for xrtvsub=$xrtvsub\n");
+	&PrntChty(2,"$Task{stem}: Error: in '$thrfile' file\n");
+
+	$Task{errmess} ="Unable to get Threshold values from '$thrfile' file";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+} # ReadThrFromThrFile

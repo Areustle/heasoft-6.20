@@ -1,0 +1,478 @@
+#! /usr/bin/perl
+#
+# Mike Tripicco (SSAI)
+# 14 Dec 2005
+#
+# swtimecorr: Correct Swift times (with option to convert to UTC from TT)
+#             Should work correctly even if file spans a leap second...
+#
+# v1.1 (11Jan2006) - handling of leapseconds improved via Clock::SwiftClock
+#                    routines
+# v1.2 (23Oct2008) - Allow for remote CALDB, robustify clockfile checking
+
+use HEACORE::HEAINIT;
+exit headas_main(\&swtimecorr);
+
+sub swtimecorr{
+  $SIG{INT} = \&sigtrap;
+  $SIG{TERM} = \&sigtrap;
+  $SIG{KILL} = \&sigtrap;
+
+  use Cwd;
+  use File::Path;
+  use File::Copy;
+  use File::stat;
+
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Task qw(:codes);
+
+  use Astro::FITS::CFITSIO qw(:constants :longnames);
+
+  $comtstart = "Elapsed seconds since MJDREF at start of file";
+  $comtstop = "Elapsed seconds since MJDREF at end of file";
+  $comtierab = "Absolute precision of clock correction";
+  $comutcf = "[s] UTCF at TSTART";
+  $comclockapp = "Clock correction applied?";
+
+  $ep_mjd_ut = 51910;
+  $ep_mjd_tt = $ep_mjd_ut + 64.184/86400.0;
+
+  $tierabs_q1 = 1e-5; #10us (full correction)
+  $tierabs_q2 = 5e-4; #0.5ms (corrected by UTCFINIT)
+  $tierabs_q3 = 1.0;  #1s (non-physical UTCFINIT used)
+
+  my $tool = bless({
+		    tool => 'swtimecorr',
+		    code => 0,
+		    }, "Task");
+
+  my $tname = 'swtimecorr';
+  my $tvers = '1.2';
+
+  my $status = 0;
+
+  $invokedir = cwd();
+
+  ($status = PILGetFname('infile', $infile)) == 0 ||
+    die "error getting infile parameter";
+  ($status = PILGetFname('outfile', $outfile)) == 0 ||
+    die "error getting outfile parameter";
+  if ($outfile =~ /\.gz$/){&bailout("Cannot create gzipped outfile $outfile")}
+  ($status = PILGetString('outtime', $outtime)) == 0 ||
+    die "error getting outfile parameter";
+  if ($outtime =~ /^u/i){$outtime = "u"}
+  if ($outtime =~ /^t/i){$outtime = "t"}
+  ($status = PILGetInt('chatter', $chatter)) == 0 ||
+    die "error getting chatter parameter";
+
+  ($status = PILGetString('clockfile', $clockfile)) == 0 ||
+    die "error getting clockfile parameter";
+  if (uc($clockfile) eq "CALDB"){
+    unless (defined($ENV{"CALDB"})){&bailout("CALDB environment variable not set; please initialize CALDB and retry")}
+    if ($chatter >= 4) {print "Querying CALDB for Swift clock correction file\n"};
+    HDgtcalf("swift", "SC", "-", "-", "CLOCK", "now", "now", "now", "now", "", 1, 1024, $s1, $s2, $s3, $nret, $nfound, $status);
+    if (! $status and $nfound == 1 and $s3->[0] eq "ONLINE"){
+      $clockfile = "$s1->[0]+$s2->[0]";
+      if ($chatter >=4) {print "got clock file: $clockfile\n"}
+      HDpar_note("clockfile",$clockfile);
+    }else{ &bailout("problem querying CALDB") }
+  }
+
+  set_toolname($tname);
+  set_toolversion($tvers);
+  if ($chatter > 0) {print "**** Running $tname v$tvers ****\n"}
+
+  $status = headas_clobberfile("$outfile");
+  if (-e $outfile){
+    die "\nError: output file \"$outfile\" already exists and cannot be clobbered\n$0 died";
+  }
+
+  # are input and output files in fact the same file?
+  $insitu = "no";
+  $in_stat = stat($infile);
+  $out_stat = stat($outfile);
+  if (-e $outfile and ($in_stat->ino == $out_stat->ino)){$insitu = "yes"}
+
+  # read through the input file and save RAWTIME info
+  my $fits = Astro::FITS::CFITSIO::open_file($infile, READONLY, $status);
+  if ($status) {die "Unable to open $infile"}
+  my $numhdus = 0;
+  my $status = 0;
+  $fits->get_num_hdus($numhdus, $status);
+  if ($status) {die "Unable to get number of HDUs"}
+  for ($hdu=1; $hdu <= $numhdus; $hdu++){ #NB CFITSIO Primary = HDU1...
+    $fits->movabs_hdu($hdu, $hdutype, $status);
+    my $header = $fits->read_header;
+    push @hdus, $header;
+    foreach $key (keys(%{$header})){
+      if ($key =~ /TTYPE/ && ($header->{$key} =~ /^\'TIME/i)){
+	$key =~ /TTYPE(\d+)/;
+	$tcol=$1;
+	if ($fits->get_num_rows($rowcount, $status)){die "Error finding number of rows"}
+	my @rawtime=();
+	my $firstrow = 1;
+	my $firstelem = 1;
+	my $nelem = $rowcount;
+	my $nullval = 0;
+	my $anynul = 0;
+	if ($fits->read_col_dbl($tcol, $firstrow, $firstelem,
+				$nelem, $nullval, \@rawtime, $anynul, $status)) {
+	  die "Error reading TIME column (for RAWTIME)";
+	}
+	$rawthash{"HDU".($hdu-1)} = [ @rawtime ];
+	if ($chatter >= 3) {print "$tname: recorded RAWTIME for HDU".($hdu-1)."\n"}
+      }
+    }
+  }
+  $fits->close_file($status);
+
+  #check compression status
+  fits_file_exists($infile,my $exists,$status);
+
+  if ($insitu eq 'no'){
+    if ($exists == 1 && $infile =~ /\.gz$/){
+      copy("$infile","$outfile.gz");
+      system("gunzip $outfile.gz") && &bailout("gunzip $outfile.gz failed");
+    }
+    elsif ($exists == 2){
+      copy("$infile.gz","$outfile.gz");
+      system("gunzip $outfile.gz") && &bailout("gunzip $outfile.gz failed");
+    }else{copy("$infile","$outfile")}
+  }
+
+  use Clock::SwiftClock qw(sCC sLeap);
+  use Date::Manip qw(ParseDate DateCalc);
+
+  $swdrift = -1122.05; #18Nov2005 SC clock drift (s per 20us, cumulative since launch)
+  $swdrift = -900.0;
+
+  $swcomsg = "===>  Please note that swtimecorr could not locate an applicable\n";
+  $swcomsg .= "      entry in the specified Swift clock offset file:\n";
+  $swcomsg .= "      $SCC\n";
+  $swcomsg .= "      You may want to either update your CALDB or\n";
+  $swcomsg .= "      download a newer copy of the (ascii) clock file:\n";
+  $swcomsg .= "        ftp://legacy.gsfc.nasa.gov/xte/calib_data/clock/swco.dat\n";
+  $swcomsg .= "      copy it to ".$ENV{HEADAS}."/refdata/\n";
+  $swcomsg .= "      and then rerun $tname with \"clockfile=swco.dat\"\n";
+  $swcomsg .= "===>  Basing correction on UTCFINIT instead.\n";
+  $wroteswmsg = "no"; #We're only going to print this once!!
+
+  if (substr($clockfile,0,5) eq "http:" or substr($clockfile,0,4) eq "ftp:") {$SCC = $clockfile}
+  else{
+    if (-f $ENV{"TIMING_DIR"}."/$clockfile") {$SCC=$ENV{"TIMING_DIR"}."/$clockfile"}
+    elsif (-f $ENV{"LHEA_DATA"}."/$clockfile"){$SCC=$ENV{"LHEA_DATA"}."/$clockfile"}
+    elsif ($clockfile =~ /(.+)\+\d+$/) {$SCC = $1}
+    else {$SCC = $clockfile}
+    -f $SCC or &bailout("===> Error verifying existence of $SCC");
+  }
+  if ($chatter >= 4) {print "$tname:\n$tname: Correcting Swift timestamps\n$tname: using SCC = $SCC\n"}
+
+  my $fits = Astro::FITS::CFITSIO::open_file($outfile, READWRITE, $status);
+  if ($status) {&bailout("Unable to open $outfile")}
+  my $numhdus = 0;
+  my $status = 0;
+  @hdus=();
+  $fits->get_num_hdus($numhdus, $status);
+  if ($status) {&bailout("Unable to get number of HDUs in $outfile")}
+  for ($hdu=1; $hdu <= $numhdus; $hdu++){ #NB CFITSIO Primary = HDU1...
+    $fits->movabs_hdu($hdu, $hdutype, $status);
+    my $header = $fits->read_header;
+    push @hdus, $header;
+  }
+  for ($i=0; $i<$numhdus; $i++){
+    $swift="no";
+    $have_tstart="no";
+    $have_tstop="no";
+    $have_tierabso="no";
+    $have_utcfinit="no";
+    $have_tcol="no";
+    $have_gti="no";
+    $have_clockapp="no";
+    $have_mjdref="no";
+    $have_mjdrefi="no";
+    $have_mjdreff="no";
+    $have_timesys="no";
+    $have_dateobs="no";
+    $have_dateend="no";
+    $extname = "(PRIMARY ARRAY)";
+    foreach $key (keys(%{$hdus[$i]})){
+      if ($key =~ /TELESCOP/ && ($hdus[$i]->{$key} =~ /SWIFT/i)){$swift="yes"}
+      if ($key =~ /TSTART/){$have_tstart="yes";$tstart=$hdus[$i]->{$key}}
+      if ($key =~ /TSTOP/){$have_tstop="yes"}
+      if ($key =~ /TIERABSO/){$have_tierabso="yes"}
+      if ($key =~ /UTCFINIT/){$have_utcfinit="yes";$utcfinit = $hdus[$i]->{$key}}
+      if ($key =~ /CLOCKAPP/){$have_clockapp="yes"}
+      if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'TIME/i)){
+	$have_tcol="yes";
+	$key =~ /TTYPE(\d+)/;
+	$tcol=$1;
+      }
+      if ($key =~ /EXTNAME/ && ($hdus[$i]->{$key} =~ /^\'GTI/i)){$have_gti="yes"}
+      if ($key =~ /EXTNAME/){$hdus[$i]->{$key} =~ /'(\S*)\s*'/;$extname = $1}
+      if ($key =~ /TIMESYS/){
+	$have_timesys="yes";
+	$hdus[$i]->{$key} =~ /'(\S*)\s*'/;$timesys=$1;
+	unless ($hdus[$i]->{$key} =~ /^\'TT/i){
+	  &bailout("HDU$i: Illegal TIMESYS ($timesys); must be TT")}
+      }
+      if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'START/i)){
+	$key =~ /TTYPE(\d+)/;
+	$gtistartcol=$1;
+      }
+      if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'STOP/i)){
+	$key =~ /TTYPE(\d+)/;
+	$gtistopcol=$1;
+      }
+      if ($key =~ /MJDREF$/){$have_mjdref="yes"}
+      if ($key =~ /MJDREFI/){$have_mjdrefi="yes"}
+      if ($key =~ /MJDREFF/){$have_mjdreff="yes"}
+      if ($key =~ /DATE-OBS/){$have_dateobs="yes";$hdus[$i]->{$key} =~ /'(.*)'/;$dateobs=$1}
+      if ($key =~ /DATE-END/){$have_dateend="yes";$hdus[$i]->{$key} =~ /'(.*)'/;$dateend=$1}
+    }
+    if ($chatter >= 1){print "$tname: HDU$i: EXTNAME = $extname\n"}
+    unless ($swift eq "yes"){
+      if ($chatter > 0){print "$tname: HDU$i not Swift (TELESCOP keyword missing or non-Swift)...skipping\n"}
+      next;
+    }
+    unless ($have_timesys eq "yes"){
+      if ($chatter > 0){print "$tname: HDU$i has no TIMESYS keyword...skipping\n"}
+      next;
+    }
+    if ($have_clockapp && $hdus[$i]->{CLOCKAPP} eq "T"){
+      if ($chatter > 0){print "$tname: HDU$i: Clock correction already applied...skipping\n"}
+      next;
+    }
+    if ($have_tstart eq "no" or $have_tstop eq "no"){
+      if ($chatter > 0){print "$tname: Missing TSTART and/or TSTOP...skipping\n"}
+      next;
+    }
+
+    #Check UTCFINIT for non-physical value and reset to zero
+    if ($have_utcfinit eq "yes" && $utcfinit > 999){
+      $swcomsg .= "===>  WARNING! Non-physical UTCFINIT ($hdus[$i]->{UTCFINIT})...assuming 0.0\n";
+      $utcfinit = 0.0;
+    }
+
+    #Compute leapsecond correction at TSTART (leapsecs since 2001.0)
+    $leapcor = 0;
+    $leapcor = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTART}/86400.0);
+    if ($outtime eq "t" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTART) = $leapcor\n"}
+
+    #Compute leapsecond correction at TSTOP (leapsecs since 2001.0)
+    $leapcor2 = 0;
+    $leapcor2 = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTOP}/86400.0);
+    if ($outtime eq "t" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTOP) = $leapcor2\n"}
+
+    # Check whether file spans a leap second. If so we'll have to compute them for each time (slow)
+    if ($leapcor != $leapcor2){$ut2tt = -999}else{$ut2tt = $leapcor}
+
+    # UTCF is jammed when a leap second occurs (ie, 1s is subtracted from UTCF for a 'normal'
+    # [positive] leap second) so we must "undo" that to get TTCF
+    $ttcfinit = $utcfinit + $leapcor;
+
+    #Calculate CFINIT for output file depending on time system
+    if ($outtime eq "u"){
+      $newutcfinit = 0.0;
+      $cfinit = $utcfinit;
+    }else{
+      #UTCFINIT still needs to account for leapsecs
+      $newutcfinit = -1 * $leapcor;
+      $cfinit = $ttcfinit;
+    }
+
+    if ($fits->movabs_hdu($i+1, $hdutype, $status)){&bailout("Error moving to HDU$i")}
+
+    #Update TSTART
+    if (sCC($hdus[$i]->{TSTART},$outtime,$leapcor,$clockfile,$tzero,$correction)){
+      if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+      $correction = $cfinit * 1e6; #microseconds;
+    }
+    $msg = "$tname: HDU$i: TSTART = ".($hdus[$i]->{TSTART}).", ";
+    $msg .="TSTOP = ".($hdus[$i]->{TSTOP});
+    if ($chatter > 4){print "$msg\n"};
+    if ($chatter >= 3){printf "$tname: HDU$i: correcting TSTART ($hdus[$i]->{TSTART}) by %+9.6f s\n",($correction*1e-6)}
+    $msg = "$tname: HDU$i: TSTART = ".($correction*1e-6+($hdus[$i]->{TSTART})).", ";
+    if ($fits->update_key_dbl('TSTART',$correction*1e-6+($hdus[$i]->{TSTART}),
+			      15,$comtstart,$status))
+      {&bailout("Error updating TSTART keyword in HDU$i")}
+    if ($have_dateobs eq "yes" && $outtime eq "u"){
+      if ($chatter >= 3){print "$tname: HDU$i: Correcting DATE-OBS (was $dateobs TT)\n"}
+      $datecor = ($correction * 1e-6) - 64.184;
+      if ($datecor < 0){$delta = "- ".(int (-1*$datecor+0.5))." seconds"}else{
+	$delta = "+ ".(int ($datecor+0.5))." seconds"}
+      $newdateobs=DateCalc($dateobs,$delta,\$err);
+      if ($err){&bailout("DateCalc error: $err\n")}
+      $newdateobs =~ /(\d{4})(\d{2})(\d{2})(\d{2}):(\d{2}):(\d{2})/;
+      $newdateobs = "$1-$2-$3T$4:$5:$6";
+      if ($chatter > 4){print "$tname: HDU$i: DATE-OBS is now $newdateobs UTC\n"}
+      if ($fits->update_key_str('DATE-OBS',$newdateobs,'Date and time of observation start',$status))
+	{&bailout("Error updating DATE-OBS keyword in HDU$i")}
+    }
+
+    #Update TSTOP
+    if (sCC($hdus[$i]->{TSTOP},$outtime,$leapcor2,$clockfile,$tzero,$correction)){
+      if ($wroteswmsg eq "no" && ($chatter >= 3)) {print $swcomsg;$wroteswmsg="yes"}
+      $correction = $cfinit*1e6 + ($hdus[$i]->{TSTOP}-$tstart)*20.0/$swdrift; #microseconds;
+    }
+    if ($chatter >= 3){printf "$tname: HDU$i: correcting TSTOP ($hdus[$i]->{TSTOP}) by %+9.6f s\n",($correction*1e-6)}
+    $msg .="TSTOP = ".($correction*1e-6+$hdus[$i]->{TSTOP})." (corrected)";
+    if ($chatter > 4) {print "$msg\n"};
+    if ($fits->update_key_dbl('TSTOP',$correction*1e-6+($hdus[$i]->{TSTOP}),
+			      15,$comtstop,$status))
+      {&bailout("Error updating TSTOP in HDU$i")}
+    if ($have_dateend eq "yes" && $outtime eq "u"){
+      if ($chatter >= 3){print "$tname: HDU$i: Correcting DATE-END (was $dateend TT)\n"}
+      $datecor = ($correction * 1e-6) - 64.184;
+      if ($datecor < 0){$delta = "- ".(int (-1*$datecor+0.5))." seconds"}else{
+	$delta = "+ ".(int ($datecor+0.5))." seconds"}
+      $newdateend=DateCalc($dateend,$delta,\$err);
+      if ($err){&bailout("DateCalc error: $err\n")}
+      $newdateend =~ /(\d{4})(\d{2})(\d{2})(\d{2}):(\d{2}):(\d{2})/;
+      $newdateend = "$1-$2-$3T$4:$5:$6";
+      if ($chatter > 4){print "$tname: HDU$i: DATE-END is now $newdateend UTC\n"}
+      if ($fits->update_key_str('DATE-END',$newdateend,'Date and time of observation end',$status))
+	{&bailout("Error updating DATE-END keyword in HDU$i")}
+    }
+
+    #Update TIERABSO
+    if ($have_tierabso eq "yes"){
+      if ($wroteswmsg eq "yes"){
+	if ($have_utcfinit eq "yes" && $hdus[$i]->{UTCFINIT} > 999){$newtierabs = $tierabs_q3}
+	else{$newtierabs = $tierabs_q2}
+      }else{
+	$newtierabs = $tierabs_q1;
+      }
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting TIERABSO (was $hdus[$i]->{TIERABSO})\n"}
+      if ($fits->update_key_dbl('TIERABSO',$newtierabs,6,$comtierab,$status))
+	{&bailout("Error updating TIERABSO in HDU$i")}
+    }
+    #Update UTCFINIT
+    if ($have_utcfinit eq "yes"){
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting UTCFINIT (was $hdus[$i]->{UTCFINIT})\n"}
+      if ($fits->update_key_dbl('UTCFINIT',$newutcfinit,6,$comutcf,$status))
+	{&bailout("Error updating UTCFINIT in HDU$i")}
+    }
+    #Update CLOCKAPP
+    if ($have_clockapp eq "yes"){
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting CLOCKAPP (was $hdus[$i]->{CLOCKAPP})\n"}
+      if ($fits->update_key_log('CLOCKAPP',1,$comclockapp,$status))
+	{&bailout("Error updating CLOCKAPP in HDU$i")}
+    }
+    #Update keywords related to a timesystem change
+    if ($outtime eq "u"){
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting TIMESYS (was $timesys)\n"}
+      if ($fits->update_key_str('TIMESYS','UTC',"Time system",$status))
+	{&bailout("Error updating TIMESYS in HDU$i")}
+      if ($have_mjdref eq "yes"){
+	if ($fits->update_key(TINT,'MJDREF',$ep_mjd_ut,"MJD reference day",$status))
+	  {&bailout("Error updating MJDREF in HDU$i")}
+      }
+      if ($have_mjdrefi eq "yes"){
+	if ($fits->update_key(TINT,'MJDREFI',$ep_mjd_ut,"MJD reference day (integer part)",$status))
+	  {&bailout("Error updating MJDREFI in HDU$i")}
+	if ($fits->update_key(TFLOAT,'MJDREFF',0,"MJD reference day (fractional part)",$status))
+	  {&bailout("Error updating MJDREFF in HDU$i")}
+      }
+    }
+
+    #Update TIME column
+    if ($have_tcol eq "yes"){
+      if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+      if ($fits->get_num_cols($colcount, $status)){&bailout("Error finding number of cols")}
+
+      my @time;
+      my $firstrow = 1;
+      my $firstelem = 1;
+      my $nelem = $rowcount;
+      my $nullval = 0;
+      my $anynul = 0;
+      if ($fits->read_col_dbl($tcol, $firstrow, $firstelem,
+			      $nelem, $nullval, \@time, $anynul, $status)) {
+	&bailout("Error reading TIME column");
+      }
+      my @timecorr=();
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting TIME column\n"}
+      foreach $t (@time){
+	if (sCC($t,$outtime,$ut2tt,$clockfile,$tzero,$correction)){
+	  if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	  $correction = $cfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds;
+	}
+	push @timecorr, $t+($correction*1e-6);
+      }
+      if ($fits->write_col_dbl($tcol, $firstrow, $firstelem,
+			       $nelem, \@timecorr, $status)){
+	&bailout("Error updating TIME column");
+      }
+      if ($chatter >= 3) {print "$tname: HDU$i: Adding RAWTIME column\n"}
+      if ($fits->insert_col($colcount+1,'RAWTIME','1D',$status))
+	{&bailout("Error inserting RAWTIME column")}
+      if ($fits->write_col_dbl($colcount+1, $firstrow, $firstelem,
+			       $nelem, \@{$rawthash{"HDU$i"}}, $status))
+	{&bailout("Error writing RAWTIME column")}
+    }
+
+    #Update GTI START/STOP columns
+    if ($have_gti eq "yes"){
+      if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+
+      my @time=();
+      my $firstrow = 1;
+      my $firstelem = 1;
+      my $nelem = $rowcount;
+      my $nullval = 0;
+      my $anynul = 0;
+      if ($fits->read_col_dbl($gtistartcol, $firstrow, $firstelem,
+			      $nelem, $nullval, \@time, $anynul, $status)) {
+	&bailout("Error reading START column");
+      }
+      my @timecorr=();
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting START column\n"}
+      foreach $t (@time){
+	if (sCC($t,$outtime,$ut2tt,$clockfile,$tzero,$correction)){
+	  if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	  $correction = $cfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds;
+	}
+	push @timecorr, $t+($correction*1e-6);
+      }
+      if ($fits->write_col_dbl($gtistartcol, $firstrow, $firstelem,
+			       $nelem, \@timecorr, $status)){
+	&bailout("Error updating START column");
+      }
+      my @time=();
+      if ($fits->read_col_dbl($gtistopcol, $firstrow, $firstelem,
+			      $nelem, $nullval, \@time, $anynul, $status)) {
+	&bailout("Error reading STOP column");
+      }
+      my @timecorr=();
+      if ($chatter >= 3) {print "$tname: HDU$i: Correcting STOP column\n"}
+      foreach $t (@time){
+	if (sCC($t,$outtime,$ut2tt,$clockfile,$tzero,$correction)){
+	  if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	  $correction = $cfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds;
+	}
+	push @timecorr, $t+($correction*1e-6);
+      }
+      if ($fits->write_col_dbl($gtistopcol, $firstrow, $firstelem,
+			       $nelem, \@timecorr, $status)){
+	&bailout("Error updating STOP column");
+      }
+    }
+    HDpar_stamp($fits,$i+1,$status);
+    $fits->write_chksum($status);
+  }
+  $fits->close_file($status);
+
+  return 0;
+}
+
+sub sigtrap{
+  my $signame = shift;
+  &bailout("\n!Trapped a $signame signal!");
+}
+
+sub bailout{
+  my $errmsg = @_[0];
+  if ($insitu eq "no"){unlink($outfile)}
+  die "$0: $errmsg\nBailing out";
+}

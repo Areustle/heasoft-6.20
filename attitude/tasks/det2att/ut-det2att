@@ -1,0 +1,121 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/det2att/ut-det2att,v $
+# $Revision: 1.1 $
+# $Date: 2005/10/17 17:19:41 $
+#
+#		det2att unit test
+#
+#
+# $Log: ut-det2att,v $
+# Revision 1.1  2005/10/17 17:19:41  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::Det2att;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runDet2att
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runDet2att
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{result} = "$output/qdelta.fits";
+	$self->{template} = "$input/template.fits";
+
+	my @task = (
+		infile     => "$input/offset.fits",
+		outfile    => $self->{result},
+		teldef     => "$input/teldef.fits",
+		history    => 'yes',
+		chatter    => $args->{chatter},
+	);
+
+	my %task = @task;
+
+	# build command line
+	my $command = $self->buildCommand('det2att', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{result}) {
+		$self->error(BAD_OUTPUT, "missing result file");
+	}
+
+	{
+		my $cols = '[col TIME; QPARAM]';
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template} . $cols,
+				infile2 => $self->{result} . $cols,
+				tolerance => 1e-10,
+				exclude => 'CREATOR,DATASUM',
+				);
+
+		$self->shell($command);
+	}
+
+}
+

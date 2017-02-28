@@ -1,0 +1,958 @@
+#!perl
+
+# $Source: /headas/headas/swift/uvot/tasks/uvotmaghist/uvotmaghist,v $
+# $Revision: 1.21 $
+# $Date: 2015/09/08 20:21:30 $
+#
+#
+# $Log: uvotmaghist,v $
+# Revision 1.21  2015/09/08 20:21:30  rwiegand
+# Noted that ra/dec/srcas/bkgas are deprecated.
+#
+# Revision 1.20  2010/06/30 20:47:15  rwiegand
+# Added subpixel parameter.
+#
+# Revision 1.19  2010/06/22 21:12:46  rwiegand
+# Added parameter for detector sensitivity loss correction.
+#
+# Revision 1.18  2009/07/20 20:44:54  rwiegand
+# Updated version number.  Changed default apercorr parameter value to
+# CURVEOFGROWTH.  Assorted help file updates.
+#
+# Revision 1.17  2009/04/29 21:14:29  rwiegand
+# If there are no images to process (presumably because the have all been
+# excluded), print a warning and exit normally instead of displaying scary
+# messages and exiting with an error.
+#
+# Revision 1.16  2009/03/09 20:07:42  rwiegand
+# Corrected problem with hash key used to check for excluded HDUs (now EXTNAME).
+#
+# Revision 1.15  2008/10/16 18:31:54  rwiegand
+# Remove line terminators if taking input from infile=@path.
+#
+# Revision 1.14  2008/04/22 20:15:26  rwiegand
+# Updated default fwhmsig to 3%.  Allow user to control uvotapercorr fwhmsig
+# value for apercorr=CURVEOFGROWTH.
+#
+# Revision 1.13  2008/04/09 15:05:59  rwiegand
+# Added centroid parameter.
+#
+# Revision 1.12  2008/03/26 14:49:14  rwiegand
+# Added LSS parameter.  Use UVOT::Time for converting between MET and ISO/UTC.
+#
+# Revision 1.11  2007/10/23 21:26:41  rwiegand
+# Renamed parameter method => apercorr with values NONE|CURVEOFGROWTH.
+#
+# Revision 1.10  2007/10/17 21:05:22  rwiegand
+# Pass allowcorr=yes to swifttime.  Relocated code that checks PGPLOT
+# devices so it is available for magnitude and rate plots.
+#
+# Revision 1.9  2007/10/09 15:32:58  rwiegand
+# Allow user to control output plot type including GIF and Postscript.
+#
+# Revision 1.8  2007/09/14 15:25:15  rwiegand
+# Updated MET and TIME to middle of exposure.
+#
+# Revision 1.7  2007/07/17 15:28:11  rwiegand
+# Added PSF CALDB and frame time parameters.  Allow user to select which
+# column to plot.
+#
+# Revision 1.6  2007/06/14 15:26:28  rwiegand
+# Was failing to pass calibration parameters on to uvotsource.
+#
+# Revision 1.5  2007/06/06 20:31:43  rwiegand
+# Moved some qdp commands from the command line to the qdp script which
+# were causing a problem on Solaris.
+#
+# Revision 1.4  2007/05/25 15:38:58  rwiegand
+# Updated light curve plotting in particular what is draw for upper and
+# lower limits.
+#
+# Revision 1.3  2007/05/22 14:40:03  rwiegand
+# Allow user to specify uvotsource method parameter.
+#
+# Revision 1.2  2007/05/22 14:32:49  rwiegand
+# Fixed problem writing TIME column data.
+#
+# Revision 1.1  2007/05/21 17:13:19  rwiegand
+# Relocated tool from obsolete uvotmag directory.
+#
+# Revision 1.18  2006/12/19 19:47:41  rwiegand
+# Updated X axis label.  Allow timezero to be passed at YYYY-MM-DDTHH:MM:SS.
+#
+# Revision 1.17  2006/12/19 16:47:32  rwiegand
+# Allow multiple input files.  Try harder to avoid duplicate exposures.
+#
+# Revision 1.16  2006/12/19 15:03:24  rwiegand
+# Added parameters for specifying nsigma and whether time axis uses log or
+# linear scale.  Use same approach as uvotsource for finding rates from
+# source and background regions and counts.  Adjusted title and use white
+# background for plots.  Added more columns to output table.
+#
+# Revision 1.15  2006/12/18 15:20:12  rwiegand
+# Implemented exclusion of HDUs based on ASPCORR keyword.
+#
+# Revision 1.14  2006/11/30 19:49:09  rwiegand
+# Added EXTNAME column to outfile.  If multiple images with the same EXPID
+# occur in the input, ignore all but the first.
+#
+# Revision 1.13  2006/11/30 18:06:11  rwiegand
+# Fix title of chart to reflect reference time.  Use TRIGTIME if available.
+#
+# Revision 1.12  2006/11/06 16:32:15  rwiegand
+# Updated calculation of RATE_BKG for annulus/region methods.
+#
+# Revision 1.12  2006/11/06 16:12:46  rwiegand
+# Found and corrected another problem with annulus area versus region area.
+# I suspect another one lingers, but want help from scientists.
+#
+# Revision 1.11  2006/11/06 14:59:21  rwiegand
+# Updated region file handling to match uvotsource.  Still intend to come
+# up with a more general interface that can be shared.
+#
+# Revision 1.10  2006/10/19 16:42:20  rwiegand
+# Corrected calculation of RATE_BKG when given a background region (instead
+# of using the annulus parameters srcas/bkgas).
+#
+# Revision 1.9  2006/03/01 22:39:02  rwiegand
+# Added frametime parameter instead of hard-coded value.  Write parameter
+# history including a note for derived timezero if determined from data.
+#
+# Revision 1.8  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.7  2005/08/05 12:28:00  rwiegand
+# Added parameter to control whether or not systematic errors are included
+# in MAG_ERR and FLUX_ERR calculations.
+#
+# Revision 1.6  2005/01/31 21:12:52  rwiegand
+# Changed PIL type of srcreg and bkgreg parameters to file to deal with
+# trailing spaces.
+#
+# Revision 1.5  2005/01/24 16:23:48  rwiegand
+# Updated quoting of paths passed to ximage to allow directories other than
+# cwd, and renaming of files to work across file systems.
+#
+# Revision 1.4  2005/01/23 03:50:11  rwiegand
+# Adjusted time calculations.  Made parameter checking more robust.
+#
+# Revision 1.3  2005/01/19 20:34:01  rwiegand
+# Added parameters for specifying source and background region files.
+# Added parameter for specifying start time of plot.  Calculate and
+# write background rate for each image.
+#
+# Revision 1.2  2004/10/22 19:17:31  rwiegand
+# Propagate more keywords from input to output (since they are needed
+# by the uvotmag sub-process if CALDB is queried).  The MET value was
+# not being written to the magnitude history table.
+#
+# Revision 1.1  2004/08/27 17:08:20  rwiegand
+# Added tool for creating magnitude history.
+#
+
+use strict;
+
+package UVOT::MagHist;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+use SimpleFITS;
+
+use FileHandle;
+use File::Copy;
+use Math;
+use UVOT::Time;
+
+
+
+sub executeAux
+{
+	my ($self, @steps) = @_;
+
+	foreach my $step (@steps) {
+		return if not $self->isValid;
+		$self->$step;
+	}
+
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->executeAux(qw(
+			initialize
+			loadInput
+			));
+
+	# only perform these steps if there are usable images
+
+	$self->executeAux(qw(
+			makeTemporaries
+			runUvotsource
+			setTimeZero
+			loadTable
+			updateTimeColumn
+			makePlot
+			)) if $self->{HAVE_IMAGES};
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file plotfile=file
+				zerofile=file coinfile=file psffile=file
+				lssfile=file sensfile=file syserr=bool
+				ra=real dec=real srcas=real bkgas=real apercorr=string
+				timezero=string srcreg=file bkgreg=file exclude=string
+				frametime=string nsigma=real logtime=boolean plotcol=string
+				centroid=boolean fwhmsig=real subpixel=integer
+				clobber=bool history=bool cleanup=bool chatter=int
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	foreach my $key (qw(outfile plotfile)) {
+		if (-e $args->{$key} and not $args->{clobberFlag}) {
+			$self->error(BAD_OUTPUT,
+					"$args->{$key} exists and clobber not set");
+		}
+	}
+
+	if ($args->{infile} =~ /^@/) {
+		# file containing list of file names
+		my $path = substr($args->{infile}, 1);
+		my $fh = FileHandle->new($path);
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to open $path [$!]");
+		}
+		else {
+			my @files = <$fh>;
+			undef($fh);
+			chomp(@files);
+			$self->{input} = \@files;
+		}
+	}
+	else {
+		$self->{input} = [ split(/,/, $args->{infile}) ];
+	}
+
+	$self->{TSTART} = 0;
+
+	if ($args->{srcreg} =~ /^NONE$/i xor $args->{bkgreg} =~ /^NONE$/i) {
+		$self->error(BAD_INPUT,
+				'both (or neither) region files must be specified');
+	}
+	elsif ($args->{srcreg} =~ /^NONE$/i) {
+		$self->{backgroundAnnulus} = 1;
+		if ($args->{srcas} >= $args->{bkgas}) {
+			$self->error(BAD_INPUT, "srcas must be smaller than bkgas");
+		}
+		else {
+			$self->warning('use of ra/dec/srcas/bkgas is deprecated; please use srcreg/bkgreg.');
+		}
+	}
+	else {
+		$self->{backgroundAnnulus} = 0;
+		foreach my $key (qw(srcreg bkgreg)) {
+			if (not -f $args->{$key}) {
+				$self->error(BAD_INPUT, "$key path is not a file");
+			}
+		}
+	}
+
+	my %exclude;
+	if ($args->{exclude} !~ /^NONE$/i) {
+		foreach my $word (split(',', $args->{exclude})) {
+			if ($word =~ /^DEFAULT$/i) {
+				$exclude{'ASPCORR:NONE'} = 1;
+				$exclude{DUPEXPID} = 1;
+				$exclude{'OBS_MODE:SETTLING'} = 1;
+			}
+			else {
+				$exclude{$word} = 1;
+			}
+		}
+	}
+	$self->{exclude} = \%exclude;
+}
+
+
+sub excludeHDU
+{
+	my ($self, $tag) = @_;
+	my $exclude = $self->{exclude}{$tag};
+	return $exclude;
+}
+
+
+sub cleanQuotes
+{
+	my ($in) = @_;
+	my $out = $in;
+	if ($in =~ /^'(.+?)\s*'/) {
+		$out = $1;
+	}
+	return $out;
+}
+
+
+sub loadInput
+{
+	my ($self) = @_;
+
+	$self->{FILTER} = undef;
+	my @hdus;
+	$self->{hdus} = \@hdus;
+
+	$self->{seen} = { }; # keep track of EXPIDs to avoid duplicates
+
+	foreach my $file (@{ $self->{input} }) {
+		$self->loadFile($file);
+	}
+
+	if ($self->isValid and @hdus) {
+		$self->{HAVE_IMAGES} = 1;
+
+		my @sorted = sort { $a->{TSTART} <=> $b->{TSTART} } @hdus;
+		$self->{hdus} = \@sorted;
+	}
+	else {
+		$self->warning("no HDUs to process");
+	}
+}
+
+
+sub loadFile
+{
+	my ($self, $path) = @_;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my $numhdus = 0;
+	if ($self->isValid and $fits->get_num_hdus($numhdus, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to get HDU info for $path [$status]");
+		return;
+	}
+
+	if (not $self->{cards}) {
+		my @cards;
+		$self->storeHeaderCards($fits,
+				types => [ TYP_HDUID_KEY, TYP_COMM_KEY, TYP_CONT_KEY,
+						TYP_USER_KEY, TYP_REFSYS_KEY ],
+				array => \@cards,
+				);
+		$self->{cards} = \@cards;
+	}
+
+	my @hdus;
+	my $seen = $self->{seen};
+
+	for (my $hdu = 1; $self->isValid and $hdu <= $numhdus; ++$hdu) {
+
+		my %hdu = (PATH => $path, EXT0 => $hdu - 1);
+		my $hdutype;
+
+		if ($fits->movabs_hdu($hdu, $hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to move to $path HDU $hdu [$status]");
+		}
+		elsif ($hdutype != IMAGE_HDU) {
+			$self->error(BAD_INPUT,
+					"$path HDU $hdu is not an image");
+		}
+		else {
+			my $header = $fits->read_header;
+			if ($header->{NAXIS} != 2) {
+				$self->report("skipping HDU $hdu{EXT0} [not 2d]");
+				next;
+			}
+
+			my $aspcorr = cleanQuotes($header->{ASPCORR} || 'NONE');
+			{
+				my $value = $header->{OBJECT} || $header->{OBS_ID} || '';
+				my $object = cleanQuotes($value);
+				$self->{PLOT_TITLE} = "Swift/UVOT $object";
+			}
+
+			my $obsmode = cleanQuotes($header->{OBS_MODE} || 'NONE');
+
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(NAXIS1 NAXIS2 FILTER TSTART TSTOP) ],
+					hash => \%hdu,
+					);
+			last if not $self->isValid;
+
+			$hdu{EXTNAME} = cleanQuotes($header->{EXTNAME} || $header->{HDUNAME} || 'UNNAMED');
+			my $hdudesc = "HDU $hdu{EXT0} / $hdu{EXTNAME}";
+
+			if (not $self->{TRIGTIME} and $header->{TRIGTIME}) {
+				$self->{TRIGTIME} = $header->{TRIGTIME};
+				$self->report("found TRIGTIME $self->{TRIGTIME} in $hdudesc")
+					if $self->chatter(2);
+			}
+
+			my @exclude = (
+				$hdu{EXT0},
+				$hdu{EXTNAME},
+				"ASPCORR:$aspcorr",
+				"OBS_MODE:$obsmode",
+			);
+			my $excluded = undef;
+			foreach my $exclusion (@exclude) {
+				if ($self->excludeHDU($exclusion)) {
+					$excluded = 1;
+					$self->report("excluding $hdudesc based on $exclusion");
+					last;
+				}
+			}
+			next if $excluded;
+
+			my $expid = $header->{EXPID};
+			if (not $expid) {
+				if ($hdu{EXTNAME} =~ /^\w{2}(\d{9,})[EI]$/) {
+					$expid = $1;
+				}
+			}
+			if ($expid) {
+				if ($seen->{$expid}) {
+					$self->report("ignoring duplicate EXPID $expid");
+					next;
+				}
+				else {
+					$seen->{$expid} = 1;
+				}
+			}
+
+			my $context = "$path+$hdu{EXTNAME}";
+
+			# figure out the exposure
+			if ($header->{EXPOSURE}) {
+				$hdu{EXPOSURE} = $header->{EXPOSURE};
+			}
+			elsif ($header->{ONTIME}) {
+				$hdu{EXPOSURE} = $header->{ONTIME};
+			}
+
+			if (not defined($self->{FILTER})) {
+				$self->{FILTER} = $hdu{FILTER};
+			}
+			elsif ($self->{FILTER} ne $hdu{FILTER}) {
+				$self->{FILTER} = 'MIXED';
+				$self->warning('combining FILTERs')
+					if not $self->{WARNED_COMBINED_FILTERS};
+				$self->{WARNED_COMBINED_FILTERS} = 1;
+			}
+
+			if (not $self->{TSTART} or $hdu{TSTART} < $self->{TSTART}) {
+				$self->{TSTART} = $hdu{TSTART};
+			}
+
+			push(@hdus, \%hdu);
+		}
+	}
+
+	if ($fits) {
+		my $tmp = 0 ;
+		$fits->close_file($tmp);
+	}
+
+	push(@{ $self->{hdus} }, @hdus);
+}
+
+
+sub makeTemporaries
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->{backgroundAnnulus}) {
+		$self->{srcreg} = $self->temporary('src', ext => '.reg');
+		$self->makeRegionFile($self->{srcreg}, 1);
+		$self->{bkgreg} = $self->temporary('bkg', ext => '.reg');
+		$self->makeRegionFile($self->{bkgreg}, 0);
+	}
+	else {
+		$self->sanitizeRegionFile('srcreg', 1);
+		$self->sanitizeRegionFile('bkgreg', 0);
+	}
+
+	# $self->{tmpout} = $self->temporary('output');
+	# $self->createEmptyFITS($self->{tmpout}, infile => $self->{input}[0]);
+}
+
+
+# this is meant to replicate the uvotsource behavior with region files;
+# it is not an accurate interpretation of FITS region files.
+sub sanitizeRegionFile
+{
+	my ($self, $key) = @_;
+
+	my $args = $self->args;
+	my $path = $args->{$key};
+
+	my $fh0 = FileHandle->new($path);
+	if (not $fh0) {
+		$self->error(BAD_INPUT, "unable to open $path [$!]");
+		return;
+	}
+	my @lines = <$fh0>;
+	undef($fh0);
+
+	my $tmpfile = $self->temporary($key);
+	my $fh = FileHandle->new($tmpfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_INPUT, "unable to create $tmpfile [$!]");
+	}
+	else {
+		foreach my $line (@lines) {
+			if ($line !~ /^\S+\;-/) {
+				$fh->print($line);
+			}
+		}
+		foreach my $line (@lines) {
+			if ($line =~ /^\S+\;-/) {
+				$fh->print($line);
+			}
+		}
+		$fh->close;
+		$self->{$key} = $tmpfile;
+	}
+}
+
+
+
+sub loadTable
+{
+	my ($self) = @_;
+
+	my @table;
+	my $status = SimpleFITS->readonly($self->{MAGHIST})
+			->move(2)
+			->loadtable(\@table)
+			->close
+			->status
+			;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load $self->{MAGHIST} [$status]");
+	}
+
+	foreach my $hdu (@table) {
+
+		$hdu->{TIME_ERR} = $hdu->{TELAPSE} / 2;
+
+		$hdu->{MET} = $hdu->{TSTART} + $hdu->{TIME_ERR};
+		$hdu->{TIME} = $hdu->{MET} - $self->{TIMEZERO};
+
+		$hdu->{PLOT_TIME} = $hdu->{TIME};
+
+		if ($hdu->{AP_COI_SRC_RATE} < $hdu->{COI_RATE_LIMIT}) {
+			$hdu->{MAG_ERR} = 0;
+		}
+
+	}
+
+	$self->{TABLE} = \@table;
+
+}
+
+
+sub updateTimeColumn
+{
+	my ($self) = @_;
+
+	my @time = map { $_->{TIME} } @{ $self->{TABLE} };
+
+	my $status = SimpleFITS->readwrite($self->{MAGHIST})
+			->move(2)
+			->writecol('TIME', { }, \@time)
+			->close
+			->status
+			;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to write TIME column [$status]");
+	}
+	else {
+		$self->report('updated TIME column');
+	}
+
+}
+
+
+
+sub makePlot
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	if (uc($args->{plotfile}) eq 'NONE') {
+		return;
+	}
+
+	my $hard = 'gif';
+	$self->{pgplot} = $args->{plotfile};
+	if ($args->{plotfile} =~ /\.(\w+)$/) {
+		$hard = lc($1);
+		my %EXTENSION = (
+			gif => 'gif',
+			vgif => 'gif',
+			ppm => 'ppm',
+			vppm => 'ppm',
+			ps => 'ps',
+			vps => 'ps',
+			cps => 'ps',
+			vcps => 'ps',
+			wd => 'xwd',
+			vwd => 'xwd',
+		);
+		my $basetype = $EXTENSION{$hard} || $hard;
+		$self->{pgplot} = "pgplot.$basetype";
+		$args->{plotfile} =~ s/\.\w+$/.$basetype/;
+	}
+	$self->{pghard} = $hard;
+	$self->verbose("plot type is $hard");
+
+	my $qdpfile = $self->temporary('qdp');
+	my $qfh = FileHandle->new($qdpfile, 'w');
+	if (not $qfh) {
+		$self->error(BAD_OUTPUT,
+				"unable to create $qdpfile [$!]");
+		return;
+	}
+
+	if (uc($self->args->{plotcol}) eq 'MAG') {
+		$self->makeMagPlot($qdpfile, $qfh);
+	}
+	else {
+		$self->makeRatePlot($qdpfile, $qfh);
+	}
+}
+
+
+sub makeMagPlot
+{
+	my ($self, $qdpfile, $qfh) = @_;
+
+	my $xlog = $self->args->{logtimeFlag} ? 'ON' : 'OFF';
+	$qfh->print("READ SErr 1
+READ TErr 2
+LABEL f
+LOG y OFF
+LOG x $xlog
+TIME off
+SCREEN white
+SCREEN 1 0 0 0
+MARKER 0 ON
+LABEL TOP $self->{PLOT_TITLE}
+LABEL x $self->{TIMELABEL}
+LABEL y $self->{FILTER} Magnitude
+LWidth 4
+CSize 1.37
+");
+
+	my $ymin = 999;
+	my $ymax = -999;
+
+	foreach my $hdu (@{ $self->{TABLE} }) {
+
+		my $mag = $hdu->{MAG};
+
+		next if $mag > 90;
+
+		my $magp;
+		my $magm;
+		my $mag0;
+
+		if ($mag > $hdu->{MAG_LIM}) {
+			$mag0 = $hdu->{MAG_LIM};
+			$magp = 10;
+			$magm = 0;
+		}
+		elsif ($mag < $hdu->{MAG_COI_LIM}) {
+			$mag0 = $hdu->{MAG_COI_LIM};
+			$magp = 0;
+			$magm = -10;
+		}
+		else {
+			$mag0 = $mag;
+			$magp = $hdu->{MAG_ERR};
+			$magm = -$hdu->{MAG_ERR};
+		}
+
+		if ($mag0 > $ymax) { $ymax = $mag0; }
+		if ($mag0 < $ymin) { $ymin = $mag0; }
+#print "mag $mag, ymin $ymin, ymax $ymax\n";
+
+		$qfh->print("$hdu->{PLOT_TIME} $hdu->{TIME_ERR} $mag0 $magp $magm\n");
+	}
+
+	# plot light curve
+	$ymin = $ymin - 0.5;
+	$ymax = $ymax + 0.5;
+
+	$qfh->print("r y $ymax $ymin
+hard /$self->{pghard}
+exit
+");
+	$qfh->close;
+
+	my $command = qq(echo $qdpfile | qdp);
+	$self->shell($command);
+}
+
+
+sub makeRatePlot
+{
+	my ($self, $qdpfile, $qfh) = @_;
+
+	my $args = $self->args;
+
+	my $plotcol = uc($args->{plotcol});
+	my $errcol = $plotcol . '_ERR';
+	my $info = $self->{TABLE}[0];
+	if (not $info) {
+		$self->warning("no data to plot");
+	}
+	elsif (not exists($info->{$plotcol})) {
+		$self->error(BAD_INPUT, "invalid plotcol '$plotcol'");
+	}
+	elsif (not exists($info->{$errcol})) {
+		$self->error(BAD_INPUT, "invalid errcol '$errcol'");
+	}
+	return if not $self->isValid;
+
+	
+	my $xlog = $args->{logtimeFlag} ? 'ON' : 'OFF';
+	$qfh->print("READ SErr 1
+READ TErr 2
+LABEL f
+LOG y OFF
+LOG x $xlog
+TIME off
+SCREEN white
+SCREEN 1 0 0 0
+MARKER 0 ON
+LABEL TOP $self->{PLOT_TITLE}
+LABEL x $self->{TIMELABEL}
+LABEL y $self->{FILTER} $args->{plotcol}
+LWidth 4
+CSize 1.37
+");
+
+	my $ymin = 1e20;
+	my $ymax = -1e20;
+	my $empty = 1;
+
+	foreach my $hdu (@{ $self->{TABLE} }) {
+
+		$empty = 0;
+		my $rate = $hdu->{$plotcol};
+		my $err = $hdu->{$errcol};
+
+		if ($rate > $ymax) { $ymax = $rate; }
+		if ($rate < $ymin) { $ymin = $rate; }
+#print "rate $rate, ymin $ymin, ymax $ymax\n";
+
+		$qfh->print("$hdu->{PLOT_TIME} $hdu->{TIME_ERR} $rate $err -$err\n");
+	}
+
+	# plot light curve
+	if ($empty) {
+		$ymin = 0;
+		$ymax = 1;
+	}
+	my $range = $ymax - $ymin;
+	if ($range > 0) {
+		$ymin -= $range / 20;
+		$ymax += $range / 20;
+	}
+	else {
+		$ymin = 0.5 * $ymin;
+		$ymax = 1.5 * $ymin;
+		if ($ymin > $ymax) {
+			my $tmp = $ymin;
+			$ymin = $ymax;
+			$ymax = $tmp;
+		}
+	}
+
+	$qfh->print("r y $ymin $ymax
+hard /$self->{pghard}
+exit
+");
+	$qfh->close;
+
+	my $command = qq(echo $qdpfile | qdp);
+	$self->shell($command);
+}
+
+
+sub convertToUTC
+{
+	my ($self, $met) = @_;
+	my $utc = UVOT::Time::met2utc($self, $met);
+	return $utc;
+}
+
+
+
+sub convertToMET
+{
+	my ($self, $utc) = @_;
+	my $met = UVOT::Time::utc2met($self, $utc);
+	return $met;
+}
+
+
+sub runUvotsource
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $outfile = $self->temporary('maghist', ext => '.fits');
+	$self->{MAGHIST} = $outfile;
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+		my $command = $self->buildCommand('uvotsource',
+				image => "$hdu->{PATH}+$hdu->{EXT0}",
+				outfile => $outfile,
+				srcreg => $self->{srcreg},
+				bkgreg => $self->{bkgreg},
+				sigma => $args->{nsigma},
+				apercorr => $args->{apercorr},
+				zerofile => $args->{zerofile},
+				coinfile => $args->{coinfile},
+				psffile => $args->{psffile},
+				lssfile => $args->{lssfile},
+				sensfile => $args->{sensfile},
+				syserr => $args->{syserr},
+				frametime => $args->{frametime},
+				centroid => $args->{centroid},
+				fwhmsig => $args->{fwhmsig},
+				subpixel => $args->{subpixel},
+				);
+		$self->shell($command);
+		last if not $self->isValid;
+	}
+}
+
+
+sub setTimeZero
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{timezero} =~ /^\d+-\d+-\d+T\d+:\d+:\d+/) {
+		$self->{TIMEZERO} = $self->convertToMET($args->{timezero});
+		$self->{TIMELABEL} = "Time since $self->{TIMEZERO} MET";
+		$self->parameterNote(timezero => "=> $self->{TIMEZERO}");
+	}
+	elsif ($args->{timezero} > 0) {
+		$self->{TIMEZERO} = $args->{timezero};
+		$self->{TIMELABEL} = "Time since $self->{TIMEZERO} MET";
+	}
+	elsif ($self->{TRIGTIME}) {
+		$self->{TIMEZERO} = $self->{TRIGTIME};
+		my $utctrig = $self->convertToUTC($self->{TRIGTIME});
+		$self->{TIMELABEL} = "Time since Trigger ($utctrig)";
+		$self->parameterNote(timezero => "=> TRIGTIME $self->{TIMEZERO}");
+	}
+	else {
+		$self->{TIMEZERO} = int($self->{TSTART});
+		$self->{TIMELABEL} = "Time since $self->{TIMEZERO} MET";
+		$self->parameterNote(timezero => "=> $self->{TIMEZERO}");
+	}
+
+}
+
+
+sub makeRegionFile
+{
+	my ($self, $path, $inner) = @_;
+
+	my $args = $self->args;
+
+	my $fh = FileHandle->new($path, 'w');
+
+	my $srcdeg = sprintf('%.6f', $args->{srcas} / 3600);
+	my $bkgdeg = sprintf('%.6f', $args->{bkgas} / 3600);
+
+	if ($inner) {
+		$fh->print("fk5;circle($args->{ra}d,$args->{dec}d,${srcdeg}d)\n");
+	}
+	else {
+		$fh->print("fk5;circle($args->{ra}d,$args->{dec}d,${bkgdeg}d)\n");
+		$fh->print("fk5;-circle($args->{ra}d,$args->{dec}d,${srcdeg}d)\n");
+	}
+
+	$fh->close;
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# move output if successful
+	my $haveProducts = ($self->isValid and $self->{HAVE_IMAGES});
+	if ($haveProducts) {
+		$self->putParameterHistory($self->{MAGHIST})
+			if $args->{historyFlag};
+		move($self->{MAGHIST}, $args->{outfile})
+			or $self->error(BAD_OUTPUT,
+				"unable to move magnitude history to $args->{outfile} [$!]");
+	}
+
+	if ($haveProducts and $args->{plotfile} !~ /NONE/i) {
+		if (-f $self->{pgplot}) {
+			move($self->{pgplot}, $args->{plotfile})
+				or $self->error(BAD_OUTPUT,
+						"unable to move plot to $args->{plotfile} [$!]");
+		}
+		else {
+			$self->report("plotfile $self->{pgplot} not present");
+		}
+	}
+
+	if ($self->{backgroundAnnulus}) {
+		$self->warning('use of ra/dec/srcas/bkgas is deprecated; please use srcreg/bkgreg.');
+	}
+}
+
+
+
+# main
+{
+	my $task = UVOT::MagHist->new(version => '1.1');
+
+	$task->run;
+
+	exit($task->{code});
+}
+

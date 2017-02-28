@@ -1,0 +1,260 @@
+#! perl
+
+#######################################################
+# $Source: /headas/headas/swift/uvot/tasks/uvotshiftpha/uvotshiftpha,v $
+# $Revision: 1.3 $
+# $Date: 2007/02/22 21:02:40 $
+#######################################################
+# Shifts the count rate value in a UVOT lenticular
+# filter .pha file assuming a power-law decay.
+#
+# $Log: uvotshiftpha,v $
+# Revision 1.3  2007/02/22 21:02:40  rwiegand
+# Load background PHA file from same directory as source PHA file.
+#
+# Revision 1.2  2007/02/12 15:26:55  rwiegand
+# Updated for HEAdas.  Support multi-row PHA files.
+#
+#######################################################
+
+package UVOT::ShiftPHA;
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+
+use File::Basename;
+
+
+# main
+{
+	my $task = __PACKAGE__->new;
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	my $args = $self->args;
+
+	$self->{SRCPHA} = $self->loadPHA($args->{infile}, 1)
+		if $self->isValid;
+
+	$self->{BKGPHA} = $self->loadPHA($self->{BACK_PATH})
+		if $self->isValid;
+
+	$self->shiftPHA
+		if $self->isValid;
+
+	$self->updatePHA
+		if $self->isValid;
+
+	$self->finalize
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(options => [ qw(
+				infile=file intime=real
+				outfile=file outtime=real
+				alpha=real
+				cleanup=boolean history=boolean clobber=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+# Check that the input files exists
+	if (not -f $args->{infile}) {
+		$self->error(BAD_INPUT, "infile $args->{infile} does not exist");
+	}
+
+	if (-e $args->{outfile}) {
+		if (not $args->{clobberFlag}) {
+			$self->error(BAD_INPUT,
+					"outfile $args->{outfile} exists and clobber not set");
+		}
+		elsif (not unlink($args->{outfile})) {
+			$self->error(BAD_INPUT,
+					"unable to remove outfile $args->{outfile} [$!]");
+		}
+	}
+
+}
+
+
+
+sub loadPHA
+{
+	my ($self, $path, $isSrc) = @_;
+
+	my ($file, $dir) = File::Basename::fileparse($path);
+
+# Open the input pha file.
+	my $status;
+	my $fits = SimpleFITS->readonly($path);
+	if ($status = $fits->status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my $header = '';
+	my @table;
+	$status = $fits->move('SPECTRUM')
+			->readheader($header, clean => 1)
+			->loadtable(\@table)
+			->close
+			->status
+			;
+
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to load $path [$status]");
+		return;
+	}
+
+	my %info;
+	$info{TABLE} = \@table;
+
+	foreach my $key (qw(HDUCLAS3 BACKFILE BACKSCAL)) {
+		if (my $value = $header->{$key}) {
+			$info{$key} = $value;
+		}
+		else {
+			$self->error(BAD_INPUT, "$path SPECTRUM missing $key");
+		}
+	}
+
+	$info{DATATYPE} = $info{HDUCLAS3} || 'UNKNOWN';
+
+	if ($isSrc) {
+		$self->{BACK_PATH} = "$dir/$info{BACKFILE}";
+	}
+
+	return \%info;
+}
+
+
+
+sub shiftPHA
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $intime = $args->{intime};
+	my $outtime = $args->{outtime};
+
+	my $srcpha = $self->{SRCPHA};
+	my $srctable = $srcpha->{TABLE};
+
+	my $bkgpha = $self->{BKGPHA};
+	my $bkgtable = $bkgpha->{TABLE};
+
+	my $count = scalar(@$srctable);
+
+	my $datatype = $srcpha->{DATATYPE};
+
+# for each input source and background row that is processed, push
+# the corresponding new rate and stat_err on these arrays (since we
+# need arrays to write the data anyway)
+	my @new_rate;
+	my @new_stat_err;
+
+# Compute the count rate from the source.
+# Correct background rate for area.
+	my $scale_factor = $srcpha->{BACKSCAL} / $bkgpha->{BACKSCAL};
+	for (my $i = 0; $i < $count; ++$i) {
+
+		my $bkg = $bkgtable->[$i]{$datatype} * $scale_factor;
+		my $bkg_err = $bkgtable->[$i]{STAT_ERR} * $scale_factor;
+		my $rate = $srctable->[$i]{$datatype};
+		my $stat_err = $srctable->[$i]{STAT_ERR};
+		my $source = $rate - $bkg;
+		my $source_err = sqrt($stat_err**2 + $bkg_err**2);
+
+# Shift the count rate
+# Assume the standard GRB power-law decay
+# flux_out = flux_in * ( time_out / time_in )^alpha
+# countrate = constant * flux
+		my $factor = ($args->{outtime} / $args->{intime})**$args->{alpha};
+		my $new_source = $source * $factor;
+		my $new_source_err = $source_err * $factor;
+
+# Add the background to the shifted source count rate.
+		my $new_rate = $new_source + $bkg;
+		my $new_stat_err = sqrt( $new_source_err**2 + $bkg_err**2 );
+
+		push(@new_rate, $new_rate);
+		push(@new_stat_err, $new_stat_err);
+
+		# my $format = "total \L$datatype at %.1f (s) = %.3f +/- %.3f";
+		my $format = "total \L$datatype at %.1f (s) = %f +/- %f";
+		$self->report(sprintf($format, $intime, $rate, $stat_err));
+		$self->report(sprintf($format, $outtime, $new_rate, $new_stat_err));
+	}
+
+# Copy the input .pha file to the output .pha file
+	$self->shell("cp $args->{infile} $args->{outfile}");
+
+# Write the output .pha file.
+	$self->updatePHA($args->{outfile},
+			DATATYPE => $srcpha->{DATATYPE},
+			RATE => \@new_rate,
+			STAT_ERR => \@new_stat_err,
+			);
+
+}
+
+
+sub updatePHA
+{
+	my ($self, $path, %args) = @_;
+
+	my $fits = SimpleFITS->readwrite($path);
+	my $status = $fits->move('SPECTRUM')
+			->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to open $path for update [$status]");
+		return;
+	}
+
+# Change the RATE/COUNTS value in the output file
+	$fits->writecol($args{DATATYPE}, { }, $args{RATE});
+
+# Change the STAT_ERR value in the output file
+	$fits->writecol('STAT_ERR', { }, $args{STAT_ERR});
+
+# Close the output pha file
+	$status = $fits->close->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT, "unable to update $path columns [$status]");
+	}
+	
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid and -e $args->{outfile}) {
+		$self->putParameterHistory($args->{outfile});
+		$self->updateChecksums($args->{outfile});
+	}
+}
+

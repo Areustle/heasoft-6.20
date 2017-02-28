@@ -1,0 +1,985 @@
+#!/usr/bin/perl
+#
+# File: pcadeadcalc2
+#
+# Description:  Calculate deadtime for PCA Standard2 file (or background)
+#
+# Author: C. B. Markwardt
+#
+#
+
+
+use Getopt::Std;
+
+getopts(':h');
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    pcadeadcalc2 - Calculate deadtime for PCA Standard2 file (or background)
+
+USAGE
+    Standard2:  pcadeadcalc2 std2file std2file_DT hkfiles=\@hkfiles.lis
+    Background: pcadeadcalc2 bkgfile  bkgfile_DT  std2file=std2file_DT
+
+DESCRIPTION
+
+    pcadeadcalc2 calculates PCA deadtime quantities for data in the
+    Standard2 mode.  This tool calculates the dead time due to various
+    terms, including GoodXenon counts, Very Large Event (VLE) counts,
+    Propane layer counts, and other counts in the detector.  Also, by
+    default, the tool filters out bad data during times which are
+    known to be "bad" for typical scientific analysis.
+
+    This tool is designed to function for both Standard2 files and
+    also for background files created with pcabackest.  The tool is
+    run in a slightly different way for each, described below.
+
+    As output, the tool produces a "new" Standard2 or background file
+    which contain dead-time related quantities appended as new columns
+    to the table.  The user can use these quantities to adjust their
+    light curves or spectra to remove the effects of dead-time.
+
+    pcadeadcalc2 does not apply any deadtime correction by itself, but
+    merely calculates dead-time related quantities, and (optionally)
+    filters out PCU data during known bad states.  See 'pcadeadspect2'
+    for more information about to correct Standard2 spectra.
+
+    The most useful columns in the FITS table are:
+        LiveTimePcu0
+        LiveTimePcu1
+        LiveTimePcu2
+        LiveTimePcu3
+        LiveTimePcu4
+    which represent the detector live-time for each PCU in the PCA array,
+    I.e. the number of effective seconds each PCU was sensitive to X-rays
+    during each 16-second counting interval.  When a PCU's high voltage is
+    disabled, the detector is considered "dead".
+
+    Other useful quantities in the output file are:
+        PCUN_ON       - is PCU N enabled?
+        DeadTimePcuN  - [sec] effective dead-time for PCU N
+        LiveFracPcuN  - fractional live-time for PCU N
+        BadPcuN       - PCU N is OFF or in a known bad state
+
+BAD SCIENCE TIMES
+
+    By default, zero_bad=YES, which instructs pcadeadcalc2 to filter
+    out data from PCUs which are in a known "bad" state for scientific
+    analysis.  It does this by setting the Xenon counts to zero during
+    these times, as well as OnTime = LiveTime = 0.  This setting
+    occurs on a PCU-by-PCU basis.
+
+    pcadeadcalc2 has a list of known conditions which would flag a PCU
+    as "bad" for scientific analysis.  The tool's categorization does
+    not mean that such data cannot be analyzed, but it does mean that
+    typically a scientist would not analyze these data, but even if
+    they did, it would require special care.  The conditions also
+    represent the RXTE PCA team's best recommendations for data
+    filtering for generic observations and typical scientific
+    analysis.  The conditions for declaring a "bad time" are:
+
+      1. A PCU's high voltage is disabled.
+      2. A PCU's high voltage transition occurred in the previous or
+         next Standard2 sample. (disable with transition_bad=NO)
+      3. A PCU breakdown event occurred between TIME-600 and TIME+150.
+         (only if breakfile is set)
+      4. PCU0 is missing its propane layer (i.e., after 2000-05-20).
+         (disable with propane_bad=NO)
+      5. PCU1 is missing its propane layer (i.e., after 2006-12-25).
+         (disable with propane_bad=NO)
+
+    Most of these conditions can be disabled, as indicated in the list.
+    
+
+BREAKDOWNS
+
+    PCA breakdown events can create subtle effects even before the
+    high voltage is turned off.  The user is strongly recommended to
+    download a up-to-date version of the RXTE calibration database
+    (CALDB) and set breakfile=CALDB, which is the default.  This will
+    automatically flag breakdown events as "bad" times on an
+    individual PCU-by-PCU basis.
+
+
+HOW TO RUN
+
+    Standard2 files (files beginning with "FS4a"), contain various
+    counting rates and spectra that are used for science.  The user
+    must provide as input the name of the Standard2 file and the names
+    of the PCA housekeeping files via the 'hkfiles' parameter (i.e.,
+    files beginning with "FH5a,b,c,d,e").
+
+    Background files are produced by the task 'pcabackest' or
+    'runpcabackest' and represent an estimated background which
+    exactly corresponds to a Standard2 file in the same observation.
+    Background estimates do not have many of the rates required to
+    compute the deadtime, so the user must first run 'pcadeadcalc2' on
+    the corresponding Standard2 file, and then use the output of that
+    as input via the 'std2file' parameter.
+
+    Let us assume that following files are present:
+         FS4a     - Standard2 data
+         FS4a_bkg - Background estimates (from pcabackest)
+    and we wish to calculate deadtime quantities    
+         FS4a_DT     - Standard2 *PLUS* deadtime quantities
+         FS4a_bkgDT - Background estimates *PLUS*  """
+
+    First, change directories to the OBSID/pca directory, and then
+    obtain a list-file with the housekeeping files with this command,
+
+      ls FH5* > hkfiles.lis
+
+    This should list all 5 PCU housekeeping files.
+
+
+    Next, run pcadeadcalc2 on the Standard2 file,
+
+      pcadeadcalc2 infile=FS4a outfile=FS4a_DT hkfiles=\@hkfiles.lis
+
+    This should create a new file, FS4a_DT, with deadtime correction
+    quantities.
+
+
+    Finally, run pcadeadcalc2 on the background file, using the results
+    of the previous run via the 'std2file' parameter,
+
+      pcadeadcalc2 infile=FS4a_bkg outfile=FS4a_bkgDT std2file=FS4a_DT
+
+    Note that the file name used with 'std2file' is the file *with 
+    dead-time quantities*, not the original Standard2 file.
+    
+
+HOW TO USE OUTPUTS
+
+    This section briefly describes how these outputs can be used.
+
+    The user can simply plot the various quantities to get
+    a sense of the deadtime variations during an observation.  The
+    most relevant quantities are TIME vs. LiveFracPcuN.
+
+    For spectral analysis, the outputs of pcadeadcalc2 can be run as
+    input to 'saextrct'.  Most importantly, the same time filtering
+    (i.e. GTI files) can be applied to the accumulation of counts
+    spectrum data and the live-time time quantities.
+
+    For example, if the spectrum is accumulated like this,
+
+       saextrct infile=FS4a gtiorfile=APPLY gtiandfile=myfile.gti \
+         outroot=spect accumulate=ONE ... \
+         columns=X1LSpecPcu2,X1RSpecPcu2 \
+         printmode=SPECTRUM lcmode=SUM spmode=SUM ...
+
+    i.e. accumulate one summed spectrum for PCU2, then the user can
+    make a similar live-time spectrum like this,
+
+       saextrct infile=FS4a gtiorfile=APPLY gtiandfile=myfile.gti \
+         outroot=live accumulate=ONE ... \
+         columns=LiveTimePcu2 \
+         printmode=SPECTRUM lcmode=SUM spmode=SUM ...
+
+    In other words, *ONLY CHANGING* the columns parameter to refer to
+    the live-time column.  The result will be a spectrum with a single
+    energy bin which is described as "COUNTS" but is really the number
+    of live-time seconds.  You can print it with this command,
+
+      ftlist live.pha T
+
+      ==> 3915.53 sec  (EXAMPLE RESULT)
+
+    which should print a single number.  This number is the *effective*
+    exposure for the spectrum and can be placed in the EXPOSURE keyword of
+    the original spectrum, for example like this,
+
+      fthedit spect.pha EXPOSURE add 3915.53  ## EXAMPLE RESULT!!!
+
+
+    A similar process should be used with the background file
+    (FS4a_bkgDT in this example) to extract a spectrum with
+    'saextrct', and the EXPOSURE of the resulting spectrum should be
+    modified in a similar fashion.
+
+    For light curve analysis, the user may extract a "light curve" of
+    live-time values and correct the light curve values in a similar
+    way.
+
+
+PARAMETERS
+
+    infile [filename]
+        Name of the Standard2 or background file.
+
+    outfile [filename]
+        Name of the output file which will have dead-time quantities appended.
+
+    (hkfiles) [string]
+        When the input is Standard2 file, specify a list of PCA
+        housekeeping files.  This can either be a comma-separated
+        list, or a \@filename.txt where filename.txt contains a list of
+        files.  There must be exactly five files specified because there
+        are five PCUs.
+
+    (std2file) [string]
+        When the input is a background estimate file, specify the
+        output of a previous run of pcadeadcalc2 which has been applied
+        to the corresponding Standard2 file.
+
+    (breakfile = 'CALDB') [string]
+        Set to a file name which contains PCU breakdown GTI
+        information.  If set to 'CALDB', then the task will query
+        CALDB for the appropriate file.  If set to 'NONE', then no PCU
+        breakdown processing will be done.
+
+    (zero_bad = YES) [boolean]
+        If set, then the task will set the Xenon counts to zero any
+        PCU which is considered to be in a "bad" science state at the
+        given time, as described above.  If not set, then Xenon counts
+        are not changed.
+
+    (transition_bad = YES) [boolean]
+        If set, then PCU high voltage transitions are considered "bad"
+        science times (+/- 16 sec).  If not set, then only PCU high
+        voltage "off" is considered bad.
+
+    (propane_bad = YES) [boolean]
+        If set, then PCUs are considered "bad" if their propane layers
+        are gone.  If not set, then the propane layer status is not
+        considered.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 2) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+    See main text.
+
+CAVEATS
+
+    This task does not show report dead-time during the single time
+    bin during the transition between low-voltage and high-voltage.
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    saextrct
+
+EOHELP
+exit;
+    }
+
+use HEACORE::HEAINIT;
+
+# ==================================================================
+# Call the main task subroutine with an exception handler
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+eval {
+    $status = headas_main(\&pcadeadcalc2);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub pcadeadcalc2 {
+
+    $taskname = "pcadeadcalc2";
+    $taskvers = "1.2";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &pcadeadcalc2_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Working subroutine
+sub pcadeadcalc2_work {
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants :longnames);
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter);
+    my ($fits1, $fits2, $handle1, $handle2);
+    my ($mode, $tddes5);
+
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+    ($status = PILGetString('std2file', $std2file)) == 0 || die "error getting std2file parameter";
+    ($status = PILGetString('hkfiles', $hkfile)) == 0 || die "error getting hkfile parameter";
+    ($status = PILGetBool('zero_bad', $zero_bad)) == 0 || die "error getting zero_bad parameter";
+    ($status = PILGetBool('transition_bad', $transition_bad)) == 0 || die "error getting transition_bad parameter";
+    ($status = PILGetBool('propane_bad', $propane_bad)) == 0 || die "error getting propane_bad parameter";
+    ($status = PILGetString('breakfile', $breakfile)) == 0 || die "error getting breakfile parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting cleanup parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    print "Running $taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------\n" if ($chatter >= 2);
+
+    if ($std2file =~ m/^infile$/i) { 
+      $std2file = "$infile";
+    }
+    if ($breakfile =~ m/^none$/i) {
+      undef $breakfile;
+    }
+    $clobstr = $clobber ? "YES" : "NO";
+
+    # ===================================================
+    # Create new output file by copying input file
+    &headas_clobberfile($outfile);
+    $cmd = "ftcopy infile='$infile' outfile='$outfile' clobber='$clobstr'";
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    system($cmd);
+    if ($? || ! -f "$outfile") {
+      die "ERROR: could not create '$outfile'";
+    }
+    print "  Create '$outfile'\n" if ($chatter >= 2);
+    # Add output file to the scratch list... UNTIL the end of this
+    # procedure where it is removed from the list.  
+    # IMPORTANT NOTE: this procedure expects "$outfile" to be the
+    # first element of the @scratchfile list.
+    push @scratchfiles, "$outfile";
+
+
+    # ===================================================
+    # Check to see if the input file is a Standard2 file or Background
+    $outfits = SimpleFITS->open("$outfile");
+    die "ERROR: could not open '$outfile' " if (! $outfits );
+    $hduclas2 = $outfits->move(2)->readkey('HDUCLAS2');
+    print "HDUCLAS2 = '$hduclas2'\n" if ($chatter >= 5);
+    if ($hduclas2 ne 'TOTAL' && $hduclas2 ne 'BACKGROUND') {
+      die "ERROR: could not read HDUCLAS2 of input file; is it a Standard2 file? ";
+    }
+    $datamode = $outfits->readkey('DATAMODE');
+    print "DATAMODE = '$datamode'\n" if ($chatter >= 5);
+    if ($datamode !~ m/^Standard2/) {
+      die "ERROR: DATAMODE ('$datamode') keyword indicates input file is not Standard2 file ";
+    }
+    # Check if this file has layer data or not
+    $has_layers = ($outfits->colnum('X1LSpecPcu0') > 0) ? 1 : 0;
+    print "LAYERS? ".( $has_layers ? "YES" : "NO")."\n" if ($chatter >= 5);
+    ($date_obs, $time_obs) = read_date_obs($outfits);
+    print "DATE-OBS = '$date_obs'  TIME_OBS = '$time_obs'\n" if ($chatter >= 5);
+    $outfits->setstatus(0)->close();
+
+    $is_background = $hduclas2 eq 'BACKGROUND';
+    $is_standard2  = $hduclas2 eq 'TOTAL';
+
+
+    # ===================================================
+    # CALDB query for breakfile
+    if ("$breakfile" =~ m/^CALDB$/i) {
+      $breakfile = caldb_breakfile($date_obs,$time_obs,$outfile,$chatter);
+
+      # Add this to the list of scratch files
+      push @scratchfiles, "$breakfile";
+    }
+
+    # ===================================================
+    # Expressions used to calculate non-Xenon counts & deadtime
+    @hk_expr = hk_calc_expressions($breakfile,$transition_bad,$propane_bad);
+    # Expressions used to calculate Xenon counts & deadtime
+    @xe_expr = xe_calc_expressions($has_layers,$zero_bad);
+    # Expressions used to calculate total deadtime values    
+    @su_expr = su_calc_expressions();
+
+
+    # ===================================================
+    # ===================================================
+    # ===================================================
+    # STANDARD2 PROCESSING
+    # Transfer the VLE discriminator settings to the output, but only
+    # if we are working with the original
+    if ($is_standard2) {
+
+      # ===== Parse through list of HK files
+      @hkfiles = ();
+      if ("$hkfile" =~ /^@(.*)$/) {
+	# Batch file style
+	my $file1 = "$1";
+	open(BATCHFILE,"<$file1") or die "ERROR: could not open $file1";
+	while (my $line=<BATCHFILE>) {
+	  chomp($line);
+	  push @hkfiles, $line;
+	}
+	close(BATCHFILE);
+      } else {
+	# Comma-separated list
+	@hkfiles = split(/,/,$hkfile);
+      }
+      if ($#hkfiles != 4) {
+	die "ERROR: $hkfiles must specify five housekeeping files";
+      }
+
+      # ======
+      # Now examine each file and interpolate its 'dsVle' setting
+      foreach $hkfile (@hkfiles) {
+	$fits = SimpleFITS->open("<$hkfile");
+	die "ERROR: could not open '$hkfile' " if (!$fits);
+	$tddes = $fits->move(2)->readkey('TDDES');
+	die "ERROR: could not read TDDES keyword of '$hkfile'; is it a PCA housekeeping file?" if (! $tddes);
+	if ( "$tddes" =~ m/D\[([0-9])\]/) {
+	  $pcu = "$1";
+	} else {
+	  die "ERROR: could not find PCU number in '$hkfile'; is it a PCA housekeeping file?";
+	}
+	$fits->close();
+
+	# First interpolate VLE column
+	$colname = "VLEDescPcu$pcu";
+	$cmd = "finterp ".
+	  "infile1='$outfile"."[1]' ".
+	  "infile2='$hkfile"."[1][col TIME;$colname == dsVle;]' ".
+	  "outfile='$outfile' ".
+	  "incol='$colname' sortkey1=TIME sortkey2=TIME extrap=REPEAT";
+	print "COMMAND: $cmd\n" if ($chatter >= 5);
+	system($cmd);
+	die "ERROR: could not interpolate PCU $pcu VLE setting" if ($?);
+
+	# Now create PCUn_ON column and interpolate it
+	$colname = "PCU$pcu"."_ON";
+	$expr = "(cmdhvXE != 0) && (hvXErly != 0) && (hvXEon != 0)";
+	$cmd = "finterp ".
+	  "infile1='$outfile"."[1]' ".
+	  "infile2='$hkfile"."[1][col TIME;$colname = $expr;]' ".
+	  "outfile='$outfile' ".
+	  "incol='$colname' sortkey1=TIME sortkey2=TIME extrap=NULL";
+	print "COMMAND: $cmd\n" if ($chatter >= 5);
+	system($cmd);
+	die "ERROR: could not interpolate PCU $pcu HV setting" if ($?);
+      }
+      print "  Interpolate VLE and PCU on/off status\n" if ($chatter >=2);
+
+      # ==== Create expression file for computing sums & deadtime
+      $exprfile = "$outfile"."_expr.txt";
+      open(EXPRFILE,">$exprfile") or die "ERROR: could not open '$exprfile'";
+      push @scratchfiles, "$exprfile";
+      print EXPRFILE "*;\n";
+      foreach $expr (@hk_expr) { print EXPRFILE "$expr\n"; }
+      foreach $expr (@xe_expr) { print EXPRFILE "$expr\n"; }
+      foreach $expr (@su_expr) { print EXPRFILE "$expr\n"; }
+      close(EXPRFILE);
+
+
+    } else {
+
+      # ===================================================
+      # ===================================================
+      # ===================================================
+      # BACKGROUND PROCESSING
+
+      $colfilter = "PCU*_ON; Bad*; Breakdown*; NUM_PCU_ON; VLEDescPCU*; EventDeadTime; VLEEventDeadTimePcu*; VleCntPcu*; VLEDeadTimePcu*; VpCntPcu*; VpDeadTimePcu*; RemainingCntPcu*; RemainingDeadTimePcu*;";
+
+      $outfile1 = "$outfile"."_1";
+
+      $cmd = "ftpaste infile='$outfile' ".
+	"pastefile='$std2file"."[1][col $colfilter]' ".
+	"outfile='$outfile1' clobber=YES";
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      push @scratchfiles, "$outfile1";
+      system($cmd);
+      die "ERROR: could not transfer dead-time related columns from '$std2file'; make sure std2file is the result of processing a Standard2 file with pcadeadcalc " if ($?);
+      print "  Transfer dead-time quantities from Standard2 file\n" if ($chatter >= 2);
+      
+      unlink($outfile); rename($outfile1,$outfile);
+
+      # Expressions used to recalculate some auxiliary rates
+      @ba_expr = ba_calc_expressions();
+
+      # ==== Create expression file for computing sums & deadtime
+      #  NOTE: only sum Xenon rates since we already did the other
+      #        rates in the Standard2 file
+      $exprfile = "$outfile"."_expr.txt";
+      open(EXPRFILE,">$exprfile") or die "ERROR: could not open '$exprfile'";
+      push @scratchfiles, "$exprfile";
+      print EXPRFILE "*;\n";
+      foreach $expr (@ba_expr) { print EXPRFILE "$expr\n"; }
+      foreach $expr (@xe_expr) { print EXPRFILE "$expr\n"; }
+      foreach $expr (@su_expr) { print EXPRFILE "$expr\n"; }
+      close(EXPRFILE);
+    }
+
+    # =================================
+    # Whew!  Finally, compute deadtime for output file
+    #    (secretly make a new file and then move that file into place)
+    $outfile1 = "$outfile"."_1";
+    $cmd = "ftcopy ".
+      "infile='$outfile"."[1][col @".$exprfile."]' outfile='$outfile1' clobber=YES";
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    push @scratchfiles, "$outfile1";
+    system($cmd);
+    die "ERROR: could not compute deadtime for '$outfile' " if ($?);
+    unlink($outfile); rename($outfile1,$outfile);
+    print "  Compute final output quantities\n" if ($chatter >= 2 );
+
+    # Remove the final output file from the scratch list
+    # because it is in good shape
+    shift(@scratchfiles) if ($scratchfiles[0] eq "$outfile");
+      
+    return $status;
+}
+
+# ==================================================================
+# colexpr - utility function to insert CFITSIO calculator expression
+#           for named column with given description
+sub colexpr {
+  my ($colname, $coldesc, $colval) = @_;
+  return ("$colname = $colval;",
+	  "#TTYPE#($coldesc) = '$colname';");
+}
+
+# colunit - utility function to insert CFITSIO calculator expression
+#           for column units (TUNITn)
+sub colunit {
+  my ($colunit1) = @_;
+  return ("#TUNIT#(Physical unit of field) = '$colunit1';");
+}
+# colunit - utility function to insert CFITSIO calculator expression
+#           for column display format (TDISPn)
+sub coldisp {
+  my ($coldisp1) = @_;
+  return ("#TDISP#(Display format of field) = '$coldisp1';");
+}
+
+
+
+# ==================================================================
+# 
+# xe_calc_expressions - expressions used to calculate Xenon rates
+# 
+sub xe_calc_expressions {
+  my ($has_layers,$zero_bad) = @_;
+  my (@xe_expr);
+  @xe_expr = ();
+
+  foreach $pcu (0 .. 4) {
+    $p = "Pcu$pcu";
+
+    if ($has_layers) {
+      if ($zero_bad) {
+	push @xe_expr,
+	  ("X1LSpec$p = X1LSpec$p * ( Bad$p ? 0 : 1);",
+	   "X1RSpec$p = X1RSpec$p * ( Bad$p ? 0 : 1);",
+	   "X2LSpec$p = X2LSpec$p * ( Bad$p ? 0 : 1);",
+	   "X2RSpec$p = X2RSpec$p * ( Bad$p ? 0 : 1);",
+	   "X3LSpec$p = X3LSpec$p * ( Bad$p ? 0 : 1);",
+	   "X3RSpec$p = X3RSpec$p * ( Bad$p ? 0 : 1);");
+      }
+      push @xe_expr, 
+ 	(colexpr("XeCnt$p","PCU $pcu GoodXenon counts",
+		 "SUM(X1LSpec$p) + SUM(X1RSpec$p) +".
+		 "SUM(X2LSpec$p) + SUM(X2RSpec$p) +".
+		 "SUM(X3LSpec$p) + SUM(X3RSpec$p)"),
+	 colunit("count"), coldisp("I5"),);
+	 # Don't put Xenon TDDES, otherwise it confuses 'saextrct'!!!
+	 # "#TDDES# = 'D[$pcu] & E[X1L^X1R^X2L^X2R^X3L^X3R] & C[0~255]';",
+
+    } else {
+      # Case where there are no layers (i.e. background data)
+      if ($zero_bad) {
+	push @xe_expr,
+	  ("XeSpec$p = XeSpec$p * ( Bad$p ? 0 : 1);");
+      }
+      push @xe_expr, 
+ 	(colexpr("XeCnt$p","PCU $pcu GoodXenon counts",
+		 "SUM(XeSpec$p)"),
+	 colunit("count"), coldisp("I5"),);
+      # Don't put Xenon TDDES, otherwise it confuses 'saextrct'!!!
+      # "#TDDES# = 'D[$pcu] & E[X1L^X1R^X2L^X2R^X3L^X3R] & C[0~255]';",
+    }
+    push @xe_expr, 
+	 (colexpr("XeDeadTime$p", "PCU $pcu GoodXenon dead-time",
+		  "XeCnt$p * EventDeadTime"),
+	  colunit("s"), coldisp("E10.3"),
+	 );
+
+  }
+
+  return @xe_expr;
+}
+
+# ==================================================================
+#
+# hk_calc_expressions - expressions used to calculate the "other" nonXenon rates
+#
+sub hk_calc_expressions {
+  my ($breakfile,$transition_bad,$propane_bad) = (@_);
+  my (@hk_expr);
+  @hk_expr = ();
+  
+  push @hk_expr,
+    (
+     # Number of PCUs enabled
+     colexpr("NUM_PCU_ON", "Number of PCUs on",
+	     "(PCU0_ON ? 1 : 0) + (PCU1_ON ? 1 : 0) + (PCU2_ON ? 1 : 0) + ".
+	     "(PCU3_ON ? 1 : 0) + (PCU4_ON ? 1 : 0)"),
+     coldisp("I3"),
+     
+     # Dead-time for all normal (non-VLE) events
+     colexpr("EventDeadTime", "Per-event dead-time", 
+	     "10E-6"),
+     colunit("s"), coldisp("E10.3"),
+    );
+  
+  
+  foreach $pcu (0 .. 4) {
+    $p = "Pcu$pcu";
+    
+    # BreakdownPcu<n> - whether there is a breakdown event
+    if ($breakfile) {
+      $PCU_GTI = "[PCU$pcu"."_GTI]";
+      push @hk_expr,
+	(
+	 colexpr("Breakdown$p", "PCU $pcu has breakdown?",
+		 "(.NOT. gtifilter('$breakfile$PCU_GTI',Time,'START','STOP'))"),
+	);
+    }
+
+    # ----
+    # Determine when there are "bad" times...
+    $PCU_ON = "PCU$pcu"."_ON";
+    # ... if the PCU is off ...
+    $badexpr = "(.NOT. $PCU_ON) ";
+    # ... a transition in the high voltage so the count rates are transient...
+    if ($transition_bad) { 
+      $badexpr .= "|| ($PCU_ON"."{-1} != $PCU_ON) || ($PCU_ON"."{+1} != $PCU_ON) ";
+    }
+    # ... a breakdown ...
+    if ($breakfile) { $badexpr .= "|| (Breakdown$p) "; }
+    # ... PCUs with missing propane layers ...
+    if ($propane_bad && $pcu == 0) { $badexpr .= "|| (TIME >= 201139200) "; }
+    if ($propane_bad && $pcu == 1) { $badexpr .= "|| (TIME >= 409622400) "; }
+    # ... and make sure we consider NULL = Bad ...
+    $badexpr = "DEFNULL($badexpr,T)";
+
+
+    $d = "VLEDesc$p";
+    push @hk_expr,
+      (
+       # BadPcu<n> - is PCU data bad?
+       colexpr("Bad$p", "PCU $pcu data is 'bad'",
+	       "($badexpr)"),
+
+       # VLE - VLE-related deadtime per event
+       colexpr("VLEEventDeadTime$p", "PCU $pcu Per-VLE dead-time",
+		 "($d == 0 ? 12E-6 : ($d == 1 ? 60E-6 : ($d == 2 ? 150E-6 : 500E-6)))"),
+       colunit("s"), coldisp("E10.3"),
+
+       # VLE - VLE-related deadtime
+       colexpr("VLEDeadTime$p", "PCU $pcu VLE dead-time",
+	       "VLECnt$p * VLEEventDeadTime$p"),
+       colunit("s"), coldisp("E10.3"),
+       
+       
+       # VPR - Propane count rate (collapsed from a spectrum)
+       colexpr("VpCnt$p", "PCU $pcu VPR Propane counts",
+	       "SUM(VpSpec$p)"),
+       colunit("count"), coldisp("I5"),
+       "#TDDES# = 'D[$pcu] & E[VPR] & C[0~255]';",
+       
+       # VPR - Propane dead time
+       colexpr("VpDeadTime$p", "PCU $pcu Propane dead-time",
+	       "VpCnt$p * EventDeadTime"),
+       colunit("s"), coldisp("E10.3"),
+       
+       
+       # "Remaining rate" - anything not Xe, VLE, VPR
+       colexpr("RemainingCnt$p", "PCU $pcu Remaining counts",
+	       "VpX1LCnt$p + VpX1RCnt$p + VxX1LCnt$p + VxX1RCnt$p + ".
+		   "VxX2LCnt$p + VxX2RCnt$p + VxX3LCnt$p + VxX3RCnt$p + ".
+		   "X1LX1RCnt$p + X2LX2RCnt$p + X3LX3RCnt$p + ".
+		   "Q3VxVpXeCnt$p + Q4VxVpXeCnt$p + Q5VxVpXeCnt$p + ".
+		   "Q6VxVpXeCnt$p + Q7VxVpXeCnt$p + Q8VxVpXeCnt$p + ".
+		   "CALCnt$p + VxLCnt$p + VxHCnt$p + VxLVxHCnt$p + ".
+		   "VpXe23Cnt$p + VxpXOR2XeCnt$p + ZeroCnt$p + ".
+		   "X1LX2LCnt$p + X1RX2RCnt$p + X2LX3LCnt$p + X2RX3RCnt$p"),
+       colunit("count"), coldisp("I5"),
+       "#TDDES# = 'D[$pcu] & E[0^3^5~7^9~15^17~31^33~255^257~511^1024^1027^1029~1031^1033~1039^1041~1055^1057~1535] & C[0~255]';",
+       
+       colexpr("RemainingDeadTime$p", "PCU $pcu RemainingCounts dead-time",
+	       "RemainingCnt$p * EventDeadTime"),
+       colunit("s"), coldisp("E10.3"),
+       
+      );
+    
+    
+    
+  }
+  
+  return @hk_expr;
+}
+
+
+# ==================================================================
+#
+# ba_calc_expressions - expressions used for modifying background rates
+#
+sub ba_calc_expressions {
+  my (@ba_expr);
+  @ba_expr = ();
+
+  # Average VpCntPcuN value derived from mission long data of all
+  # background observations.  Scatter is 200 ct/(16 sec), which is a
+  # dead time error of less than .01%.  There are flares of VpCntPcuN
+  # which are much higher, up to 2000 ct/s, which are not modeled by
+  # this, which introduce up to 0.2% error, but there is no way to
+  # know when these occur a priori.
+
+  # Estimation of RemainingCntPcuN for background comes from same
+  # mission long data analysis of background observations.  I tried
+  # both Rem = A*VLE + B and Rem = A*VLE, and the second model is only
+  # slightly less accurate.  The remaining scatter is about 800
+  # ct/(16sec) = 50 ct/s, which gives a dead time error of <0.01%.
+
+  # I used the simple average of Rem/VLE slopes for all PCUs and all
+  # epochs.  This introduces a scatter in the slope of 0.7.  For a
+  # maximum VLE range of 0-3000 ct/(16 sec), this introduces a maximum
+  # error in Remaining rate of 130 ct/s, which in turn introduces a
+  # dead time error of less than 0.1%.
+
+  # PCU0 and PCU1 after their propane losses have a slightly different
+  # Rem/VLE slope
+ 
+  foreach $pcu (0 .. 4) {
+    $p = "Pcu$pcu";
+
+    $on_expr = ".NOT. Bad$p";
+
+    # Note that I don't use colexpr() here because the columns already
+    # exist and we are just re-filling them with recomputed values.
+    push @ba_expr,
+      # Estimated propane counts per 16 sec, and related deadtime
+      ("VpCnt$p      = ( $on_expr ) ? 750 : 0;",
+       "VpDeadTime$p = VpCnt$p * EventDeadTime;",
+
+      # Estimated remaining counts per 16 sec, and related deadtime
+       "RemainingCnt$p = ( $on_expr ) ? (VleCnt$p * 7.91) : 0;",
+       "RemainingDeadTime$p = RemainingCnt$p * EventDeadTime;",
+       );
+     }
+
+  return @ba_expr;
+}
+
+# ==================================================================
+#
+# su_calc_expressions - expressions used for summation of various rates
+#
+sub su_calc_expressions {
+  my (@su_expr);
+  @su_expr = ();
+  
+  foreach $pcu (0 .. 4) {
+    $p = "Pcu$pcu";
+
+    $on_expr = ".NOT. Bad$p";
+    push @su_expr, 
+      (colexpr("OnTime$p", "PCU $pcu on-time",
+	       "( $on_expr ) ? #TIMEDEL : 0"),
+       colunit("s"), coldisp("F12.4"),
+       # This special sauce needed to placate 'saextrct'
+       "#1CTYP# = 'CHANNEL';",
+       "#1CPIX# = '0~255';",
+       "#TDDES# = 'D[$pcu] & E[4096] & C[0~255]';",       
+
+       colexpr("CountDeadTime$p", "PCU $pcu total count dead time",
+	       "XeDeadTime$p + VLEDeadTime$p + VpDeadTime$p + RemainingDeadTime$p"),
+       colunit("s"), coldisp("F12.4"),
+       # This special sauce needed to placate 'saextrct'
+       "#1CTYP# = 'CHANNEL';",
+       "#1CPIX# = '0~255';",
+       "#TDDES# = 'D[$pcu] & E[4096] & C[0~255]';",
+
+       colexpr("DeadTime$p", "PCU $pcu total dead time",
+	       "( OnTime$p > 0) ? CountDeadTime$p : 0"),
+       colunit("s"), coldisp("F12.4"),
+       # This special sauce needed to placate 'saextrct'
+       "#1CTYP# = 'CHANNEL';",
+       "#1CPIX# = '0~255';",
+       "#TDDES# = 'D[$pcu] & E[4096] & C[0~255]';",       
+
+       colexpr("LiveTime$p", "PCU $pcu total live time",
+	       "OnTime$p - DeadTime$p"),
+       colunit("s"), coldisp("F12.4"),
+       # This special sauce needed to placate 'saextrct'
+       "#1CTYP# = 'CHANNEL';",
+       "#1CPIX# = '0~255';",
+       "#TDDES# = 'D[$pcu] & E[4096] & C[0~255]';",
+	       
+       colexpr("LiveFrac$p", "PCU $pcu live-time fraction",
+	       "( OnTime$p > 0) ? (LiveTime$p / OnTime$p) : 0"),
+       coldisp("F8.5"),
+       );
+       
+     }
+
+  push @su_expr, 
+    (colexpr('OnTimeVect', "PCA per-PCU on-time vector",
+	     "{OnTimePcu0,OnTimePcu1,OnTimePcu2,OnTimePcu3,OnTimePcu4}"),
+     colunit("s"), coldisp("F12.4"),
+     # This special sauce needed to placate 'saextrct'
+     "#1CTYP# = 'CHANNEL';",
+     "#1CPIX# = '0:4';",
+    );
+  push @su_expr, 
+    (colexpr('LiveTimeVect', "PCA per-PCU live-time vector",
+	     "{LiveTimePcu0,LiveTimePcu1,LiveTimePcu2,LiveTimePcu3,LiveTimePcu4}"),
+     colunit("s"), coldisp("F12.4"),
+     # This special sauce needed to placate 'saextrct'
+     "#1CTYP# = 'CHANNEL';",
+     "#1CPIX# = '0:4';",
+    );
+     
+
+  return @su_expr;
+}
+
+# ==================================================================
+# sub read_date_obs - read DATE-OBS/TIME-OBS keywords.  Handles old
+# DATE-OBS/TIME-OBS pair, as well as new DATE-OBS single keyword.
+# 
+# Arguments:
+# $fits - handle to SimpleFITS file
+#
+# Returns:
+#   array of pair (DATE-OBS,TIME-OBS)
+# 
+sub read_date_obs {
+  my ($fits) = @_;
+  my ($time_obs, $date_obs, $status);
+  my ($year, $mon, $day);
+  my ($has_time_obs, $has_date_obs);
+  $status = 0;
+  
+  $time_obs = $fits->readkey("TIME-OBS");
+  $has_time_obs = ($fits->status() == 0);
+  $date_obs = $fits->setstatus(0)->readkey("DATE-OBS");
+  $has_date_obs = ($fits->status() == 0);
+  $fits->setstatus(0);
+
+  if ($has_time_obs) {
+    # Expect:
+    #   DATE-OBS = 'DD/MM/YY'       (convert to YYYY-MM-DD)
+    #   TIME-OBS = 'hh:mm:ss.ddd'   (keep original value)
+    die "ERROR: no DATE-OBS/TIME-OBS keywords in input file" if (! $has_date_obs );
+    Astro::FITS::CFITSIO::fits_str2date($date_obs, $year, $mon, $day, $status);
+    die "ERROR: could not parse DATE-OBS keyword (1) in input file" if ($status);
+
+    $date_obs = sprintf("%04d-%02d-%02d",$year,$mon,$day);
+
+
+  } else {
+    # Expect:
+    #   DATE-OBS = 'YYYY-MM-DDThh:mm:ss.ddd' (parse into date and time)
+    Astro::FITS::CFITSIO::fits_str2time($date_obs, $year, $mon, $day, 
+				   $hr, $min, $sec, 
+				   $status);
+    die "ERROR: could not parse DATE-OBS keyword (2) in input file" if ($status);
+    $time_obs = sprintf("%02d:%02d:%02d", $hr, $min, $sec);
+    $date_obs = substr("$date_obs",0,10);
+  }    
+    
+  return ($date_obs, $time_obs);
+}
+
+
+# ==================================================================
+#
+# sub caldb_breakfile - locate proper 'breakfile' from CALDB
+#
+sub caldb_breakfile {
+  my ($date_obs,$time_obs,$outfile,$chatter) = @_;
+  my ($cmd,$caldb_result,$caldb_file,$caldb_ext);
+  my (@caldb_results);
+
+  use HEACORE::HEAUTILS;
+
+#   $cmd = "quzcif mission=XTE instrument=PCA detector=ALL filter=- ".
+#     "codename=STDGTI ".
+#       "date='$date_obs' time='$time_obs' expr='-' retrieve='NO' ";
+#   print "COMMAND: $cmd\n" if ($chatter >= 5);
+#   @caldb_results = `$cmd`;
+#   die "ERROR: could not query CALDB file for breakdown GTI file" if ($?);
+
+#   $caldb_result = $caldb_results[0];
+#   if ("$caldb_result" =~ m/^(.*[^ ]) *([0-9]+) *$/) {
+#     $caldb_file = $1;
+#     $caldb_ext = $2;
+#   } else {
+#     die "ERROR: could not parse CALDB result for breakdown GTI file";
+#   }
+#   print "  CALDB breakfile query: $caldb_file\n" if ($chatter >= 2);
+
+  my ($detector,$filter,$codename,$date_end,$time_end,
+      $expression,$caldb_filep,$caldb_extp,$statusp,$nret,$nfound,$status);
+  $detector = "ALL"; $filter = "-"; $expression = "-";
+  $codename = "STDGTI";
+  $date_end = "now"; $time_end = "now";
+  $status = 0;
+  HDgtcalf("XTE","PCA",$detector,$filter,$codename,$date_obs,$time_obs,
+	   $date_end,$time_end,$expression,1,1024,
+	   $caldb_filep, $caldb_extp, $statusp, $nret, $nfound, $status);
+  die "ERROR: could not query CALDB for breakdown GTI file" if ($status);
+  $caldb_file = $caldb_filep->[0];
+  $caldb_ext  = $caldb_extp->[0];
+  print "  CALDB breakfile query: $caldb_file\n" if ($chatter >= 2);
+  
+  # Make a local copy so that - in case we are referring to remote
+  # CALDB - we don't have a lot of slow network accesses.
+  $breakfile = "$outfile"."_break.gti";
+  unlink($breakfile);
+  $cmd = "ftcopy infile='$caldb_file' outfile='$breakfile' clobber=YES ".
+    "copyall=YES history=NO";
+  print "COMMAND: $cmd\n" if ($chatter >= 5);
+  system($cmd);
+  die "ERROR: could not copy CALDB file for breakdown GTI file" 
+    if ($? || ! -f "$breakfile");
+
+  $breakfile;
+}

@@ -1,0 +1,2239 @@
+#!/usr/bin/perl
+#
+# batsurvey - standard BAT survey processing
+#
+#
+# ===========================================================
+# batsurvey is the main driver and not an FTOOL
+#
+# batsurvey-erebin is a copy from its own directory, with some
+# modifications to write out quality maps;
+#
+# batsurvey-gti scans an observation for good time intervals based on
+# loads of quality-screening criteria;
+#
+# batsurvey-detmask does quality filtering at a detector level for a
+# snapshot observation: hot pixels (in multiple energy bands), global
+# quality map, user quality map (possibly multiple), pattern mask
+# quality-selected from survey; detector enable/disable)
+#
+# batsurvey-aspect does attitude drift checking for a snapshot
+# observation.  It looks for attitude drifts of more than a certain
+# magnitude, and reports them back to the calling task in order to make
+# a policy decision.
+#
+# $Id: batsurvey,v 1.29 2013/09/04 18:59:41 craigm Exp $
+#
+# $Log: batsurvey,v $
+# Revision 1.29  2013/09/04 18:59:41  craigm
+# Bug fix to report accurate exit status; no logic change to the code --CM
+#
+# Revision 1.28  2013/01/17 22:22:00  craigm
+# Update to batsurvey to prevent operation on data with 20 energy bins instead of the default 80 bins; the documentation provides a way to override the default if desired; unit tests on standard 80-bin data still passes --CM
+#
+# Revision 1.27  2013/01/17 22:09:41  craigm
+# Add new parameters which allow a user to specify wildcard patterns that point to the data they want: 'dph_pattern' 'attitude_pattern' 'sao_pattern' 'go_pattern' 'de_pattern'; Unit tests still pass --CM
+#
+# Revision 1.26  2011/09/19 20:50:48  craigm
+# Modify batsurvey to defend against the case where there are no background model templates *at all*, which causes a batclean crash; unit tests pass --CM
+#
+# Revision 1.25  2011/09/02 02:06:50  craigm
+# Add batclean_bkgmodels and eff_area_map parameters; enable use of per-detector sensitivity maps via eff_area_map parameter; unit tests still pass --CM
+#
+# Revision 1.24  2010/12/16 06:28:20  craigm
+# Continued attempts to document factoring of snapshot processing with the goal of moving it out to a standalone function; unit test still passes --CM
+#
+# Revision 1.23  2010/12/14 18:38:12  craigm
+# Add more documentation comments about re-factoring; some code cleanups (quotations) --CM
+#
+# Revision 1.22  2010/12/06 11:09:00  craigm
+# Move some utility routines to the end of the script instead of the beginning; add some comments relating to the factorability of the code (want to move the snapshot processing code into its own function); add more quoting in command line args; unit tests still pass --CM
+#
+# Revision 1.21  2010/06/22 02:11:25  craigm
+#
+#
+# Fix sloppy pattern matching in file names.
+#
+# I was using m/NONE/i which would match *any* string NONE within the
+# filename string.  If it happened to contain that substring anywhere,
+# with any upper/lowercase combination, then odd things would start to
+# happen.
+#
+# I fixed these by making them more stringent.
+#
+# Unit tests still pass.
+# --CM
+#
+# Revision 1.20  2010/06/14 20:53:33  craigm
+# When computing TOTSNR, do not subtract background since it was already subtracted by batcelldetect; this quantity was only used for diagnostic purposes --CM
+#
+# Revision 1.19  2010/05/26 01:19:20  craigm
+# Use new features of SimpleFITS library, which makes the application code more simple; unit tests still pass --CM
+#
+# Revision 1.18  2010/05/06 01:24:03  craigm
+# Update to version 6.11; unit tests still pass; because of the revised behavior of ftimgcalc, each call to ftimgcalc must now have a resultname value; this has been added; preserve the IMAGE_ID keyword in the output catalog; document SNR output column better --CM
+#
+# Revision 1.17  2010/02/25 02:54:34  craigm
+# This version has diagnostic routines to fit the positions of bright sources without distortion correction; the purpose is to check the distortion map and image parameters of the BAT imaging system;  set check_centroiding=YES and optionally set check_centroiding_snrthresh to a SNR level for bright sources; unit tests still pass --CM
+#
+# Revision 1.16  2010/02/24 22:14:55  craigm
+# Another attempt to work around ftlist section bug in FTOOLS 6.7; this time explicitly request section='1:1,1:1' which seems to do the trick under all versions of FTOOLS; unit tests still pass --CM
+#
+# Revision 1.15  2010/02/24 22:00:31  craigm
+# Fix a potential bug when calling 'ftlist' to produce some of the diagnostic statistics outputs; now I explicitly call 'punlearn ftlist' and also set the section='*:*' parameter so that the previous error message is avoided; unit tests still pass --CM
+#
+# Revision 1.13  2009/08/22 03:30:32  craigm
+# Update to version 6.10; outputs now include stats_point.fits and stats_obs.fits, which are FITS versions of the original difficult-to-maintain ASCII stats files; now the columns are well labeled with units, etc; in addition to saving the original values, it now also calculates and saves the total counts in each energy band, which will be useful for calculating sensitivity limits; unit tests still pass; --CM
+#
+# Revision 1.12  2009/08/21 23:05:04  craigm
+#
+#
+# Update to version 6.9;
+#
+# Add new parameter 'cleanexpr' to flag sources that should always be
+# cleaned no matter what; internal code changes to key off of this
+# selection instead of SNR;
+#
+# bug fix: the *_2.cat file was not carrying forward the CLEANED flag
+# from the *_1a.cat file; now fixed;
+#
+# bug fix: output {RA,DEC,PA}_PNT keywords were being written as strings
+# when they should have been TDOUBLE;
+#
+# because we may be cleaning large numbers of sources, I had to rework
+# the way ftimgcalc is called so that we don't blow the command line
+# length limit; (I tested to be sure this works)
+#
+# add some TDISP formats for SNR values; show a diagnostic list of
+# cleaned sources;
+#
+# Revision 1.11  2009/07/09 01:24:04  craigm
+# Updates to battsplit, batdrmgen-multi, batsurvey, batsurvey-aspect batsurvey-detmask batsurvey-gti; this update changes slightly how parameters are read, so that 'ask' parameters are always prompted first, and in the order listed in the parameter file; previously the order was jumbled by perl's hash behavior, so people could be prompted for parameter 2 before being prompted for 1;  now all the perl tasks should behave properly in this respect;  all unit tests still pass without changes --CM
+#
+# Revision 1.10  2009/07/02 02:29:08  craigm
+# Update to version 6.7; mostly a change to the unit test to use the older CALDB file, but in the meantime I need to add parameters for the baterebin parameters; unit test still passes with older CALDB file --CM
+#
+# Revision 1.9  2009/06/23 18:46:41  craigm
+# Bump to version 6.6; this version moves the code that makes the 'CLEANED' column in the output catalog to a different position that does not depend on there being an incatalog;  thus, if the user specifies incatalog=NONE, the tool will now work again; also, now the output RA_PNT, DEC_PNT, PA_PNT pointing information is updated for each DPI snapshot independently, rather than carrying forward the defaults for the entire observation; should hopefully make the accounting more accurate; unit tests still pass --CM
+#
+# Revision 1.8  2009/06/11 03:02:36  craigm
+# Bump to version 6.5; this version keeps track of which sources were cleaned and which were not; it does this by keeping an intermediate catalog ('*_1a.cat') which is half-way between iteration 1 and iteration 2 during the cleaning stage; I checked that the bright sources are indeed cleaned and also that the CLEANED catalog flag now appears; other elements of the unit test still pass --CM
+#
+# Revision 1.7  2009/06/09 21:49:20  craigm
+# Documentation --CM
+#
+# Revision 1.6  2009/06/05 04:50:24  craigm
+# Update to version 6.4; new parameter 'gtifile' which allows the user to enter their own time selection good time interval file, in addition of course to the 'filtexpr' parameter; unit tests still pass; I also checked that the time filtering is done properly; --CM
+#
+# Revision 1.5  2009/06/05 03:46:42  craigm
+# update the task version to 6.3 based on previous changes --CM
+#
+# Revision 1.4  2009/06/05 03:46:12  craigm
+#
+#
+# Fixed bug in calculation of '$fullebins' variable, does not assume
+# that the upper end of the analysis energy range is always exactly 195
+# keV.
+#
+# Added the 'bsurseq' parameter, which causes a keyword named BSURSEQ to
+# be written to all output files.  This allows the user to tag output
+# files with a specific run number, separate from the software version.
+# This is ignored by the unit test.
+#
+# Some small documentation and code formatting things.
+#
+# Revision 1.3  2009/01/31 03:53:38  craigm
+# Version 6.2 of task; new parameter filtnames which allows to select which filters are used by batsurvey-gti --CM
+#
+# Revision 1.2  2008/10/21 00:05:17  craigm
+# Bump to version 6.1; make batclean 'balance'ing a configurable parameter; unit test now explicitly uses previous balancing for comparison purposes --CM
+#
+# Revision 1.1  2008/05/20 10:37:55  craigm
+# Commit of 'batsurvey' task 6.0; this is a modification of version '5G'; primarily the modifications were to make the task more FTOOL-like, and no real changes to the core algorithms were done; the names of the tasks were changed to 'batsurvey{-xxx}' from the original 'bat-survey{-xxx}'; batsurvey-aspect now has an alignfile=CALDB option; the formats of the inventory.dat and outventory.dat have been changed; some version coding has been done to allow expansion in the future, as well as printing the number of energy bins; unit test pases on Linux-32bit against actual survey processing version 5G --CM
+#
+# 
+
+use strict;
+use HEACORE::HEAINIT;
+
+my $taskname = "batsurvey";
+my $taskvers = "6.15";
+
+# ===================================
+# Execute main subroutine, with error trapping
+my $status = 0;
+eval {
+    $status = headas_main(\&bat_survey);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit $status;
+
+# ===================================
+# Main subroutine - setup, tear-down and error trapping
+
+my $outsig = "NONE";  # Used for writing signature file
+my $outres = "NONE";
+
+sub bat_survey {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &bat_survey_work();
+    };
+
+    # Write default statistics file if the process crashed hard
+    if ($outsig ne "NONE" && $outres ne "NONE" && ! -f $outsig) {
+      if (open(OUTFILE,">$outsig")) {
+	print OUTFILE "$outres\n";
+	close(OUTFILE);
+      }
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+
+
+# ===================================
+# Main work routine
+#   - all the science analysis happens here
+sub bat_survey_work {
+
+    # ===== 
+    # Initialization
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+
+    use Astro::FITS::CFITSIO qw(:longnames :constants);
+    use SimpleFITS;
+
+    use Time::Local;
+    use POSIX;
+
+    # Force immediate flushing of transcript
+    use IO::Handle;
+    STDOUT->autoflush(1);
+    STDERR->autoflush(1);
+
+    my $chatter;
+    $status = PILGetInt("chatter",$chatter);
+    my $verbose = ($chatter >= 5)?(1):(0);
+    # Ordered parameters, usually ask parameters which must come first
+    my @parmlist = ("indir", "outdir");
+    my %parms = (
+		 indir => \&PILGetString,
+		 outdir => \&PILGetString,
+		 keep_sky_images => \&PILGetString,
+		 timesep => \&PILGetString,
+		 poivarmap => \&PILGetBool,
+		 pointing_check => \&PILGetBool,
+		 check_centroiding => \&PILGetBool,
+		 check_centroiding_snrthresh => \&PILGetReal,
+		 off_axis_corr => \&PILGetBool,
+		 ncleaniter => \&PILGetInt,
+		 keepbits => \&PILGetInt,
+		 energybins => \&PILGetString,
+		 elimits => \& PILGetString,
+		 filter_midnight => \&PILGetBool,
+		 ratemaxthresh => \&PILGetReal,
+		 rateminthresh => \&PILGetReal,
+		 detthresh => \&PILGetReal,
+		 detthresh2 => \&PILGetReal,
+		 expothresh => \&PILGetReal,
+		 timeslop => \&PILGetReal,
+		 min_dph_frac_overlap => \&PILGetReal,
+		 max_dph_time_nonoverlap => \&PILGetReal,
+		 balance => \&PILGetString,
+		 snrthresh => \&PILGetReal,
+		 cleansnr => \&PILGetReal,
+		 cleanexpr => \&PILGetString, 
+		 brightthresh => \&PILGetReal,
+		 pcodethresh => \&PILGetReal,
+		 stlossfcnthresh => \&PILGetReal,
+		 gtifile => \&PILGetString,
+		 filtexpr => \&PILGetString,
+		 filtnames => \&PILGetString,
+		 saofiltexpr => \&PILGetString,
+		 bsurseq => \&PILGetString,
+		 pulserfile => \&PILGetString,
+		 fltpulserfile => \&PILGetString,
+		 residfile => \&PILGetString,
+		 baterebin_opts => \&PILGetString,
+
+		 bkgpcodethresh => \&PILGetReal,
+		 badpixthresh => \&PILGetReal,
+		 copy_cleaned_sources => \&PILGetBool,
+		 copy_cleaned_radius => \&PILGetReal,
+		 batclean_backexp => \&PILGetBool,
+		 batclean_bkgmodel => \&PILGetString,
+		 eff_area_map => \&PILGetString,
+		 
+		 point_toler => \&PILGetReal,
+		 roll_toler => \&PILGetReal,
+		 pointerr_frac_time => \&PILGetReal,
+		 pointerr_abs_time => \&PILGetReal,
+
+		 incatalog => \&PILGetString,
+		 aperture => \&PILGetString,
+		 mask_edge_aperture => \&PILGetString,
+		 
+		 global_pattern_map => \&PILGetString,
+		 global_pattern_mask => \&PILGetString,
+		 
+		 # Wildcard patterns
+		 dph_pattern => \&PILGetString,
+		 attitude_pattern => \&PILGetString,
+		 sao_pattern => \&PILGetString,
+		 go_pattern => \&PILGetString,
+		 de_pattern => \&PILGetString,
+		 
+		 alignfile => \&PILGetString,
+		 clobber => \&PILGetBool, 
+		);
+
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+    print "$taskname v$taskvers\n" if ($chatter >= 1);
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+
+    # Find parameter values (listed above)
+    my ($parm, $func, $val);
+    # ... first read ordered parameters, then anything else
+    foreach $parm ( @parmlist, keys(%parms) ) {
+      my $func = $parms{$parm};
+      next if (ref($func) ne "CODE");  # Skip if we already did this parm
+      undef($val);
+      $status = &$func("$parm", $val);
+      die "ERROR: could not retrieve parameter '$parm'" if ($status);
+      $parms{$parm} = $val;
+      print "$parm=$val\n" if ($verbose);
+    }
+
+    # Print environment
+    if ($verbose) {
+      print "      DATE = ".localtime()." (local)\n";
+      print "      DATE = ".gmtime()." UTC\n";
+      print "  HOSTNAME = $ENV{HOSTNAME}\n";
+      print "       CWD = $ENV{PWD}\n";
+      print "      USER = $ENV{USER}\n";
+      print "    FTOOLS = $ENV{FTOOLS}\n";
+      print "     CALDB = $ENV{CALDB}\n";
+    }
+      
+    print "====================================================\n";
+    my $indir = $parms{indir};
+    my $outdir = $parms{outdir};
+    my ($intail,$outtail);
+    $intail = $indir;
+    $intail =~ s|^.*/||;
+    $outtail = $outdir;
+    $outtail =~ s|^.*/||;
+    $parms{intail} = $intail;
+    $parms{outtail} = $outtail;
+
+    my $survey_version = "$taskvers";
+    # Keep images? ("ALL"; "NONE"; "LAST"=last iter only)
+    my $keep_sky_images = $parms{keep_sky_images};
+    if ($keep_sky_images =~ m/^ALL$/i) { 
+      $keep_sky_images = "ALL";
+    } elsif ($keep_sky_images =~ m/^NONE$/i) {
+      $keep_sky_images = "NONE";
+    } elsif ($keep_sky_images =~ m/^LAST$/i) {
+      $keep_sky_images = "LAST";
+    } else {
+      die "ERROR: keep_sky_images must be ALL, NONE or LAST";
+    }
+    my $timesep = $parms{timesep};
+    if ($timesep =~ m/^SNAPSHOT$/i) {
+      $timesep = "SNAPSHOT";
+    } elsif ($timesep =~ m/^DPH$/i) {
+      $timesep = "DPH";
+    } else {
+      die "ERROR: timesep must be SNAPSHOT or DPH";
+    }
+    my $poivarmap = $parms{poivarmap};
+    my $pointing_check = $parms{pointing_check};
+    my $check_centroiding = $parms{check_centroiding};
+    my $off_axis_corr = $parms{off_axis_corr};
+    my $ncleaniter = $parms{ncleaniter};
+    my $keepbits = $parms{keepbits};
+    my $elimits = $parms{elimits};
+    my $ebins = $parms{energybins};
+    my $fullebins;
+
+    # Data filtering parameters
+    my $filter_midnight = $parms{filter_midnight};
+    my $ratemaxthresh = $parms{ratemaxthresh};
+    my $rateminthresh = $parms{rateminthresh};
+    my $detthresh = $parms{detthresh};
+    my $detthresh2 = $parms{detthresh2};
+    my $stlossfcnthresh = $parms{stlossfcnthresh};
+    my $filtexpr = $parms{filtexpr};
+    my $filtnames = $parms{filtnames};
+    my $saofiltexpr = $parms{saofiltexpr};
+    my $baterebin_opts = $parms{baterebin_opts};
+    undef $baterebin_opts if ($baterebin_opts =~ m/^none$/i);
+    my $pulserfile = $parms{pulserfile};
+    undef $pulserfile if ($pulserfile =~ m/^indef$/i);
+    my $fltpulserfile = $parms{fltpulserfile};
+    undef $fltpulserfile if ($fltpulserfile =~ m/^indef$/i);
+    my $residfile = $parms{residfile};
+    undef $residfile if ($residfile =~ m/^indef$/i);
+
+    my $expothresh = $parms{expothresh};
+    my $timeslop = $parms{timeslop};
+    my $minfracoverlap = $parms{min_dph_frac_overlap};
+    my $maxtimenonoverlap = $parms{max_dph_time_nonoverlap}; 
+    # The above selections are for the initial pass.  In a second
+    # pass, the pointerr_* values are used (see below)
+
+    # Source detection / clean parameters
+    my $snrthresh = $parms{snrthresh};
+    my $cleansnr = $parms{cleansnr};
+    my $balance = "$parms{balance}";
+    my $brightthresh = $parms{brightthresh};
+    my $pcodethresh = $parms{pcodethresh};
+    my $bkgpcodethresh = $parms{bkgpcodethresh};
+    my $badpixthresh = $parms{badpixthresh};
+    my $copy_cleaned_sources = $parms{copy_cleaned_sources};
+    my $cleanrad = $parms{copy_cleaned_radius};
+
+    # batsurvey-aspect parameters
+    my $point_toler = $parms{point_toler};
+    my $roll_toler =  $parms{roll_toler};
+    my $pointerr_pct_time = $parms{pointerr_frac_time};
+    my $pointerr_abs_time = $parms{pointerr_abs_time};
+
+    # NOTE: changed to 35, since a significant fraction of data before
+    # Feb 2005 had slow settling times.
+
+    # External file parameters
+    my $basecat = $parms{incatalog};
+    my $aperture = $parms{aperture};
+    if ($aperture =~ m/^caldb$/i) { $aperture = "CALDB:FLUX"; }
+    my $maskedge = $parms{mask_edge_aperture};
+    if ($maskedge =~ m/^caldb$/i) { $maskedge = "CALDB:MASK_EDGES"; }
+
+    # Global pattern map: can have 'strftime' time format
+    my $globalpatternmap = $parms{global_pattern_map};
+    undef $globalpatternmap if ($globalpatternmap =~ m/^none$/i);
+
+    # Global pattern mask
+    my $globalmask = $parms{global_pattern_mask};
+    # No need to undef($globalmask) since batsurvey-detmask accepts NONE
+
+    my $alignfile = $parms{alignfile};
+    my $offcorrfile = $parms{offcorrfile};
+    # "$configdir/offaxiscorr_20050923.img";
+
+    # ================================================================
+    # Initialize global variables
+    my $totexpo = 0.0;
+    my $totgoodexpo = 0.0;
+    my $ntotgti = 0;
+    my $ngoodgti = 0;
+    my ($obs_tstart, $obs_tstop, $obs_date_obs, $obs_date_end);
+    $obs_tstart = +1.0e20;
+    $obs_tstop  = -1.0e20;
+    $obs_date_obs = '0000-00-00T00:00:00';
+    $obs_date_end = '0000-00-00T00:00:00';
+
+    # ================================================================
+    # Environment checking
+    die "ERROR: directory $indir not found" if (! -d "$indir");
+    mkdir ("$outdir",0777) if (! -d "$outdir");
+    die "ERROR: could not make directory $outdir" if (! -d "$outdir");
+    unlink("$outdir/done");
+    $parms{statfile} = "$outdir/global_status.txt";
+    unlink("$parms{statfile}");
+    $parms{pointname} = "global";
+
+    my ($outventory_file, $inventory_file, $outventory_fits, $inventory_fits);
+    $outventory_file = "$outdir/stats_point.dat";  # Snapshot stats
+    $outventory_fits = "$outdir/stats_point.fits"; # Snapshot stats (FITS)
+    $inventory_file  = "$outdir/stats_obs.dat";    # Observation stats
+    $inventory_fits  = "$outdir/stats_obs.fits";   # Observation stats (FITS)
+    unlink("$outventory_file"); unlink("$outventory_fits");
+    unlink("$inventory_file");  unlink("$inventory_fits");
+    # Default statistics if the task fails completely  (GLOBAL vars)
+    $outsig = $inventory_file;
+    $outres = "A $indir $outdir 0 0 0 0 0";
+
+    die "ERROR: subdirectory auxil not found" if (! -d "$indir/auxil");
+    die "ERROR: subdirectory bat/survey not found" if (! -d "$indir/bat/survey");
+
+    # ================================================================
+    # Change these if files are located in different directories or have
+    # different filename patterns
+    my ($attitude_glob, $dph_glob, $sao_glob, $go_glob, $de_glob);
+    my ($scratchdir);
+    $attitude_glob = parseglob($parms{attitude_pattern},$indir);# Attitude data
+    $dph_glob      = parseglob($parms{dph_pattern},$indir);     # Survey DPHs
+    $sao_glob      = parseglob($parms{sao_pattern},$indir);     # SAO (prefilter) file
+    $go_glob       = parseglob($parms{go_pattern},$indir);      # BAT Gain/offset file
+    $de_glob       = parseglob($parms{de_pattern},$indir);      # BAT Disable/enable file
+
+    # Scratch directory where temporary stuff goes
+    $scratchdir = "$outdir/scratch";
+
+    # Make output directories
+    mkdir ("$scratchdir",0777);
+    mkdir ("$outdir/dph",0777);
+    mkdir ("$outdir/dpi",0777);
+    mkdir ("$outdir/lc",0777);
+    mkdir ("$outdir/auxil",0777);
+    mkdir ("$outdir/gti",0777);
+    
+    # ==== Attitude file
+    my (@gatts,@saofiles,@files,@gofiles,@oldfiles,@efiles,@gstart,@gstop);
+    my ($gatt,$saofile,$file,$batch,$gofile,$dph_masks,$ebatch,$fits);
+    my ($mastergti,$ngti,$goodexpo1);
+    my ($cmd);
+
+    @gatts = myglob($attitude_glob);
+    die "ERROR: no attitude file found" if ($#gatts == -1);
+    $gatt = $gatts[0];
+
+    @saofiles = myglob($sao_glob);
+    die "ERROR: no SAO file found" if ($#saofiles == -1);
+    $saofile = $saofiles[0];
+
+    # ======= Read some basic information
+    $fits = SimpleFITS->open("$gatt", access => "readonly", ext => 2);
+    if ($fits == 0 || $fits->status() != 0) {
+      die "ERROR: could not open '$gatt' attitude file";
+    }
+      
+    $parms{obs_id}   = $fits->readkey('OBS_ID');   $fits->setstatus(0);
+    $parms{telescop} = $fits->readkey('TELESCOP'); $fits->setstatus(0);
+    $parms{instrume} = $fits->readkey('INSTRUME'); $fits->setstatus(0);
+    $parms{mjdrefi}  = $fits->readkey('MJDREFI');  $fits->setstatus(0);
+    $parms{mjdreff}  = $fits->readkey('MJDREFF');  $fits->setstatus(0);
+    $parms{mjdref}   = $fits->readkey('MJDREF');   $fits->setstatus(0);
+    $parms{timesys}  = $fits->readkey('TIMESYS');  $fits->setstatus(0);
+    $parms{timeref}  = $fits->readkey('TIMEREF');  $fits->setstatus(0);
+    $parms{tassign}  = $fits->readkey('TASSIGN');  $fits->setstatus(0);
+    $parms{timezero} = $fits->readkey('TIMEZERO'); $fits->setstatus(0);
+    $parms{utcfinit} = $fits->readkey('UTCFINIT'); $fits->setstatus(0);
+    $parms{object}   = $fits->readkey('OBJECT');   $fits->setstatus(0);
+    $fits->close();
+
+
+    # -------
+    # Effective area map may be a comma-separated list or an @filename.txt
+    my $eff_area_map = $parms{eff_area_map};
+    my (@eff_area_maps, @computed_eff_area_maps);
+    @eff_area_maps = expand_batchfile($eff_area_map);
+    if ($#eff_area_maps == 0 && $eff_area_maps[0] =~ m/none/i) {
+      @eff_area_maps = ();
+    }
+      
+    # -------
+    # batclean_bkgmodel:
+    #    * batclean_bkgmodel="simple"
+    #    * batclean_bkgmodel="@filename.txt"
+    # We need to check the contents of this file in order to see if
+    # special tokens are used.  If the 
+    # tokens *are* used, then we need to regenerate the @filename.txt each time
+    # and replace the tokens.
+    # Special tokens:
+    #   EFF_AREA_TEMPLATES - if present, the names of computed templates are substituted
+    #      the computation is template[i,j] = eff_area_maps[i] * src_template[j]
+    #      where i = index of effective area maps
+    #            j = index of source
+    #      (NOTE: must set eff_area_map parameter)
+    # If none of the special tokens are used, then batsurvey does not add the computed templates
+    # in which case the file just contains the input list
+    #
+
+    my $modify_bkgmodel_templates = 0;
+    my $compute_eff_area_templates = 0;
+
+    my $batclean_bkgmodel = $parms{batclean_bkgmodel};
+    my $batclean_bkgmodel1 = $batclean_bkgmodel;     # will be changed to point to batclean_bkgmodel_file if special token EFF_AREA_TEMPLATES found 
+
+    # Scratch file which will be overwritten every snapshot with new
+    # model files.
+    my ($batclean_bkgmodel_file) = "$scratchdir/batclean_bkgmodels.txt";
+    my (@batclean_bkgmodels);
+
+    @batclean_bkgmodels = expand_batchfile($batclean_bkgmodel);
+
+    # Check for special tokens and remove them.....
+    my $batclean_bkgmodeli;
+    my @temp_batclean_bkgmodels = ();
+    foreach $batclean_bkgmodeli (@batclean_bkgmodels) {
+
+      if ($batclean_bkgmodeli =~ m/^EFF_AREA_TEMPLATES$/) {
+	$compute_eff_area_templates = 1;
+	$modify_bkgmodel_templates = 1;
+        # replace what was input by a pointer to the temporary file
+        $batclean_bkgmodel1 = "@".$batclean_bkgmodel_file;
+	if ($#eff_area_maps < 0) {
+	  die "ERROR: eff_area_map and EFF_AREA_TEMPLATES must be set together";
+	}
+      } else {
+	push @temp_batclean_bkgmodels, $batclean_bkgmodeli;
+      }
+    }
+    @batclean_bkgmodels = @temp_batclean_bkgmodels;
+
+
+    # ============================ ENERGY REBINNING ========
+    # goto SKIP_EREBIN;
+    timecheckpoint();
+    $batch = "$scratchdir/survey.lis";
+    @files = myglob($dph_glob);
+    die "ERROR: no survey files were found" if ($#files == -1);
+    open(BATCHFILE,">$batch") or die "ERROR: could not open $batch";
+    foreach $file (@files) {
+      print BATCHFILE "$file\n";
+    }
+    close(BATCHFILE);
+    @gofiles = myglob($go_glob);
+    if ($#gofiles >= 0) {
+      $gofile = $gofiles[0];
+    } else {
+      $gofile = "query";
+    }
+
+    # ==== Split the energy bins into two separate arrays
+    my @ebinstr = split(/,/,$ebins);
+    my @emin = ();
+    my @emax = ();
+    my ($str);
+    foreach $str (@ebinstr) {
+      my @eminmax = split(/-/,$str);
+      push @emin, $eminmax[0];
+      push @emax, $eminmax[1];
+    }
+    my $nebins = $#emin + 1;
+
+    # Workaround for baterebin problem, by adding an integral bin at
+    # the bottom and top which covers the full range 0-350 keV.  Thus,
+    # 14-25,25-50 becomes 0-14,14-25,25-50,50-350.
+    $fullebins = "0-$emin[0]," . "$ebins," . "$emax[$nebins-1]-350";
+    $baterebin_opts .= " ebins=$fullebins";
+
+    # Remove any old files (actual deletion is done by outcall())
+    @oldfiles = myglob("$outdir/dph/*_erebin.dph");
+
+    $cmd = "batsurvey-erebin @". $batch ." $outdir/dph/%rootfile_erebin.dph ".
+      "calfile='$gofile' outmap=$outdir/dph/%rootfile.mask clobber=yes";
+    $cmd .= " pulserfile='$pulserfile'" if ($pulserfile);
+    $cmd .= " fltpulserfile='$fltpulserfile'" if ($fltpulserfile);
+    $cmd .= " residfile='$residfile'" if ($residfile);
+    $cmd = $cmd . " baterebin_opts='$baterebin_opts'" if ($baterebin_opts);
+
+    # No error checking in this outcall since we are not 
+    # within a pointing.
+    if (outcall(\%parms,$cmd, \@oldfiles, [])) {
+      die "ERROR: batsurvey-erebin failed";
+    }
+    
+    # All the DPH files
+    @efiles = myglob("$outdir/dph/*_erebin.dph");
+    die "ERROR: no erebinned files were created" if ($#efiles == -1);
+
+    # All the quality maps from baterebin
+    $dph_masks = "$scratchdir/dph_masks.lis";
+    @files = glob("$outdir/dph/*.mask");
+    die "ERROR: no erebin masks were created" if ($#files == -1);
+    open(BATCHFILE,">$dph_masks") or die "ERROR: could not open $dph_masks";
+    foreach $file (@files) {
+      print BATCHFILE "$file\n";
+    }
+    close(BATCHFILE);
+    
+  SKIP_EREBIN:
+    # ========================== QUALITY SELECTION =======
+    timecheckpoint();
+    $ebatch = "$scratchdir/esurvey.lis";
+
+    # List survey files, and append DATA_FLAGS filtering expression
+    @files = glob("$outdir/dph/*_erebin.dph");
+    die "ERROR: no rebinned DPH files found" if ($#files == -1);
+    open(BATCHFILE,">$ebatch") or die "ERROR: could not open $ebatch";
+    foreach $file (@files) {
+      print BATCHFILE "$file"."[DATA_FLAGS == 0]\n";
+    }
+    close(BATCHFILE);
+
+    # ==== call batsurvey-gti for time filtering
+    # Decide whether we separate each DPH separately or 
+    # by snapshot.
+    my $sepdph = ($timesep eq "SNAPSHOT")?"NO":"YES";
+    $cmd = "batsurvey-gti '$indir' '@"."$ebatch' '$outdir/gti' ".
+      "sepdph='$sepdph' ".
+      "filters='$filtnames' elimits='$elimits' ".
+      "rateminthresh=$rateminthresh ratemaxthresh=$ratemaxthresh ".
+      "detthresh=$detthresh stlossfcnthresh=1.0E-9 ".
+      "filtexpr='$filtexpr' saofiltexpr='$saofiltexpr' ".
+      "dphfiltexpr='DATA_FLAGS == 0' gtifile='$parms{gtifile}'";
+    
+    $mastergti = "$outdir/gti/master.gti";
+    @files = glob("$outdir/gti/*");
+    if (outcall(\%parms,$cmd,\@files,[]) ||
+	(! -d "$outdir/gti") || (! -f "$mastergti")) {
+      die "ERROR: could not create $mastergti";
+    }
+
+    # ==== Retrieve statistics about the master GTI
+    $totexpo   = `pget batsurvey-gti totexpo`; chomp($totexpo);    # Total DPH EXPOSURE
+    $ngti      = `pget batsurvey-gti ngti`; chomp($ngti);
+    $goodexpo1 = `pget batsurvey-gti goodexpo`; chomp($goodexpo1); # Total Good DPH exposure
+    
+    # ==== Read each good time
+    $fits = SimpleFITS->open("<$mastergti");
+    die "ERROR: could not open $mastergti" if (!$fits);
+    $ngti = $fits->move(2)->readkey('NAXIS2');
+    die "ERROR: $mastergti contained no good times" if ($ngti <= 0);
+
+    @gstart = $fits->readcol('START');
+    @gstop  = $fits->readcol('STOP');
+    die "ERROR: could not read master GTI file" if ($fits->status());
+
+    $fits->close();
+
+    # ==== Reference epoch for all Swift times
+    use Time::Local;
+    my $tref = timegm(0,0,0,1,0,2001);
+    
+
+    # =======================================================
+    #              SCAN THROUGH EACH GTI
+    # =======================================================
+    timecheckpoint();
+    $ntotgti = $#gstart + 1;
+    print " ===== NUMBER OF GTIs : $ntotgti\n";
+
+    my ($igtirow);
+    print " ======== BEGIN SNAPSHOT LOOP ========= \n";
+  GTI: foreach $igtirow (0 .. $#gstart) {
+      # SNAPSHOT VARS
+      my ($tstart,$tstop,@utstart,@utstop,$sstart,$sstop);
+      my ($date_obs, $date_end);
+      my ($pass,$gtigoodexpo,$med_ra,$med_dec,$med_roll,$expotot,$expobad,$expo);
+      my ($pname,$pdir,$proot,$statfile,$defile,$repoquery,$bkgdpi1,$scrcat,$trancat);
+      my ($iband);
+      my ($pntgti0,$pntgti1,$pntgti,$goodfrac);
+      my ($dpi,$bkgdpi,$img,$snr,$cat,$reg,$var,$poi,$att,$dmask,$occ);
+      my ($previmg,$prevsnr,$prevvar,$prevcat,$newcat,$newsrcind);
+      my (@dpichi,@dpibkg);
+
+      $tstart = $gstart[$igtirow] - $timeslop;
+      $tstop  = $gstop[$igtirow]  + $timeslop;
+      
+      @utstart = gmtime($tref + $tstart);
+      @utstop = gmtime($tref + $tstop);
+      
+      $sstart = sprintf("%04d%03d%02d%02d", $utstart[5]+1900, $utstart[7]+1,
+			$utstart[2], $utstart[1]);
+      $sstop = sprintf("%04d%03d%02d%02d",  $utstop[5]+1900, $utstop[7]+1,
+		       $utstop[2], $utstop[1]);
+
+      # In ISO format, for use as DATE_OBS and DATE_END keywords
+      $date_obs = sprintf("%04d-%02d-%02dT%02d:%02d:%02d", 
+			  $utstart[5]+1900, $utstart[4]+1, $utstart[3],
+			  $utstart[2], $utstart[1], $utstart[0]);
+      $date_end = sprintf("%04d-%02d-%02dT%02d:%02d:%02d", 
+			  $utstop[5]+1900, $utstop[4]+1, $utstop[3],
+			  $utstop[2], $utstop[1], $utstop[0]);
+      
+      print "--------------------------------------------------------\n";
+      print "--------------------------------------------------------\n";
+      print "GTI: start $sstart | $tstart point_$sstart\n";
+      print "Valid time range $sstart - $sstop ($tstart - $tstop)\n";
+      print "--------------------------------------------------------\n";
+      timecheckpoint();
+      
+      # ==== Initialize snapshot statistics
+      $parms{pointstatus} = "unknown";
+      $pass = 0;
+      $parms{ndets} = 0;
+      $parms{exposure} = 0;
+      $gtigoodexpo = 0.0;
+      $med_ra = -999;
+      $med_dec = -999;
+      $med_roll = -999;
+      foreach $iband (0 .. $nebins-1) {
+	# Initialize statistics to null values
+	$dpichi[$iband] = 0; 
+	$dpibkg[$iband] = 0;
+      }
+
+      # ==== Input / output directories and files
+      $pname = "point_$sstart";
+      $pdir = "$outdir/$pname";
+      $proot = "$pdir/$pname";
+      $statfile = "$proot"."_status.txt";
+      $parms{pointname} = "$pname";
+      $parms{statfile}  = "$statfile";
+      mkdir ("$pdir",0777);
+      
+      $pntgti0 = "$proot"."_pnt0.gti";  # Per-pointing GTI
+      $dpi = "$proot"."_1.dpi";       # Source+background DPI
+      $dmask = "$proot".".detmask"; # Detector quality map
+      $att = "$proot".".att";       # Cleaned attitude file
+      
+      # ==== Create pointing-level GTI (including some time slop)
+      $cmd = "ftcopy '$mastergti"."[1][#ROW == ($igtirow+1)][col START=START-$timeslop; STOP=STOP+$timeslop]' '$pntgti0' clobber=YES";
+      if (outcall(\%parms,$cmd, [$pntgti0], 
+		  [["! -f \"$pntgti0\"","pntgti0_failed",
+		    "Could not create pointing GTI"]])) { 
+	goto NEXT_GTI;
+      }
+      # last: mastergti, igtirow, timeslop
+      
+      # ==== Make a preliminary DPI file
+      # we will check for attitude drift during the DPI, and then re-make
+      # if the attitude has drifted enough
+      $cmd = "batbinevt @"."$ebatch '$dpi' DPI 0 u '$ebins' ".
+	"weighted=NO outunits=RATE gtifile='$pntgti0' ".
+	"min_dph_frac_overlap='$minfracoverlap' ".
+	"max_dph_time_nonoverlap='$maxtimenonoverlap' ".
+	"clobber=YES";
+      if (outcall(\%parms,$cmd, [$dpi],
+		  [["! -f \"$dpi\"", "dpi1_failed",
+		    "Could not create DPI(1)"] ])) {
+	goto NEXT_GTI;
+      }
+      # last: minfracoverlap, maxtimenooverlap
+      
+      # ==== Make clean attitude file
+      $pntgti = "NONE";
+      $pntgti = "$proot"."_pnt1.gti" if ($pointing_check);
+      $cmd = "batsurvey-aspect gtifile='$dpi"."[STDGTI]' attfile='$gatt' ".
+	"alignfile='$alignfile' outgtifile='$pntgti' outattfile='$att' ".
+	"point_toler='$point_toler' roll_toler='$roll_toler' clobber=YES ";
+      if (outcall(\%parms,$cmd, [$att, $pntgti],
+		[["! -f \"$att\"", "aspect_failed",
+		  "Could not create pointing-specific attitude file"],
+		 ["$pointing_check && ! -f \"$pntgti\"", "pointcheck_failed",
+		  "Could not create pointing-check GTI file"]])) {
+	goto NEXT_GTI; 
+      }
+      # last: gatt, alignfile, point_toler, roll_toler
+      
+      # Retrieve attitude-related stats from the parameter file
+      $med_ra   = `pget batsurvey-aspect med_ra`;   chomp($med_ra);
+      $med_dec  = `pget batsurvey-aspect med_dec`;  chomp($med_dec);
+      $med_roll = `pget batsurvey-aspect med_roll`; chomp($med_roll);
+      $expotot  = `pget batsurvey-aspect expotot`;  chomp($expotot);
+      $expobad  = `pget batsurvey-aspect expobad`;  chomp($expobad);
+      
+      if ($pointing_check) {
+	my $expopct = $expobad / $expotot * 100.0;
+	
+	if ($expobad / $expotot > $pointerr_pct_time ||
+	    $expobad > $pointerr_abs_time) {
+	  warn "WARNING: Pointing shifted significantly during observation";
+	  warn "         applying a more conservative GTI";
+	} else {
+	  # No real problem so negate the pntgti;
+	  $pntgti = $pntgti0;
+	  print "   ==> pointing errors small enough to ignore\n".
+	    "       reverting to $pntgti0.\n";
+	}
+      }
+      # last: expotot, expobad
+      
+      # In the case where we did no attitude check, we need the original
+      # pointing-level GTI
+      if ($pntgti eq "NONE") { $pntgti = "$pntgti0"; }
+      # last: pntgti0
+      
+      # Make a copy of the in-use GTI so there is no confusion
+      $pntgti1 = $pntgti;
+      $pntgti = "$proot"."_pnt.gti";
+      system("cp '$pntgti1' '$pntgti'");
+      
+      # ==== Make DPI file
+      $goodfrac = 1.0 - $pointerr_pct_time;
+      $cmd = "batbinevt @"."$ebatch '$dpi' DPI 0 u '$ebins' ".
+	"weighted=NO outunits=RATE gtifile='$pntgti' ".
+	"min_dph_frac_overlap='$goodfrac' ".
+	"max_dph_time_nonoverlap='$pointerr_abs_time' ".
+	"clobber=YES";
+      if (outcall(\%parms,$cmd, [$dpi], 
+		  [["! -f \"$dpi\"", "dpi2_failed", 
+		    "Could not create DPI(2)"]])) {
+	goto NEXT_GTI;
+      }
+      # last: ebatch, ebins, pntgti, goodfrac, pointerr_{abs,pct}_time
+      
+      # ==== Write BAT survey processing version into the DPI; it will carry
+      # forward to the other products
+      $fits = SimpleFITS->open("+<$dpi");
+      if ($fits == 0 || $fits->status() != 0) {
+	pntstat(\%parms,"dpi_check","Could not open $dpi");
+	goto NEXT_GTI;
+      }
+
+      # This is a loop through each energy band DPI, which writes
+      # various identifying keywords.
+      while ($fits->status() == 0) {
+	if ($parms{exposure} == 0) { 
+	  $parms{exposure} = $fits->readkey('EXPOSURE');
+	}
+
+	$fits->writekey('BSURVER', "$survey_version", 
+			"BAT survey processing version",TSTRING)
+	     ->writekey('RA_PNT',  "$med_ra",
+			"[deg] RA median pointing (batsurvey)",TDOUBLE)
+	     ->writekey('DEC_PNT',  "$med_dec",
+			"[deg] Dec median pointing (batsurvey)",TDOUBLE)
+	     ->writekey('PA_PNT',  "$med_roll",
+			"[deg] Position angle (roll) median (batsurvey)",
+			TDOUBLE)
+	     ->writekey('IMAGE_ID', "$pname", "Image Identifier", TSTRING);
+	
+	if ($parms{bsurseq} !~ m/^NONE$/i) {
+	  $fits->writekey('BSURSEQ', "$parms{bsurseq}",
+			  "BAT survey processing sequence",TSTRING);
+	}
+	$fits->move("+1");
+      }
+      $fits->setstatus(0)->close();
+      
+      
+      # ====
+      # DPI check - EXPOSURE keyword should be larger than threshold
+      
+      if ($parms{exposure} < $expothresh) {
+	pntstat(\%parms,"expo_small", "Exposure $parms{exposure} < $expothresh");
+	goto NEXT_GTI;
+      }
+      $gtigoodexpo = $parms{exposure};
+      
+      # ==== Make sure the image does not contain garbage
+      $cmd = "fimgstat '$dpi' INDEF INDEF min=-999 max=+999";
+      outcall(\%parms,$cmd,[],[]);
+      my $dmin = `pget fimgstat min`; chomp($dmin);
+      my $dmax = `pget fimgstat max`; chomp($dmax);
+      if ($dmin == 0 && $dmax == 0) {
+	pntstat(\%parms,"zero_counts", "Output DPI was zero");
+	goto NEXT_GTI;
+      }
+      
+      # Are there detector enable/disable maps available?  If yes,
+      # then use them.  Otherwise, fall back to 'repoquery'
+      my (@defiles);
+      @defiles = myglob($de_glob);
+      $defile = "NONE";
+      $repoquery = "NO";
+      if ($#defiles >= 0) {
+	$defile = $defiles[0];
+      } else {
+	$repoquery = "YES";
+      }
+      
+      # ==== Make detector quality filter 
+      $cmd = "batsurvey-detmask '$dpi' '$dmask' detflagfile='$defile' ".
+	"patternmask='$globalmask' detmask='@"."$dph_masks' ".
+	  "outenamask='$proot".".enamask' outcaldbmask='$proot".".caldbmask' ".
+	    "repoquery=$repoquery clobber=YES chatter=2 cleanup=YES ";
+      if (outcall(\%parms,$cmd, [$dmask],
+		  [["! -f \"$dmask\"", "batdetmask_failed",
+		    "Could not create pointing detmask"]])) {
+	goto NEXT_GTI;
+      }
+
+      # ==== Compute a pattern map based on time of observation
+      my ($patternmap);
+      $patternmap = &get_patternmap($tstart + $tref, $globalpatternmap);
+      
+
+      # =============== START OF SNAPSHOT DPI PROCESSING
+      # In: $dpi, $bkgdpi[t], $dmask, $balance
+      # In: $basecat, $ncleaniter
+      # In: $poivarmap
+      # In: $poivarmap, $poi[t], $img[t], $att
+      # In: $aperture, $keepbits
+      # In: $nebins
+      # In: $occ[t], $saofile
+      # In: $off_axis_corr, $offcorrfile
+      # In: $copy_cleaned_sources, $proot (cheesmap)
+      # In: $cat[t], $snrthresh, $reg[t], $sstart (newsrcname), $pcodethresh
+      # In: $bkgpcodethresh, $var[t], $newsrcind (?)
+      # In: $proot (fixcat,fitcat)
+      # In: $keep_sky_images
+      # In: $outdir (scratch dpi file), $proot (maskedge detmask)
+      # In: $maskedge, $aperture, $balance
+      # In: $proot ("a" bkgdpi), $proot ("a" cat)
+      # In: $cleansnr
+      # In: $outdir (scratch sigma dpi), $proot (sigma detmask)
+      # In: $patternmap
+      # In: $badpixthresh
+      # In: $detthresh2
+      # In: $proot (next clean bkgdpi), $outdir (scratch raw-pattern dpi)
+      # In: $parms{batclean_backexp}
+      # In: $proot (constructing next iteration images)
+
+      # These are all used within the snapshot processing step
+      $bkgdpi = "$proot"."_1.bkgdpi"; # Background DPI
+      $img = "$proot"."_1.img";     # Flux image
+      $snr = "$proot"."_1.snr";     # Not used
+      $cat = "$proot"."_1.cat";     # Catalog of detected sources
+      $reg = "$proot".".reg";       # Region file for detected sources
+      $var = "$proot"."_1.var";     # Measured RMS noise
+      $poi = "$proot".".poivar";    # Poisson noise (not iterative)
+      $occ = "$proot".".occimg";    # Occultation exposure map
+
+      # ==== Make clean background map
+      # In: $dpi, $bkgdpi[t], $dmask, $balance
+      $cmd = "batclean '$dpi' '$bkgdpi' detmask='$dmask' outversion=fit ".
+	"srcclean=NO aperture=NONE balance='$balance' maskfit=YES";
+      if (outcall(\%parms,$cmd, [$bkgdpi], 
+		  [["! -f \"$bkgdpi\"", "batclean1_failed",
+		    "batclean failure (1)"]])) {
+	goto NEXT_GTI;
+      }
+
+      # =================== BEGIN CLEAN ITERATIONS
+      
+      undef $previmg;
+      undef $prevsnr;
+      undef $prevcat;
+      undef $prevvar;
+
+      # Input catalog starts with user-specified input (or NONE)
+      # In: $basecat, $ncleaniter
+      $newcat = "$basecat";
+      $newsrcind = "1";
+
+      my ($cleaniter);
+    CLEANITER: foreach $cleaniter (1 .. $ncleaniter) {
+
+	my ($poivarfile,$oldimg,$scat,$expr);
+	my ($extnum,$mul_ext_files,$div_ext_files);
+	my (@div_ext_list,@exprlist);
+	
+	# ==== Make a sky map
+	# Optional Poisson variance
+	# In: $poivarmap
+	if ($poivarmap) {
+	  $poivarfile = "$poi";
+	  unlink("$poi");
+	} else {
+	  $poivarfile = "NONE";
+	}
+	
+	# Sky image
+	# In: $poivarmap, $poi[t], $img[t], $att
+	# In: $aperture, $keepbits
+	$cmd = "batfftimage '$dpi' '$img' '$att' detmask='$dmask' ".
+	  "bkgfile='$bkgdpi' ".
+	  "clobber=YES aperture=$aperture teldef=CALDB pcodemap=APPEND_LAST ".
+	  "keepbits=$keepbits bkgvarmap='$poivarfile' bkgvartype=STDDEV";
+	# signifmap=$snr 
+	if (outcall(\%parms,$cmd, [$img],
+		    [["! -f \"$img\"", "batfftimage_failed",
+		      "Could not create initial sky maps"]])) {
+	  goto NEXT_GTI;
+	}
+	
+	# ==== Occultation correction (earth only)
+	
+	# Reason for earth only: moon constraint puts a very local
+	# pocket of high variance at the position of the moon, which
+	# fools the source detection program.  It's net zero, but
+	# sometimes there are huge positive fluctuations which get
+	# detected.
+	
+	# Names of images to correct: flux images (divide) 
+	#    partial coding (multiply)
+	# In: $nebins
+	@div_ext_list = ();
+	foreach $extnum (0 .. $nebins-1) {
+	  push @div_ext_list, "$img"."[$extnum]";
+	}
+#	if ($poivarfile ne "NONE") {
+#	    push @div_ext_list, "$poivarfile";
+#	}
+	$div_ext_files = join(',',@div_ext_list);
+	$mul_ext_files  = "$img"."[BAT_PCODE_1]";
+	
+	# Note: sky flux and partial coding maps are corrected IN PLACE.
+	# In: $occ[t], $saofile
+	$cmd = "batoccultmap '$img' '$occ' '$saofile' ".
+	  "algorithm=CONTOUR constraints=EARTH ".
+	  "gtifile=INFILE occultation=fraction method=POSITION timesegtol=5.0 ".
+	   "multfiles='$mul_ext_files' divfiles='$div_ext_files' clobber=YES";
+	if (outcall(\%parms,$cmd, [$occ], 
+		    [["! -f \"$occ\"", "batoccultmap_failed",
+		      "Could not create occultation exposure map"]])) {
+	  goto NEXT_GTI;
+	}
+
+	# ==== Correct for off-axis flux
+	# In: $off_axis_corr, $offcorrfile
+	if ($off_axis_corr && -f "$offcorrfile") {
+	  $oldimg = "$img".".orig";
+	  rename("$img","$oldimg");  print("mv $img $oldimg\n");
+	  $cmd = "ftimgcalc outfile='$img' expr='IMG / CORR' ".
+	    "a='IMG=$oldimg' b='CORR=$offcorrfile' ".
+	    "clobber=YES replicate=YES bunit=:IMG wcsimage=:IMG ".
+	    "nvectimages=$nebins otherext=+IMG resultname='BAT_IMAGE'";
+	  if (outcall(\%parms,$cmd,[$img],
+		      [["! -f \"$img\"", "offaxis_failed",
+			"Could not compute flux-corrected maps"]])) {
+	    goto NEXT_GTI;
+	  }
+	  unlink("$oldimg");
+	  
+	  # Insert the OFFAXAPP keyword to signal that this 
+	  # image has been corrected for off-axis effects
+	  $fits = SimpleFITS->open("+<$img");
+	  foreach $iband (1 .. $nebins) {
+	    $fits
+	      ->move($iband)
+	      ->writekey('OFFAXAPP',1,"Corrected for off-axis effects",TLOGICAL);
+	  }
+	  $fits->close();
+	}
+	
+	# ==== If we cleaned sources from the previous iteration, then
+	# copy them back into this map
+	# In: $copy_cleaned_sources, $proot (cheesmap)
+	if ($copy_cleaned_sources && $prevcat && $previmg) {
+	  my ($imxr,$imyr,$cleanedr,$ncleaned,$isrc,$cheeze,$expr);
+	  my (@imx,@imy,@exprlist,@cleanflag);
+	  $fits = SimpleFITS->open("<$prevcat")->move(2);
+	  $status = $fits
+	    ->readcol('IMX',{},$imxr)
+	    ->readcol('IMY',{},$imyr)
+	    ->readcol('CLEANED',{},$cleanedr)
+	    ->close()
+	    ->status();
+
+	  $ncleaned = 0;
+	  @exprlist = ();
+	  if ($status == 0) {
+	    @imx = @$imxr; @imy = @$imyr; @cleanflag = @$cleanedr;
+	    
+	    foreach $isrc (0 .. $#cleanflag) {
+	      if ($cleanflag[$isrc]) {
+		push @exprlist, 
+		  "circle($imx[$isrc],$imy[$isrc],$cleanrad,A.IMX,A.IMY)";
+		$ncleaned ++;
+	      }
+	    }
+	  }
+	  $cheeze = "$proot".".cheesemap";
+	  unlink("$cheeze");
+
+	  # We need to iterate here, since ftimgcalc has a limited command line
+	  # length.  Basically we call ftimgcalc several time, in batches of about
+	  # ten sources per batch (<800 characters).  All of the masks will be
+	  # joined together with the || operator.
+
+	  while ($#exprlist >= 0) {
+	    my ($expri,$opts,$cheeze1);
+	    undef $expr;
+	    $opts = "";
+
+	    # Create a command line, up to 800 characters
+	    while ($#exprlist >= 0 && length($expr) < 800) {
+	      $expri = pop(@exprlist);
+	      if (defined($expr)) { $expr .= "||"; }
+	      $expr .= "$expri";
+	    }
+
+	    # If we already did one iteration, we need to recall the previous mask
+	    $cheeze1 = "$cheeze"."1";  # temporary file name
+	    if (-f "$cheeze") {
+	      rename("$cheeze","$cheeze1");  print "mv '$cheeze' '$cheeze1'\n";
+	      $expr .= " || (B == 1)";
+	      $opts .= "b='$cheeze1'";
+	    }
+
+	    $cmd = "ftimgcalc outfile='$cheeze' expr='($expr)?1:0' a='$img' ".
+	      "wcsimage=:A clobber=YES $opts";
+	    if (outcall(\%parms, $cmd, [$cheeze],
+			[["! -f \"$cheeze\"", "cheezi_failed",
+			  "Could not create partial clean-source mask"]])) {
+	      goto NEXT_GTI;
+	    }
+	    unlink("$cheeze1") if (-f "$cheeze1");   # Remove scratch file
+	  }
+	  if ( -f "$cheeze" ) {
+	    rename("$img","$img".".orig");   print("mv $img $img".".orig\n");	
+	    $cmd = "ftimgcalc outfile='$img' expr='(CHEESE>0)?(OLD):(NEW)' ".
+	      "a='OLD=$previmg' b='CHEESE=$cheeze' c='NEW=$img.orig' ".
+	      "clobber=YES replicate=YES bunit=:NEW wcsimage=:NEW ".
+	       "nvectimages=$nebins otherext=+NEW bitpix=E ".
+	       "resultname='BAT_IMAGE'";
+	    if (outcall(\%parms,$cmd, [$img],
+			[["! -f \"$img\"", "cheese_failed",
+			  "Could not substitute cleaned sources into map"]])) {
+	      goto NEXT_GTI;
+	    }
+	    unlink("$img.orig");
+	  }
+	}
+	
+	
+	# ==== Source detection
+	# In: $cat[t], $snrthresh, $reg[t], $sstart (newsrcname), $pcodethresh
+	# In: $bkgpcodethresh, $var[t], $newsrcind (?)
+	$cmd = "batcelldetect '$img' '$cat' $snrthresh ".
+	   "incatalog='$newcat' pcodefile=$img'[BAT_PCODE_1]' ".
+	   "regionfile='$reg' newsrcname=\'$sstart"."_%02d\' newsrcind=$newsrcind ".
+	   "pcodethresh=$pcodethresh bkgpcodethresh=$bkgpcodethresh ".
+	   "nullborder=YES bkgvarmap='$var' posfit=NO posfitwindow=0.0 ".
+	   "distfile=CALDB ".
+	   "clobber=YES vectorflux=YES keepbits=$keepbits rows=1-$nebins ".
+	   "keepkeywords='*APP,OBS_ID,IMAGE_ID,RA_PNT,DEC_PNT,PA_PNT'";
+	if (outcall(\%parms,$cmd, [$cat],
+		    [["! -f \"$cat\"", "batcelldetect_failed",
+		      "Could not create initial catalog"]])) {
+	  goto NEXT_GTI;
+	}
+	
+	# ==== Create value-added columns:
+	#   CLEANLEV describes the iteration number
+	#   VECTSNR is the vector signal to noise ratio, which batclean does
+	#     does not handle
+	#   SNR is a total band signal to noise ratio computed from the
+	#     original flux values
+	$scat = "$cat"."s";
+	unlink("$scat");
+	$expr = 
+	  "CLEANLEV = $cleaniter; ".
+	  "#TTYPE#(batclean iteration number) = \"CLEANLEV\"; ";
+	if ($cleaniter > 1) {
+	  # Only reset CLEANED flag upon first iteration.  After that
+	  # we carry forward the previous iteration's value.
+	  $expr = 
+	  "CLEANED=F; ".
+	  "#TTYPE#(Has this source been cleaned?) = \"CLEANED\";";
+	}
+	$expr = 
+	  "VECTSNR = SNR; ".
+	  "#TTYPE#(S/N ratios for each band) = \"VECTSNR\";".
+	  "#TDISP#(display format) = \"F8.2\"; ".
+	  "-SNR; ".
+	  "TOTSNR=SUM(RATE)/SQRT(SUM(BKG_VAR**2)); ".
+	  "#TTYPE#(S/N ratio - all bands combined) = \"TOTSNR\"; ".
+	  "#TDISP#(display format) = \"F8.2\"; ".
+	  "SNR = MAX({VECTSNR,TOTSNR}); ".
+	  "#TTYPE#(Maximum S/N ratio found - {VECT,TOT}SNR) = \"SNR\"; ".
+	  "#TDISP#(display format) = \"F8.2\"; ";
+	$cmd = "ftcopy $cat'[1][col *; $expr]' $scat ".
+	  "clobber=YES copyall=YES";
+	if (outcall(\%parms,$cmd,[$scat],
+		    [["! -f \"$scat\"", "modcat_failed",
+		      "Could not create modified catalog"]])) {
+	  goto NEXT_GTI;
+	}
+	rename("$scat","$cat");   print("mv $scat $cat\n");	
+
+	# ==== 
+	# Check source centroiding
+	# In: $check_centroiding, $check_centroiding_snrthresh, 
+	# In: $proot (fixcat,fitcat)
+	if ($cleaniter == 1 && $check_centroiding) {
+	  my ($imgs,$img1,$irows,$fixcat,$fitcat,$highcat,$nbright,$esuff);
+	  my (@imglist);
+	  my ($check_snrthresh,$inbkgvarmap);
+	  $check_snrthresh = $parms{check_centroiding_snrthresh};
+
+	  # Find out how many bright sources will satisfy the
+	  # requirement.
+	  $highcat = "$cat"."[1][SNR > $check_snrthresh]";
+	  $nbright = 0;
+	  $fits = SimpleFITS->open("<$highcat")->move(2);
+	  $nbright = $fits->nrows() if ($fits->status() == 0);
+	  $fits->setstatus(0)->close(0);
+	  print "    Found $nbright sources for centroid check\n";
+
+	  # If there are some bright sources, then fit their positions
+	  if ($nbright > 0) {
+
+	  # This loop has two iterations
+	  #   0. estimate positions from the sum band
+	  #   1. estimate positions from the individual bands
+	  foreach $iband (0 .. 1) {
+
+	    if ($iband == 0) {
+	      # ----
+	      # "0th" band is really the sum of all other bands.
+	      # we compute the sum by using ftimgcalc
+	      $esuff = "tot";
+	      $img1 = "$img".".tot";
+	      $irows = "1";
+	      $inbkgvarmap = "NONE"; # Compute on the fly
+
+	      @exprlist = ();
+	      @imglist  = ();
+	      foreach $extnum (0 .. $nebins-1) {
+		push @exprlist, "BAND$extnum";
+		push @imglist,  chr(65+32+$extnum)."='BAND$extnum=$img"."[$extnum]'";
+	      }
+	      $expr = join("+",@exprlist);
+	      $imgs = join(" ",@imglist);
+
+	      $cmd = "ftimgcalc outfile='$img1' expr='$expr' $imgs ".
+		"nvectimages=1 bunit=:BAND0 wcsimage=:BAND0 clobber=YES ".
+		"resultname='BAT_IMAGE' ";
+	      outcall(\%parms,$cmd,["$img1"],[]);
+	      
+	    } else {
+
+	      # ----
+	      # Other bands are taken from the input image and 
+	      # done in a single batch
+	      $esuff = "bands";
+	      $irows = "1-$nebins";
+	      $img1 = $img;
+	      $inbkgvarmap = "$var";
+	    }
+
+	    $fixcat = "$proot"."_e$esuff.fixcat";  # Hold positions fixed
+	    $fitcat = "$proot"."_e$esuff.fitcat";  # Allow positions to vary
+
+	    # Position fit for source centroiding check only!
+	    # Note distfile=NONE means no distortion correction
+	    $cmd = "batcelldetect '$img1' '$fitcat' $snrthresh ".
+	      "incatalog='$highcat' pcodefile=$img'[BAT_PCODE_1]' ".
+	      "pcodethresh=$pcodethresh bkgpcodethresh=$bkgpcodethresh ".
+	      "nullborder=YES posfit=YES posfitwindow=0.2 srcdetect=NO ".
+	      "distfile=NONE carryover=NO ".
+	      "inbkgvarmap='$inbkgvarmap' inbkgmap='ZERO' ".
+	      "clobber=YES keepbits=$keepbits rows='$irows' ".
+	      "keepkeywords='*APP,OBS_ID,RA_PNT,DEC_PNT,PA_PNT,E_MIN,E_MAX,DPHLEVEL'";
+	    outcall(\%parms,$cmd,[$fitcat],[]);
+	    
+	    # Centroid check only!
+	    # niter=0 indicates only to convert from celestial to
+	    # instrumental tangent-plane coordinates, with no need
+	    # to do any detection or fitting.
+	    $cmd = "batcelldetect '$img1' '$fixcat' $snrthresh ".
+	      "incatalog='$highcat' pcodefile=$img'[BAT_PCODE_1]' ".
+	      "pcodethresh=$pcodethresh bkgpcodethresh=$bkgpcodethresh ".
+	      "nullborder=YES posfit=NO posfitwindow=0.0 srcdetect=NO ".
+	      "distfile=NONE carryover=NO ".
+	      "clobber=YES keepbits=$keepbits rows='$irows' niter=0 ".
+	      "keepkeywords='*APP,OBS_ID,RA_PNT,DEC_PNT,PA_PNT,E_MIN,E_MAX,DPHLEVEL'";
+	    outcall(\%parms,$cmd,[$fixcat],[]);
+	    if ($iband == 0 && -f "$img1") {
+	      unlink("$img1");
+	    }
+	    
+	  } # end of energy band loop
+
+	} # if nbright > 0
+	} # end of centroid-check if-statement
+	
+	
+	# ==== Remove old images if they exist
+	# In: $keep_sky_images
+	if ($keep_sky_images eq "LAST") {
+	  if (-f "$previmg") { unlink("$previmg"); }
+	  if (-f "$prevsnr") { unlink("$prevsnr"); }
+	  if (-f "$prevvar") { unlink("$prevvar"); }
+	}
+	
+	# ================== NOTE: EXIT HERE if we have achieved the
+	#       desired number of iterations
+	#
+	# There is no need to do further cleaning/filtering the DPI
+	# since we wouldn't be coming back to the top of the loop and
+	# imaging it again.
+	
+	# If ncleaniter == 1, then be sure to complete the whole clean
+	# loop at least once.
+	if ($cleaniter == $ncleaniter && $ncleaniter > 1) {
+	  
+	  last CLEANITER;
+	}
+	
+	# ==== First iteration: check for bright sources which 
+	# cast shadows of the edge of the mask onto the array.
+	# In: $outdir (scratch dpi file), $proot (maskedge detmask)
+	# In: $maskedge, $aperture, $balance
+	if ($cleaniter == 1) {
+	  my ($scrcat,$scrdpi1, $scrdpi2, $newdmask);
+	  my $nbright = 0;
+	  # CFITSIO expression to select bright sources
+	  my $brightexpr = "(SUM(RATE) > $brightthresh " .
+               "|| MAX(RATE) > $brightthresh) && PCODEFR > $pcodethresh";
+
+	  $scrcat = "$scratchdir/temp.cat";
+	  $cmd = "ftcopy infile='$cat"."[$brightexpr]' outfile='$scrcat' " .
+	    " clobber=YES";
+	  outcall(\%parms,$cmd,[$scrcat],
+		  [["! -f \"$scrcat\"", "bright_cat_failed1",
+		    "Could not create bright source catalog"]]);
+
+	  if ( -f "$cat" ) {
+	    $fits = SimpleFITS->open("<$scrcat")->move(2);
+	    $nbright = $fits->nrows() if ($fits->status() == 0);
+	    $fits->setstatus(0)->close(0);
+	  }
+
+	  print "    Found $nbright sources for bright filtering\n";
+
+
+	  # ----- Bright source special handling
+	  if ($nbright > 0) {
+
+	    # ----- Bright source - block mask edge shadows
+	    $scrdpi1 = "$scratchdir/bright_temp1.dpi";
+	    $newdmask = "$proot"."_1_maskedge.detmask";
+	    
+	    # Make a map of all bright sources and collapse it
+	    $cmd = "batmaskwtimg $scrdpi1 $att 0.0 0.0 ".
+	      "infile=$dpi aperture=$maskedge teldef=CALDB ".
+	      "incatalog=$scrcat detmask=$dmask ".
+	      "outtype=NONZERO combmeth=MAX clobber=YES";
+	    if (outcall(\%parms,$cmd,[$scrdpi1,$newdmask],
+		    [["! -f \"$scrdpi1\"", "maskedge_failed1",
+		      "Could not create mask edge map"]])) {
+	      goto NEXT_GTI;
+	    }
+
+	    $cmd = "ftimgcalc outfile='$newdmask' expr='(A>0 || B>0)?(1):(0)' ".
+	      "a='$scrdpi1' b='$dmask' wcsimage=:A resultname='BAT_DPI' ";
+	    if (outcall(\%parms,$cmd,[$newdmask],
+			  [["! -f \"$newdmask\"", "maskedge_failed2",
+			    "Could not create combined mask edge map"]])) {
+	      goto NEXT_GTI;
+	    }
+	    $dmask = $newdmask;
+	  
+
+	    # ----- Bright source - compute effective area maps
+	    # Compute effective area maps for each source
+	    @computed_eff_area_maps = ();
+	    $scrdpi2 = "$scratchdir/bright_temp2.dpi";
+	    if ( $compute_eff_area_templates ) {
+	      # Compute source-related templates.  Note that this is 
+	      # a similar template to the one batclean *would* have
+	      # calculated, except we are going to multiply it by
+	      # the effective area sensitivity map in just a moment.
+	      $cmd = "batmaskwtimg $scrdpi2 $att 0.0 0.0 ".
+		"infile=$dpi aperture=$aperture teldef=CALDB ".
+		"incatalog=$scrcat detmask=$dmask ".
+		"outtype=WEIGHTS combmeth=NONE clobber=YES ".
+                "corrections=forward,unbalanced,flatfield rebalance=no";
+	      if (outcall(\%parms,$cmd,[$scrdpi2],
+			  [["! -f \"$scrdpi2\"", "eff_area_failed1",
+			    "Could not create eff area template map"]])) {
+		goto NEXT_GTI;
+	      }
+
+	      my ($kmap);
+	      for $kmap (0 .. $#eff_area_maps ) {
+		my ($efftemp1, $jsrc);
+
+		$efftemp1 = "$scratchdir/eff_template_$kmap.fits";
+
+		$cmd = "ftimgcalc outfile='$efftemp1' expr='EFF*TEMPLATE' ".
+		  "a=EFF='$eff_area_maps[$kmap]' ".
+		  "b=TEMPLATE='$scrdpi2' ".
+		  "nvectimages=$nbright replicate=YES ".
+		  "wcsimage=NONE resultname='BAT_DPI' clobber=YES";
+		if (outcall(\%parms,$cmd,[$efftemp1],
+			    [["! -f \"$efftemp1\"", "bright_template_failed2",
+			      "Could not create bright template map"]])) {
+		  goto NEXT_GTI;
+		}
+		
+		# Do not write the unmultiplied map, force the user to 
+		# do this explicitly.
+		# push @computed_eff_area_maps, "$eff_area_maps[$kmap]";
+
+		for $jsrc (0 .. $nbright - 1 ) {
+		  push @computed_eff_area_maps, "$efftemp1"."[$jsrc]";
+		}
+	      } # End loop over @eff_area_maps
+	    } # End compute_eff_area_maps
+
+         } # End if ($nbright > 0)
+
+	} # End ($cleaniter == 1)
+
+
+	# ==========================================
+        # Here we write out a revised batclean background model
+        # list if we have modified it.
+        if ($modify_bkgmodel_templates) {
+	  my ($model);
+	  my $modelcount = 0;
+
+	  unlink("$batclean_bkgmodel_file");
+	  if (! open(BKGFILE,">$batclean_bkgmodel_file") ) {
+	    pntstat(\%parms, "bkgmodel_file_file1",
+		    "Could not open $batclean_bkgmodel_file for writing");
+	    goto NEXT_GTI;
+	  }
+
+	  foreach $model (@batclean_bkgmodels) {
+	    print BKGFILE "$model\n";
+	    $modelcount = $modelcount + 1;
+	  }
+	  foreach $model (@computed_eff_area_maps) {
+	    print BKGFILE "$model\n";
+	    $modelcount = $modelcount + 1;
+	  }
+	  # Defend against the case where the 'bkgmodel' is empty!
+	  if ($modelcount == 0) {
+	    print BKGFILE "simple\n";
+	  }
+	    
+	  close(BKGFILE);
+	}
+	
+	# ==========================================
+	# Intermediate clean with sources - before sigma cut
+	# In: $proot ("a" bkgdpi), $proot ("a" cat)
+	$bkgdpi1 = "$proot"."_$cleaniter"."a.bkgdpi";
+	
+	$trancat = "$proot"."_$cleaniter"."a.cat";
+
+	# Cleaned sources either have high signal to noise or 
+	# confirm the user's custom query.
+	# In: $cleansnr
+	my ($clean_expr);
+	$clean_expr = "(SNR > $cleansnr)";
+	if ("$parms{cleanexpr}" !~ /^NONE$/i) { 
+	  $clean_expr = "$clean_expr || (".$parms{cleanexpr}.")";
+	}
+	# Rewrite catalog so that CLEANED=T for sources above threshold
+	$cmd = "ftcopy $cat'[col *;CLEANED=($clean_expr);]' $trancat ".
+	  "clobber=YES copyall=YES";
+	if (outcall(\%parms,$cmd,[$trancat],
+		    [["! -f \"$trancat\"", "cleancat_failed",
+		      "Could not update catalog CLEANED flag"]])) {
+	  goto NEXT_GTI;
+	}
+	
+	# Whew! it worked so we will now use this transition catalog
+	# for the remaining cleaning analysis.
+	$cat = "$trancat";
+
+	my ($ncatrows);
+	$fits = SimpleFITS->open("<$cat")->move(2);
+	$ncatrows = $fits->nrows();
+	$fits->setstatus(0)->close(0);
+	if ($ncatrows > 0) {
+
+	  # Print list of cleaned sources
+	  $cmd = "ftlist infile='$cat"."[1][CLEANED == T][col PREFIX=\"CLEANED$cleaniter\";*]' ".
+	    "option=T columns='PREFIX,CATNUM,NAME,RA_OBJ,DEC_OBJ,SNR' ".
+	    "rownum=NO separator='|' ";
+	  print "# Sources cleaned during iteration number $cleaniter\n";
+	  print "=====================================================================\n";
+	  system($cmd);
+	  print "=====================================================================\n";
+	  
+	  # Yes there were sources!
+	  #  - note that cleansnr=0 so that we can get the always-clean sources
+	  $cmd = "batclean '$dpi' '$bkgdpi1' detmask='$dmask' outversion=fit ".
+	    "incatalog='$cat"."[1][CLEANED == T]' ".
+	    "bkgmodel='$batclean_bkgmodel1' ".
+	    "cleansnr='0.0001' snrcol='SNR' srcclean=YES ".
+	    "aperture='$aperture' balance='$balance' maskfit=YES clobber=YES";
+	  if (outcall(\%parms,$cmd,[$bkgdpi1],
+		      [["! -f \"$bkgdpi1\"", 
+			"Could not create source clean map (2)"]])) {
+	    goto NEXT_GTI;
+	  }
+	} else {
+	  # No, there were no bright sources, use the old clean background
+	  $bkgdpi1 = $bkgdpi;
+	  print   "      (no bright sources; skipping intermediate clean step)\n";
+	}
+	
+	$fits = SimpleFITS->open("<$dpi");
+	$expo = $fits->move(1)->readkey('EXPOSURE');
+	$fits->close();
+
+	# In: $outdir (scratch sigma dpi), $proot (sigma detmask)
+	if (($cleaniter == 1) && ($expo > 0)) {
+	  my ($pattern_par,$model_expr,$expr1,$expr2,$newdmask,$scrdpi1,$nn);
+	  my ($cmd1,$cmd2);
+
+	  $scrdpi1 = "$scratchdir/sigma_temp1.dpi";
+	  $newdmask = "$proot"."_1_sigma.detmask";
+	  
+	  $model_expr = 'MODEL';
+	  $pattern_par = 'NONE';
+	  
+	  # Add the pattern map to the model in the expression
+	  # In: $patternmap
+	  if (defined($patternmap)) {
+	    $pattern_par = 'PATTERN='.$patternmap;
+	    $model_expr = '(MODEL + DEFNULL(PATTERN,0))';
+	  }
+	  
+	  # In: $badpixthresh
+	  #  abs(data - model)*sqrt(expo/model) > badpixthresh
+	  $expr1 = "(ABS(DATA - $model_expr )*SQRT($expo/(MODEL + 1E-20)) > $badpixthresh) ? 1 : 0";
+	  $cmd1 = "ftimgcalc outfile='$scrdpi1' expr='$expr1' ".
+	    "a='DATA=$dpi' b='MODEL=$bkgdpi1' c='$pattern_par' ".
+	    "nvectimages=$nebins wcsimage=:DATA clobber=YES";
+	  
+	  $expr2 = "MASTER";
+	  $cmd2  = "z='MASTER=$dmask' ";
+	  foreach $nn (0 .. $nebins-1) {
+	    $expr2 .= "+M$nn";
+	    $cmd2  .= chr(65+32+$nn)."='M$nn=$scrdpi1"."[$nn]' ";
+	  }
+	  $cmd2 = "ftimgcalc outfile='$newdmask' ".
+	    "expr='($expr2) != 0 ? 1 : 0' ".
+	    "$cmd2 nvectimages=1 wcsimage=:M0 resultname='BAT_DPI' ".
+	    "clobber=YES ";
+	  if (outcall(\%parms,$cmd1,[$scrdpi1],
+		      [["! -f \"$scrdpi1\"", "sigmamask1_failed",
+			"Could not create sigma cut map (1)"]]) ||
+	      outcall(\%parms,$cmd2, [$newdmask],
+		      [["! -f \"$newdmask\"", "sigmamask2_failed",
+			"Could not create sigma cut map (2)"]])) {
+	    goto NEXT_GTI;
+	  }
+	  
+	  $dmask = $newdmask;
+	  
+	}
+	
+	# ====
+	# Check for too-few detectors
+	# In: $detthresh2
+	$cmd = "fimgstat $dmask INDEF INDEF min=-999 max=+999";
+	outcall(\%parms,$cmd,[],[]);
+	my $dsum = `pget fimgstat sum`; chomp($dsum);
+	$parms{ndets} = 49478 - $dsum;
+	print "    Number of enabled detectors: $parms{ndets}\n";
+	if ($parms{ndets} < $detthresh2) {
+	  pntstat(\%parms,"ndets_low", 
+		  "Too few good detectors in detector mask ($parms{ndets} < $detthresh2)");
+	  goto NEXT_GTI;
+	}
+	
+	# ==============================================
+	# Final clean - after sigma cut
+	# In: $proot (next clean bkgdpi), $outdir (scratch raw-pattern dpi)
+	# In: $parms{batclean_backexp}
+	my $cleaniterp1 = $cleaniter + 1;
+	$bkgdpi = "$proot"."_$cleaniterp1".".bkgdpi";
+	
+	# XXX Kludge!  batclean does not handle fixed maps
+	# so we need to subtract the pattern map from the input
+	# rate map temporarily.
+
+	my ($adjdpi);  # Adjusted src DPI
+	if ($patternmap) {
+	  $adjdpi = "$scratchdir/raw_minus_pattern.dpi";
+	  $cmd = "ftimgcalc outfile='$adjdpi' expr='RAW - DEFNULL(PATTERN,0)' ".
+	    "a='RAW=$dpi' b='PATTERN=$patternmap' ".
+	    "clobber=YES replicate=YES bunit=:RAW wcsimage=:RAW ".
+	    "nvectimages=$nebins otherext=+RAW resultname='BAT_DPI' ";
+	  
+	  if (outcall(\%parms,$cmd, [$adjdpi],
+		      [["! -f \"$adjdpi\"", "pre_batclean_fudge_failed",
+			"Could not create fudged rate map for final clean"]])) {
+	    goto NEXT_GTI;
+	  }
+	} else {
+	  $adjdpi = "$dpi";
+	}
+
+	my ($backexp_file);
+	$backexp_file = "NONE";
+	if ($parms{batclean_backexp}) {
+	  $backexp_file = "$proot".".backexp";
+	  unlink("$backexp_file") if ( -f "$backexp_file" );
+	}
+	
+	#  - note that cleansnr=0 so that we can get the always-clean sources
+	$cmd = "batclean '$adjdpi' '$bkgdpi' detmask='$dmask' ".
+	  "outversion=fit incatalog='$cat"."[1][CLEANED == T]' ".
+	  "bkgmodel='$batclean_bkgmodel1' ".
+	  "cleansnr='0.0001' maskfit=YES clobber=YES ".
+	  "srcclean=YES aperture=$aperture balance='$balance' ".
+	  "backexp='$backexp_file' ";
+	if (outcall(\%parms,$cmd, [$bkgdpi],
+		    [["! -f \"$bkgdpi\"", "batclean3_failed",
+		      "Could not create source clean map (final)"]])) {
+	  goto NEXT_GTI;
+	}
+	
+	
+	# XXX Follow-on kludge!  batclean does not handle fixed maps
+	# so we need to add the pattern map to the resulting batclean
+	# background map.
+	
+	if ($patternmap) {
+	  # Old background map is preserved
+	  rename("$bkgdpi", "$bkgdpi.raw");  print("mv $bkgdpi $bkgdpi.raw\n");	
+	  
+	  $cmd = "ftimgcalc outfile='$bkgdpi' ".
+	    "expr='BKG + DEFNULL(PATTERN,0)' ".
+	    "a='BKG=$bkgdpi.raw' b='PATTERN=$patternmap' ".
+	    "clobber=YES replicate=YES bunit=:BKG wcsimage=:BKG ".
+	    "nvectimages=$nebins otherext=+BKG resultname='BAT_DPI' ";
+	  
+	  if (outcall(\%parms,$cmd, [$bkgdpi],
+	      [["! -f \"$bkgdpi\"", "post_batclean_fudge_failed",
+		"Could not create fudged background map after final clean"]])) {
+	    goto NEXT_GTI;
+	  }
+	} else {
+	  # If the pattern map doesn't exist, we do nothing here.
+          # The $bkgdpi files is OK as-is.
+        }
+	
+	# ====
+	# Prepare for the next iteration
+	$newcat = $cat;
+	$newsrcind += 10;
+	
+	# Remove old variance map since it takes much space
+	unlink("$var");  
+	
+	# ====
+	# Keep old values for next iteration
+	$previmg = $img;
+	$prevsnr = $snr;
+	$prevcat = $cat;
+	$prevvar = $var;
+	
+	# ====
+	# File names for next iteration
+	# In: $proot (constructing next iteration images)
+	$img = "$proot"."_$cleaniterp1.img";
+	$snr = "$proot"."_$cleaniterp1.snr";
+	$cat = "$proot"."_$cleaniterp1.cat";
+	$var = "$proot"."_$cleaniterp1.var";
+	$reg = "$proot".".reg";
+	
+	my $newdmask = "$proot"."_$cleaniterp1.detmask";
+	unlink("$newdmask");
+	system("cp -p $dmask $newdmask");
+	$dmask = "$newdmask";
+      }
+      # End of cleaning iterations
+      
+      # Post-processing chi-squared check
+      # Collect the chi-square values for the best image
+      my $chiexpr = "SUM((MASK == 0)?((DATA-MODEL)**2/MODEL*#EXPOSURE):0)";
+      my $chifile = "$proot"."_chi.fits";
+      $cmd = "ftimgcalc outfile='$chifile' expr='$chiexpr' ".
+	"a='DATA=$dpi' b='MODEL=$bkgdpi' c='MASK=$dmask' ".
+	"nvectimages=$nebins replicate=YES ".
+	"wcsimage=:DATA clobber=YES";
+      outcall(\%parms,$cmd,[$chifile],[]);
+      if ( -f "$chifile" ) {
+	# Read the pixel data from each extension
+	$fits = SimpleFITS->open("<$chifile");
+	foreach $iband (0 .. $nebins-1) {
+	  $fits->move($iband+1);
+	  my @temp = $fits->readpix();	  
+	  $dpichi[$iband] = $temp[0];
+	  print "   Chi-square band $iband = $dpichi[$iband]\n";
+	}
+	$fits->setstatus(0)->close();
+      }
+
+      my $bkgexpr = "SUM((MASK == 0)?(DATA*#EXPOSURE):0)";
+      my $bkgfile = "$proot"."_totbkg.fits";
+      $cmd = "ftimgcalc outfile='$bkgfile' expr='$bkgexpr' ".
+	"a='DATA=$dpi' b='MASK=$dmask' ".
+	"nvectimages=$nebins replicate=YES ".
+	"wcsimage=:DATA clobber=YES";
+      outcall(\%parms,$cmd,[$bkgfile],[]);
+      if ( -f "$bkgfile" ) {
+	# Read the pixel data from each extension
+	$fits = SimpleFITS->open("<$bkgfile");
+	foreach $iband (0 .. $nebins-1) {
+	  $fits->move($iband+1);
+	  my @temp = $fits->readpix();	  
+	  $dpibkg[$iband] = $temp[0];
+ 	  print "   Background band $iband = $dpibkg[$iband]\n";
+	}
+	$fits->setstatus(0)->close();
+      }
+
+      print "GTI: processed\n";
+      
+      $pass = 1;
+      pntstat(\%parms,"ok","success");
+      $ngoodgti ++;
+      $totgoodexpo += $gtigoodexpo;
+
+      if ($gtigoodexpo > 0) {
+	if ($tstart < $obs_tstart) { 
+	  $obs_tstart = $tstart;
+	  $obs_date_obs = $date_obs;
+	}
+	if ($tstop  > $obs_tstop)  { 
+	  $obs_tstop  = $tstop;
+	  $obs_date_end = $date_end;
+	}
+      }
+
+    NEXT_GTI:
+
+      # Record statistics about this snapshot
+      open(OUTFILE,">>$outventory_file") 
+	or die "ERROR: could not open $outventory_file";
+      print OUTFILE 
+	"B $survey_version $intail $pname $pass $parms{pointstatus} ".
+	"$tstart $tstop $med_ra $med_dec $med_roll ".
+	"$parms{exposure} $gtigoodexpo $parms{ndets} $nebins @dpichi\n";
+      close(OUTFILE);
+      
+      if ( ! -f "$outventory_fits" ) {
+	$fits = SimpleFITS->open("$outventory_fits", access => "create");
+	if ($fits == 0 || $fits->status() != 0) {
+	  die "ERROR: could not create $outventory_fits";
+	}
+	$fits
+	  ->createtab("STATS_POINT")
+	  ->insertcol({TTYPE=>["OBS_ID", "Observation ID"],
+		       TFORM=>"20A"})
+	  ->insertcol({TTYPE=>["IMAGE_ID", "Image ID"],
+		       TFORM=>"20A"})
+	  ->insertcol({TTYPE=>["BSURVER", "BAT survey processing version"],
+		       TFORM=>"10A"})
+	  ->insertcol({TTYPE=>["BSURSEQ", "BAT survey processing sequence"],
+		       TFORM=>"20A"})
+	  ->insertcol({TTYPE=>["DATE_OBS", "Image start time"],
+		       TFORM=>"22A"})
+	  ->insertcol({TTYPE=>["DATE_END", "Image end time"],
+		       TFORM=>"22A"})
+	  ->insertcol({TTYPE=>["TSTART", "Image start time (MET)"],
+		       TFORM=>"1D",
+		       TDISP=>"F18.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["TSTOP", "Image stop time (MET)"],
+		       TFORM=>"1D",
+		       TDISP=>"F18.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["RAW_EXPOSURE", "Original raw exposure"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["EXPOSURE", "Good exposure"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["IMAGE_STATUS", "Was processing successful?"],
+		       TFORM=>"L"})
+	  ->insertcol({TTYPE=>["IMAGE_DESCR", "Status description"],
+		       TFORM=>"20A"})
+	  ->insertcol({TTYPE=>["RA_PNT", "Median R.A. pointing direction"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["deg"]})
+	  ->insertcol({TTYPE=>["DEC_PNT", "Median Dec. pointing direction"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["deg"]})
+	  ->insertcol({TTYPE=>["PA_PNT", "Median roll angle"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["deg"]})
+	  ->insertcol({TTYPE=>["NBATDETS", "Number of accepted BAT detectors"],
+		       TFORM=>"J"})
+	  ->insertcol({TTYPE=>["NUMBAND", "Number of energy bands"],
+		       TFORM=>"I"})
+	  ->insertcol({TTYPE=>["CHI2", "Per-band chi-square value"],
+		       TFORM=> sprintf("%dD",$nebins),
+		       TDISP=>"F10.2"})
+	  ->insertcol({TTYPE=>["BKG_COUNTS", "Per-band total counts"],
+		       TFORM=> sprintf("%dD",$nebins),
+		       TDISP=>"F12.1",
+		       TUNIT=>["count"]});
+	$fits->writekey('BSURVER', "$survey_version", 
+			"BAT survey processing version",TSTRING);
+	if ($parms{bsurseq} !~ m/^NONE$/i) {
+	  $fits->writekey('BSURSEQ', "$parms{bsurseq}",
+			  "BAT survey processing sequence",TSTRING);
+	}
+	$fits->writekey('OBS_ID',$parms{obs_id},"",TSTRING) if ($parms{obs_id});
+	$fits->writekey('TELESCOP',$parms{telescop},"",TSTRING) if ($parms{telescop});
+	$fits->writekey('INSTRUME',$parms{instrume},"",TSTRING) if ($parms{instrume});
+	$fits->writekey('MJDREFI',$parms{mjdrefi},"",TDOUBLE) if ($parms{mjdrefi});
+	$fits->writekey('MJDREFF',$parms{mjdreff},"",TDOUBLE) if ($parms{mjdreff});
+	$fits->writekey('MJDREF',$parms{mjdref},"",TDOUBLE) if ($parms{mjdref});
+	$fits->writekey('TIMESYS',$parms{timesys},"",TSTRING) if ($parms{timesys});
+	$fits->writekey('TIMEREF',$parms{timeref},"",TSTRING) if ($parms{timeref});
+	$fits->writekey('TASSIGN',$parms{tassign},"",TSTRING) if ($parms{tassign});
+	$fits->writekey('TIMEZERO',$parms{timezero},"",TDOUBLE) if ($parms{timezero});
+	$fits->writekey('UTCFINIT',$parms{utcfinit},"",TDOUBLE) if ($parms{utcfinit});
+	$fits->writekey('OBJECT',$parms{object},"",TSTRING) if ($parms{object});
+	
+	die "ERROR: could not create structure of $outventory_fits" if ($fits->status());
+	  
+#	$fits->writekey('',$parms{},"",TSTRING) if ($parms{});
+#         ->insertcol({TTYPE=>["", ""],
+#		       TFORM=>"",
+#		       TDISP=>"",
+#		       TUNIT=>[""]})
+	  
+      }
+      $fits = SimpleFITS->open("$outventory_fits", 
+			       access => "readwrite",
+			       ext => "STATS_POINT");
+      if ($fits == 0 || $fits->status() != 0) {
+	die "ERROR: could not open $outventory_fits";
+      }
+      my ($row);
+      $row = $fits->nrows() + 1;
+      $fits
+	->writecol("OBS_ID",   {rows=>$row}, $parms{obs_id})
+	->writecol("IMAGE_ID", {rows=>$row}, $pname)
+	->writecol("BSURVER",  {rows=>$row}, $survey_version)
+	->writecol("BSURSEQ",  {rows=>$row}, $parms{bsurseq} ? $parms{bsurseq} : "NULL")
+	->writecol("DATE_OBS", {rows=>$row}, $date_obs)
+	->writecol("DATE_END", {rows=>$row}, $date_end)
+	->writecol("TSTART",   {rows=>$row}, $tstart)
+	->writecol("TSTOP",    {rows=>$row}, $tstop)
+	->writecol("RAW_EXPOSURE", {rows=>$row}, $parms{exposure})
+	->writecol("EXPOSURE", {rows=>$row}, $gtigoodexpo)
+	->writecol("IMAGE_STATUS", {rows=>$row}, $pass)
+	->writecol("IMAGE_DESCR", {rows=>$row}, $parms{pointstatus})
+	->writecol("RA_PNT", {rows=>$row}, $med_ra)
+	->writecol("DEC_PNT", {rows=>$row}, $med_dec)
+	->writecol("PA_PNT", {rows=>$row}, $med_roll)
+	->writecol("NBATDETS", {rows=>$row}, $parms{ndets})
+	->writecol("NUMBAND", {rows=>$row}, $nebins)
+	->writecol("CHI2", {rows=>$row}, \@dpichi)
+	->writecol("BKG_COUNTS", {rows=>$row}, \@dpibkg);
+      $fits->close();
+      die "ERROR: could not write outventory data" if ($fits->status());
+
+      # Erase sky images if requested
+      if ( $keep_sky_images eq "NONE" ) {
+	my ($pat);
+	foreach $pat ("$proot"."_*.img", "$proot"."_*.var", 
+		      "$proot"."_*.snr", "$proot"."*.poivar",
+		      "$proot"."*.occimg") {
+	  unlink(glob($pat));
+	}
+      }
+      
+      print "--------------------------------------------------------\n";
+      print "GTI: stop $sstart | $tstart point_$sstart\n";
+      print "--------------------------------------------------------\n";
+
+    } # end of GTI loop
+
+    # We have completed processing of all snapshots.
+    # Now do final clean-up.
+    
+    open(OUTFILE,">$inventory_file")
+      or die "ERROR: could not open $inventory_file";
+    print OUTFILE 
+      "A $intail $outtail $totexpo $totgoodexpo $ntotgti $ngoodgti 1\n";
+    close(OUTFILE);
+    
+    if ( ! -f "$inventory_fits" ) {
+      $fits = SimpleFITS->open("$inventory_fits", access => "create");
+      if ($fits == 0 || $fits->status() != 0) {
+	die "ERROR: could not create $inventory_fits";
+      }
+      $fits
+	  ->createtab("STATS_OBS")
+	  ->insertcol({TTYPE=>["OBS_ID", "Observation ID"],
+		       TFORM=>"20A"})
+	  ->insertcol({TTYPE=>["BSURVER", "BAT survey processing version"],
+		       TFORM=>"10A"})
+	  ->insertcol({TTYPE=>["BSURSEQ", "BAT survey processing sequence"],
+		       TFORM=>"20A"})
+	  ->insertcol({TTYPE=>["DATE_OBS", "Observation start time"],
+		       TFORM=>"22A"})
+	  ->insertcol({TTYPE=>["DATE_END", "Observation end time"],
+		       TFORM=>"22A"})
+	  ->insertcol({TTYPE=>["TSTART", "Observation start time (MET)"],
+		       TFORM=>"1D",
+		       TDISP=>"F18.2",
+		       TUNIT=>["s"]})
+          ->insertcol({TTYPE=>["TSTOP", "Observation stop time (MET)"],
+		       TFORM=>"1D",
+		       TDISP=>"F18.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["RAW_EXPOSURE", "Original raw exposure"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["EXPOSURE", "Good exposure"],
+		       TFORM=>"1D",
+		       TDISP=>"F10.2",
+		       TUNIT=>["s"]})
+	  ->insertcol({TTYPE=>["N_RAW_IMAGES", "Number of input snapshots"],
+		       TFORM=>"I"})
+	  ->insertcol({TTYPE=>["N_IMAGES", "Number of good snapshots"],
+		       TFORM=>"I"});
+      $fits->writekey('BSURVER', "$survey_version", 
+		      "BAT survey processing version",TSTRING);
+      if ($parms{bsurseq} !~ m/^NONE$/i) {
+	$fits->writekey('BSURSEQ', "$parms{bsurseq}",
+			"BAT survey processing sequence",TSTRING);
+      }
+      $fits->writekey('OBS_ID',$parms{obs_id},"",TSTRING) if ($parms{obs_id});
+      $fits->writekey('TELESCOP',$parms{telescop},"",TSTRING) if ($parms{telescop});
+      $fits->writekey('INSTRUME',$parms{instrume},"",TSTRING) if ($parms{instrume});
+      $fits->writekey('MJDREFI',$parms{mjdrefi},"",TDOUBLE) if ($parms{mjdrefi});
+      $fits->writekey('MJDREFF',$parms{mjdreff},"",TDOUBLE) if ($parms{mjdreff});
+      $fits->writekey('MJDREF',$parms{mjdref},"",TDOUBLE) if ($parms{mjdref});
+      $fits->writekey('TIMESYS',$parms{timesys},"",TSTRING) if ($parms{timesys});
+      $fits->writekey('TIMEREF',$parms{timeref},"",TSTRING) if ($parms{timeref});
+      $fits->writekey('TASSIGN',$parms{tassign},"",TSTRING) if ($parms{tassign});
+      $fits->writekey('TIMEZERO',$parms{timezero},"",TDOUBLE) if ($parms{timezero});
+      $fits->writekey('UTCFINIT',$parms{utcfinit},"",TDOUBLE) if ($parms{utcfinit});
+      $fits->writekey('OBJECT',$parms{object},"",TSTRING) if ($parms{object});
+      
+      die "ERROR: could not create structure of $inventory_fits" if ($fits->status());
+    }
+    $fits = SimpleFITS->open("$inventory_fits", 
+			     access => "readwrite",
+			     ext => "STATS_OBS");
+    if ($fits == 0 || $fits->status() != 0) {
+      die "ERROR: could not open $inventory_fits";
+    }
+    my ($row);
+    $row = $fits->nrows() + 1;
+    $fits
+	->writecol("OBS_ID",   {rows=>$row}, $parms{obs_id})
+	->writecol("BSURVER",  {rows=>$row}, $survey_version)
+	->writecol("BSURSEQ",  {rows=>$row}, $parms{bsurseq} ? $parms{bsurseq} : "NULL")
+	->writecol("DATE_OBS", {rows=>$row}, $obs_date_obs)
+	->writecol("DATE_END", {rows=>$row}, $obs_date_end)
+	->writecol("TSTART",   {rows=>$row}, $obs_tstart)
+	->writecol("TSTOP",    {rows=>$row}, $obs_tstop)
+	->writecol("RAW_EXPOSURE", {rows=>$row}, $totexpo)
+	->writecol("EXPOSURE", {rows=>$row}, $totgoodexpo)
+	->writecol("N_RAW_IMAGES", {rows=>$row}, $ntotgti)
+	->writecol("N_IMAGES", {rows=>$row}, $ngoodgti);
+    $fits->close();
+    die "ERROR: could not write inventory data" if ($fits->status());
+    
+    print "====================================================\n";
+    print "$taskname: COMPLETE\n";
+    print "      DATE = ".localtime()." (local)\n";
+    print "      DATE = ".gmtime()." UTC\n";
+    print "====================================================\n";
+
+    return 0;
+}
+
+# ==================================================================
+# ==================================================================
+#                   UTILITY ROUTINES
+# ==================================================================
+# ==================================================================
+
+sub get_patternmap {
+  my ($t,$globalpatternmap) = @_;
+  my ($patternmap);
+
+  undef($patternmap);  # Make sure we start with no pattern map
+      
+  # Find the pointing specific pattern map based on the 
+  # global patternmap (which may have time expressions)
+  if (defined($globalpatternmap)) {
+    # Use global pattern map format string to
+    # select a particular file by date
+	
+    my @tlist = gmtime($t);
+    $patternmap = strftime("$globalpatternmap",
+			   $tlist[0], $tlist[1], $tlist[2], $tlist[3],
+			   $tlist[4], $tlist[5], $tlist[6], $tlist[7]);
+    if (! -f "$patternmap" ) {
+      warn "WARNING: pattern map $patternmap does not exist! (ignoring)";
+      undef($patternmap);
+    } else {
+      print "Global pattern map selected: $patternmap\n";
+    }
+  }
+
+  # Return pattern map file name (or undef)
+  $patternmap;
+}
+
+# Utility subroutine to print the current time
+sub timecheckpoint {
+  my (@list);
+  @list = gmtime();
+  printf "%s: time-check - %04d-%02d-%02dT%02d:%02d:%02d\n", 
+    $taskname,
+    $list[5]+1900,$list[4]+1,$list[3],
+      $list[2],$list[1],$list[0];
+}  
+
+# ===============================================
+# Write a failure message for a given pointing
+# NOTE: assumes $parms has hashes of indir, pointname and statfile
+# *NOTE*: sets the hash "pointstatus" in $parms
+sub pntstat {
+    my ($parms,$code,$desc) = @_;
+    my ($statusline,$status);
+    my ($statfile,$indir,$pname,$ndets,$exposure);
+
+    $indir = $parms->{intail};
+    $statfile = $parms->{statfile};
+    $pname = $parms->{pointname};
+    $ndets = $parms->{ndets};
+    $exposure = $parms->{exposure};
+
+    $status = "FAIL";
+    if ($code eq "ok") { $status = "SUCCESS"; }
+    $statusline = 
+      "status=\"$status\";code=\"$code\";reason=\"$desc\";".
+      "obsid=\"$indir\";point=\"$pname\";".
+      "ndets=\"$ndets\";exposure=\"$exposure\"";
+    open(STATFILE,">$statfile") or die "ERROR: could not open $statfile";
+    print STATFILE "$statusline\n";
+    close(STATFILE);
+
+    timecheckpoint();
+    if ($code ne "ok") { print STDERR "WARNING: $desc ($code)\n"; }
+    $parms->{pointstatus} = $code;
+}
+
+# ===============================================
+# Call an ftool - outcall($parms,$cmd,$delfiles,$errconds)
+#   $parms - hashref containing context info
+#   $cmd - scalar string command to run
+#   $delfiles - reference to an array of files to be deleted before
+#     running the command
+#   $errconds - reference to an array of error conditions.  Each 
+#     array element should be a reference like the following,
+#         ["condition", "code", "description"]
+#     "condition" - a string condition to be tested.  If true,
+#         then $cmd can be considered to have failed.
+#     "code" - failure code for this condition
+#     "description" - more verbose description of this code
+#  RETURNS: 0 upon success; 1 upon failure
+#
+sub outcall {
+    my ($parms,$cmd,$outfiles,$errconds) = @_;
+    my ($outfile,$errcond);
+
+    timecheckpoint();
+    print "$cmd\n";
+    foreach $outfile (@$outfiles) {
+      if (-d "$outfile") {
+	unlink(glob("$outfile/*"));
+	rmdir("$outfile");
+      } else {
+	unlink("$outfile");
+      }
+    }
+    system("$cmd < /dev/null");
+    timecheckpoint();
+    foreach $errcond (@$errconds) {
+	my $test = $errcond->[0];
+	my $code = $errcond->[1];
+	my $desc = $errcond->[2];
+	if (eval $test) {
+	    pntstat($parms,$code,$desc);
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+# expand_batchfile - parse/expand @file.lis style of file
+#    $infile - expression to be parsed (see below)
+# RETURNS: expanded list as an array of strings
+#
+# $infile can be a single file name
+# $infile can be a comma-separated list of files
+# $infile can be a @file.lis batch file which lists
+#   one file per line
+#
+sub expand_batchfile {
+  my ($infile) = @_;
+  my (@result);
+
+  if ("$infile" =~ /^@(.*)$/) {
+    # Batch file style
+    my $file1 = "$1";
+    open(BATCHFILE,"<$file1") or die "ERROR: could not open $file1";
+    while (my $line=<BATCHFILE>) {
+      chomp($line);
+      push @result, $line;
+    }
+    close(BATCHFILE);
+  } else {
+    # Comma-separated list
+    @result = split(/,/,$infile);
+  }
+  
+  return @result;
+}
+
+# parseglob - parse user-supplied pattern and normalize it
+#  $par - user-supplied glob
+#  $indir - default input directory
+# RETURNS: normalized glob string (not expanded yet)
+sub parseglob {
+  my ($par, $indir) = @_;
+  # Remove leading/trailing spaces
+  $par =~ s/^ *//;
+  $par =~ s/ *$//;
+  # Replace leading INDIR with $indir
+  $par =~ s/^INDIR/$indir/;
+  $par =~ s/^\@INDIR/\@$indir/;
+  return "$par";
+}
+
+# myglob - parse a wildcard glob
+#   $g - input glob (see below)
+# RETURNS: list of strings matching glob
+#
+# $g can be a comma-separated list
+# $g can be an @file.lis style of batch file
+# $g can be a Unix-style wildcard pattern
+#
+sub myglob {
+  my ($g) = (@_);
+  my (@result);
+
+  # If the glob-string starts with "@" or has a comma in it, parse it
+  # like a list; otherwise, parse it like a glob
+  if ($g =~ m/^@/ || ($g =~ m/,/ && $g !~ m/{/)) {
+    @result = expand_batchfile($g);
+  } else {
+    @result = glob($g);
+  }
+
+  return @result;
+}

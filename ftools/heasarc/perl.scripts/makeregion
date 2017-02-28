@@ -1,0 +1,276 @@
+#!/usr/bin/perl
+# Authors: Ziqin Pan
+# Description: makeregion creates and displays regions on POW window and save
+#              them as a region file.
+# Modifiction: Original created on 12/08/04
+#
+
+use Getopt::Std;
+use Math::Trig;
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+
+makeregion creates and displays regions on POW window and save 
+them as a region file.
+
+EOHELP
+exit 0;
+}
+
+ &set_toolname("makeregion");
+ &set_toolversion("1.0");
+
+ $infile =0;
+ $regionfile =0;
+ $ra =0;
+ $dec =0;
+ $radius=0;
+ $timeout=0;
+
+ &makeregion_getpar();
+
+ $status = &makeregion_work($infile,$regionfile,$ra,$dec,$radius,$timeout);
+
+ &makeregion_setpar();
+ 
+
+sub makeregion_work {
+
+
+   my @val =@_;
+   chop($val[0]);
+   chop($val[1]);
+   chop($val[2]);
+   chop($val[3]);
+   chop($val[4]);
+   chop($val[5]);
+
+print "XX==> region file:  $val[1]\n";
+print "XX==> coordination: $val[2],$val[3],$val[4]\n";
+print "XX==> timeout: $val[5]\n";
+
+   $| = 1;
+
+   $proc_id=fork;
+   if ( $proc_id == 0) {
+      system("POWplot $val[0] &");
+#      $return_value =`POWplot $val[0]`;
+#      $ppid = getppid;
+#      kill 9, $ppid;
+      
+   }
+   elsif ( defined $proc_id) {
+      $outputfile =$val[1];
+      if ( $val[1] eq "" ) {
+         $outputfile ="pow.reg";
+      }
+      my $version="";
+      my $count =0;
+
+      $xpa_user =$ENV{XPA_USER};
+      $host =$ENV{REMOTEHOST};
+
+    
+
+#      print "xpa_user:$xpa_user\n";
+ 
+      if ( !(defined $xpa_user) || $xpa_user eq "") {
+          $pow = "pow";
+      } else {
+          $pow ="pow_$xpa_user";
+      } 
+     
+     
+
+      print "Try to access to POWplot on $pow . Please wait!\n";
+      $lbx ="NULL";
+      while (($lbx =~ /NULL/) || ($lbx =~ /XPA/i) || ($lbx =="")) {
+          if ($count > $val[5] ) {
+             print "Access to POW plot timeout\n";
+             kill 9, $proc_id;
+             return 1;
+          }
+          sleep 5;
+           $value = `xpaget $pow bounds 2>/dev/null`;
+          ($lbx,$lby,$rtx,$rty) = split(/ /,$value,4); 
+           chop($lbx);
+          $count =$count+5;
+
+      }
+     print "Access successsfully\n";
+
+
+      ($lbx,$lby,$rtx,$rty) = split(/ /,$value,4); 
+
+
+      if ( $val[2] eq "def") {
+         $val[2] = ($lbx+$rtx)/2.;
+         if ($val[2] <0) {
+         $val[2] = -$val[2];
+         $ah = $val[2]/15.;
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $h = -$h;
+         $val[2] = join(':',$h,$m,$s);
+         } else {
+         $ah = $val[2]/15.;
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $val[2] = join(':',$h,$m,$s);
+         }
+      } else {
+      }
+
+      if ($val[3] eq "def") {
+	$val[3] = ($lby+$rty)/2.;
+         if ($val[3] <0) {
+         $val[3] = -$val[3];
+         $ah = $val[3];
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $h = -$h;
+         $val[3] = join(':',$h,$m,$s);
+         } else {
+         $ah = $val[3];
+         $h =int($ah);
+         $am = 60.*($ah-$h);
+         $m =int($am);
+         $s =int(60.*($am -$m));
+         $val[3] = join(':',$h,$m,$s);
+         }
+      } else {
+      }
+
+      
+      if ( $val[4] eq "def" ) {
+          $val[4] = ($rty -$lby)/8.*60;
+         if ($val[4] <0) {
+         $val[4] = -$val[4];
+         }
+      }
+
+     
+
+      $region = "fk5; circle($val[2],$val[3],$val[4]')";
+
+      @prevstat =stat($outputfile);
+
+
+      system("xpaset -p $pow regionTool -open");
+      system("xpaset -p $pow regionName $outputfile");
+      system("echo \"$region\"");
+      system("echo \"$region\" |xpaset $pow regions");
+
+      $return_value= `xpaget $pow regionTool -wait`;
+      #########################
+      # Pan Chai - wait command will now returned immediately. Scripts needs to check every
+      #            2 seconds to see if the status has changed. This will work with old way
+      #            since the return_value in old way will return either 0 or 1 after user inputs.
+      #########################
+      while ($return_value eq "NOT_YET") {
+            sleep 2;
+            $return_value= `xpaget $pow regionTool -wait`;
+      }
+
+      system("xpaset -p $pow close");
+
+
+      print "compelet makeregion\n";
+         
+   }
+
+   return 0;
+
+}
+
+
+sub makeregion_getpar {
+
+ if (&get_par("infile",\$infile,0)) {
+    print "Error to get parameter \"infile\"\n";
+    exit(-1)
+ }
+
+ if (&get_par("regionfile",\$regionfile,1)){
+    print "Error to get parameter \"regionfile\"\n";
+    exit(-1)
+ }
+
+ if (&get_par("ra",\$ra,2)){
+    print "Error to get parameter \"ra\"\n";
+    exit(-1)
+ }
+ if (&get_par("dec",\$dec,3)){
+    print "Error to get parameter \"dec\"\n";
+    exit(-1)
+ }
+ if (&get_par("radius",\$radius,4)){
+    print "Error to get parameter \"radius\"\n";
+    exit(-1)
+ }
+ if (&get_par("timeout",\$timeout,5)){
+    print "Error to get parameter \"timeout\"\n";
+    exit(-1)
+ }
+
+}
+
+sub makeregion_setpar {
+  &set_par("infile",$infile);
+  &set_par("regionfile",$regionfile);
+  &set_par("ra",$ra);
+  &set_par("dec",$dec);
+  &set_par("radius",$radius);
+  &set_par("timeout",$timeout);
+}
+
+sub set_par {
+   my ($name,$val) =@_;
+   my $status =0;
+   $status =`pquery $toolname $name $name=$val`;
+   return $status;
+}
+
+
+sub set_toolname {
+   my ($var) =@_;
+   $toolname =$var;
+}
+
+sub set_toolversion {
+   my ($var) =@_;
+   $toolversion =$var;
+}
+
+sub get_par {
+   my ($name,$valref,$num) =@_;
+   my $status =0;
+
+   if ($#ARGV < $num) {
+   $$valref = `pquery $toolname $name `;
+   }
+   elsif ( $ARGV[$num] =~ /\=/ ) {
+     if ( $ARGV[$num] =~ /$name\=/ ) {
+       $$valref = `pquery $toolname $name $ARGV[$num]`;
+     }
+     else {
+       print "Parameter duplicated, possibly ambigious: $name\n";
+       $status =1;
+     }
+   }
+   else {
+   $$valref = `pquery $toolname $name $name=$ARGV[$num]`;
+   }
+
+   return $status;
+
+}
+ 
+

@@ -1,0 +1,148 @@
+#!/usr/sbin/perl
+
+require "utils.pl";
+
+if(@ARGV) {
+#get the invoking string, if it exists,  to pass to pquery for parsing
+  $invokestring = join(' ',@ARGV);
+}
+
+if (grep {$_ eq "-h"} @ARGV) {
+print <<EOF;
+fmodtab (Nov99)             ftools.futils             fmodtab (Nov99)
+NAME
+  fmodtab  --  modify the values in multiple rows of a table column
+
+INPUT PARAMETERS
+
+infile - name and extension number of the FITS table to 
+         be modified
+column - name of the column to be modified
+
+
+modfile - name of the ascii file containing a list of row 
+          numbers and the new data values for the row.  If the 
+          column is a vector column, each line of the modfile would
+          have 3 values: row number, element number, and new data value.
+          The string value is treaded as scalor.
+
+EXAMPLES
+
+Modify the values in rows 5, 7, and 9 of the 'RATE' column in the file
+'myfile.fits+2':
+
+fmodtab myfile.fits+2 rate modfile
+
+where modfile looks like
+    5     46.4
+    7     54.7
+    9     INDEF
+
+(note that the value in row 9 is set to null)
+
+Change the value in row 6 element 4 of the 'RATE1' vector column in the first extension of
+file 'blah.fits' to 77.4
+
+fmodtab blah.fits rate1 modfile2
+
+where modfile2 looks like:
+6    4    77.4
+
+Change the value in row 6 of the 'Name' string column in the first extension of file 'text.fits' to "first string"
+
+fmodtab text.fits  name modfile2
+
+where modfile2 looks like:
+6 first string
+or
+6 "first string"
+
+SEE ALSO:
+    ftedit
+EOF
+exit(0);
+}
+
+#remove any FTOOLSOUTPUT settings to enable default use of /dev/tty for pquery 
+#if we don't do this, the user won't see prompts from pquery
+delete $ENV{FTOOLSOUTPUT};
+
+$infile = `pquery fmodtab infile $invokestring`;
+chop($infile);
+
+$column = `pquery fmodtab column $invokestring`;
+chop($column);
+
+
+@flcol = runcom(
+      "flcol infile=$infile outfile=STDOUT showdims=yes clobber=no mode=ql", 
+       file_trouble_sub, 
+      "Couldn't get column info for input filespec $infile.\n");
+
+chop(@flcol);
+
+@column_matches = grep(/$column\s/i,@flcol);
+
+if (scalar(@column_matches) == 0) {
+  file_trouble_sub("Couldn't find column $column in filespec $infile\n");
+}
+
+
+@fields = split /\s+/ , $column_matches[0];
+
+$column_type = $fields[1];
+
+#if the column format string starts with a number other than 1 it's a vector column
+$vector_column =  ($column_type =~ /^(\d+)/ and $1 != 1);
+
+# check to see whether it is the string 
+
+$string_column = ($column_type =~ /.*[aA].*/);
+
+$modfile = `pquery fmodtab modfile $invokestring`;
+
+chop $modfile;
+
+if (!(-r "$modfile")) {
+  file_trouble_sub("Couldn't open modfile $modfile\n");
+}
+
+open MODFILE, $modfile;
+
+while ($line = <MODFILE>) {
+  $line =~ s/^\s+//;
+  if ($string_column) {
+    @a = split(/\s+/,$line);
+    $row = shift(@a); 
+    $value = join(" ",@a);
+    $value =~ s/^\"//;
+    $value =~ s/\"$//;
+    $value = "\"$value\"";
+    $element = 1;
+  } elsif (!$vector_column) {
+    ($row,$value) = split /\s+/ , $line;
+    $element = 1;
+  } else {
+    if (split(/\s+/,$line) != 3) {
+      file_trouble_sub("You need to specify row, element and value on each line of the modfile for a vector column\n");
+    } else {
+      ($row,$element,$value) = @_;
+    }
+  }
+  
+  yakker("fpartab value=$value fitsfile=$infile column=$column row=$row element=$element", 1, file_trouble_sub,
+ "Couldn't write value $value to row $row and element $element of file $infile\n");
+}
+
+exit(0);
+	 
+
+
+sub file_trouble_sub {
+
+  local($message) = $_[0];
+  
+  print $message;
+
+  exit(1);
+}

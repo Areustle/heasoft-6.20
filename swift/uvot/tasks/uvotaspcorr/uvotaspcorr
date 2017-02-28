@@ -1,0 +1,301 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotaspcorr/uvotaspcorr,v $
+# $Revision: 1.3 $
+# $Date: 2006/10/23 16:08:56 $
+#
+#	Tool to set up and run uvotskycorr
+#
+#
+# $Log: uvotaspcorr,v $
+# Revision 1.3  2006/10/23 16:08:56  rwiegand
+# Reduced use of log file to deduce correction information.
+#
+# Revision 1.2  2006/01/25 18:47:55  rwiegand
+# Added cleanup parameter.  Use last directory in input path when naming
+# output files.
+#
+# Revision 1.1  2006/01/19 18:56:05  rwiegand
+# Task to simplify running uvotskycorr on observations.
+#
+
+use strict;
+
+package UVOT::Aspcorr;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+use UVOT::Filter;
+
+my %ASPCORR_FILTER = map { $_ => 1 } qw(V U B UVM2 UVW1 UVW2 WHITE);
+
+
+{
+	my $task = __PACKAGE__->new;
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(options => [ qw(
+				input=file output=file filter=string apply=boolean
+				catspec=file flat=boolean starid=string
+				clobber=boolean cleanup=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->findCorrections
+			if $self->isValid;
+
+	$self->applyCorrections
+			if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT, "invalid $key directory $args->{$key}");
+		}
+	}
+	return if not $self->isValid;
+
+	my $img_dir;
+	my $aux_dir;
+	if ($args->{flatFlag}) {
+		$img_dir = $args->{input} . '/';
+		$aux_dir = $args->{input} . '/';
+	}
+	else {
+		$img_dir = $args->{input} . '/uvot/image';
+		$aux_dir = $args->{input} . '/auxil';
+	}
+
+	my @attitude = glob("$aux_dir/*sat.fits*");
+	if (@attitude == 1) {
+		$self->{attfile} = $attitude[0];
+	}
+	elsif (@attitude > 1) {
+		$self->error(BAD_INPUT, "multiple attitude files [@attitude]");
+	}
+	else {
+		$self->error(BAD_INPUT, "no attitude file in $aux_dir");
+	}
+
+	$self->{tag} = uc($args->{filter});
+	$self->{indirname} = (split(m^[/\\]^, $args->{input}))[-1];
+
+	my @image = glob("$img_dir/*_sk.img*");
+	my @info;
+	if (not @image) {
+		$self->error(BAD_INPUT, "no sky image files in $img_dir");
+	}
+	else {
+		foreach my $path (@image) {
+			if ($path =~ /sw\d+u(\w\w)_sk.img/) {
+				my $code = $1;
+				my $filter = UVOT::Filter::codeFilter($code);
+# print "args '$args->{filter}' code '$code' filter '$filter'\n";
+				if (not defined($filter)) {
+					$self->warning("unrecognized code '$code'");
+				}
+				elsif ($args->{filter} =~ /^ALL$/i
+						or uc($args->{filter}) eq $filter) {
+					if ($ASPCORR_FILTER{$filter}) {
+						push(@info, {
+									path => $path,
+									filter => $filter,
+									code => $code,
+								});
+					}
+					else {
+						$self->verbose("skipping $filter file $path");
+					}
+				}
+			}
+		}
+	}
+
+	if (not @info) {
+		$self->error(BAD_INPUT, "no files to correct");
+	}
+
+	$self->{info} = \@info;
+}
+
+
+sub findCorrections
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = join(',', map { $_->{path} } @{ $self->{info} });
+	$self->{input} = $input;
+
+	my $extensions = 0;
+	foreach my $info (@{ $self->{info} }) {
+
+		my $command = $self->buildCommand('ftlist',
+				infile => $info->{path},
+				option => 'H',
+				);
+		my $result = $self->shell($command);
+		my @hdu;
+		# not currently using the HDU info, but could come in handy
+		foreach my $line (@{ $result->{lines} }) {
+			if ($line =~ /^HDU\s+\d+/) {
+				my ($hdu1, $name, $type, $dim) = split(/\s+/, $line);
+				push(@hdu, {
+							hdu0 => $hdu1 - 1,
+							name => $name,
+							type => $type,
+							dim => $dim,
+						});
+			}
+		}
+		$extensions += @hdu - 1;
+		$info->{hdus} = \@hdu;
+	}
+
+	$self->report("input has $extensions extensions");
+
+	my $outfile = "$args->{output}/CORR.$self->{indirname}.$self->{tag}";
+	unlink($outfile);
+	$self->{corrfile} = $outfile;
+	my $logfile = "$args->{output}/LOG.$self->{indirname}.$self->{tag}";
+	$self->report("capturing output to $logfile");
+
+	my $corrections = 0;
+	{
+		my $command = $self->buildCommand('uvotskycorr',
+				what => 'ID',
+				skyfile => $input,
+				attfile => $self->{attfile},
+				outfile => $outfile,
+				catspec => $args->{catspec},
+				starid => $args->{starid},
+				cleanup => $args->{cleanup},
+				chatter => 5,
+				);
+		my $result = $self->shell($command, { pipeFrom => 1 });
+		return if $result->{error};
+
+		my $fh = FileHandle->new($logfile, 'w');
+		if (not $fh) {
+			$fh = \*STDOUT;
+			$self->warning("unable to create $logfile [$!]");
+		}
+
+		# filter the messages to let the user see progress, but limit
+		# the noise
+		my $pipe = $result->{handle};
+		while (<$pipe>) {
+			$fh->print($_);
+			if (/error/) {
+				next if /^uvotmag: the systematic/;
+				next if /^aspcorr: error: missing ASPQ/;
+				print;
+			}
+			elsif (/warning/) {
+				next if /exposure map/;
+				next if /^warning: ignoring doubly ambiguous match/;
+				next if /warning:\s*$/;
+				print;
+			}
+			elsif (/ correction fo/) {
+                if (/found/) {
+					++$corrections;
+				}
+				print;
+			}
+		}
+
+		$fh->close;
+	}
+
+	$self->report("found correction for $corrections of $extensions extensions");
+}
+
+
+sub applyCorrections
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $args->{applyFlag}) {
+		$self->report('corrections are not being applied');
+		return;
+	}
+
+	my $corrfile = $self->{corrfile};
+	if (not -f $corrfile) {
+		$self->warning("no corrections to apply [missing $corrfile]");
+	}
+	else {
+		$self->report("applying corrections from $corrfile");
+
+		my $command = $self->buildCommand('uvotskycorr',
+				what => 'SKY',
+				skyfile => $self->{input},
+				attfile => $self->{attfile},
+				corrfile => $corrfile,
+				outfile => 'NONE',
+				catspec => 'NONE',
+				starid => 'NONE',
+				chatter => 5,
+				);
+		my $result = $self->shell($command, { pipeFrom => 1 });
+		return if $result->{error};
+
+		my $logfile = "$args->{output}/LOG.$self->{indirname}.$self->{tag}.apply";
+
+		my $fh = FileHandle->new($logfile, 'w');
+		if (not $fh) {
+			$fh = \*STDOUT;
+			$self->warning("unable to create $logfile [$!]");
+		}
+
+		# filter the messages to let the user see progress, but limit
+		# the noise
+		my $pipe = $result->{handle};
+		while (<$pipe>) {
+			$fh->print($_);
+			if (/error/) {
+				# next if /^uvotmag: the systematic/;
+				# next if /^aspcorr: error: missing ASPQ/;
+				print;
+			}
+			elsif (/warning/) {
+				# next if /exposure map/;
+				# next if /warning:\s*$/;
+				next if /: the quaternion is applied to the reference pixel/;
+				print;
+			}
+			elsif (/applying correction to/) {
+				print;
+			}
+		}
+
+		$fh->close;
+	}
+}
+

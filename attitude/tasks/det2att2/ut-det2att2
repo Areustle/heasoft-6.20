@@ -1,0 +1,127 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/det2att2/ut-det2att2,v $
+# $Revision: 1.2 $
+# $Date: 2015/06/15 17:03:51 $
+#
+#		det2att unit test
+#
+#
+# $Log: ut-det2att2,v $
+# Revision 1.2  2015/06/15 17:03:51  irby
+# Task is now named "det2att2".
+#
+# Revision 1.1  2012/09/27 21:34:05  treichar
+# Added "new" tool ahdet2att, a modification of det2att.  ahdet2att allows both time-dependent translations (old) and rotations (new) of a coordinate system to be converted to an attitude file.  When development and testing are completed, ahdet2att will replace det2att and will be renamed to det2att.
+#
+# Revision 1.1  2005/10/17 17:19:41  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::Det2att2;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runDet2att2
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runDet2att2
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{result} = "$output/qdelta.fits";
+	$self->{template} = "$input/template.fits";
+
+	my @task = (
+		infile     => "$input/offset.fits",
+		outfile    => $self->{result},
+		teldef     => "$input/teldef.fits",
+		history    => 'yes',
+		chatter    => $args->{chatter},
+	);
+
+	my %task = @task;
+
+	# build command line
+	my $command = $self->buildCommand('det2att2', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{result}) {
+		$self->error(BAD_OUTPUT, "missing result file");
+	}
+
+	{
+		my $cols = '[col TIME; QPARAM]';
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template} . $cols,
+				infile2 => $self->{result} . $cols,
+				tolerance => 1e-10,
+				exclude => 'CREATOR,DATASUM',
+				);
+
+		$self->shell($command);
+	}
+
+}
+

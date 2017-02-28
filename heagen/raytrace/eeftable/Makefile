@@ -1,0 +1,14 @@
+HD_COMPONENT_NAME       = heagen
+
+HD_COMPONENT_VERS       =
+
+PERLSCRIPT              = eeftable
+
+HD_INSTALL_PERL_SCRIPTS = ${PERLSCRIPT}.pl
+
+HD_INSTALL_PFILES       = ${PERLSCRIPT}.par
+
+HD_INSTALL_HELP         = ${PERLSCRIPT}.html
+
+include ${HD_STD_MAKEFILE}
+

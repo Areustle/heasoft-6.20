@@ -1,0 +1,366 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batgrbproduct/ut_batgrbproduct,v $
+# $Revision: 1.10 $
+# $Date: 2009/03/04 22:09:58 $
+#
+#	ut_batgrbproduct
+#		validate batgrbproduct (overall BAT GRB pipeline analysis)
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "batgrbproduct";
+$ut_taskname   = "ut_batgrbproduct";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output obsid chatter fudgemap cleanup extractor dryrun
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS CALDB )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+  my ($self) = @_;
+  
+  my $headas = $ENV{HEADAS};
+  my $input = $self->args->{input};
+  my $output = $self->args->{output};
+  my $obsid  = $self->args->{obsid};
+  my $fudgemap = $self->args->{fudgemap};
+  my $cleanup = $self->args->{cleanup};
+  my $extractor = $self->args->{extractor};
+  $fudgemap =~ s/\@INPUT\@/$input/;
+  
+  if ($cleanup =~ m/^y/i) { $cleanup = 1; } else { $cleanup = 0; }
+  
+  my $templatedir = "$input/$obsid"."-template";
+  my $outdir = "$output/$obsid"."-results";
+  
+  # ******************* FILL IN PARAMETERS HERE ********
+  my %task = (
+	      indir         => "$input/$obsid", 
+	      outdir        => "$outdir",
+	      extractor     => "$extractor",
+	      aperture      => "CALDB:FLUX",
+	      chatter       => 0,
+	      clobber       => "Yes",
+	     );	
+  
+  if (not -d $task{indir}) {
+    $self->fatal(BAD_INPUT,
+		 "invalid $key directory: $task{indir}");
+  }
+  
+  # build command line
+  my $command = "$taskname";
+  
+  foreach my $p (keys %task) {
+    $command .= " $p='$task{$p}'";
+  }
+  $rootname = "sw$obsid"."b_";
+  
+  # Defaults:
+  #   type => "table"
+  #   ext  => "[1]"  or "[0]" for image
+  
+  @files = ( { name => "%s/auxil/$rootname"."all.evaux",
+	       reltol => 1.5e-9,
+	       abstol => 1e-5,
+	       exclude => "TSTART,TSTOP",
+	     },
+	     { name => "%s/auxil/$rootname"."output.cat",
+	       ext => "[1][col NAME;RA_OBJ;DEC_OBJ;SNR]",
+	       abstol => 0.01,
+	     },
+	     { name => "%s/gti/$rootname"."dur.gti",
+	       ext  => "",   # All extensions
+	       abstol => 0.001,
+	       reltol => 1e-9,
+	     },
+	     { name => "%s/img/$rootname"."preslew_1chan.img",
+	       type => "image",
+	       modexpr => "/#EXPOSURE",   # Convert to rate map
+	       nvectimages => 1,
+	       abstol => 1e-4,
+	       reltol => 0.02,
+	       maxdif => 20,
+	     },
+	     { name => "%s/img/$rootname"."postslew_1chan.img",
+	       type => "image",
+	       modexpr => "/#EXPOSURE",
+	       nvectimages => 1,
+	       abstol => 1e-4,
+	       reltol => 0.02,
+	       maxdif => 20,
+	     },
+	     { name => "%s/img/$rootname"."preslew.pcodeimg",
+	       type => "image",
+	       nvectimages => 1,
+	       abstol => 0.001,
+	       reltol => 0.02,
+	     },
+	     { name => "%s/img/$rootname"."postslew.pcodeimg",
+	       type => "image",
+	       nvectimages => 1,
+	       abstol => 0.001,
+	       reltol => 0.02,
+	     },
+	     { name => "%s/lc/$rootname"."1chan_1s.lc",
+	       abstol => 0.001,
+	       reltol => 0.02,
+	       exclude => "BATCREAT,BTELDEF",
+	     },
+	     { name => "%s/lc/$rootname"."1chan_4ms.lc",
+	       abstol => 0.016,
+	       reltol => 0.02,
+	       maxdif => 100,
+	       exclude => "BATCREAT,BTELDEF",
+	     },
+	     { name => "%s/lc/$rootname"."1chan_64ms.lc",
+	       abstol => 0.004,
+	       reltol => 0.02,
+	       maxdif => 10,
+	       exclude => "BATCREAT,BTELDEF",
+	     },
+	     { name => "%s/lc/$rootname"."4chan_1s.lc",
+	       abstol => 0.002,
+	       reltol => 0.02,
+	       exclude => "BATCREAT,BTELDEF",
+	     },
+	     { name => "%s/lc/$rootname"."4chan_64ms.lc",
+	       abstol => 0.008,
+	       reltol => 0.02,
+	       maxdif => 10,
+	       exclude => "BATCREAT,BTELDEF",
+	     },
+	     { name => "%s/pha/$rootname"."preslew.pha",
+	       abstol => 1e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."postslew.pha",
+	       abstol => 1e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."slew.pha",
+	       abstol => 1e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."t50.pha",
+	       abstol => 1e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."t90.pha",
+	       abstol => 1e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."total.pha",
+	       abstol => 1e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."peak.pha",
+	       abstol => 5e-5,
+	       reltol => 0.02,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,RESPFILE",
+	     },
+	     { name => "%s/pha/$rootname"."preslew.rsp",
+	       reltol => 0.05,
+	       abstol => 2e-8,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,PHAFILE",
+	     },
+	     { name => "%s/pha/$rootname"."postslew.rsp",
+	       reltol => 0.05,
+	       abstol => 2e-8,
+	       exclude => "TOTCOUNT,BATCREAT,BTELDEF,PHAFILE",
+	     },
+	   );
+  
+  if ($self->args->{dryrun} =~ m/^y/i) {
+    warn "WARNING:  ************ TEST IS NOT OPERATIONAL! **********";
+    sleep(3);
+  } else {
+    # ================== Run the command
+    $self->doCommand("rm -rf $task{outdir}");
+    # Save a copy
+    my $result = $self->doCommand("$command 2>&1 | tee $output/batgrbproduct.log");
+  }
+  return $result->{status} if ($result->{status});
+  
+  # Erase event directory
+  if ($cleanup) {
+    $command = "rm -rf $task{outdir}/events";
+    $result = $self->doCommand($command);
+  }
+  
+  # ***************** VERIFY OUTPUT OF TASK HERE ***********
+  
+  if (not -f "$fudgemap") {
+    $self->fatal(BAD_INPUT,
+		 "input 'fudge map' was not found");
+    return -1;
+  }
+  
+  foreach $file (@files) {
+    $outputfile   = sprintf($file->{name},"$outdir");
+    $templatefile = sprintf($file->{name},"$templatedir");
+    
+    # ==== Check for presence of template file
+    if (not -f $templatefile) {
+      $self->fatal(BAD_INPUT,
+		   "invalid template $key file: $templatefile");
+      return -1;
+    }
+    # ==== Check for presence of output file
+    if (not -f $outputfile) {
+      $self->fatal(BAD_OUTPUT, "Output file $outputfile does not exist");
+      next;
+    }
+    
+    # ==== Verify that output file was valid FITS file
+    $command = "ftverify infile=$outputfile outfile=STDOUT heasarc=yes";
+    $result = $self->doCommand($command);
+    if ($result->{output} !~ m/Verification found.*and 0 error/) {
+      $self->error(BAD_OUTPUT, "Ftverify failed on $outputfile");
+    }
+    
+    $type = "table";
+    $type = $file->{type} if ($file->{type});
+    if ($type eq "table") { $ext = "[1]"; } else { $ext = "[0]"; }
+    $ext = $file->{ext} if (defined($file->{ext}));
+    undef($reltol); undef($abstol);
+    if (defined($file->{reltol})) {
+      $reltol = "reltol=$file->{reltol}";
+    }
+    if (defined($file->{abstol})) {
+      $abstol = "tolerance=$file->{abstol}";
+    }
+    $exclude = "CREATOR,DATE-OBS,DATE-END,FILIN*,MJD-OBS,NPIXSOU,ORIGIN,USER,TIMEZER*";
+    $exclude = $exclude.",".$file->{exclude} if ($file->{exclude});
+    $maxdif = 0;
+    $maxdif = $file->{maxdif} if (defined($file->{maxdif}));
+    $hdumaxdiff = 25;
+    if ($maxdif > $hdumaxdiff) { $hdumaxdiff = $maxdif; }
+
+    if ($type eq "image") {
+      $outputfile_fudged = $outputfile.".fudge";
+      $templatefile_fudged = sprintf($file->{name},"$outdir").".fudge_template";
+      $modexpr = "";
+      $modexpr = $file->{modexpr} if ($file->{modexpr});
+
+      $nvectimages = 1;
+      $nvectimages = $file->{nvectimages} if ($file->{nvectimages});
+      
+      $command = "ftimgcalc $outputfile_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B$modexpr)' a='$outputfile$ext' b='$fudgemap' nvectimages=$nvectimages replicate=YES clobber=YES ";
+      $self->doCommand($command);
+      
+      $command = "ftimgcalc $templatefile_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B$modexpr)' a='$templatefile$ext' b='$fudgemap' nvectimages=$nvectimages replicate=YES clobber=YES ";
+      $self->doCommand($command);
+      
+      $command = "ftdiff '$templatefile_fudged$ext' '$outputfile_fudged$ext' hdumaxdiff=$maxdif exclude='$exclude' $reltol $abstol ";
+    } elsif ($type eq "table") {
+      
+	$command = "ftdiff '$templatefile$ext' '$outputfile$ext' hdumaxdiff=$hdumaxdiff exclude='$exclude' $reltol $abstol ";
+    }
+    
+    $result = $self->doCommand(" ( $command  ; true )");
+    
+    if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+      $ndiffs = $1;
+      print "   -->  FTDIFF reports $ndiffs differences\n";
+      if ($ndiffs > $maxdif) {
+	  $lines = $result->{output};
+	  print "$lines\n" if $self->chatter(5);
+	  print "=======================================================\n"
+	      ."=======================================================\n"
+	      ."=======================================================\n"
+	      ."=======================================================\n";
+	  warn "WARNING: output data do not match exactly.  Is this fatal?";
+	  print "=======================================================\n"
+	      ."=======================================================\n"
+	      ."=======================================================\n"
+	      ."=======================================================\n";
+	  $self->error(BAD_OUTPUT, "error because of bad compare");
+      } else {
+	  print "   -->  OK\n";
+      }
+      
+  }
+    
+} # End loop over files
+  
+} # End runtask
+	
+
+

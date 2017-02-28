@@ -1,0 +1,172 @@
+#!/usr1/local/bin/perl5
+#
+#	ut-uvot2pha
+#
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+# main
+{
+  my $tool = bless({
+		    tool => 'ut-uvot2pha',
+		    code => 0,
+		   });
+
+  eval {
+    $tool->parseOptions(
+			argv => [ @ARGV ],
+			options => [ qw(
+					input output chatter
+				       ) ],
+		       );
+
+    $tool->execute;
+  };
+
+  if ($@) {
+    $tool->error(BAD_TASK, "exception: $@");
+  }
+
+  my $result = $tool->{code} ? 'failed' : 'passed';
+  $tool->report("test $result");
+  exit($tool->{code});
+}
+
+
+sub execute{
+  my ($self) = @_;
+
+  $self->validate
+    if $self->isValid;
+
+  $self->runUvot2pha
+    if $self->isValid;
+
+  $self->checkResults
+    if $self->isValid;
+}
+
+
+sub validate{
+  my ($self) = @_;
+
+  # validate environment
+  foreach my $var (qw(PFILES HEADAS)) {
+    if (not defined($ENV{$var})) {
+      $self->fatal(BAD_INPUT,
+		   "environment variable $var not set");
+    }
+    elsif ($var eq 'PFILES') {
+    }
+    elsif (not -d $ENV{$var}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $var directory $ENV{$var}");
+    }
+  }
+
+  # validate input/output directories
+  foreach my $key (qw(input output)) {
+    my $arg = $self->args->{$key};
+    if (not -d $arg) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key directory: $arg");
+    }
+  }
+}
+
+
+sub runUvot2pha{
+  my ($self) = @_;
+
+  my $input = $self->args->{input};
+  my $output = $self->args->{output};
+
+  my @args = (
+	      infile => "$input/sw00030892056uw2.img+1",
+	      srcreg  => "$input/source.reg",
+	      bkgreg  => "$input/background.reg",
+
+	      srcpha => "$output/source.pha",
+	      bkgpha => "$output/background.pha",
+
+	      respfile => "CALDB",
+	      logfile => "none",
+
+	      phatype => "rate",
+
+	      ra => '23 21 01',
+	      dec => '-41 48 36',
+
+	      date_obs => '-',
+	      time_obs => '-',
+	      date_end => '-',
+	      time_end => '-',
+	      tmpdir => '.',
+
+	      chatter => 0,
+	      clobber => 'yes',
+	      history => 'yes',
+	     );
+
+  # validate required files
+  my %args = @args;
+  $args{srctemplate} = "$input/srctemplate.pha";
+  $args{bkgtemplate} = "$input/bkgtemplate.pha";
+  foreach my $key (qw(srcreg bkgreg srctemplate bkgtemplate)) {
+    if (not -f $args{$key}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key file: $args{$key}");
+    }
+  }
+
+  my $command = $self->buildCommand('uvot2pha', @args);
+  my $result = $self->runCommand($command);
+}
+
+sub checkResults
+{
+  my ($self) = @_;
+
+  my $input = $self->args->{input};
+  my $output = $self->args->{output};
+
+  my $srcpha = "$output/source.pha";
+  my $bkgpha = "$output/background.pha";
+  my $srctemplate = "$input/srctemplate.pha";
+  my $bkgtemplate = "$input/bkgtemplate.pha";
+
+  my $command = $self->buildCommand('ftverify',
+				    infile => $srcpha,
+				    outfile => 'STDOUT',
+				   );
+  $self->shell($command);
+
+  my $command = $self->buildCommand('ftverify',
+				    infile => $bkgpha,
+				    outfile => 'STDOUT',
+				   );
+  $self->shell($command);
+
+  my $command = $self->buildCommand('ftdiff',
+				    infile1 => $srcpha,
+				    infile2 => $srctemplate,
+				    tolerance => 0.0,
+				    reltol => 0.003,
+				    exclude => 'CREATOR,BACKFILE,RESPFILE,LONGSTRN',
+				   );
+  my $result = $self->shell($command);
+
+  my $command = $self->buildCommand('ftdiff',
+				    infile1 => $bkgpha,
+				    infile2 => $bkgtemplate,
+				    tolerance => 0.0,
+				    reltol => 0.003,
+				    exclude => 'CREATOR,RESPFILE,LONGSTRN',
+				   );
+  my $result = $self->shell($command);
+}

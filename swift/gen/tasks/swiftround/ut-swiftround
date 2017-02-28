@@ -1,0 +1,113 @@
+#!perl
+#
+# $Source: /headas/headas/swift/gen/tasks/swiftround/ut-swiftround,v $
+# $Revision: 1.1 $
+# $Date: 2007/11/15 18:22:41 $
+#
+#		swiftround test case
+#
+#
+# $Log: ut-swiftround,v $
+# Revision 1.1  2007/11/15 18:22:41  rwiegand
+# Unit test for swiftround task.
+#
+
+use strict;
+
+package Test::SwiftRound;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runSwiftround
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=string output=string chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runSwiftround
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @task = (
+		infile     => "$input/input.fits",
+		outfile    => "$output/output.fits",
+		round      => 0.1,
+
+		cleanup    => 'yes',
+		clobber    => 'yes',
+		chatter    => 5,
+	);
+
+	my %task = @task;
+
+	$self->{outfile} = $task{outfile};
+	$self->{template} = "$input/template.fits";
+
+	# build command line
+	my $command = $self->buildCommand('swiftround', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{outfile}) {
+		$self->error(BAD_OUTPUT, "missing output file");
+	}
+
+	my $command = "ftdiff $self->{template} $self->{outfile}";
+	$self->shell($command);
+}
+

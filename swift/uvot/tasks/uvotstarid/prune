@@ -1,0 +1,118 @@
+# $Source: /headas/headas/swift/uvot/tasks/uvotstarid/prune,v $
+# $Revision: 1.2 $
+# $Date: 2004/05/10 17:54:27 $
+#
+#	prune the GSC2 files
+#
+# $Log: prune,v $
+# Revision 1.2  2004/05/10 17:54:27  rwiegand
+# Update positions to J2000 by applying proper motion.
+#
+
+
+use strict;
+
+use DirHandle;
+
+package GSC2::Prune;
+
+my $FIELDS = join(';', qw(GSCID2
+		RA(D)=(ISNULL(raProperMotion)?RightAsc:RightAsc+raProperMotion*(2000-PositionEpoch))
+		DEC(D)=(ISNULL(decProperMotion)?Declination:Declination+decProperMotion*(2000-PositionEpoch))
+		(ISNULL(raProperMotion)?0:raProperMotion)
+		(ISNULL(decProperMotion)?0:decProperMotion)
+		JpgMag
+		Classification
+		));
+
+
+sub processFile
+{
+	my ($self, $path) = @_;
+
+	my $from = "$self->{rootdir}$path";
+	my $to = "$self->{outdir}$path";
+
+	if (-f $to) {
+		$self->timestamp("$to already exists");
+		# return;
+	}
+
+	my $qual = "[2][col $FIELDS]";
+	my $flags = 'copyall=yes clobber=yes';
+
+	my $command = "ftcopy '$from$qual' $to $flags";
+	$self->timestamp("running $command");
+exit;
+
+	my $out = qx($command);
+	if ($?) {
+		die("command failed:\n\t$command\n\t=> $?");
+	}
+}
+
+
+sub processDirectory
+{
+	my ($self, $path) = @_;
+
+	my $from = "$self->{rootdir}$path";
+	my $to = "$self->{outdir}$path";
+
+	if (not -d $to) {
+		if (not mkdir($to)) {
+			die("unable to create output directory $to [$!]");
+		}
+	}
+
+	my $dh = DirHandle->new($from);
+	my @contents = $dh->read;
+	undef($dh);
+
+	foreach my $x (@contents) {
+		next if $x eq '.' or $x eq '..';
+		$self->process("$path/$x");
+	}
+}
+
+
+sub process
+{
+	my ($self, $path) = @_;
+
+	my $from = "$self->{rootdir}$path";
+
+	if (-d $from) {
+		$self->processDirectory($path);
+	}
+	elsif (-f $from) {
+		$self->processFile($path);
+	}
+	else {
+		die("process: invalid path $from");
+	}
+}
+
+
+sub timestamp
+{
+	my ($self, $text) = @_;
+	my $time = localtime;
+	print "$time: $text\n";
+}
+
+
+{
+	my %data = (
+		rootdir => 'gscii',
+		outdir => 'out',
+		counter => 0,
+	);
+
+	my $self = bless(\%data);
+
+	$self->timestamp('starting');
+	$self->process('');
+	$self->timestamp('complete');
+}
+

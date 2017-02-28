@@ -1,0 +1,512 @@
+#! /usr/bin/perl
+#
+#
+# Mike Tripicco
+# 31 Jan 1996
+# XTE GSFC/NASA
+#
+#  version 1.3  04 June 1996 - changed handling of timestep/deltat since
+#                              it is now a prompted-for parameter in fcollect
+#
+#  version 1.4  21 Jan 1997  - modified inspection of stderr file to allow
+#                              for "ld.so:" type warnings
+#
+#  version 1.5  16 Jun 1998  - changed help section to reflect new features
+#                              in fcollect/xtederive
+#
+#  version 1.6  15 Jul 1998  - modified "ridiculous kludge" to be a little less
+#                              ridiculous; it will now properly identify the
+#                              correct directory/FIST* file to modify in nonstd
+#                              cases (eg, mixed production and realtime data)
+#
+#  version 1.7  12 Feb 1999  - added flexibility to -p option (can specify FMI file
+#                              as long as it begins "FMI") to mirror changes made
+#                              to fcollect (v5.2)
+#
+#  version 1.8  01 Jul 2008  - added '-b' (PCA breakdown file) option to pass to
+#                              fcollect (v5.8)
+#
+if ($VMS){
+  die("Sorry, this Perl script is not operational under VMS");
+}else{
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+$bailout="bailout";
+
+getopts('a:b:f:g:o:p:t:chis');
+		
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    xtefilt -- a script which assembles the scientifically
+               important parameters from the Spacecraft and
+               Orbit FITS data files for a given observation, 
+               derives some additional quantities and creates 
+               an XTE filter file.
+    
+USAGE
+    xtefilt -a "appidfile"                   *REQUIRED*
+            -o "obsid"                       *REQUIRED*
+            -p "pathname to FITS database"   *REQUIRED*
+            -t "timestep (secs)"             *REQUIRED*
+
+            -b "breakfile"
+            -c (clobber)
+            -g "maximum gapsize (secs)"
+            -h (print help)
+            -i (interactive)
+            -f "output filename"
+            -s (put output file into stdprod directory)
+
+or
+    xtefilt
+    
+    
+DESCRIPTION
+    
+PARAMETERS (SWITCHES/FLAGS)
+
+    -a [appidfile] - the name of the file containing the 
+                     AppIds to be collected
+               *PROMPTED FOR IF NOT SUPPLIED ON COMMAND LINE*
+
+    -b [breakfile] - the name of the PCA breakdown file (also
+                     can be "NONE" or "CALDB") (default: NONE)
+
+    -c             - overwrite existing file with same name? 
+                     (default: NO)
+
+    -f [filename]  - output filename (.xfl will be appended)
+                     (default: FPxx_aaaaa_bbbbb.xfl)
+
+    -g [maxgap]    - the maximum gap (in seconds) across which
+                     to interpolate
+                     (default: 128.0)
+
+    -h             - print this help page
+
+    -i             - if set, user is prompted for confirmation
+                     before modifying stdprod index file
+ 
+    -o [obsid]     - the ObsId to be filtered
+               *PROMPTED FOR IF NOT SUPPLIED ON COMMAND LINE*
+
+    -p [path]      - full pathname for the top of the
+                     XTE FITS database (where FMI file is)
+               *PROMPTED FOR IF NOT SUPPLIED ON COMMAND LINE*
+
+    -s             - put output file in STDPROD directory
+                     and update the Std_Prod_Index_File
+
+                     (default: file stays in current working directory)
+
+                     (If enabled, any filename specified with the -f
+                      flag will be ignored and an XFD-style name used)
+
+    -t [timestep]  - delta T for the filter file (in seconds)
+                     (default: 16.0)
+               *PROMPTED FOR IF NOT SUPPLIED ON COMMAND LINE*
+
+EXAMPLES
+
+    1. xtefilt -o 00010-01-01-00 -p /data/xtegof/FITS/FD -a appidlist -t 1.0
+
+       The four required parameters are specified on the command line.
+       If not, they will be prompted for by the script.
+
+    2. xtefilt -c -s
+    
+       Prompt me for the required parameters and accept defaults for 
+       the rest, except that I want "clobber" enabled (-c) and I want 
+       the filter file placed into the standard products directory of 
+       the appropriate XTE database (-s).
+    
+NOTES
+
+    The current version of XTEDERIVE (called by XTEFILT) computes 
+    the following quantities:
+    
+     'X_RA','X_DEC','Y_RA','Y_DEC','Z_RA','Z_DEC','POINT_RA','POINT_DEC',
+     'POINT_L','POINT_B','ROLLBIAS','VEL_RA','VEL_DEC','SUN_RA','SUN_DEC',
+     'MOON_RA','MOON_DEC','SUN_ANGLE','MOON_ANGLE','RAM_ANGLE','ELV',
+     'MCILWAIN_L','OFFSET','BKGD_THETA','BKGD_PHI','PCU0_ON','PCU1_ON',
+     'PCU2_ON','PCU3_ON','PCU4_ON','NUM_PCU_ON','TIME_SINCE_SAA','ELECTRON0',
+     'ELECTRON1','ELECTRON2','ELECTRON3','ELECTRON4','L6CNTPCU0'
+
+    
+    This version of XTEFILT requires FCOLLECT v4.2.1 or higher to run properly.
+
+    The following appidlist is currently being used in the RXTE-GOF:
+
+       14 ACSESTQ1
+       14 ACSESTQ2
+       14 ACSESTQ3
+       14 ACSESTQ4
+       15 ACSMODESTAT
+       16 ACSSCPOSX
+       16 ACSSCPOSY
+       16 ACSSCPOSZ
+       16 ACSSCVELX
+       16 ACSSCVELY
+       16 ACSSCVELZ
+       17 ACSEARTHLAT
+       17 ACSEARTHLON
+       20 ACSLUNARX
+       20 ACSLUNARY
+       20 ACSLUNARZ
+       21 ACSALTITUDE
+       24 ACSEARTHX
+       24 ACSSUNX
+       24 ACSSUNY
+       24 ACSSUNZ
+       74 VpX1LCntPcu0
+       74 VpX1RCntPcu0
+       74 Q6VxVpXeCntPcu0
+       74 VpX1LCntPcu1
+       74 VpX1RCntPcu1
+       74 Q6VxVpXeCntPcu1
+       74 VpX1LCntPcu2
+       74 VpX1RCntPcu2
+       74 Q6VxVpXeCntPcu2
+       74 VpX1LCntPcu3
+       74 VpX1RCntPcu3
+       74 Q6VxVpXeCntPcu3
+       74 VpX1LCntPcu4
+       74 VpX1RCntPcu4
+       74 Q6VxVpXeCntPcu4
+       74 X2LX2RCntPcu0
+       74 X3LX3RCntPcu0
+       74 X1LX2LCntPcu0
+       74 X1RX2RCntPcu0
+       74 X2LX3LCntPcu0
+       74 X2RX3RCntPcu0
+       83 ctLldPm pm_0
+       89 ctLldPm pm_1
+       90 cmdhvXE cmdhvXE_PCU0
+       91 cmdhvXE cmdhvXE_PCU1
+       92 cmdhvXE cmdhvXE_PCU2
+       93 cmdhvXE cmdhvXE_PCU3
+       94 cmdhvXE cmdhvXE_PCU4
+       90 hvXEon hvXEon_PCU0
+       91 hvXEon hvXEon_PCU1
+       92 hvXEon hvXEon_PCU2
+       93 hvXEon hvXEon_PCU3
+       94 hvXEon hvXEon_PCU4
+       90 hvXErly hvXErly_PCU0
+       91 hvXErly hvXErly_PCU1
+       92 hvXErly hvXErly_PCU2
+       93 hvXErly hvXErly_PCU3
+       94 hvXErly hvXErly_PCU4
+       90 evXEgood evXEgood_PCU0
+       91 evXEgood evXEgood_PCU1
+       92 evXEgood evXEgood_PCU2
+       93 evXEgood evXEgood_PCU3
+       94 evXEgood evXEgood_PCU4
+       251 hvD0 hvD0_0
+       251 hvD1 hvD1_0
+       251 hvD2 hvD2_0
+       251 hvD3 hvD3_0
+       252 hvD0 hvD0_1
+       252 hvD1 hvD1_1
+       252 hvD2 hvD2_1
+       252 hvD3 hvD3_1
+       295 TIME_SINCE_BRK0
+       295 TIME_SINCE_BRK1
+       295 TIME_SINCE_BRK2
+       295 TIME_SINCE_BRK3
+       295 TIME_SINCE_BRK4
+       295 TIME_SINCE_BRK
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov. 
+    
+SEE ALSO
+    FCOLLECT, XTEDERIVE
+
+EOHELP
+exit 0;
+}
+
+require "utils.pl";
+
+print "\n";
+print "Running XTEFILT v1.8 \n";
+print "##########################################\n\n";
+
+# Prompt for three REQUIRED parameters if not
+# specified on the command line
+
+if(defined $opt_o) {
+    print "ObsId provided was: $opt_o \n";
+    $obsid = $opt_o;
+} else {
+    @dum=&runcom('pget fcollect obsid');
+    chop($dum[0]);
+    print "Observation ID: [$dum[0]] ";
+    ($obsid = <STDIN>);
+    if($obsid =~ /^./ ){
+        chop($obsid);
+    } else{                     
+        $obsid = $dum[0];
+    }
+}
+
+if(defined $opt_p) {
+    print "Pathname provided was: $opt_p \n";
+    $fdpath = $opt_p;
+} else {
+    @dum=&runcom('pget fcollect fdpath');
+    chop($dum[0]);
+    print "Path to XTE FITS Database: [$dum[0]] ";
+    ($fdpath = <STDIN>);
+    if($fdpath =~ /^./ ){
+        chop($fdpath);
+    } else{                     
+        $fdpath = "$dum[0]";
+    }
+}
+
+if(defined $opt_a) {
+    print "AppID file provided was: $opt_a \n";
+    $appidfile = $opt_a;
+} else {
+    @dum=&runcom('pget fcollect appidfile');
+    chop($dum[0]);
+    print "File containing AppID list: [$dum[0]] ";
+    ($appidfile = <STDIN>);
+    if($appidfile =~ /^./ ){
+        chop($appidfile);
+    } else{                     
+        $appidfile = "$dum[0]";
+    }
+}
+
+if(defined $opt_t) {
+    print "Timestep provided was: $opt_t \n";
+    $deltat = $opt_t;
+} else {
+    @dum=&runcom('pget fcollect deltat');
+    chop($dum[0]);
+    print "Timestep: [$dum[0]] ";
+    ($deltat = <STDIN>);
+    if($deltat =~ /^./ ){
+        chop($deltat);
+    } else{                     
+        $deltat = "$dum[0]";
+    }
+}
+
+@dum=&runcom('pget fcollect outfile');
+chop($dum[0]);
+$outfile=$dum[0];
+#@dum=&runcom('pget fcollect deltat');
+#chop($dum[0]);
+#$deltat=$dum[0];
+@dum=&runcom('pget fcollect maxgap');
+chop($dum[0]);
+$maxgap=$dum[0];
+@dum=&runcom('pget fcollect clobber');
+chop($dum[0]);
+$clobber=$dum[0];
+
+if(defined $opt_c) {
+    $clobber="yes";
+    print "enabling clobber\n";
+} else {
+    $clobber="no";
+}
+
+if(defined $opt_b) {
+  $breakfile=$opt_b;
+} else {
+  $breakfile="NONE";
+}
+
+#
+# Normally, we'll accept whatever is in the fcollect.par
+# file unless overridden on the command line. In this case,
+# we REALLY don't want to clobber files unless explicitly
+# asked for via the -c switch.
+#
+
+#if(defined $opt_t) {
+#    print "timestep provided was: $opt_t \n";
+#    $deltat=$opt_t;
+#}
+
+if(defined $opt_g) {
+    print "maxgap provided was: $opt_g \n";
+    $maxgap=$opt_g;
+}
+
+if(defined $opt_f) {
+    print "output filename provided was: $opt_f \n";
+    $outfile=$opt_f;
+}
+
+if(defined $opt_s) {
+    $stdprod="yes";
+    $outfile="XFD";
+    if(defined $opt_f) {
+      print "Sorry, overriding your output filename (since\n";
+      print "files written in stdprod/ must have standard names)\n";
+    }
+} else { 
+    $stdprod="no";
+}
+
+if(defined $opt_i) {
+    $confirm="yes";
+    print "xtefilt will prompt before modifying stdprod index file\n";
+} else {
+    $confirm="no";
+}
+
+if ($fdpath !~ /FMI/) {
+  $fmifile = $fdpath."/FMI";
+} else {
+  $fmifile = $fdpath;
+  substr($fdpath,index($fdpath,'/FMI')) = '';
+}
+
+#print "\n##########################################\n";
+
+$fcollect_string = "fcollect obsid='$obsid' ";
+#$fcollect_string .= "fdpath='$fdpath' appidfile='$appidfile' ";
+$fcollect_string .= "fdpath='$fmifile' appidfile='$appidfile' ";
+$fcollect_string .= "outfile='$outfile' deltat=$deltat ";
+$fcollect_string .= "breakfile='$breakfile' ";
+$fcollect_string .= "maxgap=$maxgap clobber='$clobber' mode='ql'";
+
+print "\nabout to run:\n  $fcollect_string\n";
+
+if ($VMS){
+  @result=&runcom($fcollect_string);
+}
+else{
+  @result=system($fcollect_string);
+}
+
+if ($result[0] != 0){
+  die "FCOLLECT failed ($result[0])";
+}
+
+@dum=&runcom('pget fcollect fname');
+chop($dum[0]);
+$fname=$dum[0];
+
+$xtederive_string = "xtederive infile='$fname' clobber='$clobber' ";
+
+print "\nabout to run:\n  $xtederive_string\n";
+$xdflag=0;
+
+if ($VMS){
+  @result=&runcom($xtederive_string);
+}
+else{
+  system("$xtederive_string 2> /tmp/xterr$$");
+  open(ERRFIL,"/tmp/xterr$$");
+  if (!eof(ERRFIL)) {
+#
+# Skip any lines containing "ld.so" or which are all blanks.
+# If anything remains there's been a real error - print it 
+# and prepare to die...
+#
+    while ( ($_ = <ERRFIL>) =~ /(ld\.so|^\s*\n$)/ ) { ; }
+    if ( $_ ) {
+      $xdflag=1;
+      print $_;
+      while(<ERRFIL>){ print $_; }
+    }
+  }
+  close(ERRFIL);
+  unlink("/tmp/xterr$$");
+}
+
+if ($xdflag == 1){ 
+  die "XTEDERIVE failed";
+} 
+
+unlink($fname);
+
+$fchecksum_string = "fchecksum infile='$fname.xfl' update+ datasum+";
+
+#print "\nabout to run:\n  $fchecksum_string\n";
+print "\nUpdating checksums on $fname.xfl\n";
+@result=&runcom($fchecksum_string);
+
+if ($stdprod eq "yes"){ 
+#
+# The next bit is a ridiculous kludge to determine the name of the
+#  Standard Products directory, the FIST index file, and the number 
+#  rows in the latter.
+#
+#  @result=&runcom("fdump infile='$fdpath/FMI' outfile=STDOUT columns=Std_Prod_Index_File rows='-' prhead=no page=no");
+#  @foo=grep(/$obsid\/FIST/,@result);
+#  @result=&runcom("fdump infile='$fdpath/FMI' outfile=STDOUT columns=ObsId rows='-' prhead=no page=no");
+  @result=&runcom("fdump infile='$fmifile' outfile=STDOUT columns=ObsId rows='-' prhead=no page=no");
+  @obsline=grep(/$obsid\s/,@result);
+  @tmp=split(' ',$obsline[0]);
+  $rownum=$tmp[0];
+#  @result=&runcom("fdump infile='$fdpath/FMI' outfile=STDOUT columns=Std_Prod_Index_File rows='$rownum' prhead=no page=no");
+  @result=&runcom("fdump infile='$fmifile' outfile=STDOUT columns=Std_Prod_Index_File rows='$rownum' prhead=no page=no");
+  if ($#foo == -1){
+    @foo=grep(/FIST/,@result);
+  }
+  @bar=split(' ',$foo[0]);
+  $spidx=$fdpath . "/" . $bar[1] . "[1]";
+  $spidx0=$fdpath . "/" . $bar[1];
+  @dum=split(/\//,$bar[1]);
+  $obsdir=$fdpath . "/" . join('/',@dum[0 .. $#dum-1]);
+  @result=&runcom("fkeyprint infile='$spidx' outfile=STDOUT keynam=NAXIS2");
+  @foo=grep(/=/,@result);
+  @bar=split(' ',$foo[0]);
+  $nrows=$bar[2];
+  $ffloc="stdprod/$fname.xfl";
+#
+  unless (-e "$obsdir/stdprod/$fname.xfl" && ($clobber eq "no")){
+    @result=system("mv $fname.xfl $obsdir/stdprod/$fname.xfl");
+    if ($result[0] != 0){
+      die "mv failed ($fname.xfl to $obsdir/stdprod/$fname.xfl)($result[0])";
+    }
+    print "\nMoved $fname.xfl into $obsdir/stdprod/\n";
+
+    print "\nReady to write '$ffloc' into all $nrows rows\n";
+    print "of the 'Filter_File' column in the index file[ext#]:\n";
+    print "$spidx\n";
+    if ($confirm eq "yes"){
+      $doit = &yesOrNo("\nContinue?");
+    }else{
+      $doit = 1;
+    }
+    if ($doit){
+      print "\n";
+      for (1 .. $nrows) {
+        print "updating row $_\n";
+        $fpt_string="fpartab value='$ffloc' fitsfile='$spidx' ";
+        $fpt_string=$fpt_string . "column='Filter_File' row='$_'";
+        @result=&runcom($fpt_string,$bailout,$fpt_string);
+      }
+      print "\nupdating checksums...";
+      $fcksm_string="fchecksum infile='$spidx0' update+ datasum+";
+      @result=&runcom($fcksm_string,$bailout,$fcksm_string);
+      print "done\n";
+    }
+  }else{print "Sorry, clobber flag not set, can't overwrite files\n";}
+}
+
+print "\n##########################################\n";
+print "XTEFILT finished \n";
+}
+
+
+sub bailout{
+   unlink("$obsdir/stdprod/$fname.xfl");
+   die("Fatal Error in $_[0]");
+}

@@ -1,0 +1,529 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>battblocks HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+battblocks - estimate interesting Bayesian Blocks and burst durations 
+             for time-variable data
+
+<h2>USAGE</h2>
+
+<tt>battblocks infile outfile</tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+battblocks estimates interesting time intervals (GTIs) based on time
+variable event or rate data.  It does this using the Bayesian Block
+algorithm, which is intended to robustly compute time intervals based
+on Bayesian analysis. (see Scargle 1998)
+</p>
+
+<p>
+The Bayesian block algorithm can be used to estimate time intervals
+for any time series.  For bursts, it can also estimate several
+measures of the burst duration, and the interval of the peak flux.
+<i>Users should be aware that these algorithms are sensitive
+to systematic variations in the background.</i> Some care must be
+taken to filter the incoming light curve.  Users can also choose their
+own percentage fluence with the 'txx' keyword; the result is stored in
+the GTI_TXX extension.
+</p>
+
+<h3>Input Data</h3>
+<p>
+The user provides event data or a single-channel binned light curve.
+The light curve should be a standard OGIP light curve FITS file
+(i.e. contain the proper HDUCLASn keywords which identify whether the
+light curve is background subtracted or not).  Both RATE and COUNT
+type light curves are supported.  It must be possible to multiply RATE
+by the TIMEDEL per-bin exposure to arrive at counts per bin.  If the
+light curve has been background subtracted, then the ERROR column must
+be present.
+</p>
+
+<p>
+battblocks relies on the keyword information in the input file as
+being correct.  In particular, HDUCLAS1 should be "EVENTS" or
+"LIGHTCURVE", depending on the input file type.  For light curves,
+HDUCLAS2 should be "NET" or "TOTAL" depending on whether the file is
+background subtracted.  For light curves, HDUCLAS3 should be "RATE" or
+"COUNT", although the user can override this with the hduclas3
+parameter.  There must also be a way to determine the per-sample
+exposure, either with the standard TIMEDEL keyword, or a column named
+either TIMEDEL or EXPOSURE.
+</p>
+
+<h3>How battblocks Estimates Burst Durations</h3>
+
+<p>
+As noted above, battblocks can estimate the burst duration and its
+uncertainty.  This section contains a description of the algorithm
+used to make these estimates.
+</p>
+
+<p>
+By default the first and last Bayesian blocks are assumed to be
+background intervals, and the time interval between these two blocks
+is assumed to contain the total burst emission.  Consider the
+following burst light curve (view with fixed font size):
+</p>
+
+<pre>
+
+
+       ^             ***
+       |            **  **
+   R   |           **    **
+   A   |           **      **
+   T   |          **         ****
+   E   |          **           ********
+       |         **                ***************
+       |   *******                            ********************** ---> t
+Bayesian:  |     | | | | | |     |       |         |                |
+           t0    t1                               t{n-1}           tn
+                 |<- burst_tstart    burst_tstop ->|
+
+
+</pre>
+
+<p>
+The Bayesian block algorithm time bin edges are also shown, labeled
+t0, t1, ..., t{n-1} and tn.  By default the start of the burst is
+assumed to begin at time t1 and end at time t{n-1}.
+</p>
+
+<p>
+The default pre-burst background interval, GTI_BKG1, is defined as the
+start of the light curve to the start of the burst indicated by the
+end of the first Bayesian block (i.e., t0 to burst_tstart).
+</p>
+
+<p>
+The default post-burst background interval, GTI_BKG2, is defined as
+the end of the burst, indicated by the beginning of the last Bayesian
+block, to the end of the light curve (i.e., burst_tstop to tn).
+</p>
+
+<p>
+If the automatically-determined intervals are undesireable, then the
+user can make the following adjustments.  t0 and tn are determined by
+the first and last bins of the light curve, so the user can simply
+time-filter the light curve before calling battblocks to adjust these
+points (i.e. delete rows from the beginning or end of the light curve
+FITS file). burst_tstart and burst_tstop are considered to be the
+start and end of the burst emission, T(0%) and T(100%) as defined
+below, and by default are set by the Bayesian block edges.  However,
+the user may override these times by setting the 'burst_tstart' and
+'burst_tstop' keywords.
+
+<p>
+The automated method requires that the Bayesian block algorithm find
+three or more Bayesian blocks from the data: pre-burst background
+block, at least one burst block, and one post-burst background block.
+If only one or two Bayesian blocks are found, and the user has not
+specified 'burst_tstart' and 'burst_tstop', then the duration estimate
+will fail.
+</p>
+
+<p>
+Based on the above assumptions, 0% of the total burst fluence has
+occurred by time burst_tstart, and 100% of the total burst fluence has
+occurred by time burst_tstop.  The intermediate percentage points,
+from 0 to 100%, are based on the cumulative light curve, scaled by the
+total number of counts, to the range of 0 to 1,
+
+<pre>
+   f(t) = CUMULATIVE_LC(t) / CUMULATIVE_LC(burst_tstop)
+</pre>
+
+<p>
+The T90 burst duration is calculated by finding the time at which f
+crosses the 5% point (=T(5%)), and the 95% point (=T(95%)).  T90 is
+the duration between these two crossing points (= T(95%) - T(5%)).  A
+similar process is used to estimate T50 (= T(75%) - T(25%)).  Because
+of the statistical nature of the measurements, the light curve may
+cross the X% threshold multiple times.  In that case, the first and
+last crossing are recorded, and the center between these two is
+reported as the T(X%) time.
+</p>
+
+<p>
+The duration uncertainty is estimated by extending +/- 1 sigma
+confidence band (defined below) around the cumulative light curve, and
+finding when the upper and lower bands cross the X% point.  The
+uncertainty E(X%) is calculated as half the time between the upper and
+lower band crossing points.  The uncertainty in T90 is SQRT(E(5%)**2 +
+E(95%)**2), and similar for T50.
+</p>
+
+<p>
+The confidence bands are defined as follows.  Given the scaled
+cumulative light curve value, f, the 1 sigma confidence band is
+estimated as either
+<pre>
+   (1 sigma band) = f +/- SQRT(f*(1-f))*FRMS      (durerrmeth=FRACVAR)
+</pre>
+or
+<pre>
+   (1 sigma band) = f +/- FRMS                    (durerrmeth=TOTVAR)
+</pre>
+where FRMS is the root-sum-square fractional error bar during the
+burst, defined as,
+<pre>
+   FRMS = SQRT( SUM( f_ERROR^2 ) )
+</pre>
+where f_ERROR (=LC_ERROR/CUMULATIVE_LC(burst_tstop)), is the fractional
+error in f.  The choice of the error model depends on the durerrmeth
+setting, as indicated in the formulae above.  Based on Monte Carlo 
+simulations, and the burst duration work of Koshut et al. (1996),
+the BAT team recommends the default of durerrmeth=TOTVAR.
+</p>
+
+<h3>Output Data</h3>
+
+<p>
+The start and stop times of each Bayesian block is stored in a good
+time interval file (GTI file) specified by outfile.
+
+<p>
+Burst durations are stored in the following keywords (all units in
+seconds):
+
+<ul>
+<li>T50DUR - estimated T50</li>
+<li>T50ERR - estimated uncertainty in T50DUR</li>
+<li>T90DUR - estimated T90</li>
+<li>T90ERR - estimated uncertainty in T90DUR</li>
+<li>TUSERDUR - estimated user-defined interval duration</li>
+<li>TUSERERR - estimated uncertainty in TUSERDUR</li>
+<li>TUSERPCT - user-defined percentage interval (specified by 'txx')</li>
+</ul>
+
+In addition to storing the burst duration, the actual start time and
+stop time are stored in the 'durfile' with extension names GTI_T90 and
+GTI_T50.  
+</p>
+
+<p>The interval of the peak flux is estimated by sliding a time window
+across the light curve or event data and finding the epoch with the
+highest counts.  The user can select the size of the window.  The
+corresponding GTI is written to 'durfile' with the extension name
+'GTI_PEAK'.  
+
+<p>
+In cases of short bursts, it is possible for the algorithm to find a
+peak interval shorter than 1 second (or whatever value 'tpeak' is set
+to).  In other cases where the light curve bins are larger than 1
+second to begin with, it may not be able to define a "peak 1 second"
+based on the light curve.  In those unusualy cases, the reported
+interval will be centered on the originally-calculated interval, and
+the duration will be forced to be exactly 1 second (or the 'tpeak'
+setting).
+
+</p>
+
+<p>
+The background intervals are also stored in the 'durfile'.  The
+pre-burst background time interval (extension name 'GTI_BKG1') begins
+at time -INFINITY and ends at time burst_tstart as defined above.  The
+post-burst background time interval (extension name 'GTI_BKG2') begins
+at burst_tstop and ends at +INFINITY.  These good time intervals can be used
+to select background data and/or spectra from event files.  In
+practice, +/- INFINITY is specified by the 'global_tstart' and
+'global_tstop' parameters.
+
+<p>
+For these measures, the user can request that battblocks perform
+background subtraction.  The background is estimated based on the
+first and last Bayesian block intervals, and linearly interpolated to
+other points.
+</p>
+
+<h3>Specifying Explicit Time Breakpoints</h3>
+
+<p>
+In some cases, users may wish to cut the natural Bayesian blocks at
+certain times based on external knowledge.  For example, if a user
+knows that an instrument setting changed at a certain time, then the
+data before and after that time should be treated differently.
+
+<p>
+battblocks has a convenience option, 'breakfile', for the user to
+specify explicit time breakpoints in the data set.  The 'breakfile'
+should be a standard GTI extension, which defines time intervals of
+interest.  Unlike a 'typical' GTI, the intervals of the breakfile are
+allowed to be adjacent in time.  These intervals are intersected
+(ANDed) with the natural Bayesian block intervals, and the result is
+that the natural Bayesian blocks will be 'cut' at breakfile START/STOP
+times.
+
+<h3>Implementation Details</h3>
+<p>
+The global analysis time grows quadratically: as the input file size
+doubles, the computation time quadruples, and so on.  Users can
+perform a local Bayesian block analysis by setting tlookback to a
+non-zero time window size.  Only data within the time window at a
+particular instant are considered for the analysis at that instant.
+When tlookback is used, the resulting blocks are analyzed in 
+a <i>second</i> pass to further consolidate blocks larger than the
+window size.  Users of event data can also adjust the 'nspill'
+parameter to decimate the events, at the expense of decreasing the
+time resolution proportionately.
+</p>
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>infile [filename]
+
+<dd>Input file name containing event data or light curve data.  Events
+must be sorted in increasing time order.  Light curve data must be
+OGIP-format (containing the HDUCLASn keywords), and either have the
+columns TIME and COUNTS (binned counts); or TIME, RATE and ERROR
+(binned data with error bars).  Only single channel light curves are
+supported.
+<p>
+
+<dt>outfile [filename]
+
+<dd>Name of output good time interval file.
+<p>
+
+<dt>(durfile = 'NONE') [filename]
+
+<dd>Name of output duration measures.  If durfile is 'NONE' then the
+duration measures are not computed or written.  GTI tables with
+extensions 'GTI_T90', 'GTI_T50' and 'GTI_PEAK' are created.  Note that
+if fewer than three Bayesian blocks are detected, then durations
+are not estimated.
+<p>
+
+<dt>(nspill = 128) [integer]
+
+<dd>Number of events to skip per analysis cell.  'nspill' events are
+grouped into one cell before Bayesian analysis.  The smallest allowed
+value, nspill=1, means that no events are skipped.  This parameter
+is ignored for binned data.
+<p>
+
+<dt>(gaussian = INDEF) [string]
+
+<dd>Boolean which determines whether the Bayesian blocks computation
+is performed using Gaussian statistics or not.  A value of INDEF
+causes battblocks to use Gaussian statistics for background-subtracted
+light curves, and Poissonian statistics otherwise.  If "yes", then the
+ERROR column must exist in the input file.  Ignored for event data.
+<p>
+
+<dt>(txx = 0.0) [real]
+
+<dd>User-specified percentage of burst to estimate the duration for.
+By default 90% (GTI_T90) and 50% (GTI_T50) fluence intervals are
+computed, but users can choose another percentage point as well
+(stored as GTI_TXX).  The interval is not estimated if txx is set to 0.0.
+<p>
+
+<dt>(tpeak = 1.0) [real]
+
+<dd>Size of sliding window, in seconds, used to determine the interval
+of the peak count rate.
+<p>
+
+<dt>(tlookback = 0.0) [real]
+
+<dd>A non-zero value indicates the lookback time window in seconds,
+for the local bayesian block analysis.  Smaller values will run
+faster, at the expense of generating more blocks (no block will be
+larger than tlookback).  The lookback time is converted to a number of
+samples by examining the <i>mean</i> sample rate.  A value of 0.0
+indicates the global bayesian block optimization should be performed.
+<p>
+
+<dt>(burst_tstart = "INDEF") [string]
+
+<dd>The MET start time of burst emission, as defined above.  The value
+of this parameter will be used to set the GTI_BKG1 stop time and the
+GTI_TOT start time, and will be used during calculation of the
+T50/T90/TXX burst duration.  If "INDEF" is specified, then the
+value is estimated based on the Bayesian blocks as discussed above.
+<p>
+
+<dt>(burst_tstop = "INDEF") [string]
+
+<dd>The MET stop time of burst emission, as defined above.  The value
+of this parameter will be used to set the GTI_BKG2 start time and the
+GTI_TOT stop time, and will be used during calculation of the
+T50/T90/TXX burst duration.  If "INDEF" is specified, then the
+value is estimated based on the Bayesian blocks as discussed above.
+<p>
+
+<dt>(timedel = 100e-6) [real]
+
+<dd>Internal time quantization size.  Time resolutions more finely
+sampled than timedel are lost.
+<p>
+
+<dt>(ncp_prior = 6.0) [real]
+
+<dd>Log parameter prior for the number of "change points" between
+Bayesian blocks.  This parameter acts as a smoothing parameter which
+weights against separate blocks.  A smaller number permits less
+significant changes to be "detected," while a larger number requires
+more significant changes to be "detected."
+<p>
+
+<dt>(bkgsub = NO) [boolean]
+
+<dd>Automatic background subtraction, for computation of duration
+measures and fluence estimates.  
+<p>
+
+<dt>(coalescefrac = 0.05) [real]
+
+<dd>The background subtraction and T50/T90 algorithms depend on the
+first and last Bayesian blocks being representative of the true local
+background.  If there is an outlier block, this may heavily skew the
+background and duration calculations.  If this parameter is non-zero,
+and if the first or last block has a shorter duration than
+(coalescefrac)&times;(its neighbor's duration), then the two blocks are
+coalesced into one.  Note that this will erroneously ignore real
+variations if they fall at the extremes of the time series.  Also, the
+coalescence is not iterative; the check is done only once.
+<p>
+
+<dt>(breakfile = "NONE") [string]
+
+<dd>Name of FITS extension which contains user-specified breakpoints.
+The format of breakfile is a standard GTI file.  If NONE is specified,
+then the natural Bayesian blocks are used.
+<p>
+
+<dt>(timecol = "TIME") [string]
+
+<dd>Name of the light curve time column.
+<p>
+
+<dt>(countscol = "INDEF") [string]
+
+<dd>Name of the light curve rate or counts column.  For a value of
+INDEF, battblocks will search for RATE and COUNTS columns, in that
+order.
+<p>
+
+<dt>(errcol = "ERROR") [string]
+
+<dd>Name of the light curve gaussian error column.  Not used for event
+or Poisson light curves.
+<p>
+
+<dt>(expocol = "INDEF") [string]
+
+<dd>Name of the light curve per-bin exposure column.  For a value of
+INDEF, battblocks searches for the TIMEDEL and EXPOSURE columns, in
+that order.  If expocol/TIMEDEL/EXPOSURE is not found, then the file
+is searched for a TIMEDEL or EXPOSURE keyword.
+<p>
+
+<dt>(hduclas3 = "INDEF") [string]
+
+<dd>Default value of the HDUCLAS3 keyword, if one is not present in
+the file.  If both hduclas3 and countscol are "INDEF", then battblocks
+will search for a RATE or COUNTS column and set hduclas3 according to
+which column is found.
+<p>
+
+<dt>(global_tstart = "INDEF") [string]
+
+<dd>The global start time for all data.  This should either be the
+string "INDEF", or a MET time which gives the beginning time of data
+for this observation.  This value is used as the start time for the
+pre-burst background time interval.  If "INDEF" is specified, then the
+value of -1.0E307 is used.
+<p>
+
+<dt>(global_tstop = "INDEF") [string]
+
+<dd>The global stop time for all data.  This should either be the
+string "INDEF", or a MET time which gives the ending time of data for
+this observation.  This value is used as the end time for the
+post-burst background time interval.  If "INDEF" is specified, then
+the value of +1.0E307 is used.
+<p>
+
+<dt>(diagfile = NONE) [string]
+
+<dd>Diagnostic output file, used for internal debugging purposes.
+NONE indicates no diagnostic output should be made.
+<p>
+
+<dt>(clobber = NO) [boolean]
+
+<dd>If the output file already exists, then setting "clobber = yes" will cause it to be overwritten.
+<p>
+
+<dt>(chatter = 2) [integer, 0 - 5]
+
+<dd>Controls the amount of informative text written to standard
+output.  Setting chatter = 1 produces terse output; chatter = 2
+(default) additionally prints a summary of input parameters; chatter =
+5 prints debugging information.
+<p>
+
+<dt>(history = YES) [boolean]
+
+<dd>If history = YES, then a set of HISTORY keywords will be written to
+the header of the specified HDU in the output file to record the value
+of all the task parameters that were used to produce the output
+file.
+
+</dl>
+
+<h2>EXAMPLES</h2>
+
+<p>
+1. Partition data into Bayesian Blocks
+<p>
+<pre>
+	battblocks burst.evt burst_bb.gti
+</pre>
+
+<p>
+2.  Same as example 1, but with further event decimation
+<p>
+<pre>
+	battblocks burst.evt burst_bb.gti nspill=256
+</pre>
+
+<p>
+3. Extraction of Bayesian blocks from a light curve; extraction of
+burst durations, including a user specified level of 68.3% of the
+burst (T90 and T50 intervals are always computed)
+</p>
+<pre>
+	battblocks burst.lc burst_bb.gti durfile=burst_dur.gti txx=68.3
+</pre>
+
+<h2>REFERENCES</h2>
+<p>Scargle, J. D. 1998, "Studies in Astronomical Time Series
+Analysis. V. Bayesian Blocks, a New Method to Analyze Structure in
+Photon Counting Data," Astrophys. J., 504, 405</p>
+<p>Koshut, T. 1996, "Systematic Effects on Duration Measurements of 
+Gamma-Ray Bursts," Astrophys. J., 463, 570</p>
+
+<h2>LAST MODIFIED</h2>
+
+Oct 2008
+</body>
+</html>

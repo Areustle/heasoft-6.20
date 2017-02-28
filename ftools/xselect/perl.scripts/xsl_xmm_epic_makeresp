@@ -1,0 +1,82 @@
+#! /usr/bin/perl 
+$version ="1.30";
+$date  ="2006-05-25";
+$author = "kaa";
+
+# This script makes the XMM EMOS rmf and arf. It is run by the xselect
+# routine xsl_rspsav. Note that we assume that the relevant bad pixel 
+# extensions have been included in the spectrum file.
+
+# Check that we were given input filenames
+
+if(@ARGV < 1 || @ARGV > 2)
+{
+    print "\n usage : xsl_xmm_epic_makeresp spectrumfile extended?\n";
+    exit(0);
+}
+
+# check whether SAS is set-up. if it isn't we will try to use hera
+
+$local = "yes";
+if($ENV{'SAS_CCF'} !~/\S/)
+{
+    $local = "no";
+    print "Local SAS not set up so will try to use Hera... this may take a while\n";
+}
+
+$infile  = $ARGV[0];
+$extended = "no";
+if(@ARGV == 2 && $ARGV[1] eq "yes") {
+   $extended = "yes";
+}
+
+$dot = index($infile,".");
+$rootname = substr($infile, 0, $dot);
+
+$rmffile = $rootname . ".rmf";
+$arffile = $rootname . ".arf";
+
+# remove any pre-existing files with these names to avoid hera prompting us
+# about whether we want to overwrite
+
+unlink $arffile;
+unlink $rmffile;
+
+# Need to change the region extension name from REGION to REG00101
+
+$command = "fparkey value=\"REG00101\" fitsfile=$infile\[REGION\] keyword=EXTNAME"; 
+print "\n",$command,"\n\n";
+system($command);
+
+# run rmfgen to make the rmf
+
+$command = "rmfgen format=var rmfset=$rmffile spectrumset=$infile threshold=1.0e-6";
+if ( $local eq "no" ) 
+{
+    $command = "fv -runtask " . $command;
+}
+print "\n",$command,"\n\n";
+system($command);
+
+# run arfgen to make the arf
+
+if ($extended eq "yes") {
+   $command = "arfgen arfset=$arffile spectrumset=$infile withrmfset=yes rmfset=$rmffile extendedsource=yes modelee=yes withbadpixcorr=yes badpixlocation=$infile modelootcorr=yes useodfatt=no";
+} else {
+   $command = "arfgen arfset=$arffile spectrumset=$infile withrmfset=yes rmfset=$rmffile extendedsource=no modelee=yes withbadpixcorr=yes badpixlocation=$infile modelootcorr=yes useodfatt=no";
+}
+if ( $local eq "no" )
+{
+    $command = "fv -runtask " . $command;
+}
+print "\n",$command,"\n\n";
+system($command);
+
+# set the RESPFILE and ANCRFILE keywords in the spectrum to point to the
+# files that have been created
+
+$command = "fparkey value=$rmffile fitsfile=$infile\[SPECTRUM\] keyword=RESPFILE";
+system($command);
+$command = "fparkey value=$arffile fitsfile=$infile\[SPECTRUM\] keyword=ANCRFILE";
+system($command);
+

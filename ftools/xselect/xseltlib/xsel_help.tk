@@ -1,0 +1,246 @@
+#!/software/lheasoft/develop/OSF1_4.0_alpha/bin/wish8.0
+
+package provide xsl_menu 1.0
+
+
+proc help_list {} { 
+global manual hlist  htitle
+global mindex
+global content_flag
+ 
+#source xsel_help.tcl
+#help_manual
+
+toplevel .xslhelp
+set width [winfo screenwidth .]
+set height [winfo screenheight .]
+set x [expr int(2.0*$width/9.0)]
+set y [expr int($height/7.0)]
+wm geometry .xslhelp +$x+$y 
+
+set but [frame .xslhelp.but]
+button $but.contents -text Subjects -command { get_content .xslhelp.fpage.page}
+button $but.index -text Index -command {get_index .xslhelp.fpage.page}
+button $but.close -text Close -command "destroy .xslhelp" 
+
+set indfind [frame .xslhelp.but.find ]
+label $indfind.label -text "Find   " 
+entry $indfind.entry -relief sunken \
+       -font  "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+       -background white \
+       -foreground black \
+       -textvariable myindex
+button $indfind.reset -text Reset -command {set myindex ""} 
+
+pack $but -side top -expand true -fill both
+pack $but.contents -side left -anchor w
+pack $but.index -side left -anchor w
+pack $indfind -side left -anchor w -expand true -fill both
+pack $indfind.label -side left -anchor w
+pack $indfind.entry -side left -anchor w
+pack $indfind.reset -side left -anchor w
+pack $but.close -side right -anchor w 
+
+set fpage [frame .xslhelp.fpage ]
+set page [ listbox $fpage.page -width 30 -height 20 \
+           -borderwidth 2 -relief raised  -selectmode single \
+           -font "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+             -xscrollcommand {.xslhelp.fpage.xscroll set} \
+             -yscrollcommand {.xslhelp.fpage.yscroll set} ]
+scrollbar $fpage.xscroll -command {.xslhelp.fpage.page xview} -orient horizontal
+scrollbar $fpage.yscroll -command {.xslhelp.fpage.page yview} -orient vertical
+
+set mpage [frame .xslhelp.mpage ]
+set whlp [ text $mpage.helpman -width 70 -height 20 \
+            -borderwidth 2 -relief raised -state disabled \
+            -wrap none \
+            -font "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+             -xscrollcommand {.xslhelp.mpage.txscroll set} \
+             -setgrid true -yscrollcommand {.xslhelp.mpage.tyscroll set} ]
+scrollbar $mpage.txscroll -command {.xslhelp.mpage.helpman xview} \
+             -orient horizontal
+scrollbar $mpage.tyscroll -command {.xslhelp.mpage.helpman yview}
+
+bind $indfind.entry <Return>  [list set_select $page $whlp myindex] 
+bind $page <ButtonRelease-1>   "select_cmd $page $whlp" 
+
+#pack .xslhelp -side top -expand true -fill both
+pack $fpage -side left -expand true -fill both
+pack $mpage -side right -expand true -fill both
+pack $fpage.xscroll -side bottom -fill x  
+pack $fpage.yscroll -side right -fill y 
+pack $page -side top
+pack $mpage.txscroll -side bottom -fill x 
+pack $mpage.tyscroll -side right -fill y
+pack $whlp -side left -fill both -expand true
+
+# put the contents on the window
+get_content $page
+}
+
+
+ 
+proc get_content {page} {
+global content_flag 
+global manual hlist  htitle
+global manindex
+set content_flag 1
+set i 0  
+$page delete 0 end
+foreach item $hlist(chap) {
+    set p " $htitle($item)"
+    $page insert end $p
+    set manindex($i) $item
+    incr i
+} 
+.xslhelp.but.find.entry configure -state disabled
+.xslhelp.but.find.reset configure -state disabled
+}
+
+proc get_index { page} {
+global manual hlist  htitle
+global manindex
+global content_flag
+set content_flag 0
+set i 0  
+$page delete 0 end
+foreach index [array names htitle] {
+    lappend big $htitle($index)
+    incr i
+}
+set big  [ lsort -ascii $big ]
+set i 0  
+foreach item $big {
+    set p " $item"
+    $page insert end $p
+    foreach index [array names htitle] {
+        if { $htitle($index) == $item } { 
+            set manindex($i) $index
+            break
+        }
+    }
+    incr i
+}
+.xslhelp.but.find.entry configure -state normal
+.xslhelp.but.find.reset configure -state normal
+}
+
+proc set_select {page whlp myindex} { 
+upvar 1 $myindex local_index
+set last [$page index end ]
+set i 0
+set pos [ $page curselection]
+if [info exists pos ] { 
+    set i [expr $pos + 1]
+}
+$page selection clear 0 $last
+for { } { $i < $last } {incr i } {
+    set line [ $page get $i ]
+    if [regexp $local_index $line ] { 
+        $page selection set $i
+        if {$i > 5}  { 
+           incr i -5
+        }
+        $page yview $i
+        select_cmd $page $whlp
+        break
+    }
+}
+}
+
+proc select_cmd {page whlp} { 
+global hlist manindex htitle
+global htitle manual
+global content_flag
+
+set pos [ $page curselection]
+#$page activate $pos
+
+set a $manindex($pos)
+set a [ string trim $a]
+set last [$page index end ]
+incr last -1
+if { $content_flag == 1 && $pos < $last } {
+     set next [expr $pos + 1]
+     set b $manindex($next)
+     if [regexp  ^$a $b ] {  
+        delete_list  $page $pos  
+     } else { 
+        append_list  $page $pos  
+     }
+}
+if  { [ info exists manual($a) ] == 1 } { 
+    $whlp configure -state normal
+    $whlp delete 1.0 end
+    $whlp insert end $manual($a)
+    $whlp configure -state disabled
+}
+}
+
+proc append_list { page pos } {
+global hlist manindex htitle
+set b  $manindex($pos)
+incr pos
+set last [$page index end ]
+incr last -1
+if [ info exists hlist($b) ] { 
+    set nn [llength $hlist($b)] 
+    for {set i $last} {$i >= $pos } {incr i -1} {
+         set k [expr $i + $nn] 
+         set manindex($k) $manindex($i)
+    }
+    foreach item $hlist($b) {
+        set manindex($pos) $item
+        set j [regsub -all -- "-"  $manindex($pos) " " junk]
+        set p ""
+        while { $j > 0 } { 
+           append p "  "
+           incr j -1 
+        }
+        append p "$htitle($item)"
+        $page insert $pos  $p 
+        incr pos 
+    }
+}
+}
+
+proc delete_list { page pos } {
+global hlist manindex htitle
+set b  $manindex($pos)
+set next [expr $pos + 1]
+set last [$page index end ]
+incr last -1 
+set a $manindex($pos)
+set i $next
+while { $i <= $last } {
+    set b $manindex($i)
+    if [regexp  ^$a $b ] {  
+        $page delete $next  
+    } else { 
+        break
+    }
+    incr i
+} 
+set first [expr $i ]
+set mlast [$page index end ]
+if { $mlast != $last } {
+    for {set i $first} {$i <= $last } {incr i } {
+         set manindex($next)  $manindex($i)
+         incr next
+    }
+    for {set i $mlast} {$i <= $last } {incr i } {
+         unset manindex($i)
+    }
+}
+}
+
+proc tklparm { } {
+global xsl_parval xsl_cmdprmpt xsl_defval
+set xsl_parval ""
+set xsl_cmdprmpt "Please enter the command"
+set xsl_defval ""
+query_parm "s"
+set cmdstr [list lparm $xsl_parval]
+RunCommand $cmdstr
+xsltermout
+}

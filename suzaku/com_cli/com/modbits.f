@@ -1,0 +1,34 @@
+C   11/11/86 611111341  MEMBER NAME  MODBITS  (FORT)     M  FORTRAN
+C+++++ THIS IS MODBITS.FOR
+C
+       SUBROUTINE MODBIT(QUEST,NBITS,NAMES,HELP,BITS)
+C@@@   IMPLICIT NONE
+       INTEGER*4 NBITS, BITS
+c___   include 'comode.inc'
+       include 'comode.inc'
+       CHARACTER*(*) NAMES(NBITS), HELP(NBITS), QUEST
+       INTEGER*4 IBITS(MAXENT), I, LABEL
+C
+C  MODIFY A BIT STRING
+C
+       IF (ICOMER.LT.0) GOTO LABEL
+C
+       DO 11 I = 1, NBITS
+         IF (IAND(ISHFT(1,I-1),BITS).NE.0) THEN
+           IBITS(I) = 1
+         ELSE
+           IBITS(I) = 0
+         ENDIF
+11     CONTINUE
+C
+ 10    ASSIGN 10 TO LABEL
+       CALL MODVAL(QUEST,NBITS,NAMES,HELP,IBITS)
+       IF (ICOMER.NE.1) RETURN
+C
+       BITS = 0
+       DO  12 I = 1, NBITS
+         IF (IBITS(I).EQ.1) THEN
+           BITS = IOR ( BITS, ISHFT(1,I-1) )
+         ENDIF
+12     CONTINUE
+       END

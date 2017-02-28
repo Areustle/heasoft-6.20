@@ -1,0 +1,813 @@
+#! /usr/bin/perl
+# J. Lochner: initial version Nov 20, 1995
+# Perl script for creating XTE PCA response matrices
+# 
+# 19Oct00 (MJT) short-circuited "short cut" so that pcarmf
+#               is never called with lld=63 (workaround for
+#               bug in pcarmf 7.0.1)
+#
+# 07Feb01 (MJT) lld=63 bug has been fixed as of  pcarmfv 7.10 
+#               so "short-circuit" is re-enabled. Also set up 
+#               defs for epoch 5 and changed
+#               terminology to 'calibration epoch' v7.10
+#
+# 20Feb01 (MJT) Since pcarsp v7.10, pcarmf v7.10 and pca_e2c_e05v01.fits are 
+#               being released concurrently and since e2c file has new columns 
+#               which makes it incompatible with any other version of pcarmf
+#               (and vice-versa), use of e2c_e05 is required by pcarsp v7.10
+#
+# 05Jun01 (MJT) v7.11 for release with FTOOLS v5.1
+#               added "-s" option for "Smart Standard2" processing
+#                 (uses ROWID keywords and date from .pha file; adds layers and detectors).
+#               "-p all" option now works.
+#               fixed clean-up phase for cases where final .rsp file was being deleted!
+#               tightened logic so that single detector rsp won't be sent to addrmf.
+#               faddcol failure (when not adding detectors but pha not type II) changed
+#                 to a warning followed by normal file clean-up.
+#
+# 06Aug01 (MJT) v7.12
+#               Well, the logic for whether or not to use a supplied (-n) filename needed
+#               help. Now it should work in any case where a single .rsp is the intended result.
+#
+# 09May02 (MJT) v8.0
+#               Changed the default value for $pcc. Used to be hard-coded to 0.0, now it will
+#               use the value of the (hidden) pcc_coeff parameter from pcarmf.
+# 21Oct03 (MJT) v10.1
+#               Matching version number to pcarmf for consistency. No code changes needed since
+#               newest e2c file (e05v03 at this writing) will be picked up from refdata and
+#               the partial charge coefficient will be read directly from the pcarmf.par file.
+# 23Apr09 (MJT) v11.6
+#               New version number coincident with pcarmf v11.6
+#               Changed e2c default behavior back to CALDB at request of PCA team
+#               Cosmetic changes for readability in command calls
+# 03Feb10 (MJT) v11.7.1
+#               Fundamental change to a user-provided date (via '-d' option). Previously this
+#               was passed along to subsidiary ftools explicitly but some (eg pcagainset) have
+#               no option to accept a date. Now if a date is provided the routine also pushes
+#               it into the SPECTRUM extension of the provided pha file so that any downstream
+#               tools that read DATE-OBS will use it.
+#               Added update to pha's DATASUM/CHECKSUM changed by RESPFILE kwd/col addition 
+#               These changes introduce a dependency on the CFITSIO Perl module.
+#               Note also that version was set to 11.7 in an earlier release (to match pcarmf)
+#               but not documented here.
+
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+
+require "utils.pl";
+require "interface.pl";
+use Getopt::Std;
+
+getopts('f:a:c:l:p:d:j:m:n:e:x:y:w:zhs');
+
+#
+# Output the help if -h is specified
+#
+if (defined $opt_h) {
+  print <<EOHELP1;
+PCARSP V11.7.2
+
+  This script runs the various tools necessary to construct response 
+matrices for XTE PCA spectral data.  The user inputs the PCA layers and 
+detectors which were used in the construction of the PHA file (third and 
+fifth inputs, below). The script creates .rsp files for these layers and 
+detectors respectively, and combines them as required by the PHA file 
+(fourth and sixth inputs, below).
+
+  The script creates matrices by first constructing "fundamental" .rmf files 
+by layer or detector, depending on which is requested.  If required by the 
+data mode, the EDS gain and offset values are applied.  The .rmf is then 
+binned according to the binning in the input .pha file.  A corresponding .arf 
+file is constructed using the pointing information for the observation.  The 
+.rmf and .arf are then multiplied into a .rsp file.  Layer .rsp files may be 
+combined into a detector .rsp file or left separate.  Likewise, detector .rsp 
+files may be combined into a single pca instrument .rsp file or left separate  
+The name(s) of the final .rsp file(s) are written back to the input .pha file.
+
+The user inputs to the script are as follows:
+
+  "Input the PHA file: " - the name of the .pha file, assumed to be the
+	output of SA/SEEXTRCT.  Both Type I and Type II files are supported.
+        Command line option: -f <pha filename>.
+
+  "Input the Attitude file: " - the name of the file containing the spacecraft
+        pointings for the observation.  This file may be either the XTE FILTER 
+        file, or the estimated quaternions ("FH0e_*"), either of which may be 
+        obtained via the XTE Data Finder (XDF).   This may also be of the form
+        \@filename for an ascii file containing the name of the attitude file.
+        Finally, a value of 'none' may be used when the attitude file is 
+        unavailable or inadequate.  With 'none' the resulting rsp file will 
+        assume an on-axis pointing to the target.
+        Command line option: -a <attitude filename>.
+
+  "Input the layers included in the PHA file [L1,R1,LR1, etc, or all] " - The 
+        layers included in the input pha file.  The user may input halves of 
+        particular layers (e.g. L1,R1) or combined halves (e.g. LR1 for 
+	layer 1). Ignored when using the "-s" option.
+        Command line option: -l <layer list>.
+
+  "Are the layers added ? [y/n]: " - whether the pcu detector layers
+	have been added in creating the .pha file.  If yes, then detector
+	response matrices will be constructed.  If no, then a separate response
+        matrix for each requested layer will be constructed.  As a special 
+        case, if all layers are included and added, then a single detector 
+        response matrix is created for each desired detector. Ignored when
+        using the "-s" option.
+        Command line option: -j <y/n>.
+
+   "Input the detectors included in the PHA file [0,1,2,3,4, or all]: " - The 
+        detectors included in the input pha file.  A range may be given, 
+        e.g. 0-2,4. Ignored when using the "-s" option.
+        Command line option: -p <pcu list>.
+
+   "Are the detectors added ? [y/n]: " - whether the detectors have been added
+        in creating the input pha file.  If yes, a single response matrix is 
+        produced from the sum of the requested detectors.  The yes option is 
+        appropriate only for Type I pha files containing a single spectrum.  
+        If no, the detector matrices are left separate.  The no option is 
+        appropriate for Type II pha files containing multiple spectra.
+        Ignored when using the "-s" option.
+        Command line option: -m <y/n>.
+
+Files created by the script are named by pcu number, a layer id ("xe" if entire
+detector), and the date (yyyy-mm-dd) of the observation.  Through the -n 
+<filename> command line option, the user may specify an alternate name for the 
+final output file instead of using the default.  Note that this applies only 
+when the product of the script is a single matrix.  The only files needed by 
+XSPEC are certain .rsp files.  The user has the option to retain or delete the 
+.arf, .rmf, .txt, and unnecesarry .rsp files created by the script.   
+
+Additional command line options:  
+   pcarsp -n <filename> -d <date> -e <e2c_file> -x <ra> -y <dec> 
+            -c <partial charge fraction> -z
+  
+  -n <filename>:  The user may specify the name of the final response matrix 
+                  instead of using the default name.  Note that this applies
+                  only when a single matrix results from the script (e.g. when
+                  the detectors are added).
+
+  -d <date>    :  The user may specify the date for which the matrices should
+                  be created, in the format yyyy-mm-dd.  By default, matrices 
+                  are created for the observation date contained in the pha 
+                  file. This option is superceded by the "-s" option.
+
+  -e <e2c_file>:  The user may specify either a local calibration file or 
+                  \"caldb\" (the default) for the energy-to-channel file. 
+
+  -x <ra>      :  The user may specify an alternate right ascension for the 
+                  source position.  By default, matrices are created using the
+                  object\'s ra contained in the pha file.
+
+  -y <dec>     :  The user may specify an alternate declination for the source 
+                  position.  By default, matrices are created using the
+                  object\'s declination contained in the pha file.
+
+  -c <fraction>:  The user may input the partial charge fraction to be used
+                  when computing the matrix.  A non-zero value affects the
+                  shape of lines in the spectrum.  As of pcarmf v8.0 the
+                  default value is 0.02 (was 0.0). This script now uses
+                  the value found in the pcarmf par file as the default.
+  
+  -z <keep ?>  :  The user may keep unnecessary intermediate files
+                  created by the script by specifying this option.  Default
+                  is to delete the files.
+
+  -s           :  Indicates that the script should use "Smart Standard2" processing
+                  which uses the ROWID keywords to determine the relevant layer and
+                  detector information and generates a single response file for the
+                  date in the .pha file. This option supercedes the "-l", "-j", "-p",
+                  "-m", and "-d" options.
+
+  -w <weights> :  Sum the responses with the requested <weights>.  <weights> can
+                  either be a comma-separated list of real values, or "\@INFILE".  
+                  A list must be five quantities of the form "1.0,1.0,1.0,1.0,1.0" 
+                  and represent the weighting factors used by 'addrmf' to sum the
+                  responses of the individual PCUs.  If "\@INFILE" is used, then the
+                  the input PHA file must contain five keywords of the form 
+                  PCU_WTn (n=0,1,2,3,4), which gives the same weights.
+                  Default: "-w 1.0,1.0,1.0,1.0,1.0"  (equal summed weights)
+  
+
+EOHELP1
+exit;
+}
+
+print "PCARSP V11.7.1 - Ready to go !\n";
+
+if (defined $opt_f) {
+    print "\nInput PHA file: $opt_f \n";
+    $pha = $opt_f;
+} else {
+    print "\nInput PHA file: ";
+    chop($pha=<STDIN>);
+}
+
+if (defined $opt_a) {
+    print "\nInput Attitude file: $opt_a \n";
+    $qfile = $opt_a;
+} else {
+    print "\nInput the Attitude file: ";
+    chop($qfile=<STDIN>);
+}
+
+if (! defined $opt_w ) {
+  @pcu_weights = (1.0, 1.0, 1.0, 1.0, 1.0);
+} elsif ( $opt_w =~ m/^@?INFILE$/i) {
+  @results = `fkeyprint infile='$pha' keynam='PCU_WT'`;
+  foreach $line (@results) {
+    # Parse lines containing PCU_WT<n>
+    if ($line =~ m/^PCU_WT([0-4]) *= *([^ ]*)/) {
+      $pcu = $1; $weight = $2;
+      $pcu_weights[$pcu] = $weight;
+    }
+  }
+  $missing_pcu = 0;
+  foreach $pcu (0 .. 4) {
+    if (not defined($pcu_weights[$pcu])) {
+      warn "ERROR: could not find PCU_WT$pcu in '$pha' ";
+      $missing_pcu = 1;
+    }
+  }
+  die "ERROR: cannot proceed " if ($missing_pcu);
+} else {
+  @pcu_weights = split(/,/,$opt_w);
+  die "ERROR: -w must specify 5 comma-separated PCU weights" if ($#pcu_weights != 4);
+  $max_weight = 0.0;
+  foreach $pcu (0 .. 4) {
+    $pcu_weights[$pcu] = $pcu_weights[$pcu] + 0.0;
+    if ($pcu_weights[$pcu] < 0 || $pcu_weights[$pcu] > 1) {
+      die "ERROR: PCU weights must be between 0.0 and 1.0";
+    }
+    $max_weight = $pcu_weights[$pcu] if ($pcu_weights[$pcu] > $max_weight);
+  }
+  die "ERROR: all PCU weights are zero" if ($max_weight == 0);
+}
+print "\nPCU weighting factors: $pcu_weights[0], $pcu_weights[1], $pcu_weights[2], $pcu_weights[3], $pcu_weights[4]\n";
+
+if (defined $opt_s) { # "s"mart "s"tandard2 processing
+  print "\nRunning \"Smart Standard2\" processing...\n";
+  @result = &runcom("fkeyprint $pha+1 ROWID");
+  @rowid=();
+  foreach $line (@result){
+    if ($line =~ /ROWID\d/){
+      $line =~ /=\s+'(.*)'/;
+      push(@rowid,$1);
+    }
+  }
+  %pcuhash=();
+  %layerhash=();
+  foreach $column (@rowid){
+    next unless ($column =~ /X(\d)(\w)SpecPcu(\d)/);
+    $layerhash{"$2$1"}=1;
+    $pcuhash{"$3"}=1;
+  }
+  @layer_id = keys(%layerhash);
+  @det_id = keys(%pcuhash);
+  if (@det_id == 0){
+    print "ROWID not present or has invalid columns.\n";
+    die "Is $pha a valid PCA Standard-2 Type-I pha file?\n\nDied";
+  }else{
+    $now = &phadate($pha);
+    print "A single response file will be created for\n";
+    print "  Anode chains: @layer_id\n";
+    print "  Detectors: @det_id\n";
+    print "  for date: $now\n";
+    if (@layer_id > 1) {$add_layers = "y"}else{$add_layers = "no"}
+    if (@layer_id == 6) {$layer_id[0] = "ALL"} #prevents the hideous "R1R2R3L1L2L3" name
+    if (@det_id > 1) {$det = "y"}else{$det = "no"}
+    goto SMARTSTD2; # I'm so ashamed...
+  }
+}
+
+if (defined $opt_l) {
+  print "\n Layers included in PHA file: $opt_l \n";
+  @layer_id = &split_line($opt_l);
+} else {
+  $msg = "\nInput the layers included in the PHA file [L1,R1,LR1, etc, or all; P for propane] ";
+    @layer_id = &getarray($msg);
+}
+# change to upper case and remove any leading/trailing blanks
+    for ($i=0; $i <= @layer_id-1; $i++) {
+	$layer_id[$i] = "\U$layer_id[$i]";
+	$layer_id[$i] =~ s/ //g;
+    }
+
+if (defined $opt_j) {
+    print "\nLayers added ? $opt_j \n";
+    $add_layers = $opt_j;
+} else {
+    print "\nAre layers added ? [y/n]: ";
+    chop($add_layers=<STDIN>);
+} 
+
+if (defined $opt_p) {
+    print "\nDetectors in PHA file: $opt_p \n";
+    if ($opt_p =~ /[aA][lL][lL]/) { $opt_p = "0-4" }
+    @det_id = &parse_range($opt_p,4);
+} else {
+    @det_id = &get_detectors("\nInput the detectors included in the PHA file [0,1,2,3,4, or all]: ",4);
+}
+
+if (defined $opt_m) {
+    print "\nDetectors added ? $opt_m \n";
+    $det = $opt_m;
+} else {
+    print "\nAre detectors added ? [y/n]: ";
+    chop($det=<STDIN>);
+}
+
+
+#
+# Get the date of the observation from the pha file or the -d input
+#
+if (defined $opt_d) {
+  $now = $opt_d;
+  # replace DATE-OBS value in SPECTRUM ext only
+  $specext = 2; # (assuming this as elsewhere in pcarsp)
+  $status = 0;
+  $fitspha = Astro::FITS::CFITSIO::open_file($pha, READWRITE, $status);
+  if ($status) {die "Unable to open $pha"}
+  $fitspha->movabs_hdu($specext, $hdutype, $status);
+  $fitspha->update_key_str('DATE-OBS',$opt_d,'Date updated via pcarsp',$status);
+  if ($status) {die "Unable to update DATE-OBS keyword"}
+  $fitspha->write_chksum($status);
+  $fitspha->close_file($status);
+} else {
+  $now = &phadate($pha);
+}
+print "Responses will be created for date (yyyy-mm-dd) = ".$now."\n";
+
+SMARTSTD2:
+
+# Set up epoch boundaries
+# 3/21/96 18:33:39 UT begins epoch2
+# 4/15/96 23:05:59 UT begins epoch3
+# 3/22/99 17:38:03 UT begins epoch4
+# 5/13/00 00:00:00 UT begins epoch5
+$boundepoch12 = '1996-03-21';
+$boundepoch23 = '1996-04-15';
+$boundepoch34 = '1999-03-22';
+$boundepoch45 = '2000-05-13';
+$epoch = 0;
+if ($now lt $boundepoch12) {$epoch = 1}
+if ($now gt $boundepoch12 and $now lt $boundepoch23) {$epoch = 2}
+if ($now gt $boundepoch23 and $now lt $boundepoch34) {$epoch = 3}
+if ($now gt $boundepoch34 and $now lt $boundepoch45) {$epoch = 4}
+if ($now gt $boundepoch45) {$epoch = 5}
+if ($epoch == 0) {
+  print "Ambiguity in gain epoch assignment\n";
+  print "Exact boundaries are:\n";
+  print "   1996-03-21 18:33:39 UT begins epoch 2\n";
+  print "   1996-04-15 23:05:59 UT begins epoch 3\n";
+  print "   1999-03-22 17:38:03 UT begins epoch 4\n";
+  print "   2000-05-13 00:00:00 UT begins epoch 5\n";
+  print "Please rerun pcarsp using the \"-d\" option\n";
+  print "to shift the date by one day in either direction\n";
+  print "to unambiguously fall into the desired gain epoch\n";
+  exit;
+}
+print "(calibration epoch ".$epoch.")\n\n";
+
+if ($now eq "2000-05-12") {
+  print "*******\nDANGER: Requested date (5/12/2000) coincides with the\n";
+  print "abrupt loss and slow outgassing of propane from PCU0.\n";
+  print "Use extreme caution if analyzing data from PCU0 on this date!\n*******\n";
+}
+
+#
+# Read the e2c file option
+#
+
+#  13Jan00 - new default is to look in LHEA_DATA for latest version
+#            of the e2c file for the correct epoch. If the "-e" option
+#            is used to specify a file, however, NO CHECKING IS DONE!
+#
+#  24Mar09 - reverting to original behavior by request of PCA team. At
+#            this point it's safer to assume CALDB (assuring latest e2c
+#            file) than to worry about users who haven't updated to a
+#            modern version from the older [incompatible] format.
+#
+if (not defined $opt_e or $opt_e =~ /caldb/i) {
+  $e2c = 'caldb';
+} else {
+  $e2c = "$ENV{'LHEA_DATA'}/$opt_e";
+  if (-e $e2c){
+    print "Found PCA energy-to-channel file:\n";
+    print "  $e2c\n";
+  }else{
+    if (-e $opt_e){$e2c = $opt_e}else{
+      die "Cannot find energy-to-channel file: $e2c...\nDied";
+    }
+  }
+}
+
+#
+# Read the ra file option
+#
+if (defined $opt_x) {
+  $ra = $opt_x;
+} else {
+  $ra = 'INDEF';
+}
+
+#
+# Read the dec file option
+#
+if (defined $opt_y) {
+  $dec = $opt_y;
+} else {
+  $dec = 'INDEF';
+}
+
+#
+# Read the partial charge collection value
+#
+if (defined $opt_c) {
+  $pcc = $opt_c;
+} else {
+#  $pcc = 0.0;
+  chop($pcc = `pget pcarmf pcc_coeff`);
+}
+
+#
+# Create the detector and layer arrays for the "all" options
+#
+  if ($det_id[0] eq "all" || $det_id[0] eq "ALL") {
+  @det_id = (0,1,2,3,4);
+  }
+  $num_det = @det_id;
+
+  if ($layer_id[0] eq "ALL") {
+    @layer_id = ("L1","R1","L2","R2","L3","R3");
+    $all_layers = "y";
+    $layerlist = "xe";
+  } else { 
+    $layerlist = "";
+    for ($j=0; $j <= @layer_id-1; $j++){
+       $layerlist = $layerlist.$layer_id[$j];
+    }
+  }
+  $num_layers = @layer_id;
+
+#
+# Read Channel Descriptor, checking for gain/offset values, if necessary
+#
+
+$gcor = 0;
+print "reading channel descriptor from pha file:\n";
+print '  rddescr '.$pha.' chan.txt'."\n";
+@result=&runcom('rddescr "'.$pha.'" chan.txt');
+if ($result[0] =~ ERROR) {die "RDDESCR failed ($result[0])";}
+
+
+print $result[1],"\n";
+$j = @result;
+for ($i=0; $i<=$j-1; $i++) {
+  if ($result[$i] =~ /GCORRMF/) {$gcor = 1} 
+  if ($result[$i] =~ /Unable to write/) {$gcor = -1}
+}
+
+if ($gcor == -1) {
+  print "Gain & Offset values not found in input pha file\n";
+  print "        Running PCAGAINSET tool on ".$pha."\n";
+  @result=&runcom('pcagainset "'.$pha.'" caldb');
+  print @result,"\n";
+  print "re-reading channel descriptor\n";
+  @result=&runcom('rddescr "'.$pha.'" chan.txt');
+  print $result[1],"\n";
+  $j = @result;
+  for ($i=0; $i<=$j-1; $i++) {  
+    if ($result[$i] =~ /GCORRMF/) {$gcor = 1} 
+    if ($result[$i] =~ /Unable to write/) {
+      print "unsuccessful with second try\n";
+      exit;
+    }
+  }
+}
+
+
+open(RSPLIST, "> rsp.txt");
+
+#
+# Try Short cut (if all layers requested and added)
+#
+if ($add_layers eq "y" && $all_layers eq "y") { 
+  $lld = 63;
+  $create_arf = 1;
+  print "\n";
+  for ($k= 0; $k <= $num_det-1; $k++) {
+    $weight = $pcu_weights[$det_id[$k]];
+    if ($weight > 0) {
+      @result = &matrix($now, "xe", $lld, $det_id[$k], $qfile, $gcor, $create_arf, $pcc);
+      print RSPLIST $result[0]." $weight \n";
+    }
+  }
+} else {
+
+#
+#  Resort to the long way for all other cases
+#
+
+# Initialize the associative array for the layer id's and lld codes
+  %lld = ("L1",1,"R1",2,"LR1",3,"L2",4,"R2",8,"LR2",12,"L3",16,"R3",32,"LR3",48,"P",64);
+
+# Initialize a file which records all the layer matrices which are created
+  open (ALL_LAYERS, "> all_layers.txt");
+
+# Create response matrices for each desired layer, creating one arf per detector
+
+ for ($k = 0; $k <= $num_det-1; $k++) { 
+  $create_arf = 1;
+  $weight = $pcu_weights[$det_id[$k]];
+  next if ($weight <= 0);
+
+  open(LAYERLIST, "> layers.txt");
+  for ($j=0; $j <= $num_layers-1; $j++){ 
+#     print "pcu = ".$det_id[$k].", layer = ".$layer_id[$j].", lld code = ".$lld{$layer_id[$j]}."\n";
+     @result = &matrix($now, $layer_id[$j], $lld{$layer_id[$j]}, $det_id[$k],
+		       $qfile, $gcor, $create_arf, $pcc);
+     print LAYERLIST $result[0]." 1.0 \n";
+     print ALL_LAYERS $result[0]."\n";
+     $create_arf = 0;
+  }
+  close(LAYERLIST);
+
+# Add layer matrices into detector matrices, or create a list of layer matrices.
+  if ($add_layers eq "y" && $num_layers gt 1) {
+    if ($det ne "y" &&  defined $opt_n) {
+      $detrsp = $opt_n;
+    } else {
+    $detrsp = "p".$det_id[$k]."_".$layerlist."_".$now.".rsp";
+    }
+    print "\nReady to add the layer rsp's into detector matrix ".$detrsp."\n";
+    print "using the command: \n";
+    print '  addrmf @layers.txt rmffile='.$detrsp."\n\n";
+    die "ERROR: no layers to add" if (-z "layers.txt");
+    @result=&runcom('addrmf @layers.txt rmffile="'.$detrsp.'"');
+    print RSPLIST $detrsp." $weight \n";
+    if ($result[0] =~ ERROR) {die "ADDRMF failed ($result[0])";}
+
+
+  } else {
+    open (LAYERLIST,"layers.txt");
+    while(<LAYERLIST>) {
+      print RSPLIST $_;
+    }
+    close(LAYERLIST);
+  }
+ }
+ close(ALL_LAYERS);
+}
+close(RSPLIST);
+
+# Add detector matrices, if desired
+if ($det eq "y") {
+  if (defined $opt_n) {
+    $pcarsp = $opt_n ;
+  } else {
+    if ($num_det eq 5) {
+      $pcarsp = "pca_".$layerlist."_".$now.".rsp";
+    } else {
+      $pcu_tag = "p";
+      for ($i=0; $i<=$num_det-1; $i++) {
+	$pcu_tag = $pcu_tag.$det_id[$i];
+      }
+      $pcarsp = $pcu_tag."_".$layerlist."_".$now.".rsp";
+    }
+  }
+  # Force full 'addrmf' if there is more than one detector or if
+  # the most recently calculated weight is not equal to 1.0.
+  if ($num_det > 1 || $weight != 1.0){
+    print "\nReady to add the detector rsp's using the command:\n";
+    print '  addrmf @rsp.txt rmffile='.$pcarsp."\n";
+    die "No detector responses to add" if ( -z "rsp.txt" );
+    @result=&runcom('addrmf @rsp.txt rmffile="'.$pcarsp.'"');
+    if ($result[0] =~ ERROR) {die "ADDRMF failed ($result[0])"}
+  } elsif ($num_det == 1){
+    open(RSPLIST,"rsp.txt");
+    chop($rspname = <RSPLIST>);
+    $s = index($rspname,"rsp");
+    $rspname = substr($rspname,0,$s+3);
+    close(RSPLIST);
+    print "renaming $rspname to $pcarsp\n";
+    rename($rspname,$pcarsp);
+  }
+#  Set the value of the RESPFILE keyword
+  @result=&runcom('fparkey "'.$pcarsp.'" "'.$pha.'" RESPFILE');
+# otherwise include the list of matrices in a RESPFILE column in the .pha file. 
+} else {
+  print "Ready now to include list of rsp files into .pha file\n";
+# Special case when there is just one matrix - use RESPFILE keyword
+  if ($num_det == 1 && ($num_layers == 1 || $add_layers eq "y")) {
+    open(RSPLIST,"rsp.txt");
+    chop($pcarsp = <RSPLIST>);
+    $s = index($pcarsp,"rsp");
+    $pcarsp = substr($pcarsp,0,$s+3);
+    close(RSPLIST);
+# change the name if necessary
+    if (($num_layers == 1 || $add_layers eq "y") && defined $opt_n) {
+      system("mv $pcarsp $opt_n");
+      $pcarsp = $opt_n;
+    }
+    @result=&runcom('fparkey "'.$pcarsp.'" "'.$pha.'" RESPFILE');
+  } else {
+# Normal case:  write file names to RESPFILE column, deleting
+# the RESPFILE header keyword,
+    open (COLUMNS, "> col.txt");
+    print COLUMNS "RESPFILE 25A\n";
+    close (COLUMNS);
+    @result=&runcom('fcreate col.txt rsp.txt !rsp.fits');
+    print @result,"\n";
+    $cmd = 'faddcol infile="'.$pha;
+    $cmd .= '" colfile="rsp.fits" colname="RESPFILE" delkey="yes" history="yes" casesen="no"';
+    @result=&runcom($cmd);
+    print @result,"\n";
+    if ($result[0] =~ ERROR) {
+      print "FADDCOL failed ($result[0])\n";
+      print "RESPFILE column could not be added to $pha (assumed to be Type-II)\n";
+    }
+  }
+}
+
+# Update checksum/datasum in pha file, SPECTRUM extension (since RESPFILE added)
+$fitspha = Astro::FITS::CFITSIO::open_file($pha, READWRITE, $status);
+if ($status) {die "Unable to open $pha"}
+$fitspha->movabs_hdu($specext, $hdutype, $status);
+$fitspha->update_chksum($status);
+$fitspha->close_file($status);
+
+# Offer clean-up option
+if (defined $opt_z) {
+    $cleanup = 'n';
+} else {
+    $cleanup = 'y';
+# print "\nClean-up unnecessary files ? (y/n): ";
+#    chop($cleanup=<STDIN>);
+}
+if ($cleanup eq "y") {
+  print "Starting clean-up phase\n";
+  system("rm -f *$now.arf");
+  system("rm -f *$now*.rmf");
+  system("rm -f layers.txt chan.txt modhead.txt");
+  -e "col.txt" and system("rm -f col.txt");
+  -e "pcu0_shft.txt" and system("rm -f *shft.txt");
+  -e "rsp.fits" and system("rm -f rsp.fits");
+  if ($det eq "y" and $num_det > 1) {
+    open(RSPLIST,"rsp.txt");
+    while(<RSPLIST>) {
+      system("rm -f $_");
+    }
+    close(RSPLIST);
+  }
+  system("rm -f rsp.txt");
+
+  if ($add_layers eq "y" and @layer_id > 1) {
+    open(ALL_LAYERS,"all_layers.txt");
+    while(<ALL_LAYERS>) {
+      system("rm -f $_");
+    }
+    close(ALL_LAYERS);
+  }
+  system("rm -f all_layers.txt");
+}
+
+print "all done\n";
+
+sub matrix {
+
+    local($now,$slld,$lld,$pcu,$qfile,$gcor,$create_arf,$pcc) = @_;
+
+#
+# Define the file names
+#
+    $file = "p".$pcu."_".$slld."_".$now;
+    $rmf256 = $file."_256.rmf";
+    $shft256 = $file."_shft.rmf";
+    $rmf = $file.".rmf";
+    $arf = "p".$pcu."_xe_".$now.".arf";
+    $rsp = $file.".rsp";
+
+    if ($slld eq "xe") {
+      print "Here are the files to be created for pcu".$pcu.":\n";
+    } else {
+      print "Here are the files to be created for pcu".$pcu.", anode chain ".$slld.":\n";
+    }
+    print "  256 channel rmf file       - ".$rmf256."\n";
+    print "  the (optional) shifted rmf - ".$shft256."\n";
+    print "  the rebinned rmf file      - ".$rmf."\n";
+    print "  the computed arf file      - ".$arf."\n";
+    print "  the detector rsp file      - ".$rsp."\n";
+
+    print "\nReady to Construct ".$rmf256." using the command:\n";
+    $cmd = 'pcarmf outfile="'.$rmf256.'" pcuid="'.$pcu.'" lld_code="'.$lld;
+    $cmd .= '" e2cfile="'.$e2c.'" scale_hack=0 cdate="'.$now.'" pcc_coeff="'.$pcc.'" chatter=10 clobber=yes';
+    print "  $cmd\n";
+    @result=&runcom($cmd);
+    print @result,"\n";
+    if ($result[0] =~ ERROR) {die "PCARMF failed ($result[0])";}
+
+    if ($gcor == 1) {
+        print "\nReady to apply gain correction using the command: \n";	
+        $shft = "pcu".$pcu."_shft.txt";
+        print ' gcorrmf infile="'.$rmf256.'" shftfile="'.$shft.'" outfile="'.$shft256.'" clobber=yes'."\n";
+        @result = &runcom('gcorrmf infile="'.$rmf256.'" shftfile="'.$shft.'" outfile="'.$shft256.'" clobber=yes');
+	print @result,"\n";
+        if ($result[0] =~ ERROR) {die "GCORRMF failed ($result[0])";}
+	}
+    else {$shft256 = $rmf256}
+
+    print "\nReady to rebin ".$shft256." using the command:\n";
+    $cmd = 'rbnrmf infile="'.$shft256.'" ebdfile="%" binfile="chan.txt" nchan="" cmpmode=".linear." outfile="';
+    $cmd .= $rmf.'" fchan=0 chatter=5 clobber=yes';
+    print "  $cmd\n";
+    @result=&runcom($cmd);
+    print @result,"\n";
+    if ($result[0] =~ ERROR) {die "RBNRMF failed ($result[0])";}
+
+# Construct arf file only once per detector
+    if ($create_arf) {
+    print "\nReady to construct ".$arf." using the command: \n";
+    $cmd = 'xpcaarf phafil="'.$pha.'" rmffil="'.$rmf.'" arffil="'.$arf.'" xtefilt="'.$qfile;
+    $cmd .= '" collcube=caldb pcu="'.$pcu.'" ra="'.$ra.'" dec="'.$dec.'" clobber=yes';
+    print "  $cmd\n";
+    @result=&runcom($cmd);
+    print @result,"\n";
+    if ($result[0] =~ ERROR) {die "XPCAARF failed ($result[0])";}
+    }
+
+    print "\nReady to Construct ".$rsp." using the command: \n";
+    $cmd = 'marfrmf rmfil="'.$rmf.'" arfil="'.$arf.'" outfil="'.$rsp.'" clobber=yes';
+    print "  $cmd\n";
+    @result=&runcom($cmd);
+    print @result,"\n";
+    if ($result[0] =~ ERROR) {die "MARFRMF failed ($result[0])";}
+
+    $rsp;
+
+}
+
+sub get_detectors
+{
+# Queries for, and returns an array of integers giving the chosen elements 
+# from an input array of the form: 1-3,6,7-10.
+
+    local($inputline,$maxrange) = @_;
+    print  $inputline;
+    chop($range = <STDIN>);
+    if ($range ne "all" && $range ne "ALL") {
+      @range = &parse_range($range,$maxrange);
+      if( $range[0] == -10 ) {
+	@range = &get_detectors($inputline,$maxrange);
+      }
+      else {
+	@range;
+      }
+    } else {
+     @range = $range;
+    }
+}
+
+sub write_history
+{
+# Copy the HISTORY keywords from input file (rmf or rsp) to the output 
+#   rsp file
+# For version 2.4, this routine is no longer used.  Calls to this
+#   have been deleted.
+
+    local($infile,$rsp) = @_;
+
+    open (MODHEAD, "> modhead.txt");
+    print MODHEAD "HISTORY History of I/p RMF file: ".$infile."\n";
+    close (MODHEAD);
+    @result=&runcom('fmodhead "'.$rsp.'" modhead.txt');
+    print @result,"\n";
+    @result=&runcom('fkeyprint infile="'.$infile.'[1]" keynam="HISTORY" outfile="modhead.txt" exact="no" clobber="yes"');
+    print @result,"\n";
+    @result=&runcom('fmodhead "'.$rsp.'" modhead.txt');
+    print @result,"\n";
+}
+
+sub phadate
+{
+# get the DATE-OBS value from the Spectrum extension of the PHA file
+#  Parse its format (dd/mm/yy or yyyy-mm-ddThh:mm:ss) into yyyy-mm-dd
+
+  local($i,$x,$phafile,$phaobs,$day,$month,$year,$phadate);
+  $phafile = @_[0];
+  @result=&runcom('fkeyprint infile="'.$phafile.'[1]" keynam="DATE-OBS" outfile="STDOUT" exact="no" clobber="yes"');
+
+  for ($i=0;$i <= @result; $i++) {
+    if ($result[$i] =~ /DATE-OBS/) {$phaobs = $result[$i]}
+  }
+
+  $x = index($phaobs,"'");
+  if (index($phaobs,"-",$x) == -1) {
+      $day = substr($phaobs,$x+1,2);
+      $month = substr($phaobs,$x+4,2);
+      $year = substr($phaobs,$x+7,2);
+      if ($year > 90) {$year = '19'.$year}
+
+      $phadate = $year.'-'.$month.'-'.$day;
+  } else {
+      $phadate = substr($phaobs,$x+1,10);
+  }
+}

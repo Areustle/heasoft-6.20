@@ -1,0 +1,907 @@
+A Table Driven Parameter and GUI Interface 
+*Overview
+**Concept
+There is an increasing need to allow analysis software produced to run
+under different environments (e.g. IRAF, AIPS, XANADU) to be available
+under a single system. At the same time there is a trend to make the
+analysis software more user friendly by incorporating graphical user
+interfaces, GUIs. This document combines two efforts. The first is to make
+an existing analysis environment XANADU, compatable with IRAF such that
+XANADU tasks can run under both under IRAF, but still be able to run as
+part of the standalone XANADU environment. The second is to provide a
+graphical user interface that will sit on top of both IRAF and XANADU. The
+proposed solution to this is to have an underlying system of tables which
+the GUI and the analysis tasks access as a central resource. Another long
+term goal is to put the underlying tables under a database management
+system, so allowing a user to rapidly locate tasks to perform the required
+function. 
+
+**Requirements.
+---
+ * To provide for XANADU an IRAF compatable library of subroutine calls to
+validate commands and parameters, and to get parameter values. 
+
+ * To provide a generic table driven interface which a GUI can use
+to setup the windows to indicate which tasks are available and enable
+them to be run.
+
+ * To put all the task, command and parameter information into tables
+that ultimately will be accessed by a relational database system.
+---
+*The_XANADU_Interface
+**The_Current_System
+XANADU programs can be broken down into two groups: single tasks and
+command driven. The single tasks perform a single function via a question
+and answer session (RDPHA and MKHELP are examples of this). The command
+driven tasks are larger programs like XSPEC or BROWSE, which have multiple
+commands and options. In many cases single and command driven tasks are 
+spawned from a controlling XANADU command driven program. This is 
+usually via a special interface which duplicates much of the parameter
+validation (see e.g. the ximage interface in browse). 
+
+In both cases the xparse routines are used to parse a string that is input
+either at run time, in response to questions, or as part of a command
+environment. Currently no parameter file scheme is used in XANADU.
+
+For the command driven programs xspec, browse and ximage the valid commands
+are read in from a file at startup, and stored in memory. These stored
+commands are used to check the validity of a command when it is entered
+on the command line. This is the start of an externally defined command
+system, but needs to be extended to include the parameter validation.
+
+XRONOS is already broken down into separate tasks, that are run
+stand alone. There is a command driven environment which provides an
+ximage/xspec look and feel, but this simply sets up the parameters
+(via a messy parameter interface at the moment) and spawns the tasks.
+
+The need to provide an interface to a GUI, and the request to make
+XSPEC part of the IRAF environment have driven the effort to add a 
+parameter file interface. The scheme outlined here is the result of
+numerous discussions and iterations between various members of the HEASARC,
+ASC, and the original XANADU developers. Since there are still many 
+divergant views on this, I have attempted to track a course that is
+sufficiently general and layered that other schemes can be accomodated 
+further down stream. 
+
+**New_Syntax
+The syntax for specifying parameters should be the same, for both command
+driven and single task programs. 
+***Command_Driven
+
+For a XANADU command driven program two methods are used to specify
+parameters: positional and qualifier. All positional parameters must be
+entered in a particular order on the command line. In many (but not all
+cases) the positonals are required parameters that, if not given, will be
+prompted for. A qualifier parameter is entered with the parameter name
+preceded by a token (currently a VMS style slash /), and set equal to the
+value e.g. /radius=1.0. Qualifiers are usually optional (but occasionally
+they may be required). In some programs e.g. browse, both parameter methods
+are used, whereas in others e.g. xspec, positional parameters are dominant.
+Currently qualifiers MUST be left adjusted (without spaces) and preceed the
+positional parameters. 
+
+In the new scheme it is proposed to preserve both approaches, but to make 
+two changes, which are backwards compatable with the current scheme:
+---
+ * make it such that positional parameters can also be specified using 
+qualifiers.
+
+ * use the equals sign "=" as the distinguishing token that a qualifer
+is being used, and for logicals use logical+ or logical- to specify the
+logical state. The / system would also be supported, so as to remain
+backward compatable, for logicals /logical would be equivalent to logical+.
+---
+
+E.g. in xpsec the command FIT is currently given as: 
+-------------------------------------------------------------------
+FIT 0.1 10
+-------------------------------------------------------------------
+where 0.1 is specifying the parameter value dchi2 and 10 is the parameter
+niter. In the new scheme this would still work, but so too would: 
+
+-------------------------------------------------------------------
+FIT/dchi2=0.1/niter=10 
+-------------------------------------------------------------------
+
+or
+
+-------------------------------------------------------------------
+FIT /niter=10 0.1
+-------------------------------------------------------------------
+
+or
+
+-------------------------------------------------------------------
+FIT niter=10 dchi2=0.1
+-------------------------------------------------------------------
+
+In the new version qualifiers can be put anywhere on the command string. 
+
+If there is a case where the token is used as part of a positional
+parameter (e.g. the pgplot devices all begin with "/") they can be ignored
+by use of a special option in the command table, or by enclosing the
+parameter in " ". 
+
+If there are spaces in the parameter string then it should be enclosed
+with " " e.g. ra="12 03" dec="+50 16 7.3". If there are spaces in the
+postional parameter, then either the " " mechanism can be used, or
+the fields separated with coma's, e.g. sc 12 03,+50 16 7.3 . The 
+current parser may need modifying to handle this, there have been 
+problems with it in the past.
+
+The qualifier ? or /? will list all the valid qualifiers for a particular 
+command, then return to the command line without executing the command.
+
+Partail matching of parameter names and command names will be supported.
+
+***Single_Tasks
+For individual tasks a question/answer session is used to obtain the 
+parameter values and bind them to program variables. These can be given
+at run time on the command line, in the same order as they are
+required by the program. In this case some of the parameters can be 
+optional, though they must be the last one(s) in the parameter list.
+
+In the new approach this convention would be preserved, but also the
+parameters (required and optional) could be specified with qualifiers. A
+task can be spawned from another program including the command string as
+typed in the original program. 
+
+***Parsing
+To parse these parameters out of the string YACC and Lex will be used to
+create C subroutines. These will be hooked to the current XANADU routine
+getbuf which returns the input string. This will add the complication of a
+c/fortran interface, but if YACC and Lex works as advertised they will
+provide a much simpler way to implement the new scheme. This may overlap
+somewhat the SAO host interface work, and this should probably be looked
+into. If the YACC and Lex appraoch seems to complicated, then we will
+revert to externding the current xparse fortran.
+
+***Macros
+For a command driven program it is possible to specify at run time a series
+of commands that are to be executed (a macro). This is done in one of two
+ways. First a file can be created containing a series of valid commands.
+This is then run by giving it after the program name at run time preceded 
+by an @ symbol e.g. xspec @macro
+
+If the parser routine getbuf sees the @ it redirects the input to read the
+file, until the file is read, it then returns control to the terminal. In
+the second approach a series of commands can be given on the runtime line,
+separated by a `;`. These are then decoded with a routine called gtcom2 to
+run through each command before passing control to the command line e.g. 
+` ximage read/fits fred ; smooth ; display ; exit `. This latter method is
+useful in that an intermediate file need not be created. It is typically
+used when one command driven program is spawned from another. Both
+approaches would be preserved.
+
+For single tasks there are three methods for making a macro: a file containing 
+responses to the tasks in the order they are required by the task, 
+giving on the command line the responses in the same order, or giving
+the parameters using tokens. The latter is new, and will bring the
+single task and command driven programs into a single approach.
+*A_Table_Driven_System
+
+The proposal here is to create a number of tables which are used by XANADU
+tasks to validate commands (for the command driven programs), validate
+parameters, and provide a setup for a graphical user interface to use.
+There are four tables: a parameter table, a command table, a command alias
+table and a key table. The parameter table would be internally structured
+to be identical to an IRAF parameter file. The commands table would be
+analogous to a package of IRAF tasks. The key table has no analogy under
+IRAF, because parameter files are not shared between tasks. 
+
+In addition there will be two additional tables used primarily to setup the
+gui: a keyword table to group together related commands under a single
+keyword, and a gui table to group together tasks under another single
+keyword. 
+
+**Parameter_table
+
+This would be an IRAF parameter file. It would contain all the
+valid parameters for a particular task, selection of tasks, or command
+driven program. It would follow the IRAF parameter file convention and
+contain all the standard IRAF parameters: 
+---
+ * parameter name 
+ * parameter description 
+ * type
+ * minimum value 
+ * maximum value 
+ * default value  
+ * update 
+---
+Because this table will contain the default value for a parameter, which
+will be user dependent, there will be one parameter file per user. The last
+parameter in the file will be its version number. This will be checked at
+startup to ensure its compatability. If the version numbers disagree, or
+the user does not have a local version of the parameter file, then a new
+version should be copied from a system area. 
+
+If a user is running multiple versions of the same task, then there will
+need to also be a check if the parameter file is already in use, and if it
+is, then measures must be taken to ensure that the two tasks dont interfer. 
+**Command_table
+
+This is similar to the current command file read in by xspec, ximage and
+browse. It contains all the valid commands for a command driven program, or
+group of tasks. It has the following entries:
+--- 
+ * name 
+ * description
+ * access
+ * window type
+---
+The command name can be made unique in the first few letters by using a *
+e.g. ps*am will make ps unique, even if there is another command psd. 
+
+The command description gives a summary of what the command does.
+
+Access is used to define if the command is hidden or visible so that the
+access can be restricted. It can be visible or hidden. Currently this
+is done by preceding the command name by a * to make the command hidden.
+
+Window type is used to define which GUI window is to be used. There will
+be a default which will call a standard form filling window. There may
+be other special windows for e.g. doing models.
+
+An example is:
+----------------------------------------------------------------------
+sc, search in a cone, w, def
+sn, search by name, w, def
+cdb, change database, w, def
+lusers, list registered users, s, sys 
+----------------------------------------------------------------------
+In the last case there is a command to list registered users, which
+only system people can do.
+**Command_aliases_table
+Within the current command driven environment there is the possibility to
+redefine command strings with the "alias" command. This is very useful
+for redefining complicated command sequences into a single command. There
+are currently two different sets of aliased commands one that is system
+wide, available to all users, and another that is user specific. These
+aliased commands need to be made available also to the graphical user
+interface. The current aliases tables should be modified as 
+follows:
+---
+ * aliased command name
+ * command string
+---
+There would be one of these in a system directory, and another in 
+the users root directory (or where ever the users version of the
+parameter file is kept).
+
+**Keywords_table
+This will assign a keyword to each command or aliased command, and allow 
+commands to be grouped together. This table will contain:
+---
+ * keyword (or group) name
+ * command name
+---
+It is possible for the keyword and the command name to be identical.
+
+The user will be able to update this table both as part of the gui 
+interface and to allow the user to make popular commands keywords.
+
+An example is:
+----------------------------------------------------------------------
+search, sc
+search, sp
+search, sn
+display, dsam
+display, dpage
+class, bl_lac
+----------------------------------------------------------------------
+This is separate from the commands database because it may include aliased
+command names, as well as commands (bl_lac is an alias in the above example). 
+Also the user will be able to customize this table (or have their own
+version, it may be better to split the user and system defined keywords to
+two tables so making updates easier). 
+
+**Key_table
+The Key table defines which parameters belong to which command. It contains:
+---
+ * command
+ * parameter
+ * postional order
+ * cluster
+---
+The command and parameter relate the valid parameters to each task. The
+postional order is optional, but if specified allows the order in which 
+the parameters are given to be specified for each command
+(The positional orders may be different for different commands).
+
+The key table will not exist for single tasks. In these cases the 
+positional order will be the same as the parameter order in the file.
+
+To ensure that the current parameter parsing can coexist with the new, and
+to allow for commands where the parameter checking is handled elsewhere
+(e.g. if a process is spawned) there will need to be a special symbol in
+the key table so that the parameter checking will know that the parameter
+binding and checking is done deeper in the program and that it should
+proceed without error. This will be a * for no check, and ** if the 
+checking is done by the task. An example of the key table is
+---------------------------------------------------------------------------
+sc, full,0
+sc, ra, 1
+sc, dec, 2
+sc, radius, 3
+sc, default, 0
+ximage, **XANADU/ximage/manager, 0
+msam, *, 0
+psam, histogram, 0, *
+psam, scatter, 0, *
+psam, bins, 0, histogram
+psam, x-value, 1,
+psam, y-value, 2, scatter
+psam, y2-value, 3, scatter
+psam, y3-value, 3, scatter
+---------------------------------------------------------------------------
+In this example the sc command is fully specified in the key. For the
+ximage command it will spawn the process called ximage, and will find the
+command and parameter tables for ximage in the directory specified; the gui
+can go there to find out the parameters to display, and the overlying task
+will not check the parameters entered since this will be done by ximage.
+
+For msam, the * means that the parameter checking is still done in that
+subroutine, so no checking need be done higher up. 
+
+For psam the * in the cluster field indicates that some of the other 
+parameters are only used with that particular one and these are
+then specified later on e.g. for bins.
+
+**Backward_compatability
+
+It is important that this new system be backward compatable with the
+existing programs, since its likely to take sometime to convert all the
+current parameter parsing. It is not desirable that when this new method is 
+introduced everything stops working! At the moment all the parameter checking 
+and binding occurs deep in the code responsible for executing the function.
+The new approach will centralize the checking function higher-up. The 
+parameter binding will still occur lower down in the code, but via a
+standard parameter interface subroutine library. In the transition phase it
+should be possible for the existing parameter functions to be left in the
+code, with a flag in the command table to indicate this is the case. 
+
+Most important the look and feel of each program should, whenever possible
+be preserved, so that e.g. a current browse user feels at home.
+*The_GUI_Interface
+**Objectives
+---
+ * Provide a general purpose interface to be used
+   to run a variety of HEASARC type tasks and whose configuration
+   can be changed by an application programmer.
+
+ * Provide an interface that will be useful to both the novice
+   and experienced user of any HEASARC analysis task.
+
+ * Table Driven: the information needed to create the windows,
+   buttons, labels, other widget types, etc., and to determine the response
+   to user input, will be provided in pre-existing tables.  These 
+   tables will be constructed by the developer of the analysis package.
+   The interface is to be self-configuring based on the tabular information.
+
+ * Appearance: The appearance of the interface screens is to be as shown in 
+   the diagrams (separately provided).
+  
+ * Widget types: A small number of object types (labels, push buttons, 
+   textual information, etc.) will be used initially.  These will be
+   augmented by existing packages such as PGPLOT.  In the future
+   the extra functions (plotting, model description, etc.) will be
+   provided directly by the interface.
+
+ * Interface toolkit: The interface will use Motif UIL for prototyping 
+   purposes and OSF/MOTIF for the production version.  The interface should
+   be able to be run under both the Unix and VMS operating systems.
+
+ * Tasks to be supported: Initially the interface will run with Browse 
+   (under VMS) and XSPEC (under VMS and Unix).
+
+---
+**GUI_interfaces
+There are four different types of interfaces.
+***User_Interface
+The user will interact with the interface software
+through the use of Motif style resource files.  By
+editing these files the user will be able to change
+such characteristics as color, window size, label
+strings, and button names.
+
+***Developer_Interface:
+The developer of the interface will have the 
+following tools to use.  MOTIF UIL for prototyping
+purposes, OSF/MOTIF for a functional interface, 
+C, FORTRAN, AWK for string parsing functions, 
+EXECPT for interactive task communication (Unix).
+
+***Programmer
+The analysis task programmer's link to the GUI
+will be through the parameter tables that the
+programmer is to develop.
+
+***Table_interface
+Fortran routines will be written to read the tables as defined earlier in 
+this document. GUI Fortran routines will call these lower level
+subroutines and store the results, possibly in a temporary
+file.  The character strings in the files will then be parsed and sorted
+(either in C or, preferably, using AWK) so that strings are produced
+that can be displayed as labels and push buttons names.  The number of 
+push buttons is to be determined automatically from the amount of 
+information returned by calls to the table readers.
+
+**Basic_objects 
+--------------------------------------------------------------------------
+      1.  Button boxes.
+             Quit
+             Help
+             Task choice
+             Command choice
+             Option choice
+
+      2.  Comment boxes.
+            Display information about the button that has just been chosen
+
+      3.  Command boxes.
+           Allow user to enter a command directly, without traversing
+           intermediate screens.
+
+      4.  Information boxes.
+           Display information returned from a specific task
+
+      5.  Label boxes.
+           Display static information such as the name of the
+           currently running task.
+
+      6.  Text boxes.
+           Allow user to fill in information when it is not
+           available from tables.
+
+      7.  List boxes.
+           File choice
+           Model choice
+
+      8.  PGPLOT generated screens.
+
+      In terms of Motif widgets these objects fall into the following 
+      classes; 
+               PushButton
+               Label
+               Text
+               Form
+               BulletinBoard
+               Frame
+               List
+--------------------------------------------------------------------------
+
+**GUI_table
+The GUI will scan a table at start up to find out what tasks are available. 
+This table will only be used by the GUI, and will not be accessed by any
+of the original tasks. Ultimately this table will provide an ignorant
+user with a capability to search and locate tasks and programs that do 
+particular things, e.g. spectral fitting. The GUI table will contain:
+---
+ * keyword name 
+ * package name
+ * description
+ * type (IRAF, XANADU, etc)
+ * purpose (spectral, help, etc.)
+---
+The keyword is what appears under the icon. There maybe several packages
+under each keyword. An example could be:
+
+---------------------------------------------------------------------------
+Spectral analysis, XSPEC, multimission x-ray spectral fitting, XANADU, spectral
+Spectral analysis, RDPHA, convert pha file to ascii, XANADU, spectral
+Database Search, BROWSE, search databases, XANADU, dbms
+---------------------------------------------------------------------------
+
+If there is only one keyword, as in the browse example, then this will be
+the task that will be run, and both the keyword and the task name should
+appear. One way to do this would be to have the keyword below the button, 
+and the task name (if applicable) inside. If there are multiple keywords 
+then upon selection the user will be given another window to select the task. 
+The user should be able to move a task up to the higher level, if its 
+one of their favorites. E.g. they may want xspec on the higher level
+all the time so that after moving it the gui-table contains:
+---------------------------------------------------------------------------
+Spectral analysis, XSPEC, multimission x-ray spectral fitting, XANADU, spectral
+Spectral analysis, RDPHA, convert pha file to ascii, XANADU, spectral
+Database Search, BROWSE, search databases, XANADU, dbms
+XSPEC, XSPEC, multimission x-ray spectral fitting, XANADU, spectral
+---------------------------------------------------------------------------
+
+If the keyword and task names are the same then only one should
+be displayed.
+
+Once a task is started the gui will scan the task's tables to set up 
+further windows. This will depend if it is command driven or a single task.
+The GUI will determine this by inquiring if the key and command tables 
+exist. If they dont, then its a single task.
+
+Since the user will be able to update this table (by draging the icons?)
+it must be copied to the user's directory. Also the user may want to add
+their own tasks here, so there should be an option to add foriegn tasks.
+**Single_tasks
+For a single task a menu will be displayed that will display the following 
+info:
+---
+ * a header with the task name, a help button, a quit button,
+
+ * across the page for each paramter a field containing: the parameter name, 
+and the default values given in the parameter file. The paramters 
+will be displayed with the positionals first, the required qualifers next,
+with a button for optional parameters. Clicking on the parameter will allow 
+the user to enter a new value. Double clicking will give the parameter 
+info. There will be a run button which the user will click to run the
+task.
+---
+**Comamnd_driven
+After starting a command driven program there will be an overview window
+containing buttons for all the keywords. If a user clicks on these they
+will see a commands window containing an icon for each command
+corresponding to that keyword. If they click on a command the menu
+described above for a single task will appear, and the user will fill out
+the parameters. 
+
+The user will be able to drag a single task up from the commands window to
+the keywords window, so they can keep their favorite commands permanently
+visible. There should be some icon representation used to differentiate a
+keyword from a command. 
+
+Note: They should NOT be able to move the command icons from a command driven
+program overview window higher. 
+
+There may be aliased commands. These will be treated exactly the same
+as normal commands, such that e.g. a keyword can be assigned to an aliased
+command. The gui will scan the aliased command file and display them
+in a similar manner.
+
+*Software_calls
+This describes the subroutine calls used to access the tables.
+At program startup all the required tables will be loaded into memory. 
+**Table_loading
+The following routines will load the tables into memory.
+---------------------------------------------------------------------------
+ Subroutine LDCMDS(file_command,ierr)
+ Subroutine LDPARS(file_parameters,ierr)
+ Subroutine LDKEYS(file_keys,ierr)
+ Subroutine LDALIA(file_alia,ierr)
+ Subroutine LDKWRD(file_kwrd,ierr)
+ Subroutine LDGUI(file_gui,ierr)
+---------------------------------------------------------------------------
+
+The file_command etc. specify the full filename, including the directory
+where they are located. There will be a common block associated with 
+each table that contains all the loaded information.
+
+**verification
+The verification will be handled by a series of checking routines. These
+will take the parsed string (zstring below), locate the relevant
+information and check its correctness. These will correspond to the 
+tables and will internally refer to the same common blocks used in the
+ldxxxx routines. 
+
+---------------------------------------------------------------------------
+ subroutine chkcmd(zstring, zparse, command, username, status)
+ subroutine chkwrd(zstring, zparse, command, status)
+ subroutine chkali(zstring, status)
+ subroutine strpar(zstring, zparse, parameters, npar, status)
+ subroutine chkkey(parameters, npar, status)
+ subroutine chkpar(parameters, npar, status)
+---------------------------------------------------------------------------
+
+In a command driven program, these will be called in sequence:
+---
+ * verify first the command exists (chkcmd), 
+
+ * if the command is not found check if its a keyword (chkwrd) and list out 
+the keywords if it is, 
+
+ * if its still not found check if its an aliased command (chkali) 
+(and recall chkcmd and chkwrd), 
+
+ * strip out the parameters from the string (strpar), 
+
+ * check the command-parameter combination is allowed and add the parameter 
+names for the positonal parameters (chkkey) 
+
+ * check the parameter type, value, range has been entered correctly 
+(chkpar). If a parameter is required for a particular task or command, 
+then the prompting for that parameter would occur here. 
+---
+
+The parameters are as follows: command is the returned full valid command
+name, username contains information as to the user so the access can be 
+checked, parameters is an array of the returned parameter names and associated
+string (the parameter values will still be as a character string), npar the
+number of parameters and status a return flag. zstring and zparse are the
+parsed string and the current parse position, which corresponds to the
+location of the first space after the command and qualifiers. zparse is
+needed for backward compatability, but will become obsolete eventually. 
+The status is > 0 for a fatal error, < 0 for a warning (e.g. if the 
+parameter checking is still done deeper in the program.
+
+For a single task, only the ldpars, strpar and chkpar routines would be called
+(and this would be directly analogous to IRAF). 
+
+**Parameter_binding
+
+A library of routines would be used to bind the parameter values to the
+program variables. These routines would get the values from the parameter
+common block values that were either loaded at startup from the parameter
+file, or input as part fo the parsed string. These routines would be
+analogous to those used in the IRAF F77 interface. There would be one set 
+of routines for IRAF, one for XANADU, and a wrapup set that calls one
+or the other depending on which environment is used. Bill Pence has 
+circulated the definition of the wrapup routines as listed below.
+For the XANADU versions the leading letter "p" should be replaced with 
+"x".
+
+***Subroutine_Naming 
+
+The subroutine names are deliberately somewhat obscure to avoid possible
+clashes with names in other subroutine libraries.  All the subroutines begin
+with the letter 'p' (for parameter interface) and are limited to 6 characters. 
+(The IRAF and the SAO Host Interfaces use these same subroutines, except that
+they begin with 'u' instead of 'p'). The second 2 characters indicate the
+general type of subroutine (e.g., 'cl' for 'command language'interface).  The
+4th character is generally a 'p' or 'g' indicating that the subroutine either
+'puts' or 'gets' information.  Many of the subroutines come in families, which
+differ only in the datatype of the subroutine parameter.  The last character of
+the subroutine name indicates the data type and may have one of the following
+values: 
+---------------------------------------------------------------------------
+	b boolean (4-byte logical)
+	d double precision real (8 bytes)
+	i integer (default length, usually 4 bytes)
+	l long integer (8 bytes if architecture permits)
+	r real (4 bytes)
+	s short integer (2 bytes)
+	t text string  (character*n)
+	x complex (pair of real*4 values)
+---------------------------------------------------------------------------
+Square brackets are used below to include all the allowed datatypes
+for that subroutine family (e.g., uclgs[bdi] would indicate that there
+are three different subroutines in the family, uclgsb, uclgsd, and uclgsi).
+
+
+***Interface_Definition
+
+1.  Get/read a scalar parameter 
+---------------------------------------------------------------------------
+	call pclgs[bdilrstx](parname, buffer, status)
+
+		parname    string    name of parameter to get
+		buffer     --        buffer of appropriate data type
+		status     integer   return code: 0 = successful return
+                                                 -1 = end of file on CL string
+                                                  1 = CL parameter not found
+                                                  2 = parameter has bad datatype
+                                                  3 = parameter is undefined 
+---------------------------------------------------------------------------
+
+2.  Get/read a vector parameter 
+
+---------------------------------------------------------------------------
+
+	call pclgv[bdilrsx](parname, felem, nelem, nvals, buffer, status)
+
+		parname    string    name of parameter to get
+		felem      integer   first element to get (normally 1)
+		nelem      integer   number of elements to get
+		nvals      integer   number of elements actually read
+		buffer     --        buffer of appropriate data type
+		status     integer   return code: 0 = successful return
+                                                 -1 = end of file on CL string
+                                                  1 = CL parameter not found
+                                                  3 = parameter is undefined 
+                                                  6 = bad first element number
+                                                  7 = bad number of elements
+---------------------------------------------------------------------------
+
+3.  Put/write a scalar parameter 
+
+---------------------------------------------------------------------------
+
+	call pclps[bdilrstx](parname, buffer, status)
+
+		parname    string    name of parameter to put
+		buffer     --        buffer of appropriate data type
+		status     integer   return code: 0 = successful return
+                                                  3 = parameter is undefined 
+                                                  5 = error putting parameter
+
+---------------------------------------------------------------------------
+
+4.  Put/write a vector parameter 
+
+---------------------------------------------------------------------------
+
+	call pclpv[bdilrsx](parname, buffer, felem, nelem, status)
+
+		parname    string    name of parameter to put
+		buffer     --        buffer of appropriate data type
+		felem      integer   first element to put(normally 1)
+		nelem      integer   number of elements to put
+		status     integer   return code: 0 = successful return
+                                                  3 = parameter is undefined 
+                                                  6 = bad first element number
+                                                  7 = bad number of elements
+
+---------------------------------------------------------------------------
+
+5.  Get the text of error message corresponding to status code
+
+---------------------------------------------------------------------------
+	call perget(status,text)
+
+		status     integer  return status (presumably non-zero) from
+                                    a previous call to one of the interface
+                                    routines
+                text       string   returned character string with full text
+                                    of the error message
+
+---------------------------------------------------------------------------
+
+6. Write standard output to the screen and a log file.
+
+---------------------------------------------------------------------------
+	call xwrite(text, chat)
+
+                text       string   returned character string with full text
+                                    of the error message
+
+                chat       integer  chatiness level of output, 5 is high
+                                    10 is default, 15 is low
+
+---------------------------------------------------------------------------
+
+7. Write error message to the screen and a log file
+
+---------------------------------------------------------------------------
+	call xerror(text, chat)
+
+                text       string   returned character string with full text
+                                    of the error message
+
+                chat       integer  chatiness level of output, 5 is high
+                                    10 is default, 15 is low
+
+---------------------------------------------------------------------------
+
+**Table_updating
+
+This is a lib of routines to update the parameter table. In addition
+there will be routines to add and delete to a gui and keyword table. 
+These should update both the contents in memory and in the file.
+
+**GUI_interface
+
+There will be lib to allow the gui to setup. These will inlcude routines to
+scan the gui, command, key, keyword and alias tables to get all the commands
+and keywords. Also required will be routines to obtain from the parameter
+table the parameter type, and the other parameter atributes.
+
+**Command_driven
+For command driven XANADU programs the subroutine GTCOM2 is used to wrapup
+this function. This routine already exists and is as follows: 
+
+---------------------------------------------------------------------------
+SUBROUTINE GTCOM2(String,Parse,Prompt_in,Command,Command_no,Sysdir,
+     &                 Program,Version,Idone)
+
+where
+ sysdir (c*30) - the system directory where the tables are kept
+ program (c*10) - the name of the program running 
+ version (c*6) - the version number of the program
+ prompt_in (c*80) - user defined prompt string, if ' ' then uses [nn]program>
+ command_no (i*4) - current command number
+ command (c*50) - current command
+ idone (i*4) - set to 1 if the command has already been executed in gtcom2
+             - set to -1 if there is a fatal error
+ string - the parsed command string
+ parse - the current parse position (the position of the space after the 
+          command/qualifer combination)
+
+
+**Single_task
+There is no such subroutine (that I know of). The following needs to 
+be written:
+---------------------------------------------------------------------------
+
+SUBROUTINE GTPAR (String,Parse,Sysdir,Program,Version,idone)
+---------------------------------------------------------------------------
+The parameters are the same as for gtcom2. 
+**Help
+Each parameter and command needs to have a help. This could best be
+done by having a convention where teach help is a separate .shf/.dhf
+file with the name of the command or parameter e.g. dall.shf or full.shf.
+This might cause problems is a command and parameter name is the same,
+so perhaps the parameter file ones should be different somehow.
+
+At any prompt there should be access to the help by typing help. This would
+then get the help for that parameter or command. The help files should
+be kept in the same place as the tables, or in a place that is defined
+in some central point (e.g. ldcmds or ldpars)
+**Directories
+If a directory is to be specified, then it should be included in a
+sitedef.inc file. This sets up characterstring variables that
+include the directory specification. See XANADU:[spactral.inc]
+for an example.
+
+**Performance
+This new version has loads of files that must be opened and readin at 
+startup. This may give a big performance hit. For the initial prototype
+the files will be  ASCII and editable. For distribution versions these
+files may be preprocessed so they can be combined and read in only once.
+**Walk_through
+-------------------------------------------------------------------------
+
+              UI                                Application
+              --                                -----------
+
+Start up                                         Start up
+Initialize for application
+(ie read command file etc)
+
+Read user's input                                Waiting for UI
+Parse out command
+Parse out parameters, check validity
+ and set parameter file
+Tell application that there is a command
+
+Waiting for application                          Run command, read 
+parameters
+                                                 from file.
+
+                                                 Tell UI that command is 
+done.
+
+Read user's input                                Waiting for UI
+...
+-------------------------------------------------------------------------
+In the case of IRAF the UI (ie cl) and the application (ie task or tasks)
+are linked in the same program so the UI telling the application there is
+a command is simply a subroutine call for the appropriate task. Similarly,
+returning from the subroutine call is the signal to the UI to ask the 
+reader
+for more input.
+
+The more general (and less monolithic :-) ) scheme has the UI and 
+application as separate programs communicating through files.
+
+*Builds
+**Build_1
+Build 1 will demonstrate
+---
+ * the use of yacc and lex to parse the input string
+
+ * the feasibility of the table interface
+
+ * the basic gui modules
+---
+This will include:
+---
+ * a new gtcom2 that handles both the command and parameter parsing and 
+   checking using underlying tables, plus yacc and lex generated routines.
+
+ * a basic set of motif based gui windows to handle iraf parameter file 
+   input and display, icons of all the available tasks and commands
+   associated with each task.
+
+ * an end to end test of the gui, table driven interface and an application
+   (xspec, or browse, or ximage, or a stand alone gtcom2).
+---
+The table reading software is being written with the aim of
+modifying Browse, the first version of the interface will speak to
+Browse.  However, based on past experience with XSPEC we will also
+try and have it linked to XSPEC (with some particulars to
+be worked out later).
+
+The first build (with links to Browse) should be done (on VMS)
+by the end of March or beginning of April.  After that a link to
+XSPEC will be created.  Future builds will include additional
+graphics capabilities (such as plotting, model description, image
+display) and an IRAF interface.
+
+**Build_2
+**Build_3
+

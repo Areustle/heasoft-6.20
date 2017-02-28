@@ -1,0 +1,112 @@
+#!/usr/bin/perl
+
+# HXD gti making tool
+# This script makes a gti file, which excludes the time when "buffer flash" and "TLM reject" occur.
+# 2005 Nov 29 Hiromitsu Takahashi
+# 2006 Jun 27 Hiromitsu Takahashi
+#            ftools release fo version 1.2 process
+# 2006 Nov 15 Hiromitsu Takahashi
+#            excluding the time when data transfer from AE to DE is saturated.
+#            identifying WPU borad IDs.
+# 2007 May 21 Hiromitsu Takahashi
+#            "fifo_full" option is added to choose whether the gti includes
+#             the time during the AE-DE transfer saturation or not.
+# 2008 Jul 29 Yukikatsu Terada, Takao Kitaguchi
+#            bug fixed when the non reset counters carry up
+#
+
+$hxdgtigen_version = "1.5" ;
+$bufrec_max = 32.0;
+
+### parse arguments ################################################
+if(@ARGV) {
+    foreach $i (0 .. $#ARGV) {
+        $ARGV[$i] = "\"".$ARGV[$i]."\"";
+    }
+    $invokestring = join(' ',@ARGV);
+}
+
+$hk_dir = `pquery2 hxdgtigen hk_dir $invokestring`;
+chop($hk_dir);
+
+$hk_file = `pquery2 hxdgtigen hk_file $invokestring`;
+chop($hk_file);
+
+$gti_fname = `pquery2 hxdgtigen gti_fname $invokestring`;
+chop($gti_fname);
+
+$WPU  = `pquery2 hxdgtigen WPU $invokestring`;
+chop($WPU);
+
+$fifo_full  = `pquery2 hxdgtigen fifo_full $invokestring`;
+chop($fifo_full);
+
+$clobber  = `pquery2 hxdgtigen clobber $invokestring`;
+chop($clobber);
+
+$chatter  = `pquery2 hxdgtigen chatter $invokestring`;
+chop($chatter);
+
+######## verbose #######
+if($chatter){
+  printf("hxdgtigen: hxdgtigen version %s \n",$hxdgtigen_version); 
+
+  printf("hxdgtigen: hk dir = %s\n", $hk_dir);
+  printf("hxdgtigen: hk file = %s\n", $hk_file);
+  printf("hxdgtigen: WPU = %s\n", $WPU);
+  printf("hxdgtigen: fifo full = %s\n", $fifo_full);
+  printf("hxdgtigen: output gti = %s\n", $gti_fname);
+}
+
+#######################################################################
+# check files
+
+if (!-e "$hk_dir/$hk_file"){
+    printf("hxdgtigen: No hk file!: %s/%s\n", $hk_dir, $hk_file);
+    exit;
+}
+
+system("rm -f temp_gti.list");    
+
+foreach $wpu (0, 1, 2, 3) {
+    if (`echo $WPU | grep -c $wpu`==1){
+	system("rm -f temp${wpu}_tlmrej.fits");
+	system("maketime prefr=1.0 postfr=0 infile=\"$hk_dir/$hk_file\"+2 outfile=\"temp${wpu}_tlmrej.fits\" expr=\"HXD_W${wpu}EVTLMRJCT\=\=HXD_W${wpu}EVTLMRJCT{-1}\"  compact=NO time=TIME");
+	
+	$bfsh = `fstruct \"$hk_dir/$hk_file\"+2 | grep TLMBFSH | grep W${wpu} | awk '{print \$2}'`;
+	chop($bfsh);
+	if ($chatter){
+	    system("echo \"BFSH colmun name\: WPU\"${wpu}\" \"${bfsh}");
+	}
+	system("rm -f temp${wpu}_bfsh.fits");
+	system("maketime prefr=1.0 postfr=0 infile=\"$hk_dir/$hk_file\"+2 outfile=\"temp${wpu}_bfsh.fits\" expr=\"${bfsh}\=\=${bfsh}{-1}\"  compact=NO time=TIME");
+
+system("cat >> temp_gti.list <<EOF
+temp${wpu}_tlmrej.fits
+temp${wpu}_bfsh.fits
+EOF
+");
+
+	if($fifo_full eq 'yes'){
+	if ($chatter){
+	    system("echo \"AE-DE FIFO-full time is additionally excluded from GTI\: WPU\"${wpu}");
+	}
+	    system("rm -f temp${wpu}_bufrec.fits");
+#	    system("maketime prefr=1.0 postfr=0 infile=\"$hk_dir/$hk_file\"+2 outfile=\"temp${wpu}_bufrec.fits\" expr=\"(HXD_WEVT${wpu}_BREC_CNT-HXD_WEVT${wpu}_BREC_CNT{-1})/(TIME-TIME{-1}) < $bufrec_max\" compact=NO time=TIME");
+	    system("maketime prefr=1.0 postfr=0 infile=\"$hk_dir/$hk_file\"+2 outfile=\"temp${wpu}_bufrec.fits\" expr=\"(HXD_WEVT${wpu}_BREC_CNT-HXD_WEVT${wpu}_BREC_CNT{-1})>=0 ? (HXD_WEVT${wpu}_BREC_CNT-HXD_WEVT${wpu}_BREC_CNT{-1})/(TIME-TIME{-1})<$bufrec_max : (HXD_WEVT${wpu}_BREC_CNT-HXD_WEVT${wpu}_BREC_CNT{-1}+65535)/(TIME-TIME{-1})<$bufrec_max\" compact=NO time=TIME");
+
+system("cat >> temp_gti.list <<EOF
+temp${wpu}_bufrec.fits
+EOF
+");
+	}
+
+    }
+}
+
+if($clobber eq 'yes'){ system("rm -f $gti_fname"); }
+system("mgtime ingtis=\@temp_gti.list outgti=$gti_fname merge=AND");
+
+system("rm -f temp0_tlmrej.fits temp1_tlmrej.fits temp2_tlmrej.fits temp3_tlmrej.fits temp0_bfsh.fits temp1_bfsh.fits temp2_bfsh.fits temp3_bfsh.fits temp0_bufrec.fits temp1_bufrec.fits temp2_bufrec.fits temp3_bufrec.fits temp_gti.list");
+
+if($chatter){printf("hxdgtigen: process done.\n");}

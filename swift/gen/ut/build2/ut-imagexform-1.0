@@ -1,0 +1,292 @@
+#!/usr/bin/perl
+#
+#	ut-imagexform-1.0
+#
+#		compare imagexform output against test case
+#
+#	options
+#		input=<directory>
+#			set the input directory
+#		output=<directory>
+#			set the output directory
+#		verbose
+#			more logging
+#		quiet
+#			less logging
+#
+#
+#
+
+use strict;
+
+use FileHandle;
+
+use constant PREFIX => 'ut-imagexform-1.0: ';
+
+
+sub report
+{
+	print(PREFIX, @_);
+}
+
+
+sub fatal
+{
+	&report;
+	die(PREFIX . "aborted\n");
+}
+
+
+sub doCommand
+{
+	my ($command, %args) = @_;
+
+	my ($first) = split(/\s+/, $command);
+
+	if ($args{verbose}) {
+		report("doCommand $command\n");
+	}
+	elsif (not $args{quiet}) {
+		report("running $first\n");
+	}
+
+	my $result = { };
+
+	if ($args{pipeFrom}) {
+		$result->{handle} = FileHandle->new("$command|");
+	}
+	else {
+		$result->{output} = qx($command);
+		$result->{lines} = [ split(/\n/, $result->{output}) ];
+	}
+
+	if ($?) {
+		my $s = $args{verbose} ? $first : $command;
+		fatal("error running $s [$?]: $!\n");
+	}
+
+	return $result;
+}
+
+
+sub processImageDumpStream
+{
+	my ($fhi, $outpath, %args) = @_;
+
+        if (-e $outpath) {
+            unlink($outpath);
+        }
+
+	my $fho = FileHandle->new($outpath, 'w');
+	if (not $fho) {
+		fatal("unable to open $outpath: $!");
+	}
+
+	my $title = 0;
+	while (<$fhi>) {
+		if (/^\s*$/) {
+			if ($title > 0) {
+				$title = 0;
+			}
+			else {
+				$title = -1;
+			}
+		}
+		elsif ($title) {
+			$fho->print;
+		}
+		else {
+			my (undef, $index, @rest) = split(/\s+/, $_);
+			my $s = "$index";
+			foreach my $x (@rest) {
+				$s .= ' ' . sprintf($args{format}, $x);
+			}
+			$fho->print;
+		}
+	}
+}
+
+
+sub processDiffStream
+{
+	my ($fh, %options) = @_;
+
+	my $code = 0;
+
+	while (<$fh>) {
+		if (/^(\d+(?:,\d+)?)c(\d+(?:,\d+)?)/) {
+			report("change: $_");
+			$code = 1;
+		}
+		elsif (/^(\d+)a/) {
+			report("addition: $_") if $options{verbose};
+		}
+		elsif (/^(\d+(?:,\d+)?)d/) {
+			report("deletion: $_") if $options{verbose};
+		}
+		elsif (/^[<>]/) {
+			# diff contents
+			report($_) if $options{verbose}
+		}
+		elsif (/^---/) {
+			# mark
+		}
+		else {
+			report("diff?!: $_");
+		}
+	}
+
+	return $code;
+}
+
+
+{
+	my $code = 0;
+
+	my %options = (
+		input => 'imagexform-input',
+		output => 'imagexform-output',
+	);
+
+	foreach my $arg (@ARGV) {
+		if ($arg eq 'quiet') {
+			$options{quiet} = 1;
+		}
+		elsif ($arg eq 'verbose') {
+			$options{verbose} = 1;
+		}
+		elsif ($arg =~ /^input=(.+)/) {
+			$options{input} = $1;
+		}
+		elsif ($arg =~ /^output=(.+)/) {
+			$options{output} = $1;
+		}
+		else {
+			fatal("invalid option: $arg\n");
+		}
+	}
+
+	report("validating set up\n") if not $options{quiet};
+
+	# validate environment
+	foreach my $var (qw(HEADAS FTOOLS)) {
+		if (not defined($ENV{$var})) {
+			fatal("environment variable $var not set\n");
+		}
+		elsif (not -d $ENV{$var}) {
+			fatal("invalid $var directory $ENV{$var}\n");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $options{$key}) {
+			fatal("invalid $key directory: $options{$key}\n");
+		}
+	}
+
+        my $headas = $ENV{HEADAS};
+	my $input = $options{input};
+	my $output = $options{output};
+
+	my %task = (
+		# imagexform (test case) parameters
+		infile        => "$input/IMAGEXFORM_IN.fits",
+		outfile       => "$output/IMAGEXFORM_OUT.fits",
+		attfile       => "$input/IMAGEXFORM_ATTITUDE.fits",
+		teldef        => "$input/IMAGEXFORM_TELDEF.fits",
+		from          => 'RAW',
+		to            => 'SKY',
+		segment       => 0,
+                ra            => 247.010,
+                ra            => 278.693939,
+		dec           => -49.190,
+		dec           => -8.042166,
+		seed          => -1956,
+#		clobber       => 'yes',
+		chatter       => 3,
+		history       => 'no',
+		mode          => 'ql',
+
+		# test case templates
+		dumptemplate  => "$input/IMAGEXFORM_DUMP.template",
+		imgtemplate   => "$input/IMAGEXFORM_IMG.template",
+
+		# intermediate files
+		dumpfile      => "$output/IMAGEXFORM_DUMP.txt",
+		imgfile       => "$output/IMAGEXFORM_IMG.txt",
+	);
+
+	# validate input files
+	foreach my $key (qw(infile attfile teldef)) {
+		my $input = $task{$key};
+		if (not defined($input)) {
+			fatal("missing input key: $key\n");
+		}
+		elsif (not -f $input) {
+			fatal("invalid $key file: $input\n");
+		}
+	}
+
+	if (-f $task{outfile}) {
+		unlink($task{outfile})
+			or fatal("unable to remove $task{outfile}: $!\n");
+	}
+
+	# build imagexform command line
+	my $command = 'imagexform';
+
+	foreach my $p (qw(infile outfile attfile teldef
+			from to segment ra dec seed
+			chatter history mode)) {
+		if (not defined($task{$p})) {
+			fatal("missing parameter $p\n");
+		}
+		else {
+			$command .= " '$p=$task{$p}'";
+		}
+	}
+
+	doCommand($command, %options);
+
+	# ensure created image passes fverify
+	$command = qq(fverify infile=$task{outfile} outfile=STDOUT);
+	doCommand($command, %options);
+ 
+	# compare fdump output (keywords) to template
+	$command = "fdump infile=$task{outfile}"
+		. " outfile=!$task{dumpfile} columns='*' rows=-";
+	doCommand($command, %options);
+
+	$command = "diff $task{dumpfile} $task{dumptemplate}";
+	my $result = doCommand($command, %options, pipeFrom => 1);
+	processDiffStream($result->{handle}, %options);
+	close($result->{handle});
+
+	# compare fimgdmp output to template
+	if (-f $task{imgfile}) {
+		unlink($task{imgfile})
+			or fatal("unable to unlink $task{imgfile}: $!");
+	}
+
+	$command = "fimgdmp infile=$task{outfile} outfil=$task{imgfile}"
+		. " xlow=0 xhigh=10000 ylow=0 yhigh=10000";
+	$result = doCommand($command, %options);
+#	processImageDumpStream($result->{handle}, $task{imgfile});
+#	close($result->{handle});
+
+	$command = "diff $task{imgfile} $task{imgtemplate}";
+	$result = doCommand($command, %options, pipeFrom => 1);
+	processDiffStream($result->{handle}, %options);
+	close($result->{handle});
+
+	if ($code) {
+		report("test failed\n");
+	}
+	else {
+		report("test passed\n");
+	}
+
+        exit($code);
+}
+

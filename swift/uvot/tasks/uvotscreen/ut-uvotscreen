@@ -1,0 +1,174 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotscreen/ut-uvotscreen,v $
+# $Revision: 1.12 $
+# $Date: 2008/05/06 20:01:42 $
+#
+#	ut-uvotscreen
+#
+#
+# $Log: ut-uvotscreen,v $
+# Revision 1.12  2008/05/06 20:01:42  rwiegand
+# Updated angle to provide useful screening for new data.
+#
+# Revision 1.11  2005/11/02 15:19:33  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.10  2005/01/19 21:46:08  rwiegand
+# Had wrongly assumed uvotscreen does not use CALDB- it does use the bad
+# pixel list.
+#
+# Revision 1.9  2004/10/15 14:17:57  rwiegand
+# Added (unused) CALDB test mode for consistency with other unit tests.  Make
+# working copy of event file since it is modified by the test.
+#
+# Revision 1.7  2004/06/24 17:28:41  rwiegand
+# Lost some changes?
+#
+# Revision 1.6  2004/06/23 14:33:58  rwiegand
+# Cleanup to use Task::HEAdas support.
+#
+# Revision 1.5  2004/05/20 20:06:12  rwiegand
+# Parameter renaming.
+#
+# Revision 1.4  2003/12/16 20:04:45  rwiegand
+# Ignore USER keyword when checking for differences.
+#
+# Revision 1.3  2003/11/26 15:29:34  rwiegand
+# Ignore DATE and CREATOR keywords during comparison.
+#
+# Revision 1.2  2003/08/05 17:12:21  rwiegand
+# Provide parameter evexpr for filtering EVENT table.  Renamed old expr parameter
+# to aoexpr (for attitude/orbit expression).  Removed old passqual parameter.
+#
+# Revision 1.1  2003/08/04 19:36:05  rwiegand
+# Update QUALITY column in EVENT table based on bad pixel list when badpixels
+# parameter is not NONE.  Added unit test.
+#
+
+use strict;
+
+package Test::Screen;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::Screen->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment('FTOOLS')
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runUvotscreen
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int caldb=boolean)
+			],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotscreen
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+	my $caldb = $args->{caldbFlag};
+
+	# make a working copy of the event list since it is modified by the
+	# unit test
+	my $events = "$output/unfiltered.fits";
+	my $text = qx(cp $input/unfiltered.fits $events; chmod +w $events);
+	if ($?) {
+		$self->error(BAD_EXECUTE, "setup failed: $text [$?]");
+	}
+
+	my @args = (
+		infile     => "$output/unfiltered.fits",
+		attorbfile => "$input/prefilter.fits",
+		badpixfile => ($caldb ? 'CALDB' : "$input/swubadpix.fits"),
+
+		outfile    => "$output/screened.fits",
+
+		aoexpr     => 'SUN_ANGLE.gt.(120.65)',
+		evexpr     => 'QUALITY==0',
+
+		cleanup    => 'yes',
+
+		clobber	   => 'yes',
+		history	   => 'yes',
+		chatter	   => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	foreach my $key (qw(infile attorbfile badpixfile)) {
+		if ($args{$key} eq 'CALDB') {
+		}
+		elsif (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('uvotscreen', @args);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+			infile => $args{outfile},
+			outfile => 'STDOUT',
+			);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+			infile1 => "$input/template.fits",
+			infile2 => $args{outfile},
+			exclude => 'DATE,CREATOR,USER',
+			tolerance => 1e-10, # for MJD-OBS
+			);
+		$self->shell($command);
+	}
+}
+

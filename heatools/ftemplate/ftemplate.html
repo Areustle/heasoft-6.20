@@ -1,0 +1,231 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+ftemplate - Create a FITS file from an ASCII template file.
+
+<h2>USAGE</h2>
+
+<tt>ftemplate template outfile</tt>
+
+<h2>DESCRIPTION</h2>
+
+This task creates a new FITS file using a template to define the
+structure of one or more HDUs within the file. The template file may be
+another FITS file, in which case the newly created file will have
+exactly the same keywords in each HDU as in the template FITS file, but
+all the data units will be filled with zeros.  The template file may
+also be an ASCII text file, in which case each template line is
+processed in order and generally translates into one FITS keyword
+record in the FITS file that is created.
+<P>
+The format of each ASCII template line closely follows the format of a
+FITS keyword record:
+<P>
+<tt>  KEYWORD = KEYVALUE / COMMENT </tt>
+<p>
+except that free format may be used.  The KEYVALUE and COMMENT fields
+are optional.  Any template line that begins with the pound '#'
+character is ignored by the template parser and may be use to insert
+comments into the template file itself.
+<p>
+The KEYWORD name field is limited to 8 characters in length and only
+the letters A-Z, digits 0-9, and the hyphen and underscore characters
+may be used, without any embedded spaces. Lowercase letters in the
+template keyword name will be converted to uppercase.  Leading spaces
+in the template line preceding the keyword name are generally ignored,
+except if the first 8 characters of a template line are all blank, then
+the entire line is treated as a FITS comment keyword (with a blank
+keyword name) and is copied verbatim into the FITS header.
+<p>
+The KEYVALUE field may have any allowed  FITS  data type: character
+string, logical, integer, real, complex integer, or complex real.  The
+character string values need not be enclosed in single quote characters
+unless they are necessary to distinguish the string from a different
+data type (e.g.  2.0 is a real but '2.0' is a string).  The keyword has
+an undefined (null) value if the template record only contains blanks
+following the "=" or between the "=" and the "/" comment field
+delimiter.
+<p>
+String keyword values longer than 68 characters (the maximum length
+that will fit in a single FITS keyword record) are permitted using the
+CFITSIO long string convention. They can either be specified as a
+single long line in the template, or by using multiple lines where the
+continuing lines contain the 'CONTINUE' keyword, as in this example:
+
+<pre>
+
+     LONGKEY = 'This is a long string value that is contin&'
+     CONTINUE  'ued over 2 records' / comment field goes here
+</pre>
+
+The format of template lines with CONTINUE keyword is very strict:  3
+spaces must follow CONTINUE and the rest of the line is copied verbatim
+to the FITS file.
+<p>
+The start of the optional COMMENT field must be preceded by "/", which
+is used to separate it from the keyword value field. Exceptions are if
+the KEYWORD name field contains COMMENT, HISTORY, CONTINUE, or if the
+first 8 characters of the template line are blanks.
+<p>
+More than one Header-Data Unit (HDU) may be defined in the template
+file.  The start of an HDU definition is denoted with a SIMPLE or
+XTENSION template line:
+<ul>
+<p>
+<li>
+SIMPLE begins a Primary HDU definition. SIMPLE may only appear as
+the  first keyword in the template file. If the template file begins
+with XTENSION instead of SIMPLE, then a default empty Primary HDU is
+created, and the template is then assumed to define the keywords
+starting with the first extension following the Primary HDU.
+<p>
+<li>
+XTENSION marks the beginning of a new extension HDU definition.  The
+previous HDU will be closed at this point and processing of the next
+extension begins.
+</ul>
+<p>
+AUTO-INDEXING OF KEYWORDS:  If a template keyword name ends with a "#"
+character, it is said to be 'auto-indexed'.   Each "#" character will
+be replaced by the current integer index value, which gets reset = 1 at
+the start of each new HDU in the file.  The FIRST indexed keyword in
+each template HDU definition is used as the 'incrementor';  each
+subsequent occurence of this SAME keyword will cause the index value to
+be incremented.  This behavior can be rather subtle, as illustrated in
+the following examples in which the TTYPE keyword is the incrementor in
+both cases:
+<pre>
+
+     TTYPE# = TIME
+     TFORM# = 1D
+     TTYPE# = RATE
+     TFORM# = 1E
+</pre>
+
+will create TTYPE1, TFORM1, TTYPE2, and TFORM2 keywords.  But if the
+template looks like,
+<pre>
+
+     TTYPE# = TIME
+     TTYPE# = RATE
+     TFORM# = 1D
+     TFORM# = 1E
+</pre>
+
+this results in a FITS files with  TTYPE1, TTYPE2, TFORM2, and TFORM2,
+which is probably not what was intended!
+<p>
+TEMPLATE DIRECTIVES:  In addition to the template lines which define
+individual keywords, the template parser recognizes 3 special
+directives which are each preceded by the backslash character:
+\include, \group, and \end.
+<p>
+The \include directive must be followed by a filename. It forces the
+parser to temporarily stop reading the current template file and begin
+reading the include file. Once the parser reaches the end of the
+include file it continues parsing the current template file.  Include
+files can be nested, and HDU definitions can span multiple template
+files.
+<p>
+The \group and \end directives have a more specialized use in defining
+hierarchical groupings of related FITS files.   Refer to the CFITSIO
+User's guide for more discussion of these directives,
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>template [filename]
+
+<dd>Name of the template file.  It may be a FITS format file,
+or an ASCII template file.
+<p>
+
+<dt>outfile [filename]
+
+<dd>Name of the new FITS file to be created.
+</dl>
+<h2>EXAMPLES</h2>
+
+1. This template file will create a 200 x 300 pixel image, with 4-byte
+integer pixel values, in the primary HDU.
+<pre>
+
+    SIMPLE = T 
+    BITPIX = 32
+    NAXIS = 2     / number of dimensions
+    NAXIS1 = 100  / length of first axis
+    NAXIS2 = 200  / length of second axis
+    OBJECT = NGC 253 / name of observed object
+</pre>
+
+The allowed values of BITPIX are 8, 16, 32, -32, or -64,
+representing, respectively, 8-bit integer, 16-bit integer, 32-bit
+integer, 32-bit floating point, or 64 bit floating point pixels.
+<p>
+
+2. Same as example 1, except that the image is created in an IMAGE
+extension instead of in the primary HDU.  The auto-indexing feature is
+used to define the NAXISn keywords.
+<pre>
+
+    XTENSION = IMAGE 
+    BITPIX = 16
+    NAXIS = 2     / number of dimensions
+    NAXIS# = 100  / length of first axis
+    NAXIS# = 200  / length of second axis
+</pre>
+<p>
+3.  To create a FITS  table, the template first needs to include
+XTENSION = TABLE or BINTABLE to define whether it is an ASCII or binary
+table, and NAXIS2 to define the number of rows in the table.  Two
+template lines then needed to define the name (TTYPEn) and FITS data
+format (TFORMn) of the columns, as in this example:
+<pre>
+
+    xtension = bintable
+    naxis2 = 40
+    ttype# = Name
+    tform# = 10a
+    ttype# = Npoints
+    tform# = j
+    ttype# = Rate
+    tunit# = counts/s
+    tform# = e
+</pre>
+The above example defines a null primary array followed by a 40-row
+binary table extension with 3 columns called 'Name', 'Npoints', and
+'Rate', with data formats of '10A' (ASCII character string), '1J'
+(integer) and '1E' (floating point), respectively.  Note that the other
+required FITS keywords (BITPIX, NAXIS, NAXIS1, PCOUNT, GCOUNT, TFIELDS,
+and END) do not need to be explicitly defined in the template because
+their values can be inferred from the other keywords in the template.
+This example also illustrates that the templates are generally
+case-insensitive (the keyword names and TFORMn values are converted to
+upper-case in the FITS file) and that string keyword values generally
+do not need to be enclosed in quotes.
+
+<h2>SEE ALSO</h2>
+
+<a href="ftcreate.html">ftcreate</a>,
+<a href="ftimgcreate.html">ftimgcreate</a> 
+<p>
+fv, the interactive FITS file editor, can also be used to create FITS files.
+
+<h2>LAST MODIFIED</h2>
+
+February 2003
+</body>
+</html>

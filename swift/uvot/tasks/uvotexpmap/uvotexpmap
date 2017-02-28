@@ -1,0 +1,1029 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotexpmap/uvotexpmap,v $
+# $Revision: 1.43 $
+# $Date: 2015/05/29 15:27:56 $
+#
+#	uvotexpmap
+#
+#	generate exposure maps for UVOT level 2 image file
+#
+#	TODO:
+#		option to pass in precomputed instrument map
+#
+#
+# $Log: uvotexpmap,v $
+# Revision 1.43  2015/05/29 15:27:56  rwiegand
+# Fixed UVOT exposure maps created with method=SHIFTADD to match EXPOSURE (previously missing dead time correction).
+#
+# Revision 1.42  2012/04/16 21:19:11  rwiegand
+# The reference time is now a property of the HDU instead of a member
+# variable which is changed as each HDU is processed.
+#
+# Revision 1.41  2011/11/08 13:46:59  rwiegand
+# Only transfer CRVAL* (for aspect correction) if input was a sky image.
+#
+# Revision 1.40  2011/11/07 22:56:49  rwiegand
+# Support using nominal attitude in cases where the sampled attitude
+# is questionable.
+#
+# Revision 1.39  2008/09/24 19:38:02  rwiegand
+# Updated to work with aspect corrected input images.  Base transforms on
+# SWX* and update CRVALn in created exposure maps.
+#
+# Revision 1.38  2008/04/29 19:44:26  rwiegand
+# Modified SHIFTADD method to handle missing aspect following packets for
+# IMAGE mode data.
+#
+# Revision 1.37  2008/03/03 20:09:48  rwiegand
+# Added masktrim parameter and pass sky images to uvotshiftadd so all keywords
+# are propagated.
+#
+# Revision 1.36  2007/10/11 13:48:01  rwiegand
+# Updated skytime passed to swiftxform.
+#
+# Revision 1.35  2007/10/10 21:26:32  rwiegand
+# Removed dependency on WHEELPOS keyword.  Write more keywords to quality
+# HDUs generated if badpixfile=NONE.  Corrected passing of TELDEF file
+# to uvotfakeaf.
+#
+# Revision 1.34  2007/10/05 18:41:30  rwiegand
+# Support method=SHIFTADD on event based images by faking up aspect following
+# data.  Remove need for EXPID keyword.
+#
+# Revision 1.33  2007/09/05 18:34:14  rwiegand
+# First attempt at supporting onboard shift and add when calculating
+# exposure maps.  Not yet capable of handling binned data.
+#
+# Revision 1.32  2007/06/21 15:44:13  rwiegand
+# Implemented mask radius parameter since corners of detector do not collect
+# counts.
+#
+# Revision 1.31  2007/05/03 15:50:27  rwiegand
+# Added MASK mode.
+#
+# Revision 1.30  2006/03/08 15:38:11  rwiegand
+# Use Astro::Transform to build transform instead of local code.  The
+# problem with ATTHIST remains.
+#
+# Revision 1.29  2005/11/23 13:32:35  rwiegand
+# Use input file as template for output primary header.
+#
+# Revision 1.28  2005/11/02 15:19:31  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.27  2005/09/13 18:24:49  rwiegand
+# Updated TELDEF CALDB query with expression for filter and wheel position.
+#
+# Revision 1.26  2005/07/18 12:51:12  rwiegand
+# Allow badpixfile=NONE to be passed in which case a properly sized quality
+# file will be created with all good pixels.
+#
+# Revision 1.25  2005/06/07 13:30:52  rwiegand
+# Write notes for CALDB parameters.
+#
+# Revision 1.24  2005/05/24 20:00:54  rwiegand
+# Include call to record parameter history.
+#
+# Revision 1.23  2004/11/17 21:07:27  rwiegand
+# Was passing the wrong intermediate file when building transform which
+# prevented binned data from working.  Switched where the negation of
+# offsets takes place.
+#
+# Revision 1.22  2004/11/01 16:25:24  rwiegand
+# Use uvotinstmap for MEANFOV method.  Build transform using getxform and
+# friends.
+#
+# Revision 1.21  2004/10/15 21:55:55  rwiegand
+# Support for CALDB test mode.
+#
+# Revision 1.20  2004/09/23 19:46:01  rwiegand
+# Use attitude file input if available for MEANFOV method.
+#
+# Revision 1.19  2004/09/18 12:55:40  rwiegand
+# Use quaternions in temporary attitude file to fix problem when switching
+# from +Z to +X boresight.
+#
+# Revision 1.18  2004/08/09 13:42:53  rwiegand
+# Support windows not centered on detector.
+#
+# Revision 1.17  2004/08/05 20:02:13  rwiegand
+# Have to pass extension number instead of name for farith/fcarith.
+#
+# Revision 1.16  2004/07/14 15:22:16  rwiegand
+# For the MEANFOV method, needed to multiple by EXPOSURE value.  Requiring the
+# user to enter the bad pixel map for infile for the MEANFOV method was
+# confusing so updated to use the badpixfile.
+#
+# Revision 1.15  2004/07/09 18:20:36  rwiegand
+# Updated swiftxform parameter names.
+#
+# Revision 1.14  2004/07/09 16:14:39  rwiegand
+# Renamed swifttrans to swiftxform.  Need to copy 1st extension of swiftxform
+# output instead of primary HDU.
+#
+# Revision 1.13  2004/07/07 18:30:50  rwiegand
+# Implemented MEANFOV method and use base task support.
+#
+# Revision 1.12  2004/05/12 15:59:45  rwiegand
+# Intra-tool parameter consistency renaming effort.
+#
+# Revision 1.11  2004/03/30 21:46:33  rwiegand
+# Use AREA method for generating instrument map.  Removed instprec parameter.
+#
+# Revision 1.10  2003/09/04 19:04:25  rwiegand
+# Updated parameters for uvotinstmap and expomap tools.
+#
+# Revision 1.9  2003/08/28 19:02:36  miket
+# Changed name of uvotmap to uvotinstmap
+#
+# Revision 1.8  2003/08/06 20:01:22  rwiegand
+# Updated RAW binning keywords.
+#
+# Revision 1.7  2003/07/28 21:40:37  rwiegand
+# Updated to use WCS keywords from sky image input.
+#
+# Revision 1.6  2003/07/28 21:17:57  rwiegand
+# Use EXTNAME instead of HDUNAME.  Pass binning to exposure map generation.
+# Update checksums after building output file.
+#
+# Revision 1.5  2003/07/25 20:12:57  rwiegand
+# Output exposure maps now built to match size of input image.  Updated
+# UVOT image keywords and genimage library references.
+#
+# Revision 1.4  2003/06/11 21:26:40  miket
+# global name change from uexpmap to uvotexpmap
+#
+# Revision 1.3  2003/06/06 20:44:50  rwiegand
+# Keep track of EXTNAMEs instead of ftlist HDU numbers (which changed).
+#
+# Revision 1.2  2003/05/13 22:35:17  rwiegand
+# Renamed some invocation parameters.  Added test case and help files.
+#
+# Revision 1.1  2003/05/12 14:11:17  rwiegand
+# UVOT exposure map tools.
+# The perl script uvotexpmap knows about the Swift UVOT specific file naming
+# conventions and calls uvotinstmap and expomap with the appropriate parameters.
+# The tool uvotinstmap accepts a bad pixel list and generates a UVOT instrument
+# map (in detector coordinates) for a given window (x0, y0, width, height).
+#
+
+use strict;
+
+package UVOT::ExposureMap;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+use Astro::FITS::CFITSIO qw(:constants);
+use Astro::Transform;
+use UVOT::Convert;
+use UVOT::Calibration;
+
+
+my @CALDB_KEYWORDS = qw(TELESCOP INSTRUME FILTER DATE-OBS DATE-END);
+
+my @TIME_KEYWORDS = qw(TSTART TSTOP MJDREFI MJDREFF);
+
+my @IMAGE_KEYWORDS = qw(
+	NAXIS1 NAXIS2 RA_PNT DEC_PNT PA_PNT EXPOSURE
+	CRVAL1 CRVAL2
+	WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY BINX BINY
+);
+
+my @KEYWORDS = ('EXTNAME', @CALDB_KEYWORDS, @IMAGE_KEYWORDS, @TIME_KEYWORDS);
+
+
+# main
+{
+	my $tool = UVOT::ExposureMap->new(
+			version => '1.4',
+			);
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->selectInput
+		if $self->isValid;
+
+	$self->loadTelescopeDefinition
+		if $self->isValid;
+
+	$self->setMaskTrim
+		if $self->isValid;
+
+	$self->processInput
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file badpixfile=file outfile=string
+				method=string attfile=file teldeffile=file alignfile=file
+				maskfile=file masktrim=integer
+				trackfile=file attdelta=real aberration=bool refattopt=string
+				cleanup=bool clobber=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile)) {
+			my $path = $args->{$key};
+			if (-e $path) {
+				$self->error(BAD_OUTPUT,
+						"$key '$path' exists and clobber not set");
+			}
+		}
+	}
+
+	$self->{WRITE_MASK} = $args->{maskfile} !~ /^NONE$/i;
+}
+
+
+sub isSkyWCS
+{
+	my ($wcs) = @_;
+
+	my $unit = $wcs->{CUNIT1};
+	return 1 if $unit =~ /^deg/;
+
+	my $type = $wcs->{CTYPE1};
+	return 1 if $type eq 'RA---TAN';
+	return 1 if $type eq 'DEC--TAN';
+
+	return 0;
+}
+
+
+sub selectInput
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $path = $args->{infile};
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my @hdus;
+
+	my $storeHDU = sub {
+		my ($fits, $image, $badpix) = @_;
+
+		my %hdu;
+
+		my $header = $fits->read_header;
+		$self->storeHeaderKeywords($header,
+				keys => \@KEYWORDS,
+				hash => \%hdu,
+				);
+
+		$self->storeHeaderKeywords($header,
+				keys => [ qw(SWXRA SWXDEC SWXATT) ],
+				hash => \%hdu,
+				optional => 1,
+				);
+
+		$hdu{inext} = $image;
+		$hdu{qualext} = $badpix;
+		$hdu{wcs} = $self->getWCS($header);
+		$hdu{isSky} = isSkyWCS($hdu{wcs});
+		$hdu{FRAMETIME_s} = $header->{FRAMTIME}
+				|| UVOT::Calibration::DEFAULT_FRAMETIME_s;
+		$hdu{ONBASPCT} = $header->{ONBASPCT} || 0;
+
+		if ($hdu{EXTNAME} =~ /^..(\d{9})[IE]/) {
+			$hdu{EXPID} = $1;
+			$hdu{ID} = $hdu{EXTNAME};
+		}
+		else {
+			$hdu{EXPID} = int($hdu{TSTART});
+			$hdu{ID} = "+$hdu{inext}";
+		}
+
+		if ($hdu{EXTNAME} =~ /I$/) {
+			$hdu{REFTIME} = $hdu{TSTART};
+		}
+		else {
+			$hdu{REFTIME} = ($hdu{TSTART} + $hdu{TSTOP}) / 2;
+		}
+
+		if (not exists($hdu{SWXRA}) or not exists($hdu{SWXDEC})) {
+			$hdu{SWXRA} = $hdu{RA_PNT};
+			$hdu{SWXDEC} = $hdu{DEC_PNT};
+			$self->warning("$hdu{inext} missing SWXRA/SWXDEC; using RA_PNT/DEC_PNT");
+		}
+
+		if (exists($hdu{SWXATT})) {
+			my @parts = split(/[\/\\]/, $args->{attfile});
+			my $argname = $parts[-1];
+			if ($argname ne $hdu{SWXATT}) {
+				$self->warning("parameter attfile [$args->{attfile}] does not match SWXATT [$hdu{SWXATT}]");
+			}
+		}
+
+		push(@hdus, \%hdu);
+	};
+
+	my $imgspec = $self->parseInputURL($path);
+	my $bpspec = $self->parseInputURL($args->{badpixfile});
+
+	if (length($imgspec->{extspec}) > 0) {
+		# user specified HDU
+
+		if (length($bpspec->{extspec}) > 0) {
+			# also specified bad pixel map extension
+			$storeHDU->($fits, $path, $args->{badpixfile});
+		}
+		else {
+			# assume same bad pixel map extension as image
+			$storeHDU->($fits, $path,
+					$args->{badpixfile} . "[$imgspec->{extspec}]");
+		}
+	}
+	else {
+		# process all extensions (not primary HDU)
+		my $numhdus = 0;
+		if ($fits->get_num_hdus($numhdus, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to determine number of HDUs [$status]");
+		}
+
+		for (my $hdu0 = 1; $hdu0 < $numhdus; ++$hdu0) {
+
+			if ($fits->movabs_hdu($hdu0 +1, IMAGE_HDU, $status)) {
+				$self->error(BAD_INPUT,
+						"unable to move to HDU $hdu0 +1 [$status]");
+			}
+			else {
+				$storeHDU->($fits, $path . "[$hdu0]",
+						$args->{badpixfile} . "[$hdu0]");
+			}
+		}
+	}
+
+	if ($self->isValid) {
+		$self->{hdus} = \@hdus;
+
+		$self->{tmpout} = $self->temporary('tmpout');
+		$self->createEmptyFITS($self->{tmpout}, infile => $args->{infile});
+
+		if ($self->{WRITE_MASK}) {
+			$self->{maskout} = $self->temporary('maskout');
+			$self->createEmptyFITS($self->{maskout}, infile => $args->{infile});
+		}
+	}
+	else {
+		$self->error(BAD_INPUT, "invalid input file");
+	}
+}
+
+
+sub loadTelescopeDefinition
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{teldeffile};
+
+	my $path;
+	if ($arg =~ /^CALDB/i) {
+		my $hdu = $self->{hdus}[0];
+		$path = $self->queryCALDB('TELDEF',
+				qualifiers => $arg,
+				header => $self->{hdus}[0], asString => 1);
+		$self->parameterNote(teldeffile => $path)
+			if $path;
+	}
+	else {
+		$path = $arg;
+	}
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load TELDEF $path [$status]");
+	}
+	else {
+		$self->{teldefpath} = $path;
+		$self->{teldef} = $fits->read_header;
+		undef($fits);
+	}
+}
+
+
+sub setMaskTrim
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $trim = $args->{masktrim};
+
+	if (uc($args->{maskfile}) eq 'NONE') {
+		return;
+	}
+
+	my $method = $args->{method};
+
+	if ($method eq 'MEANFOV') {
+		if ($trim == 0) {
+			$trim = -1;
+		}
+	}
+	elsif ($method eq 'SHIFTADD') {
+		if ($trim == 0) {
+			$trim = 1;
+		}
+	}
+
+	$self->{masktrim} = $trim;
+}
+
+
+sub checkAttitude
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+
+	$hdu->{ATTFILE} = $args->{attfile};
+
+	if (uc($args->{refattopt}) eq 'NONE') {
+		return;
+	}
+
+	my $tmpfile = $self->{NOMATT_file};
+	if (not $tmpfile) {
+		$tmpfile = $self->temporary('nominal', extension => '.att');
+		$self->{NOMATT_file} = $tmpfile;
+	}
+
+	my $command = $self->buildCommand('minnow',
+			infile => $args->{attfile},
+			outfile => $tmpfile,
+			alignfile => $args->{alignfile},
+			time => $hdu->{REFTIME},
+			ra => $hdu->{SWXRA},
+			dec => $hdu->{SWXDEC},
+			roll => $hdu->{PA_PNT},
+			options => "OUTLIER,$args->{refattopt}",
+			clobber => 'YES',
+			);
+	
+	$self->shell($command);
+
+	if (-f $tmpfile) {
+		$hdu->{ATTFILE} = $tmpfile;
+		$self->note("using reference attitude for HDU $hdu->{id}");
+	}
+}
+
+
+sub processInput
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $method = $args->{method};
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+
+		$hdu->{tmpout} = $self->temporary('hdumap');
+		delete($self->{transform});
+
+		$self->checkAttitude($hdu);
+
+		if ($method eq 'ATTHIST') {
+			$self->createMethodATTHIST($hdu);
+		}
+		elsif ($method eq 'MEANFOV') {
+			$self->createMethodMEANFOV($hdu);
+		}
+		elsif ($method eq 'SHIFTADD') {
+			$self->createMethodSHIFTADD($hdu);
+		}
+		elsif ($method eq 'MASK') {
+			$self->createMethodMASK($hdu);
+		}
+		else {
+			$self->error(BAD_INPUT,
+					"unknown method '$method'");
+		}
+
+		if ($self->isValid and -f $hdu->{tmpout}) {
+			$self->appendOutput($hdu);
+		}
+
+		last if not $self->isValid;
+	}
+}
+
+
+sub getTransform
+{
+	my ($self, $hdu, %args) = @_;
+
+	my $args = $self->args;
+
+	my $inspec = $hdu->{qualext};
+	my $outspec = $self->temporary('unused') . '[0]';
+
+	my $to = $args{to};
+
+	my $attfile = 'NONE';
+	my $ra = 0;
+	my $dec = 0;
+	my $roll = 0;
+
+	if ($to eq 'SKY') {
+		$ra = $hdu->{SWXRA};
+		$dec = $hdu->{SWXDEC};
+		$roll = $hdu->{PA_PNT};
+		$attfile = $hdu->{ATTFILE};
+	}
+
+	my $wcs = $hdu->{wcs};
+
+	my $helper = Astro::Transform->new(
+			task => $self,
+			args => {
+				chatter => $self->chatter,
+			}
+			);
+
+	# my %header = (%$hdu,%$wcs);
+	# $header{NAXIS1} = $hdu->{WINDOWDX} / $hdu->{BINX};
+	# $header{NAXIS2} = $hdu->{WINDOWDY} / $hdu->{BINY};
+	my %header = (%$hdu,
+		NAXIS1 => $hdu->{WINDOWDX} / $hdu->{BINX},
+		NAXIS2 => $hdu->{WINDOWDY} / $hdu->{BINY},
+	);
+
+	my $mjdref = $hdu->{MJDREFI} + $hdu->{MJDREFF};
+
+	my $info = $helper->buildTransform(
+			inspec   => $inspec,
+			outspec  => $outspec,
+
+			from     => 'RAW',
+			to       => $to,
+
+			header   => \%header,
+			teldef   => $self->{teldef},
+			teldefpath => $self->{teldefpath},
+
+			attfile  => $attfile,
+			ra       => $ra,
+			dec      => $dec,
+			time     => $hdu->{REFTIME},
+			mjdref   => $mjdref,
+
+			method   => 'AREA',
+			segment  => 0,
+			zeronulls=> 0,
+
+			bbox     => 1,
+			);
+
+	if (not $helper->isValid) {
+		$self->error(BAD_INPUT, "unable to build transform for $inspec");
+	}
+	else {
+		$self->{transform} = $info->{transform};
+	}
+
+}
+
+
+sub fakeQualityFile
+{
+	my ($self, $hdu) = @_;
+
+	my $width = $hdu->{WINDOWDX} / $hdu->{BINX};
+	my $height = $hdu->{WINDOWDY} / $hdu->{BINY};
+
+	my $qfile = $self->temporary('quality');
+	$hdu->{qualext} = $qfile . '[0]';
+
+	my $headfile = $self->temporary('head');
+	my $fh = FileHandle->new($headfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $headfile [$!]");
+		return;
+	}
+	foreach my $key (qw(EXTNAME TELESCOP INSTRUME FILTER
+			DATE-OBS DATE-END TSTART TSTOP EXPOSURE
+			RA_PNT DEC_PNT PA_PNT
+			WINDOWX0 WINDOWY0 WINDOWDX WINDOWDY BINX BINY)) {
+		$fh->print("$key = $hdu->{$key}\n");
+	}
+
+	my $crval1 = $hdu->{WINDOWX0} + $hdu->{BINX}/2 - 0.5;
+	my $crval2 = $hdu->{WINDOWY0} + $hdu->{BINY}/2 - 0.5;
+	$fh->print("
+CTYPE1 = RAWX
+CTYPE2 = RAWY
+CRPIX1 = 1.0
+CRPIX2 = 1.0
+CRVAL1 = $crval1
+CRVAL2 = $crval2
+CDELT1 = $hdu->{BINX}
+CDELT2 = $hdu->{BINY}
+CUNIT1 = pixel
+CUNIT2 = pixel
+");
+
+	$fh->close;
+
+	my $command = $self->buildCommand('ftimgcreate',
+			bitpix => 16,
+			naxes => "$width,$height",
+			datafile => 'NONE',
+			outfile => $qfile,
+			headfile => $headfile,
+			);
+	$self->shell($command);
+}
+
+
+sub createMethodMEANFOV
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{badpixfile} =~ /^NONE$/i) {
+		$self->fakeQualityFile($hdu);
+	}
+
+	$self->getTransform($hdu, to => 'SKY');
+	return if not $self->isValid;
+
+	my $command = $self->buildCommand('uvotinstmap',
+			infile     => $hdu->{inext},
+			badpixfile => $hdu->{qualext},
+			transform  => $self->{transform},
+			outfile    => $hdu->{tmpout},
+			method     => 'CONST',
+			ra         => $hdu->{SWXRA},
+			dec        => $hdu->{SWXDEC},
+			clobber    => $args->{clobber},
+			history    => $args->{history},
+			chatter    => $args->{chatter},
+			);
+
+	$self->shell($command);
+
+	$self->createMethodMASK($hdu)
+		if $self->{WRITE_MASK};
+}
+
+
+sub createMethodMASK
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+
+	if (not $self->{transform}) {
+		$self->getTransform($hdu, to => 'SKY');
+		return if not $self->isValid;
+	}
+
+	$hdu->{maskout} = $self->temporary('mask', ext => '.fits');
+
+	my $masksize = $ENV{UVOTEXPMAP_MASKSIZE} || 1250;
+
+	my $command = $self->buildCommand('uvotinstmap',
+			infile     => $hdu->{inext},
+			badpixfile => $hdu->{qualext},
+			transform  => $self->{transform},
+			outfile    => $hdu->{maskout},
+			method     => 'MASK',
+			teldef     => $self->{teldefpath},
+			attfile    => $hdu->{ATTFILE},
+			ra         => $hdu->{SWXRA},
+			dec        => $hdu->{SWXDEC},
+			trel       => $hdu->{REFTIME},
+			t1         => $hdu->{TSTART},
+			t2         => $hdu->{TSTOP},
+			masksize   => $masksize,
+			masktrim   => $self->{masktrim},
+			attdelta   => 0.1,
+			clobber    => $args->{clobber},
+			history    => $args->{history},
+			chatter    => $args->{chatter},
+			);
+
+	$self->shell($command);
+
+}
+
+
+sub createMethodSHIFTADD
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{badpixfile} =~ /^NONE$/i) {
+		$self->fakeQualityFile($hdu);
+	}
+
+	my $trackext;
+	my $extname;
+	my $skytime;
+	my $skyword;
+
+	if (uc($args->{trackfile}) eq 'NONE') {
+	}
+	elsif ($hdu->{EXTNAME} =~ /I$/) {
+		$extname = "AF$hdu->{EXPID}I";
+		my $status = SimpleFITS->readonly($args->{trackfile})
+				->move($extname)
+				->close
+				->status;
+		if ($status) {
+			$self->warning("unable to find aspect following data $extname");
+			$extname = undef;
+		}
+		else {
+			$trackext = $args->{trackfile} . "[$extname]";
+			$skytime = $hdu->{TSTART};
+			$skyword = 'TSTART';
+		}
+	}
+
+	if (not $extname) {
+		if ($hdu->{EXTNAME} =~ /^..(\d{9}[IE])$/) {
+			$extname = 'AF' . $1;
+		}
+	}
+
+	if (not $trackext) {
+		if ($hdu->{ONBASPCT} > 0) {
+			$skytime = $hdu->{TSTART};
+			$skyword = 'TSTART';
+		}
+		else {
+			$skytime = ($hdu->{TSTART} + $hdu->{TSTOP}) / 2;
+			$skyword = 'TMIDDLE';
+		}
+		# fake up aspect following data
+		my $trackfile = $self->temporary('swuaf', ext => '.hk');
+		my $command = $self->buildCommand('uvotfakeaf',
+				badpixfile => $hdu->{qualext},
+				attfile    => $hdu->{ATTFILE},
+				outfile    => $trackfile,
+				teldeffile => $self->{teldefpath},
+				trel       => $skytime,
+				t1         => $hdu->{TSTART},
+				t2         => $hdu->{TSTOP},
+				attdelta   => $args->{attdelta},
+				frametime  => $hdu->{FRAMETIME_s},
+				);
+		$self->shell($command);
+		if (not $extname) {
+			$extname = '[1]';
+		}
+		$trackext = $trackfile . "[$extname]";
+	}
+
+	my $tmpfile = $self->temporary('shiftadd', ext => '.fits');
+	{ # invoke uvotshiftadd
+		my $command = $self->buildCommand('uvotshiftadd',
+				infile     => $hdu->{inext},
+				badpixfile => $hdu->{qualext},
+				trackfile  => $trackext,
+				outfile    => $tmpfile,
+				frametime  => -1,
+				exposure   => $hdu->{EXPOSURE},
+				);
+		$self->shell($command);
+	}
+	return if not $self->isValid;
+
+	# transform to SKY
+	my $transform = $self->buildCommand('swiftxform',
+			infile    => $tmpfile,
+			outfile   => $hdu->{tmpout},
+			attfile   => $hdu->{ATTFILE},
+			to        => 'SKY',
+			alignfile => $args->{alignfile},
+			method    => 'FLAT',
+			ra        => $hdu->{SWXRA},
+			dec       => $hdu->{SWXDEC},
+			roll      => $hdu->{PA_PNT},
+			teldeffile => $self->{teldefpath},
+			skytime   => $skyword,
+chatter => $args->{chatter},
+			);
+	$self->shell($transform);
+
+	{ # swiftxform carefully prevents EXTNAME from appearing in primary...
+		my $keyname = $self->temporary('shiftadd', ext => '.key');
+		my @keys = (
+			"EXTNAME = $hdu->{EXTNAME}",
+		);
+		# transfer CRVALn from infile to tmpout (to handle aspect correction)
+		if ($hdu->{isSky}) {
+			push(@keys,
+					"CRVAL1 = $hdu->{CRVAL1}",
+					"CRVAL2 = $hdu->{CRVAL2}",
+					);
+		}
+		my $fh = FileHandle->new($keyname, 'w');
+		$fh->print(join("\n", @keys));
+		$fh->close;
+
+		my $edit = $self->buildCommand('fthedit',
+				infile => $hdu->{tmpout},
+				keyword => '@' . $keyname,
+				operation => 'add',
+				);
+		$self->shell($edit);
+	}
+
+
+	$self->createMethodMASK($hdu)
+		if $self->{WRITE_MASK};
+}
+
+
+sub appendOutput
+{
+	my ($self, $hdu) = @_;
+
+	my $command = $self->buildCommand('ftappend',
+			infile => $hdu->{tmpout},
+			outfile => $self->{tmpout},
+			);
+
+	$self->shell($command);
+
+	if ($hdu->{maskout}) {
+		$command = $self->buildCommand('ftappend',
+			infile => $hdu->{maskout},
+			outfile => $self->{maskout},
+			);
+		$self->shell($command);
+	}
+}
+
+
+sub createMethodATTHIST
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{badpixfile} =~ /^NONE$/i) {
+		$self->fakeQualityFile($hdu);
+	}
+
+	$self->getTransform($hdu, to => 'DET');
+	return if not $self->isValid;
+
+	# run uvotinstmap to create an instrument map
+	my $instmap = $self->temporary('instmap');
+
+	my $command = $self->buildCommand('uvotinstmap',
+			infile     => $hdu->{inext},
+			badpixfile => $hdu->{qualext},
+			transform  => $self->{transform},
+			outfile    => $instmap,
+			method     => 'CONST',
+			ra         => $hdu->{SWXRA},
+			dec        => $hdu->{SWXDEC},
+			clobber    => $args->{clobber},
+			history    => $args->{history},
+			chatter    => $args->{chatter},
+			);
+
+	$self->shell($command);
+	return if not $self->isValid;
+
+
+	# determine the RA,DEC at the center of the image
+	my $pix1 = ($hdu->{NAXIS1} + 1) / 2;
+	my $pix2 = ($hdu->{NAXIS2} + 1) / 2;
+	my ($ra, $dec) = $self->pixToWorld($hdu->{wcs}, $pix1, $pix2);
+
+	# build command line
+	my $command = $self->buildCommand('expomap',
+		exptype    => 'SKY',
+
+		gtiname    => $hdu->{inext},
+		attname    => $hdu->{ATTFILE},
+		instname   => $instmap,
+		teldef     => $self->{teldefpath},
+
+		outname    => $hdu->{tmpout},
+
+		attdelta   => $args->{attdelta},
+		aberration => $args->{aberration},
+
+		ra         => $hdu->{SWXRA},
+		dec        => $hdu->{SWXDEC},
+		cx         => 0,
+		cy         => 0,
+
+		width      => $hdu->{NAXIS1},
+		height     => $hdu->{NAXIS2},
+
+		inst_binx  => $hdu->{BINX},
+		inst_biny  => $hdu->{BINY},
+		exp_binx   => $hdu->{BINX},
+		exp_biny   => $hdu->{BINY},
+
+		chatter    => $args->{chatter},
+		history    => $args->{history},
+		clobber    => $args->{clobber},
+	);
+
+
+	my $result = $self->shell($command, { pipeFrom => 1 });
+	if ($result->{error}) {
+		$self->error(BAD_EXECUTE,
+			"$command failed: $result->{error}");
+	}
+	else {
+		local($self->{tool}) = 'expomap';
+		my $count = 0;
+		my $fh = $result->{handle};
+		while (<$fh>) {
+			last if not /get_sky_limits/ and ++$count > 30;
+			my $l = $_;
+			chomp($l);
+			$self->report($l);
+		}
+		$fh->close;
+	}
+
+	# ensure output image was created
+	if (not -e $hdu->{tmpout}) {
+		$self->error(BAD_OUTPUT,
+			'expomap output is missing');
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		$self->putParameterHistory($self->{tmpout});
+
+		$self->updateChecksums($self->{tmpout});
+
+		rename($self->{tmpout}, $args->{outfile})
+			or $self->error(BAD_OUTPUT,
+				"unable to rename $self->{tmpout} to $args->{outfile} [$!]");
+
+		if ($self->{WRITE_MASK}) {
+			$self->putParameterHistory($self->{maskout});
+
+			$self->updateChecksums($self->{maskout});
+
+			rename($self->{maskout}, $args->{maskfile})
+				or $self->error(BAD_OUTPUT,
+					"unable to rename $self->{maskout} to $args->{maskfile} [$!]");
+		}
+	}
+}
+
+

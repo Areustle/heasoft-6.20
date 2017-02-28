@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= hitomi
+
+HD_COMPONENT_VERS	= 
+
+HD_INC_SUBDIR		= ahapp
+
+HD_INSTALL_HEADERS	= ahapp.h
+
+include ${HD_STD_MAKEFILE}

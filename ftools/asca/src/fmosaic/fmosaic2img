@@ -1,0 +1,109 @@
+#!/usr1/local/bin/perl -w  
+
+use Getopt::Std;
+
+$opt_s=1;
+$opt_o='outfile.fits';
+$opt_c=10;
+$opt_m=1;
+$opt_h="no_help";
+
+# Get the options on the command line.
+if (!getopts('s:o:m:c:h:') || !$ARGV[0]) {
+	errors();
+}
+
+if($opt_h ne "no_help") {
+	errors();
+}
+
+$file_id =$ARGV[0];
+
+# Print the configuation of work
+print "Working configuration for this program:\n";
+print "We will smooth the image, background, and exposure files with\n";
+
+if( $opt_m == 1 ) {
+	print "a gaussian of sigma $opt_m and put the result of the \n";
+	print " [(Image-Background)/Exposure] in file $opt_o\n";
+	print " Exposure map is cut below $opt_c % of the total exposure\n";
+#	
+	print "Smoothing the 3 image files\n";
+	$_ = $file_id."_image.fits";
+	system "fgauss $_ file1.fits $opt_s";
+	$_ = $file_id."_back.fits";
+	system  "fgauss $_ file2.fits $opt_s";
+	$_ = $file_id."_emap.fits";
+	system "fgauss $_ file3.fits $opt_s";
+} 
+else {
+	print "an adaptive smoothing. There should be $opt_s count(s) under\n";
+	print "the elliptical top hat filter for the smoothing to start. \n";
+	print "The result of the [(Image-Background)/Exposure] is in file $opt_o\n";
+	print "Exposure map is cut below $opt_c % of the total exposure\n";
+#
+	print "Smoothing the 3 image files\n";
+	print "fadapt $file_id","_image.fits $opt_s\n";
+	$_ = $file_id."_image.fits";
+	system "fadapt $_ file1.fits $opt_s";
+	$_ = $file_id."_back.fits";
+	system "fadapt $_ file2.fits $opt_s";
+	$_ = $file_id."_emap.fits";
+	system "fadapt $_ file3.fits $opt_s";
+}
+
+	system "farith file1.fits file2.fits file12.fits -";
+	print "Cut exposure map\n";
+	system "fimgstat file3.fits threshlo=INDEF threshup=INDEF outfile=list4";
+
+	open (FD,"list4") || die "can't open list4";
+	while (<FD>) {
+		chomp();
+		if (/maximum/ && /image/) {
+		@field =split(/\s+/);
+		$max = $field[6]*$opt_c*0.01;
+		}
+	} 
+
+	print "minimun for exposure map is $max\n";
+	system "fimgtrim file3.fits threshlo=$max threshup=I const_lo=0 outfile =file5.fits";
+	system "fimgtrim file12.fits threshlo=0 threshup=I const_lo=0 outfile=file12p.fits";
+	print "Create final image\n";
+	system "farith file12p.fits file5.fits $opt_o / blank=0 ";
+	system "rm file1.fits file2.fits file12p.fits file12.fits file3.fits file5.fits list4";
+	print "Done\n";
+
+sub errors {
+print "\n";
+print " Usage: fmosaic2img -o <out_filename> <input_filename_root>\n";
+print "\n";
+print " This scripts allows you to combine the output files of fmosaic into\n";
+print " a single background-subtracted, exposure-corrected image\n";
+print " (Image-back)/exposrue (with smoothing and cut on exposure map).\n";
+print " When you have produced image, background, and exposure maps using fmosaic,\n";
+print " they will have the names of the form:\n";
+print "\n";
+print " name_005_040_image.fits or name_image.fits (if no energy cut is performed)\n";
+print " name_005_040_back.fits or name_back.fits (if no energy cut is performed)\n";
+print " name_005_040_emap.fits or name_emap.fits (if no energy cut is performed)\n";
+print "\n";
+print " where 'name' is the first parameter of fmosaic and the numbers represent\n";
+print " the energy cut you made.  The same 'name' should be typed as the argument\n";
+print " to fmosaic2img.\n";
+print "\n";
+print " Options are (also displayed by typing 'fmosaic2img' without any arguments):\n";
+print " Usage: fmosaic2img [-s -o -m -c] input_file_root\n";
+print "       -m specifies the method: 1 is for a gaussian (default)\n";
+print "                                2 is for adaptive smoothing\n";
+print "       -s specifies the sigma (gaussian) or \n";
+print "          the number of counts required to smooth with fadapt (adapt)\n";
+print "       -o specifies the output file name\n";
+print "       -c specifies the cut (in %) on the exposure ( default is 10%)\n";
+print "\n";
+
+exit 2;
+
+}
+
+
+

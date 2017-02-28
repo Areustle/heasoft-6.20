@@ -1,0 +1,12 @@
+#ifndef _HXD_SEC_SCL_FITS_WRITE_H_
+#define _HXD_SEC_SCL_FITS_WRITE_H_
+
+
+#define HXD_HK_FITS_PRIMARY_HDU        1
+#define HXD_HK_FITS_HK_EXTENSTION      2
+#define HXD_HK_FITS_SYS_EXTENSTION     3
+#define HXD_HK_FITS_ACU_EXTENSTION     4
+#define HXD_HK_FITS_SCL_EXTENSTION     5
+#define HXD_HK_FITS_PWH_EXTENSTION     6
+
+#endif

@@ -1,0 +1,82 @@
+#! /bin/sh
+#  Filename: lhea-fixperl
+# Description: Modify given Perl scripts to use perl given by
+#              $LHEAPERL variable at run time.
+# Author/Date: James Peachey, HEASARC/GSFC/NASA, Raytheon ITSS / 27-aug-1998
+# Modification history: Major re-write 15-oct-1999
+
+# get path to this fixer-upper script, and name of this script
+scripthome=`echo $0 | sed "s:/*[^/]*$::"`
+if [ "x$scripthome" = x ]; then
+  scripthome=.
+fi
+scripthome=`cd $scripthome; pwd`
+this_script=`echo $0 | sed 's:.*/::'`
+
+# arguments are files to change; no arguments, change all
+if [ $# = 0 ]; then
+  filelist=`ls`
+else
+  filelist="$*"
+fi
+
+for file in $filelist; do
+ if [ -f $file ]; then
+  if [ `grep -c '^#!.*perl' $file 2> /dev/null` -gt 0 ]; then
+    echo "Modifying $file to use Perl given by LHEAPERL at runtime."
+    cp -p $file $file-new # mainly to preserve permissions
+    if [ $? -ne 0 ]; then
+      echo "Unable to create new executable script $file-new -- aborting."
+      exit 3
+    fi
+    # write Bourne Shell block to handle runtime Perl selection
+    cat > $file-new <<EOHEADER
+#! /bin/sh
+# This is the LHEA perl script: $file
+# The purpose of this special block is to make this script work with
+# the user's local perl, regardless of where that perl is installed.
+# The variable LHEAPERL is set by the initialization script to
+# point to the local perl installation.
+#-------------------------------------------------------------------------------
+eval '
+if [ "x\$LHEAPERL" = x ]; then
+  echo "Please run standard LHEA initialization before attempting to run $file."
+  exit 3
+elif [ "\$LHEAPERL" = noperl ]; then
+  echo "During LHEA initialization, no acceptable version of Perl was found."
+  echo "Cannot execute script $file."
+  exit 3
+elif [ \`\$LHEAPERL -v < /dev/null 2> /dev/null | grep -ic "perl"\` -eq 0 ]; then
+  echo "LHEAPERL variable does not point to a usable perl."
+  exit 3
+else
+  # Force Perl into 32-bit mode (to match the binaries) if necessary:
+  if [ "x\$HD_BUILD_ARCH_32_BIT" = xyes ]; then
+    if [ \`\$LHEAPERL -V 2> /dev/null | grep -ic "USE_64_BIT"\` -ne 0 ]; then
+      VERSIONER_PERL_PREFER_32_BIT=yes
+      export VERSIONER_PERL_PREFER_32_BIT
+    fi
+  fi
+  exec \$LHEAPERL -x \$0 \${1+"\$@"}
+fi
+'
+if(0);
+# Do not delete anything above this comment from an installed LHEA script!
+#-------------------------------------------------------------------------------
+EOHEADER
+
+    # append actual script contents to the Bourne Shell block
+    # strip off everything up to the first #!...perl
+    cat $file | sed -ne '/^#!.*perl/,$p' >> $file-new
+    if [ $? -ne 0 ]; then
+      echo "Unable to create new executable script $file-new -- aborting."
+      exit 3
+    fi
+    # make sure file has execution permission unless it's a .pl or .pm file
+    if [ `echo $file | grep -c '\.p[lm]$'` -eq 0 ]; then
+      chmod +x $file-new
+    fi
+    mv $file-new $file
+  fi
+ fi
+done

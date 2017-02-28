@@ -1,0 +1,301 @@
+#!/usr/bin/perl
+#
+#	ut-sim1.1
+#		Create SWIFT UVOT FIT files from XMM OM files
+#
+#	options
+#		input=<directory>
+#			set the input directory
+#		output=<directory>
+#			set the output directory
+#		verbose
+#			more logging
+#		quiet
+#			less logging
+#
+#
+#
+
+use strict;
+
+use FileHandle;
+
+use constant PREFIX => 'ut-sim1.1: ';
+
+
+sub report
+{
+	print(PREFIX, @_);
+}
+
+
+sub fatal
+{
+	&report;
+	die(PREFIX . "aborted\n");
+}
+
+
+sub doCommand
+{
+	my ($command, %args) = @_;
+
+	my ($first) = split(/\s+/, $command);
+
+	if ($args{verbose}) {
+		report("doCommand $command\n");
+	}
+	elsif (not $args{quiet}) {
+		report("running $first\n");
+	}
+
+	my $result = { };
+
+	if ($args{pipeFrom}) {
+		$result->{handle} = FileHandle->new("$command|");
+	}
+	else {
+		$result->{output} = qx($command);
+		$result->{lines} = [ split(/\n/, $result->{output}) ];
+	}
+
+	if ($?) {
+		my $s = $args{verbose} ? $first : $command;
+		fatal("error running $s [$?]: $!\n");
+	}
+
+	return $result;
+}
+
+
+sub trimFile
+{
+	my ($input, $output) = @_;
+
+        my $fhi = FileHandle->new($input);
+	if (not $fhi) {
+		fatal("unable to open input $input: $!");
+	}
+
+        my $fho = FileHandle->new($output, 'w'); 
+	if (not $fho) {
+		fatal("unable to create output $output: $!");
+	}
+
+       my $format = '%.3f';
+       my $pretitle = 0;
+       my $postitle = 0;
+      
+       while (<$fhi>) {
+
+               if (/^\s*$/) {
+                       if ($postitle) {
+                               $postitle = 0;
+                       }
+                       else {
+                               $pretitle = 1;
+                       }
+               }
+               elsif ($pretitle) {
+                       # column titles
+                       $pretitle = 0;
+                       $postitle = 1;
+               }
+               else {
+                       my ($ignore, $index, @f) = split(/\s+/, $_);
+
+                       foreach (@f) {
+                               $_ = sprintf($format, $_);
+                       }
+
+                       my $s = sprintf("     %3d  ", $index);
+                       $fho->print( $s, join('   ', @f), "\n");
+               }
+       }
+}
+
+  
+{
+	my $code = 0;
+
+	my %options = (
+		input => 'input',
+		output => 'output',
+	);
+
+	foreach my $arg (@ARGV) {
+		if ($arg eq 'quiet') {
+			$options{quiet} = 1;
+		}
+		elsif ($arg eq 'verbose') {
+			$options{verbose} = 1;
+		}
+		elsif ($arg =~ /^input=(.+)/) {
+			$options{input} = $1;
+		}
+		elsif ($arg =~ /^output=(.+)/) {
+			$options{output} = $1;
+		}
+		else {
+			fatal("invalid option: $arg\n");
+		}
+	}
+
+	report("validating set up\n") if not $options{quiet};
+
+	# validate environment
+	foreach my $var (qw(HEADAS FTOOLS)) {
+		if (not defined($ENV{$var})) {
+			fatal("environment variable $var not set\n");
+		}
+		elsif (not -d $ENV{$var}) {
+			fatal("invalid $var directory $ENV{$var}\n");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $options{$key}) {
+			fatal("invalid $key directory: $options{$key}\n");
+		}
+	}
+
+        my $headas = $ENV{HEADAS};
+	my $input = $options{input};
+	my $output = $options{output};
+
+	my %task = (
+		infile        =>
+                    "$input/0070_0123700101_OMS00400IMI.FIT",
+		outfile       => "$output/UVOTSIM_OUT.fits",
+                imgunit       => "ARCMIN",
+		ximgsiz       => 8,
+		yimgsiz       => 8,
+		forcefilter   => "",
+		platescale    => 3.984375,  
+		sensecase     => 'no',
+		clobber       => 'yes',
+		history       => 'yes',
+		chatter       => 5,
+		mode          => "ql",
+	);
+
+	# validate input files
+	foreach my $key (qw(infile)) {
+		my $input = $task{$key};
+		if (not defined($input)) {
+			fatal("missing input key: $key\n");
+		}
+		elsif (not -f $input) {
+			fatal("invalid $key file: $input\n");
+		}
+	}
+
+	# build command line
+	my $command = 'uvotsim';
+
+	foreach my $p (qw(infile outfile imgunit
+			ximgsiz yimgsiz forcefilter platescale 
+			sensecase clobber history
+			chatter mode)) {
+		if (not defined($task{$p})) {
+			fatal("missing parameter $p\n");
+		}
+		else {
+			$command .= " '$p=$task{$p}'";
+		}
+	}
+
+	doCommand($command, %options);
+
+	$command = qq(fverify infile=$output/UVOTSIM_OUT.fits outfile=STDOUT);
+	doCommand($command, %options);
+ 
+	$command = "fdump infile=$output/UVOTSIM_OUT.fits "
+		. " outfile=$output/UVOTSIM_OUT.dump columns='*' rows=-";
+	doCommand($command, %options);
+
+	$command = "diff $input/UVOTSIM_OUT.template $output/UVOTSIM_OUT.dump";
+	my $result = doCommand($command, %options, pipeFrom => 1);
+	my $fh = $result->{handle};
+
+	while (<$fh>) {
+		if (/^(\d+(?:,\d+)?)c(\d+(?:,\d+)?)/) {
+			report("change: $_");
+			$code = 1;
+		}
+		elsif (/^(\d+)a/) {
+			report("addition: $_") if $options{verbose};
+		}
+		elsif (/^(\d+)d/) {
+			report("deletion: $_") if $options{verbose};
+		}
+		elsif (/^[<>]/) {
+			# diff contents
+			report($_) if $options{verbose}
+		}
+		elsif (/^---/) {
+			# mark
+		}
+		else {
+			report("diff?!: $_");
+		}
+	}
+	close($fh);
+	
+
+	my $idmp = "$output/UVOTSIM_OUT.idmp";
+        if (-e $idmp) {
+            unlink($idmp);
+        }
+	
+	$command = "fimgdmp infile=$output/UVOTSIM_OUT.fits[1] "
+		. "outfil=$idmp"
+                . " xlow=1 xhigh=31 ylow=1 yhigh=31";
+	doCommand($command, %options);
+
+	trimFile($idmp, "$output/UVOTSIM_OUT.img");
+
+	$command = "diff $input/UVOTSIM_OUT.pixels $output/UVOTSIM_OUT.img";
+	my $result = doCommand($command, %options, pipeFrom => 1);
+	my $fh = $result->{handle};
+
+	while (<$fh>) {
+		if (/^(\d+(?:,\d+)?)c(\d+(?:,\d+)?)/) {
+			report("change: $_");
+			$code = 1;
+		}
+		elsif (/^(\d+)a/) {
+			report("addition: $_") if $options{verbose};
+		}
+		elsif (/^(\d+)d/) {
+			report("deletion: $_") if $options{verbose};
+		}
+		elsif (/^[<>]/) {
+			# diff contents
+			report($_) if $options{verbose}
+		}
+		elsif (/^---/) {
+			# mark
+		}
+		else {
+			report("diff?!: $_");
+		}
+	}
+	close($fh);
+	
+ 
+        unlink("$output/UVOTSIM_OUT.dump");
+        unlink("$output/UVOTSIM_OUT.idmp");
+        unlink("$output/UVOTSIM_OUT.img");
+	
+        if ($code == 0) {
+           report("  Test passed! \n");
+        }
+        else{
+           report("  Test failed! \n");
+        }
+
+        exit($code);
+}
+

@@ -1,0 +1,72 @@
+#! /usr1/local/bin/perl5
+
+# The technique for writing HEADAS Perl scripts closely follows the paradigm
+# used for tools written in C. The application should be written as a subroutine
+# whose name is passed to a standard headas_main routine (contained in the HEAINIT
+# module). That module takes care of initializing PIL, sets up the HEADAS I/O streams,
+# runs the application subroutine, and closes PIL. It also reads the "clobber" and
+# "history" parameters (if applicable) so they can be ignored at the application level
+# since headas_clobberfile() and HDpar_stamp, respectively, deal with these.
+# An example is given below.
+
+use HEACORE::HEAINIT;
+exit headas_main(\&perldemo2);
+
+sub perldemo2{
+
+# The HEAUTILS module provides access to HDpar_stamp()
+# set_toolname(), set_toolversion(), and headas_clobberfile()
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+  my $tname = "perldemo2";
+  my $tvers = "1.1";
+
+  my $status = 0;
+  my $fptr;
+
+  ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+  ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+  ($status = PILGetString('text', $text)) == 0 || die "error getting text parameter";
+  ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+  ($status = PILGetReal('scale', $scale)) == 0 || die "error getting scale parameter";
+
+  if ($chatter gt 2){
+    print "got parameters:\n";
+    print "\tinfile = $infile\n";
+    print "\toutfile = $outfile\n";
+    print "\ttext = $text\n";
+    print "\tchatter = $chatter\n";
+    print "\tscale = $scale\n";
+  }
+
+# Use the standard HEAdas routine to clobber an existing file if and only if
+# the tool has a "clobber" parameter and it is set to "yes"
+  $status = headas_clobberfile($outfile);
+  if (-e $outfile){ die "Sorry, can't clobber existing file \"$outfile\": $!" }else{
+    $status = qx(cp $infile $outfile);
+  }
+
+# Use the standard CFITSIO routine to open a FITS file
+  ($status=ffopen($fptr,$outfile,READWRITE,$status)) == 0 || die "error opening $outfile: $!";
+
+# Use the standard HEAdas methods for registering the toolname and version number to be
+# used in error reporting and in the record of parameter values written by HDpar_stamp
+  set_toolname($tname);
+  set_toolversion($tvers);
+
+# Use the standard HEAdas routine HDpar_stamp which will (if a "history" parameter is
+# present and set to "yes") write a block of HISTORY keywords recording the runtime
+# values of the parameters
+  HDpar_stamp($fptr,1, $status);
+  unless (!$status) {
+    print "Error running HDpar_stamp!\n";
+    $status = 0;
+  }
+
+# Standard CFITSIO close FITS file routine
+  ffclos($fptr, $status);
+
+  return $status;
+}

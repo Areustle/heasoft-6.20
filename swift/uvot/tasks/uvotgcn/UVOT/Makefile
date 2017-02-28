@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= swift
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_PERL_LIBS	= GCN.pm FindAfterglow.pm
+
+HD_PERL_SUBDIR		= UVOT
+
+include ${HD_STD_MAKEFILE}

@@ -1,0 +1,17 @@
+HD_COMPONENT_NAME	= swift
+
+HD_COMPONENT_VERS	= 
+
+HD_INSTALL_PERL_SCRIPTS	= xrtgrblcspec
+
+HD_TEST_PERL_SCRIPTS	=
+
+HD_INSTALL_PFILES	= xrtgrblcspec.par
+
+HD_TEST_PFILES		=
+
+HD_INSTALL_HELP		= xrtgrblcspec.html
+
+HD_TEST_PERL_SCRIPTS    = ut_${HD_INSTALL_PERL_SCRIPTS}
+
+include ${HD_STD_MAKEFILE}

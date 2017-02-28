@@ -1,0 +1,718 @@
+\chapter{The Atomic Database}
+\label{sec:atomicdatabase}
+
+
+\section{General Description}
+
+The database system used by XSTAR version 2 attempts to 
+separate, as much as possible, the numerical quantities which 
+determine the various atomic rates from the fortran code 
+which actually performs the calculation.  The goal is 
+make the atomic data modular, so that new data can be 
+adopted or tested without requiring extensive modifications to the 
+code.  The way this is done is to separate the data from the code itself,
+and store the data in a database which is designed specifically for 
+use by XSTAR.  The database is divided into 
+`records', each of which corresponds to a given physical 
+process affecting a given level or pair of levels. An example is the 
+radiative decay of hydrogen from the 2p to the 1s level.
+Each record contains numerical constants needed to calculate the 
+rate for the process, in this example simply the Einstein A value 
+for the transition, together with various other associated quantities.
+Chief among these are two integers which describe
+the how the constants are to be used.  The first integer 
+is denoted the `data type', and describes the fitting formula to be used 
+in order to calculate a rate from the constants.  The second 
+integer is the `rate type', which describes how XSTAR uses the 
+rates calculated.  The list of data types is already quite long 
+and is expected to grow and change as new data is adopted into the database,
+but not all data types are used by the current database.
+In order to interpret the various data types, XSTAR contains 
+one central data calculating subroutine, denoted ucalc.f, 
+which branches to various segments of code (and calls to specialized 
+subroutines) which are tailored to each data type.  
+ucalc.f returns the rates in a standard form for use by the other 
+XSTAR subroutines.  It is expected that ucalc.f will require additions
+in order to handle new data types as they are adopted.  
+The list of rate types is not intended to grow, since such changes 
+could require changes to the rest of the XSTAR code structure.
+
+
+The XSTAR database system can be divided into 3 parts:
+
+First, and most important, is the ascii file containing all the data.  That is,
+this file contains all the numerical data and labels required for 
+calculation of all atomic rates and resultant quantities.
+This includes all level excitation energies, statistical weights and 
+spectroscopic names, all element names and abundances, all ion names,
+and of course all photoionization cross sections, collision rates, 
+recombination rates, fluorescence yeilds, and line wavelengths.
+This file is separated into records, corresponding crudely to lines of text, 
+although many records extend over more than one line.  
+Each record consists of a header, followed by the data.  
+The header currently consists of 6 integers:  the data type, the rate type, 
+a continuation flag (currently unused), the number of reals in the 
+record, the number of integers in the record, and the numbers of 
+characters in the record.  Then follows the real data, the integer data, and 
+the character data.  The various fields within the record 
+are separated by one or more spaces.  The record is terminated with a $\%$, and the 
+entire database is terminated by a single line containing $\%\%\%\%$.
+Each record can currently contain up to 2000 of any of the types of constants:
+real, integer, or character.  In the XSTAR source tree 
+this file is named atdat.text and currently is approximately 10MB in size.
+
+In order to facilitate rapid reading of this file by XSTAR, it is 
+converted into two binary fits tables.  The first one contains the header data
+for each record, the second contains a concatenation of all the non-header data.
+They are named, respectively, aptrs.fits and atdat.fits.  Operation of 
+XSTAR requires that the environment variable LHEA$\_$DATA be set to the 
+directory containing these files.  In the standard distribution these data files
+are kept in the refdata directory in the ftools area, and the appropriate 
+value of the environment variable LHEA$\_$DATA is set by the script which 
+initializes FTOOLS, lhea-init.csh (c shell) or lhea-init.sh (bourne shell).
+
+The third part of the database is the subroutine ucalc.f.  This routine, when 
+passed the contents of a record, returns the result of the rate 
+calculation for the corresponding process.  ucalc therefore contains all 
+of the various arithmetic expressions corresponding to rates for various 
+physical processes.  ucalc returns generally 4 real rates and two integers.
+The rates are: rate, inverse rate, heating rate, and cooling rate.  
+The integers are indeces of the levels involved, lower and upper.
+Not all data types return all 4 rates.
+
+The list of rate types currently included in ucalc.f are as follows: 
+
+
+\begin{description}
+
+ \item[1] ground state ionization      
+
+ \item[3] bound-bound collision        
+
+ \item[4] bound-bound radiative        
+
+ \item[5] bound-free collision (level) 
+
+ \item[6] total recombination          
+
+ \item[7] bound-free radiative (level) 
+
+ \item[8] total recombination, forces norm 
+
+ \item[9] 2 photon decay                
+
+ \item[11] element data                 
+
+ \item[12] ion data                     
+
+ \item[13] level data                   
+
+ \item[14] bound-bound radiative superlevel-spectroscopic level     
+
+ \item[40] bound-bound collisional superlevel-spectroscopic level     
+
+ \item[41] non-radiative Auger transition
+
+ \item[42] Inner shell photoabsorption followed by autoionization
+
+\end{description}
+
+
+The list of data types currently included in ucalc.f are as follows: 
+Those denoted xstar1 are not in use in the standard distribution of XSTAR 
+version 2, but are maintained in order to facilitate comparison with 
+the results of XSTAR version 1.
+
+In what follows, T=temperature in $10^4$K; r1,r2,...=real numbers in record;
+i1,i2,...=integers in record; c1,c2,...=characters in record
+
+
+\begin{description}
+
+\item[1) Radiative recombination, Aldrovandi and Pequignot formula:]
+ $$rate=r1/T^{r2}$$
+
+\item[2) Charge exchange with $H^0$, from Kingdon and Ferland:]
+
+\begin{verbatim}
+      rate=aax*expo(log(t)*bbx)*(1.+ccx*expo(ddx*t))*(1.e-9)
+      ans1=rate*xh0
+\end{verbatim}
+
+where xh0 is the number density of neutral hydrogen.
+
+\item[3) Autoionization correction to DR, formula from Hamilton, Sarazin 
+and Chevalier:(xstar1)]
+ $$rate=r1*e^{r2/kT}/T^{1/2}$$
+
+\item[4) Line data:]
+ r1=line wavelength (A)
+; r2=f value
+; i1=lower level index
+; i2=upper level index
+
+\item[5) 2 photon transition, collisional excitation.(xstar1)]
+ r1=line wavelength (A)
+; r2=f value
+; r3=lower level g
+; r4=upper level g
+; i1=lower level index
+; i2=upper level index
+; r5=collision strength at kT= $\varepsilon_{line}$
+
+\item[6) Level data:]
+ Contains level information for ions. Energies are in eV.      
+ Every line  contains:
+ reals r1=E$_Z$=1(eV); r2=(2J+1); r3=n$_{effective}$; r4=Ion. Potential;
+i1=n; i2=(2S+1); i3=L; i4=Z; i5=$\#$lev; i6=$\#$ion)
+; c1-c$\#$=configuration.
+
+\item[7) Dielectronic recombination, aldrovandi and Pequignot formula:]
+ $$rate=r1*10^{-6}*e^{-r2/T}*(1+r3*e^{-r4/T})/T^{3/2}$$
+
+\item[8) Dielectronic recombination, Arnaud and Raymond formula:]
+ $$rate=r1*e^{-r2/kT} + r3*(T^{-r4-r5*ln(T)})$$
+
+\item[9) Charge exchange with $He^0$, formula from Kingdon and Ferland:]
+
+
+\item[10) Charge exchange with $H^+$, formula from Kingdon and Ferland:]:]                            
+\begin{verbatim}
+      rate=aax*t**bbx*(1.+ccx*expo(ddx*t))
+     $             *expo(-eex/t)*(1.e-9)
+      ans1=rate*xh1
+\end{verbatim}
+ 
+
+\item[11) 2 photon decay data:(xstar1)]
+; r1=line wavelength (A)
+; r2=f-value
+; i1=lower level index
+; i2=upper level index
+
+\item[12) Photoionization cross section, broken power law:]
+{\bf (xstar1)} 
+ $$\sigma=r1*(\varepsilon/r5)^{r2}$$
+ i1=level index
+
+\item[13) element data:]
+ r1=abundance, r2=mass, i1=int(z), i2=index, c1-c30=name
+
+\item[14) Ion data:]
+ r1=ionization threshold, c1-c8=name
+
+\item[15) Photoionization cross section, Barfield, Koontz \& Huebner scaled from 
+neutrals:]{\bf (xstar1)}
+ $$cross section=10^{\Sigma_{n=1}^{n=12}C_n (ln(\varepsilon/\varepsilon_0))^{n-1}-18}$$
+ for $\varepsilon \leq$ r3
+; where $\varepsilon$=photon energy in eV,$\varepsilon_0$=r1-$\Delta$,
+ $\Delta$=r2, and $C_1$=r4, $C_2$=r5.
+
+\item[17) Line collision data:  hydrogenic isosequence, rates from Cota:(xstar1)]
+ r1=line wavelength (A)
+; r2=f value
+; r3=lower level g
+; r4=upper level g
+; i1=lower level index
+; i2=upper level index
+; r5=collision strength at kT= $\varepsilon_{line}$
+
+\item[18) Radiative Recombination rates for H-like levels, rates from Cota:(xstar1)]
+ $$rate=10^{r1+r2*(log_{10}(T)+4.-r3)^2}$$
+
+\item[19) Photoionization cross section from HULLAC:]
+(not used).
+ 
+
+\item[20) Same as 10, but used for total rate]                        
+
+\item[ 21)  ]
+ 
+
+\item[22) Dielectronic Recombination, Storey low temperature: (xstar1)]
+ $$rate=10^{-12}*(r1/T+r2+T*(r3+T*r4))*T^{3/2}*e^{-r5/T}$$
+ 
+
+\item[23) Photoionization cross section, Clark et al. formula: (xstar1)]
+ 
+
+\item[25) Collisional Ionization data from Raymond and Smith:(xstar1)]
+ r1=e
+; r2=a
+; r3=b
+; r4=c
+; r5=d
+ $$ch = 1./chi$$
+ $$fchi = 0.3*ch*(a+b*(1.+ch)+(c-(a+b*(2.+ch))*ch)*alpha+d*beta*ch)$$
+ $$rate = 2.2e-6*sqrt(chir)*fchi*expo(-1./chir)/(e*sqrt(e))$$
+
+\item[26) Collisional Ionization data from Cota, H-like levels:(xstar1)]
+ idest1=idat(1)
+; gglo=rlev(2,idest1)
+; edelt=abs(rlev(1,idest1)-rlev(1,nlev))
+; ans1=(4.1416e-9)*rdat(1)*t**rdat(2)*exp(-edelt/ekt)
+            /gglo
+; ans1=ans1*xnx
+
+
+\item[27) photoionization: hydrogenic]
+ 
+
+\item[28) line data collisional: Mendoza; Raymond and Smith: (xstar1) ]
+ 
+
+\item[29) collisional ionization data: scaled hydrogenic: (xstar1) ]
+ 
+
+\item[30) Radiative Recombination, hydrogenic, total, Gould and Thakur formula:]
+ $$rate=2*(2.105 \times 10^{-22})*vth*y*\phi$$
+ where:
+\begin{verbatim}
+        zeff=r1
+        beta=zeff*zeff/(6.34*t6)
+        yy=beta
+        vth=(3.10782e+7)*sqrt(t)
+c       fudge factor makes the 2 expressions join smoothly
+        ypow=min(1.,(0.06376)/yy/yy)
+        fudge=1.*(1.-ypow)+(1./1.5)*ypow
+        phi1=(1.735+alog(yy)+1./6./yy)*fudge/2.
+        phi2=yy*(-1.202*alog(yy)-0.298)
+        phi=phi1
+        if (yy.lt.0.2525) phi=phi2
+\end{verbatim}
+
+\item[31) line data including statistical weights for upper and lower(xstar1)]
+ 
+
+\item[32) Collisional ionization, Cota, ground level.(xstar1)]
+ idest1=idat(1)=1
+; gglo=rlev(2,idest1)
+; edelt=abs(rlev(1,idest1)-rlev(1,nlev))
+; ans1=(4.1416e-9)*rdat(1)*t**rdat(2)*exp(-edelt/ekt)
+             /gglo
+; ans1=ans1*xnx
+
+\item[33) line data collisional: hullac (not used)          ]
+ 
+
+\item[34) line data radiative: Mendoza and from Raymond and Smith (xstar1) ]
+ 
+
+\item[35) photoionization: table (from Barfield, Koontz and Huebner 1972):
+(xstar1) ]
+ 
+
+\item[36) photoionization, excited levels, hydrogenic(no l): (xstar1) ]
+
+i1=n, i4=level; i5=ion
+ 
+\item[49) opacity project  pi x-sections                                  ]
+ Photoionization cross section from TOPbase averaged over resonances. 
+ Photon energies are in Ry with respect to the subshell ionization threshold 
+and cross sections are in Mb.
+Just like 53, except for energy scale..
+ Every line  contains:
+ reals (2*np; x(i),y(i),i=1,np)
+; integers (8; N, L, 2*J, Z, $\#$lev+, $\#$nion+, $\#$nlev, $\#$nion)
+; characters (0)
+; ($\#$ion $\&$ $\#$nlev correspond to the initial state and $\#$ion+ $\&$ $\#$lev+
+ correspond to the state to which that ionizes.) 
+
+
+\item[50) line rad. rates from OP and IP]
+ Transition probabilities file.
+ Every line  contains:
+ reals (3; Wavelength (A), gf-val., A-val. (cm-1))
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[51) iron project and chianti line collision rates    ]
+ Burgess $\&$ Tully fit to collision strengths as taken from CHIANTI.
+ Each fit entry includes the C-fitting parameter and 5 reduced 
+ collision strengths values for X=0, .25, .5, .75, 1.
+; reals (7; Delta E, C fitting param., 5 Y-reduced values)
+; integers (5; transition type, lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[52)  same as 59 but rate type 7   ]
+
+
+\item[53) opacity project  pi x-sections                                  ]
+ Photoionization cross section from TOPbase averaged over resonances. 
+ Photon energies are in Ry with respect to the first ionization threshold 
+and cross sections are in Mb.
+ Every line  contains:
+ reals (2*np; x(i),y(i),i=1,np)
+; integers (8; N, L, 2*J, Z, $\#$lev+, $\#$nion+, $\#$nlev, $\#$nion)
+; characters (0)
+; ($\#$ion $\&$ $\#$nlev correspond to the initial state and $\#$ion+ $\&$ $\#$lev+
+ correspond to the state to which that ionizes.) 
+
+\item[54) Transition probabilities to be computed from quantum defect or as hydrogenic.  ]
+ Transition probabilities most be included as hydrogenic.
+ reals (1; 0.0E+0)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[55)  hydrogenic pi xsections, bautista format: ]
+
+i1=lower level; i2=ion;
+
+
+
+\item[56) Tabulated Upsilons for HeI from Sawey $\&$ Berrington (1993).]
+ Every line contains:
+ reals (2n; n log10(temp), n gammas)          
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[57) Effective ion charge for each level to be used in collisional ionization rates]
+(same as 65)
+ Every line contains:
+ reals (1, Zeff)
+; integers (6; N, L, 2*J, Z, $\#$lev, $\#$ion)
+; characters (0)
+
+\item[58) Bautista cascade rates]
+(not used)
+
+\item[59) verner pi xc                                     ]
+
+ Verner photoionization cross sections, after 
+ D. A. Verner $\&$ D. G. Yakovlev, 1995, A$\&$AS, 109, 125
+ r1-r6:  fitting parameters
+; i1=nuclear z
+; i2=number of electrons
+; i3=subshell
+; i4=verner fitting parameter, orbital quantum number of subshell
+; i5=final ion stage-initial ion stage
+; i6=final level number
+; i7=ion
+
+\item[60) calloway h-like coll. strength                   ]
+
+ Coefficients for analytic fits to Upsilons
+ for H-like ions according to review by Callaway (1994;
+ ADNDT,
+ 57,9)
+ Data lines contain the following information:
+ reals (coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (5)
+
+\item[61) Collision strengths from impact parameter approximation] 
+(not used)
+
+Every line contains: reals (0); integers (5: dummy, lower level, 
+upper level, Z, $\#$ion); characters (0).
+
+\item[62) calloway h-like coll. strength                   ]
+(same as 60)
+ Coefficients for analytic fits to Upsilons
+ for H-like ions according to review by Callaway (1994;
+ ADNDT,
+ 57,9)
+ Data lines contain the following information:
+ reals (coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (5)
+
+\item[63) h-like cij,  (hlike ion)                 ]
+ Transition probabilities to be computed from quantum defect or as 
+ hydrogenic.
+ reals (1; 0.0E+0)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[64) hydrogenic pi xsections, bautista format:]
+
+i3=z; i1=n; i2=l;
+
+\item[65) effective charge to be used in collisional ionization (h-like
+ions)]
+ Effective ion charge for each level to be used in collisional ionization
+ rates.
+ Every line contains:
+ reals (1, Zeff)
+; integers (5; N, L, Z, $\#$lev, $\#$ion)
+; characters (0)
+
+\item[66) Kato \& Nakazaki fit to collision strengths for He-like ions] 
+
+Like type 69 but in fine structure.
+
+ Every line contains:
+ reals (6; fit coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+
+\item[67) Effective collision strengths for He-like ions from Keenan, McCann, and Kingston]
+{\bf (1987)} 
+ Every line contains:
+ reals (n; fit coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[68) Fit to effective collision strengths for He-like ions by Zhang $\&$ Sampson. ]
+ Every line contains:
+ reals (3; fit coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[69) Kato $\&$ Nakazaki (1996) fit to collision strengths for He-like ions.]
+ Every line contains:
+ reals (6; fit coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[70) Coefficients for recomb. and phot x-section of superlevels.]
+ Every line  contains:
+ reals ($\#$; (den(i),i=1,nd),(Te(i),i=1,nt),
+        (log10(recomb. rates(i,j),i=1,nt,j=1,nd)
+        (ener(i), pi x-secs(i), i=1,nx)
+; integers (11; nd, nt, nx, N, L, 2*S+1, Z, $\#$lev+, $\#$nion+, $\#$nlev, $\#$nion)
+; characters (0)
+
+\item[71) Radiative transition rates from superlevels to spectroscopic levels]
+ The data is for a grid of Ne and  
+ Te. 
+ Every line  contains:
+ reals ($\#$; Ne(i),i=1,nd),(Te(i),i=1,nt),
+        (rad. rates (ne,kt),kt=1,nt,ne=1,nd), Wavelength (\AA)) 
+; integers (6; nd, nt, lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[72) Autoionization rates (in s$^{-1}$) for satellite levels.]
+ Every line contains:
+ reals (3; auto. rate, energy in eV above the ionization limit, 
+            statistical weight)
+; integers (6; (2S+1), L, $\#$level, continuum level numb., z, ion)
+; characters (10; level configuration)
+
+\item[73) Fit to effective collision strengths from Sampson et al. for satellite levels] 
+{\bf of He-like ions.}
+ Every line contains:
+ reals (7; fit coefficients)
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[74) Delta functions to add to phot. x-sections to match ADF DR recomb. rates.]
+ Every line  contains:
+; reals (2n+1; ionization limit (eV), (energy over g.s.(i),i=1,n),
+        (amplitude in cm$^2$(i),i=1,n)
+; integers (8; N, L, (2S+1), Z, $\#$lev+, $\#$nion+, $\#$nlev, $\#$nion)
+; characters (0)
+
+\item[75) Autoionization data for Fe XXiV satellites  :]
+
+ Every line contains:
+ reals (same as 72) (3; auto. rate, energy in eV above the ionization limit, 
+            statistical weight)
+; integers: lower level, upper ion, upper level, ion
+; characters (0)
+
+\item[76) 2 photon decay :]
+ 
+Just like data type 50.
+Every line  contains:
+ reals (3; Wavelength (A), gf-val., A-val. (cm-1))
+; integers (4; lower level, upper level, Z, $\#$ion)
+; characters (0)
+
+\item[77) Collision transition rates from superlevels to spectroscopic levels] 
+
+Every line contains: reals ($\#$: (Ne(i),i=1,nd),(Te(i),i=1,nt),
+coll.rates(ne,kt),ne=1,nt,kt=1,nd), Wavelength (\AA)); integers (6: nd,
+nt, lower level, upper level, Z, $\#$ion); characters (0).
+
+\item[78) Level data used for Auger and inner shell fluorescence 
+calculation:]  Same as type 6:
+ 
+Every line  contains:
+ reals r1=E$_Z$=1(eV); r2=(2J+1); r3=n$_{effective}$; r4=Ion. Potential;
+i1=n; i2=(2S+1); i3=L; i4=Z; i5=$\#$lev; i6=$\#$ion)
+; c1-c$\#$=configuration.
+
+Different data type used in order 
+to merge with non-Auger levels when assembling database.  These data 
+come from the compilation of Kaastra and Mewe (1993).  They are 
+gradually being replaced by more accurate level-to-level data.
+As of v.21l and later, this has been done for iron and for oxygen.
+In version 2.1kn4 and earlier, this data was used for all elements.
+
+\item[79)  Line data used for Auger and inner shell fluorescence 
+calculation:]  Same as type 4, but different data type used in order 
+to merge with non-Auger levels when assembling database.
+ 
+ r1=line wavelength (A)
+; r2=f value
+; i1=lower level index
+; i2=upper level index
+
+
+
+\item[80) Collisional ionization rates gnd of Fe and Ni :]
+
+not used
+
+\item[81) Bhatia Fe XIX collision strengths  :] 
+
+Every line  contains:
+ reals r1=$\Upsilon$; ;
+i1=lower level; i2=upper level; i3=$\#$ion);
+
+Energy separation is obtained from level data.
+
+\item[82) Fe UTA rad rates  :]         
+
+(from Gu et al. 2006)
+
+Reals: r1=wavelength (A); r2=; r3=gf; r4=A$^{radiative}_{ij}$; 
+r5=A$^{Auger}_{ij}$; r6=A$^{total}_{ij}$;
+i1=lower level; i2=upper level;
+
+\item[83) Fe UTA level data  :]                          
+
+(from Gu et al. 2006)
+
+ Same as type 6:
+ 
+Every line  contains:
+ reals r1=E$_Z$=1(eV); r2=(2J+1); r3=n$_{effective}$; r4=Ion. Potential;
+i1=n; i2=(2S+1); i3=L; i4=Z; i5=$\#$lev; i6=$\#$ion)
+; c1-c$\#$=configuration.
+
+
+\item[84) Iron K Pi xsections, spectator Auger binned    :]
+
+No longer used
+
+\item[85) Iron K Pi xsections, spectator Auger summed    :]
+
+Calculates photoionization cross section due to summation of 
+resonances near inner shell edges ala Palmeri et al., 
+2002 Ap.J.Lett.577, 119.
+
+Every line  contains:
+ reals r2=E$_{Threshold}$(Ry); r3=f parameter; r4=$\gamma$; r5=scaling factor;
+i1=lower level; i2=ion;
+
+
+
+\item[86) Iron K Auger data :]
+
+(from Palmer et al. 2003A$\&$A...410..359P, Mendoza et al  2004A$\&$A...414..377M;
+Palmeri et al., 2003A$\&$A...403.1175P; Garcia et al.,  2005ApJS..158...68G)
+
+reals: r2=A$_{ij}$ (s$^{-1}$); 
+integers:
+i1=$\#$ final level (relative to final ion); i4=$\#$final ion
+i2=$\#$ initial level; i5=$\#$initial ion
+
+
+\item[88) Iron inner shell resonance excitation  :]
+Photoexcitation to autoionizing levels
+
+Format is like types 49:
+ Photon energies are in Ry with respect to the first ionization threshold 
+and cross sections are in Mb.
+ Every line  contains:
+ reals (2*np; x(i),y(i),i=1,np)
+; integers (8; N, L, 2*J, Z, $\#$lev+, $\#$nion+, $\#$nlev, $\#$nion)
+; characters (0)
+; ($\#$ion $\&$ $\#$nlev correspond to the initial state and $\#$ion+ $\&$ $\#$lev+
+ correspond to the state to which that ionizes.) 
+
+
+\end{description}
+
+\section{Utility Programs}
+
+The program which translates the ascii database file into the binary 
+fits format used by XSTAR is called bintran.f, and is included 
+with the XSTAR source distribution.  Compilation of this program is 
+straightforward, although it requires links to the cfitsio libraries.
+Execution simply requires the redirection of the input.
+
+
+\section{Level Labels}
+
+New in version 2.21bh is the replacement of all level strings by a uniform 
+system developed for the the uadb database.  The following is reproduced from 
+the uadb manual and describes the labeling system.
+
+
+While level strings from any coupling scheme can be stored and retrieved from
+uaDB, currently it only supports searching for $LS$-coupled level strings.
+In order to guarantee uniqueness, level strings entered into the database must
+conform to the rules outlined in this appendix.
+
+All states must have a configuration.
+Term-averaged or level-resolved states must also include a term string and
+level-resolved states must specify $J$.
+The rules for each part follow.
+
+
+\subsection{Configuration strings}
+
+Configurations are stored in the database using an unambiguous notation which
+should be familiar to most users.
+A configuration consists of a space-delimited list of sub-shells in standard
+order each having the form, $nlm$, where $nl$ is the sub-shell (standard order: 1s, 
+2s, 2p, 3s, ...) and $m$ is the occupation number.
+Note that the shorthand notation of omitting $m$ when unity is not used, e.g. 
+2s1 not 2s.
+Configuration strings obey the rules:
+\begin{itemize}
+\item all closed sub-shells starting with 1s and ending just prior to the first
+      open (or last) sub-shell are not part of the configuration string,
+\item the first open sub-shell is always displayed even if it is empty ($m=0$),
+      and
+\item all empty sub-shells beyond the first open sub-shell are not 
+      displayed.
+\end{itemize} 
+Some examples:
+\begin{itemize}
+\item 1s$^2$ 2s$^2$ 2p$^3$ becomes 2p3,
+\item 1s$^2$ 2s$^1$ 2p$^4$ becomes 2s1 2p4,
+\item 1s$^2$ 2s$^0$ 2p$^5$ becomes 2s0 2p5, and
+\item 1s$^1$ 2s$^2$ 2p$^4$ becomes 1s1 2s2 2p4.
+\end{itemize}
+
+Using a list of occupation numbers as the configuration label was considered
+and ultimately rejected due to the impracticality of storing Rydberg levels.
+Consider the configuration, 1s 200p; whereas only 13 characters are
+needed to store this configuration in the form described above, nearly 
+40\,000 characters are required if using a list of occupation numbers.
+
+To get the number of electrons of a configuration takes two steps; first you
+need to calculate the number of electrons in the core and then add up the
+occupation numbers of the visible sub-shells.
+To get the number of electrons in the core, $n_{core}$, take the principal
+quantum number, $n$, and the orbital angular momentum, $l$ of the first 
+{\bf open} sub-shell and apply the following expression:
+\begin{equation}
+n_{core} = \frac{1}{3} n (n-1) (2n-1) + 2l^2 .
+\end{equation}
+For a configuration of 4p5 5s2 5p1 we have $n=4$ and $l=1$.
+The above expression yields $n_{core} = 30$ and the total occupation of the
+visible sub-shells is 8 so this configuration has 38 electrons.
+
+
+\subsection{Term strings}
+
+The format for the term should be familiar to most users. 
+It starts with an integer representing $2S+1$ followed by the spectroscopic
+letter representing the total orbital angular momentum, $L$.
+An example is {\tt 2P} where $S=1/2$ and $L=1$.
+
+
+\subsection{Level strings}
+
+To specify the total angular momentum, $J$, of a level-resolved state, you 
+append the term string defined above with an underscore and the $J$ value.
+If $J$ is a half-integer then you must use fractional notation.
+Examples of the term and level strings include: {\tt 2P\_1/2} and {\tt 1S\_0}.
+
+

@@ -1,0 +1,169 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/heatools/ftcoco/ut_ftcoco,v $
+# $Revision: 1.4 $
+# $Date: 2007/11/20 22:29:32 $
+#
+#	ut_ftcoco
+#		validate ftcoco operation
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "ftcoco";
+$ut_taskname   = "ut_ftcoco";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance incoord 
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+	my $reltol = $self->args->{reltol};
+	my $incoord = $self->args->{incoord};
+	my %task;
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	if ($incoord eq "R") {
+	    #  RA/DEC to Galactic
+	    %task = (
+			infile        => "$input/ftcoco1.fits",
+			outfile       => "$output/ftcoco1.fits.gal",
+			incoord       => "R",
+			outcoord      => "G",
+			lon1          => "RA_TEMPLATE",
+			lat1          => "DEC_TEMPLATE",
+			lon2          => "GLON_OBJ",
+			lat2          => "GLAT_OBJ",
+			radecsys      => "FK5",
+			clobber       => "YES",
+			);
+	    
+	} else {
+	    #  Galactic to RA/DEC
+	    %task = (
+			infile        => "$input/ftcoco1.fits",
+			outfile       => "$output/ftcoco1.fits.equ",
+			incoord       => "G",
+			outcoord      => "R",
+			lon1          => "GLON_TEMPLATE",
+			lat1          => "GLAT_TEMPLATE",
+			lon2          => "RA_OBJ",
+			lat2          => "DEC_OBJ",
+			radecsys      => "FK5",
+			clobber       => "YES",
+			);
+	    
+	}
+	unlink("$task{outfile}");
+
+	@infiles = ("infile");
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	$command = qq(ftverify infile=$task{infile} outfile=STDOUT heasarc=yes);
+	$self->doCommand($command);
+
+	if ($incoord eq 'R') {
+	    $command = "ftstat $task{outfile}'[col DIFF=ANGSEP(GLON_OBJ,GLAT_OBJ,GLON_TEMPLATE,GLAT_TEMPLATE)*3600;]'";
+	} else {
+	    $command = "ftstat $task{outfile}'[col DIFF=ANGSEP(RA_OBJ,DEC_OBJ,RA_TEMPLATE,DEC_TEMPLATE)*3600;]'";
+	}
+	$result = $self->doCommand($command);
+	$maxdiff = `pget ftstat max`;
+	print "   --> FTSTAT reports max angular difference of $maxdiff arcsec\n";
+	if ($maxdiff > $tolerance) {
+	    $self->error(BAD_OUTPUT, "error because of too large angular difference");
+	}
+}
+

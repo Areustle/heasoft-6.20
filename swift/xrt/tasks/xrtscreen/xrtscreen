@@ -1,0 +1,2502 @@
+#! /usr/bin/perl
+# File name: xrtscreen
+# 
+# Task name: xrtscreen
+# 
+# Description:	Generate  Good  Time  Intervals  (GTI) applying boolean
+#   expressions  to  housekeeping parameters and use them to perform event
+#   screening.  A  screening for grades, bad pixels and the elimination of
+#   calibration sources is also performed.
+#		   
+# 
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 : BS 29/11/2002 - First version
+#      0.1.1 : FT 24/02/2002 - Added call to fchecksum
+#      0.1.2 : RP 22/07/2003 - Minor change to GetExpr
+#      0.1.3 : FT 04/08/2003 - Substituted GetEventFilteredName function call
+#                              with SetLev2EvtFileName cal
+#      0.1.4 : FT 23/09/2003 - Added input parameters:
+#                              'screenevtgti'  - this allows to create GTIs for Imaging Mode 
+#                                                data without perform the data screening 
+#                                                (performed by xrtimage task) 
+#                              'screenevtgti' - to enable/disable the screening of the 
+#                                                event list by the default expression or
+#                                                the expression specified by user.
+#                              'creategti'     - to create GTIs based on HK expression
+#      0.2.0 : FT 23/10/2003 - Added input parameters: 'usehkrange', 'Changed';
+#                            - hkrangefile input parameter 'expr' into 'gtiexpr';
+#                            - Added query of input parameters depending on boolean inputs;
+#                            - Added input parameters: 'exprpcgade', 'exprwtgrade', 
+#                              'exprpdgrade','useevtrangefile', 'evtrangefile';
+#                            - Substituted the call to 'extractor' to a call to 'xselect' for 
+#                              'TIME' and 'GRADE' (the new xselect screening
+#                              criteria implemented with LHEASOFT 5.3) screenings;
+#                            - substituted 'creategti' with 'createattgti' and 'createinstrgti'
+#      0.2.1 : FT 17/11/2003 - Added "\"" around filter grade expression
+#      0.2.2 : FT 18/11/2003 - Changed call to TableEmpty subroutine
+#      0.2.3 : FT 20/11/2003 - Bugs fixed: create temporary .xco script in 'outdir' directory;
+#                                          error creating .xco file when input event file given
+#                                          without input path.
+#      0.2.4 : FT 25/11/2003 - Added call to library subroutine 'SetGtiFileName'
+#      0.2.5 : RP 17/12/2003 - Added check on imaging mode 
+#      0.2.6 : RP 19/12/2003 - Added function RequestParameter, change GetInputParameters
+#                              add call GetParameterList, LoadParameterFromCmdLine,LoadParameter
+#      0.2.7 : RP 27/01/2004 - Add call to WriteParameterList
+#      0.2.8 : FT 23/03/2004 - Handled creation of GTIs even if the .mkf file has only
+#                              one row (not supported by 'maketime'
+#                            - erased 'useevtgangefile' and 'usehkrangefile' from input parameters
+#                              and changed some input conditions
+#                            - added 'cleanup' input parameter
+#                            - bug fixed when use 'expr<mofe>' given by ommand line       
+#     0.2.9  : RP            - Changed calls to TableEmpty and GetKeyword  
+#     0.3.0  : FT            - Unlink xselect temporary files
+#     0.3.1  : FT 05/05/2004 - New naming convention handling
+#                            - Call Quzcif with the Start Observation Date instead of "NOW"
+#                            - Redirect output of the Xselect command using RunCommandAndRedirectOutput
+#                              library routine
+#                            - One input parameter 'expr' in place of 'exprpc', 'exprwt', 'exprpd'
+#                            - One input parameter 'exprgrade' in place of 'exprpcgrade', 
+#                              'exprwtgrade', 'exprpdgrade'
+#                            - changed input parameters name:
+#                              gti       -> gtiext
+#                              eventsout -> outfile
+#                              tcol      -> timecol
+#                              evtfile   -> infile
+#     0.3.1  : FT 05/05/2004 - changed input parameters:
+#                              screenevtgti  -> gtiscreen
+#                              screenevtexpr -> exprscreen
+#     0.3.2  : FT 05/08/2004 - Copy the BADPIX exension from the input event file to the output
+#                              if exsists
+#
+#     0.3.3 : RP 24/09/2004 - Added Swift Keyword to gti file
+#                              Added parameter (prefr=0 and postfr=1) when call maketime
+#     0.3.4 : RP 30/09/2004 - Change  CopyKeyword
+#     0.3.5 : RP 04/10/2004 - Delete DEFAULT value on mkffile parameter
+#     0.3.6 : FT 04/10/2004 - Bug fixed when no gti generation requested but only gti
+#                             file supplied by users: wrong gtifile list created
+#                           - do not ask for output file name if no screeneng requested
+#                           - do not ask for mkffile if no GTI generation requested
+#     0.3.7 : FT 05/10/2004 - changed imput parameters handling. Now 'gtiexpr', 'exprgrade', 'expr'
+#                             define the kind of selection to be applied:
+#                             'gtiexpr' = 'none' => no GTIs generation 
+#                             'exprgrade' = 'none' => no events selection for GRADE parameter
+#                             'expr' = 'none' => no events selection with event parameter expression.
+#                             They define also to get the default expression from CALDB files or not:
+#                             'gtiexpr' = 'default' => get expression from 'hkrangefile'
+#                             'exprgrade' = 'default' => get expression from 'evtrangefile'
+#                             'expr' = 'default' => get expression from 'evtrangefile'
+#     0.3.8 : FT 07/10/2004 - added check on PI colum that will couse errors during
+#                             xselect run
+#                           - added some comments and erased hard coded default that
+#                             are no more needed with the new handle of input parameters
+#                             because DEFAULT values are now always taken from
+#                             CALDB files.
+#                           - Added initialization of $fptr and $status to 0,
+#                             this change has been suggested by Bob Wiegand
+#                             (undefined variables give warnings with
+#                             Astro::FITS::CFITSIO library)
+#                           - added check on GRADE expression  
+#                           - Do not call xselect fi 'gtiexpr'='none', 'exprgrade'='none' and
+#                             'usrgtifile'='none'
+#                             Do not add the BADPIX extension in the output file if
+#                             exists
+#                           - changes due to warnings and bug fixed on TYMESYS keyword
+#     0.3.9 : FT 04/02/2005 - screen makefilter from TIME NULL records    
+#     0.3.10: BS 07/02/2005 - Created a temporary mkf screened for NULL file 
+#     0.3.11:    09/02/2005 - Bug fixed          
+#     0.3.12: FT 10/02/2005 - add "TIME!=-1" to the screening from TIME NULLS
+#     0.4.0 : FT 21/03/2005 - read a new hkrange file format with a new column that specify the
+#                             syntax for the screening expression.
+#                           - added the input parameter 'obsmodescreen'. if the parameter 
+#                             is set to yes (default) add to the GTI generation expression 
+#                             the observatin mode ranges (i.e. :
+#                                 "SLEWING"  -> "SETTLED==0&&TEN_ARCMIN==0"
+#                                 "SETTLING" -> "SETTLED==0&&TEN_ARCMIN==1"
+#                                 "POINTING" -> "SETTLED==1"
+#                             this expression is not used when generating GTIs
+#                             for imaging mode
+#     0.4.1 : FT 21/03/2005 - changed sintax into syntax
+#     0.4.2 : FT 07/06/2005 - moved the CheckRow subroutine into libswxrtperl
+#                             to be used also by xrtpipeline
+#                           - Check the existence of TIME values set to NULL in 
+#                             the .mkf file before running 'ftselect' to erase
+#                             rows with TIME == NULL (nonulls=yes)
+#     0.4.3 : NS 12/03/2007 - Added new input parameter 'acsscreen'
+#                           - Changed observation mode range(i.e. :
+#                                 "SLEWING"  -> "((SETTLED==0&&TEN_ARCMIN==0)||(SETTLED==1&&TEN_ARCMIN==0&&SAFEHOLD==1))"
+#                                 "SETTLING" -> "SETTLED==0&&TEN_ARCMIN==1"
+#                                 "POINTING"
+#                                  if acsscreen=yes -> "(SETTLED==1&&TEN_ARCMIN==1)"
+#                                  if acsscreen=no -> "((SETTLED==1&&TEN_ARCMIN==1)||(SETTLED==1&&TEN_ARCMIN==0&&SAFEHOLD==0))"
+# 
+#     0.4.4  :   09/05/2007 - Copy the BIASDIFF extension from the input event file to the output
+#                              if exists
+#     0.4.5  :   10/07/2007 - Query to CALDB for hkrangefile depending on 'XRTVSUB' of input evt
+#     0.4.6  :   13/11/2007 - Added GTI selection based on spacecraft parameters
+#                             from new extension SAC of hkrangefile
+#     0.4.7 :    30/09/2008  - Fixed compatibility problem with new perl 5.10
+#                            - Changed observation mode range expression(i.e. :
+#                                 "SLEWING"  -> "((SETTLED==0&&TEN_ARCMIN==0)||(SAFEHOLD==1))"
+#                                 "SETTLING" -> "SETTLED==0&&TEN_ARCMIN==1"
+#                                 "POINTING"
+#                                  if acsscreen=yes -> "(SETTLED==1&&TEN_ARCMIN==1)"
+#                                  if acsscreen=no -> "((SETTLED==1&&TEN_ARCMIN==1)||(SETTLED==1&&TEN_ARCMIN==0&&SAFEHOLD==0))"
+#     0.4.8 :    09/03/2009  - Uses PID in session name when calling xselect
+#     0.4.9 : RF 12/10/2015  - Added GTI selection on CCDFrame RAWX/RAWY out of range events
+#     0.5.0 : RF 13/10/2016  - Removed duplicate key 'TELESCOPE'.
+#                            - Fixed a bug in the writing keys 'INSTRUME' and 'RADECSYS'.
+#
+#
+# Notes:	
+# 
+#   type "fhelp xrtscreen" for parameters description
+#
+# Usage:     
+# 
+#   xrtscreen mkffile=<fitered-hk> evtfile=<level1 evt file> outdir=<output-dir> eventsout=<level 2> [parameter=value .
+#
+# Input files:  
+#        Housekeeping Filtered File (xrtfilter output)
+#        XRT Level 1 Calibrated Event File
+#        filr with GTI expression
+#        file with screening expressions
+#
+#   
+# Output files: 
+#        XRT Level 2 Event List File
+#        gti file
+#
+# HEADAS tasks needed:
+#        pquery2 
+#
+# LHEASOFT tasks needed:
+#        maketime
+#        xselect
+#        fselect
+#============================================================#
+
+require "libswxrtperl.pl";
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use strict;
+
+use vars qw( %Task %Default @Par %Ind $attrangefile $evtrangefile %badFrame);
+$Task{status} = 0;
+#
+# Specific of the task
+#
+%Task = (
+	 start   => `date`,
+	 name    => "xrtscreen",
+	 version => "0.5.0",
+	 releasedate => "2016-10-13",
+	 stem        => "xrtscreen_0.5.0",
+	 emptystem      => "               ",
+	 mode           => "", # Event File data mode
+	 clobber        => 0,  # it means 'clobber=no'
+	 screenevt      => 0, # it means 'gtiscreen=no' and 'screenevtgti=no'
+	 creategti      => 0, # it means 'createattgti=no' and 'createinstrgti=no'
+	 obsmodescreen  => 0,
+	 acsscreen      => 0,
+	 chatter        => 3,
+	 status         => 0,
+	 errmess        => "",
+	 cleanup        => 0,
+	 );
+
+#
+#  Defaults
+#
+%Default = (
+	    DEFAULT => "DEFAULT",
+	    NONE    => "NONE",
+	    CALDB   => "CALDB",
+	    MKFILEEXTENSION => "s.mkf",
+	    PCDATAMODE      => "PHOTON",
+	    WTDATAMODE      => "WINDOWED",
+	    LRDATAMODE      => "LOWRATE",
+	    PUDATAMODE      => "PILEDUP",
+	    PCMODE          => "pc",      # GetEventDataMode output
+	    WTMODE          => "wt",      #        "           "
+	    IMMODE          => "im",      #        "           "
+	    PDMODE          => "pd",      #        "           "
+	    POINTVALUE      => "POINTING",
+	    SLEWVALUE       => "SLEW",
+	    SETTLINGVALUE   => "SETTLING",
+	    );
+
+#  
+#   Running Task Message
+#
+
+&RunningTask;
+
+
+#
+# Get Input Parameters 
+#
+
+if ( &GetInputParameters ) {
+    if ( !$Task{errmess} ) {
+	$Task{errmess} = "Input parameters error";
+    }
+    goto EXITWITHERROR;
+}
+
+$Task{chatter} = &GetValPar("chatter");
+
+my $ou = &GetValPar("outdir");
+$ou =~ s/\/$//; 
+
+&SetValPar("outdir",$ou) ;
+
+if ( &GetValPar("clobber") =~ /[yY]/ ) {
+    $Task{clobber} = 1;
+}
+
+if ( &GetValPar("cleanup") =~ /[yY]/ ) {
+    $Task{cleanup} = 1;
+}
+
+if ( &GetValPar("obsmodescreen") =~ /[yY]/ ) {
+    $Task{obsmodescreen} = 1;
+}
+
+if ( &GetValPar("acsscreen") =~ /[yY]/ ) {
+    $Task{acsscreen} = 1;
+}
+
+if ( !$Task{creategti} && !$Task{screenevt} ) {
+    &PrntChty(3,"$Task{stem}: Warning: Nothing to be done. Input parameters 'evtscreen' and 'gtiscreen'\n");
+    &PrntChty(3,"$Task{stem}: Warning: set to 'no' and 'gtiexpr' set to 'none'\n");
+    &Success;
+    exit 0;
+}
+
+#
+# Create directory for outputs if it does not exist
+#
+
+if ( ! -d &GetValPar("outdir") ) {
+    if ( &CreateDir(&GetValPar("outdir"))) { 
+	$Task{errmess} = "Error creating output directory " . &GetValPar("outdir");
+	goto EXITWITHERROR; 
+    }
+    &PrntChty(3,"$Task{stem}: Warning: Created '". &GetValPar("outdir") . "' output directory\n");
+}
+
+
+my ($TmpMkf,$Cleaned);
+
+if ( $Task{creategti} ) {
+
+    $TmpMkf = &GetValPar("outdir")."/".$$.".mkf" ;
+
+    if ( ! -f &GetValPar("mkffile") ) {
+	$Task{errmess} = "Input Make Filter File: '" . &GetValPar("mkffile") . "' not found";
+	goto EXITWITHERROR;
+    }
+
+    # filter .mkf file from TIME records set to NULL
+    $Cleaned = &CleanTimeNulls(&GetValPar("mkffile"), $TmpMkf,"FILTER");
+
+    if ($Cleaned) {
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+    }
+    else { 
+	$TmpMkf =  &GetValPar("mkffile");
+    }
+
+    # set gti file name
+    if ( &CompUL( &GetValPar("gtifile") , $Default{DEFAULT} ) ) {
+	&SetValPar("gtifile", &SetGtiFileName( &GetValPar("infile"), &GetValPar("outdir") ));
+    }
+    if ( -f &GetValPar("gtifile") ) {
+	if ( $Task{clobber} ) {
+	    if ( !unlink (  &GetValPar("gtifile") ) ) {
+		&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" .  &GetValPar("gtifile") . "' file\n");
+		goto EXITWITHERROR;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: The output GTI file '" .  &GetValPar("gtifile")  ."' exists\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please specify another output file name or set the parameter 'clobber' to yes\n");
+	    $Task{errmess} = "Input parameter 'clobber' set to 'no'";
+	    goto EXITWITHERROR;
+	}
+    }
+
+    &PrntChty(3,"$Task{stem}: Info: GTI file for TIME selection will be:\n");
+    &PrntChty(3,"$Task{stem}: Info: " . &GetValPar("gtifile") . "\n");
+
+}
+else {
+    &SetValPar("gtifile","none");
+    &SetValPar("mkffile","none");
+}
+
+
+# Get Observation Start Date from the input Event File
+my ( $StartDate, $StartTime );
+&GetEventStartDate(&GetValPar("infile"),\$StartDate,\$StartTime);
+if ( $Task{status} ) { goto EXITWITHERROR; }
+
+$Task{StartDate} = $StartDate;
+$Task{StartTime} = $StartTime;
+
+my ($XselectTmpEventFileName) = "";
+my ($FselectTmpEventFileName) = "";
+my ($InEvtFile) =  &GetValPar("infile");
+my ($OutEvtFile) = "";
+
+# Set temporary files name
+
+$XselectTmpEventFileName =  &GetValPar("outdir") . "/"."xselect$$"."evt.flt";
+$FselectTmpEventFileName =   &GetValPar("outdir") . "/"."fselect$$"."evt.flt";
+
+# set the Output Filtered Event File Name
+
+if ( $Task{screenevt} ) {
+
+    # check if the Input event file has the GTI extension empty
+    
+    my($numaxis);
+    &GetKeyword($InEvtFile,&GetValPar("gtiext"),undef,"NAXIS2" ,\$numaxis);
+
+    if ( $numaxis == 0 ) {
+	&PrntChty(2,"$Task{stem}: Warning: the GTI extension of the input event file is empty\n");
+	&PrntChty(2,"$Task{stem}: Warning: no filtered event file generated for\n");
+	&PrntChty(2,"$Task{stem}: Warning: '" .  &GetValPar("infile")  . "' event file\n");
+
+	if ( -f $OutEvtFile ) {
+	    if ( !unlink (  &GetValPar("gtifile") ) ) {
+		&PrntChty(2,"$Task{stem}: Warning: Cannot delete '" .  &GetValPar("gtifile") . "' file\n");
+		goto EXITWITHERROR;
+	    }
+	}
+	goto EXITWITHWARNING;
+    }
+
+    if (  &CompUL(  &GetValPar("outfile"),$Default{DEFAULT} ) ) {
+	&SetValPar("outfile", &SetLev2EvtFileName( &GetValPar("infile"), &GetValPar("outdir")));
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Cannot retrieve DEFAULT output Filtered Event File Name\n");
+	    &PrntChty(2,"$Task{stem}: Please specify the output Filtered Event File name by 'eventsout' parameter\n");
+	    $Task{errmess} = "Cannot retrieve DEFAULT output Filtered Event File Name";
+	    goto EXITWITHERROR;
+	}
+    }
+    elsif ( rindex( &GetValPar("outfile"),'/') == -1 ) {
+	&SetValPar("outfile",  &GetValPar("outdir") . "/" .  &GetValPar("outfile"));
+    }
+    if ( !$Task{clobber} && -f  &GetValPar("outfile") ) {
+	&PrntChty(2,"$Task{stem}: Error: The output filtered event file '" .  &GetValPar("outfile")  ."' exists\n");
+	&PrntChty(2,"$Task{stem}: Error: Please specify another output file name or set the parameter 'clobber' to yes\n");
+	$Task{errmess} = "Input parameter 'clobber' set to 'no'";
+	goto EXITWITHERROR;
+    }
+    elsif ( -f  &GetValPar("outfile") ) {
+	if ( !unlink (  &GetValPar("outfile") ) ) {
+	    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '" .  &GetValPar("outfile") . "' file\n");
+	}
+    }
+}
+
+if ( $Task{creategti} ) {
+
+    &PrntChty(3,"$Task{stem}: Info: Using Maketime input file:\n");
+    &PrntChty(3,"$Task{stem}: Info: " . $TmpMkf. "\n");
+
+    my ($tmpext ) = &GetNumExtName( $TmpMkf , "FILTER");
+    if ( $tmpext == -1 ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of " .$TmpMkf. " not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of " . $TmpMkf . " not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: Not found extension with EXTNAME = FILTER\n");
+	goto EXITWITHERROR;
+    }
+    elsif ( $Task{status} ) { goto EXITWITHERROR; }
+
+    my ($NumRows);
+    &GetKeyword ( $TmpMkf, "FILTER", undef, "NAXIS2", \$NumRows);
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    my ($CheckRow) = 0;
+    if ( $NumRows == 1 ) {
+	# Cannot create GTIs file from 'mkffile' with maketime 
+        # if only one row is available! ('maketime' bug)
+	# Check if the record is good ( Pointing==1 )
+	&PrntChty(2,"$Task{stem}: Warning: Input file " .  $TmpMkf . " has only one row\n");
+	&PrntChty(2,"$Task{stem}: Warning: cannot use 'maketime' to create GTIs\n");
+	&PrntChty(2,"$Task{stem}: Warning: try to check the row available against expression provided\n");
+	$CheckRow = 1;
+    }
+
+    # Get GTI expression for 'maketime' call
+    if ( &GetGtiExpression ) {
+	&PrntChty(2,"$Task{stem}: Error: cannot retieve GTI expression for GTIs generation\n");
+	$Task{errmess} = "Cannot retrieve GTI expression for GTIs generation";
+	goto EXITWITHERROR;
+    }
+
+    # if '$CheckRow' is set, read the mkffile and try to find out if the
+    # record available is fine with our expression
+    if ( $CheckRow ) { 
+	&CheckRow( $TmpMkf, $tmpext, &GetValPar("gtifile"),&GetValPar("gtiexpr"),&GetValPar("gtiext"));
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+    }
+    else {
+	# Call 'maketime'
+	if ( &RunMaketime ) { goto EXITWITHERROR; }
+    }
+}
+
+if (  $Task{screenevt} ) {
+
+    $OutEvtFile = $XselectTmpEventFileName;
+
+    # Get events GRADE (for xselect call) and Other event file parameters expressions (for fselect call)
+    if ( &GetEventExpression ) {
+	&PrntChty(2,"$Task{stem}: Error: cannot retrieve expressions for event parameters screening\n");
+	$Task{errmess} = "Cannot retrieve event parameters expressions";
+	goto EXITWITHERROR;
+    }
+    
+    if ( !&CompUL(&GetValPar("gtiexpr"),$Default{NONE}) || !&CompUL(&GetValPar("usrgtifile"),$Default{NONE}) || !&CompUL(&GetValPar("exprgrade"),$Default{NONE}) ) {
+	
+	# Run 'xselect'
+	if ( &RunXselect($OutEvtFile, $Task{mode}) ) { goto EXITWITHERROR; } 
+	$InEvtFile = $OutEvtFile;
+	
+    }
+
+
+# if the $TmpEventFileName file is empty do not call RunFselect
+my $IsEmpty = 1;
+
+    # Get expression for events parameters screening
+    my ($ExprFselect) = "";
+#    $ExprFselect = &GetExpr ( $Task{mode} );
+
+    if ( &CompUL( &GetValPar("expr"),$Default{NONE})) {
+	&PrntChty(2,"$Task{stem}: Warning: the instrument parameters expression 'expr' is empty\n");
+	&PrntChty(2,"$Task{stem}: Warning: no screening applied on events mode parameters\n");
+    }
+    else {
+	if ( &TableEmpty("$InEvtFile","EVENTS") ) {
+	    if ( $Task{status} ) { goto EXITWITHERROR; }
+	}
+	else {
+	    $OutEvtFile = $FselectTmpEventFileName;
+	    $ExprFselect = &GetValPar("expr");
+#	     if ( &CompUL( $ExprFselect , $Default{DEFAULT}) ) {
+#		 $ExprFselect = "\"$DefaultInstrSel{$Task{mode}}\"";
+#	     }
+	    # run fselect on temporary file
+	    if ( &RunFselect($InEvtFile,$OutEvtFile,$ExprFselect) ) { goto EXITWITHERROR; } 
+	    if ( &TableEmpty("$OutEvtFile","EVENTS") ) { if ($Task{status}) { goto EXITWITHERROR; } }
+	}
+    }
+} # if sreenevtexpr
+
+
+if ( $OutEvtFile ) {
+    
+    if ( &TableEmpty("$OutEvtFile","EVENTS") ) {
+	if ( $Task{status} ) { goto EXITWITHERROR; }
+	else {
+	    &PrntChty(2,"$Task{stem}: Warning: output of event list screening is empty\n");
+	    &PrntChty(2,"$Task{stem}: Warning: no filtered event file generated for\n");
+	    &PrntChty(2,"$Task{stem}: Warning: '" .  &GetValPar("infile")  . "' event file\n");
+#	if ( !unlink ( $OutEvtFile ) ) {
+#	    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '$OutEvtFile' file\n");
+#	}
+	}
+    }
+    else {
+
+	#############################################################
+        # Add the BADPIX estension from input file to the output
+	# if exists in the input file and does not exist in the output
+	#############################################################
+
+	my ( $numext ) = &GetNumExtName(&GetValPar("infile"),"BADPIX");
+	if ( $Task{status} ) {goto EXITWITHERROR;}
+
+	if ( $numext > -1 ) {
+
+	    my ( $numextout ) = &GetNumExtName("$OutEvtFile","BADPIX");
+	    if ( $Task{status} ) {goto EXITWITHERROR;}
+
+	    if ( $numextout == -1 ) {
+		my ( $ret, $command );
+		$command = "fappend " . &GetValPar("infile") . "+$numext $OutEvtFile";
+		if ( system( $command ) ) {
+		    $Task{status} = 1;
+		    $Task{message} = "Cannot append " . &GetValPar("infile") . " bintable extension to  $OutEvtFile";
+		    &PrntChty(2,"$Task{stem}: Error: Running Command: $command\n");
+		    goto EXITWITHERROR;
+		} 
+	    } # output file without BADPIX extension
+
+	} # input file with BADPIX extension
+
+
+	#############################################################
+        # Add the BIASDIFF estension from input file to the output
+	# if exists in the input file and does not exist in the output
+	#############################################################
+
+	$numext  = &GetNumExtName(&GetValPar("infile"),"BIASDIFF");
+	if ( $Task{status} ) {goto EXITWITHERROR;}
+
+	if ( $numext > -1 ) {
+
+	    my ( $numextout ) = &GetNumExtName("$OutEvtFile","BIASDIFF");
+	    if ( $Task{status} ) {goto EXITWITHERROR;}
+
+	    if ( $numextout == -1 ) {
+		my ( $ret, $command );
+		$command = "fappend " . &GetValPar("infile") . "+$numext $OutEvtFile";
+		if ( system( $command ) ) {
+		    $Task{status} = 1;
+		    $Task{message} = "Cannot append " . &GetValPar("infile") . " bintable extension to  $OutEvtFile";
+		    &PrntChty(2,"$Task{stem}: Error: Running Command: $command\n");
+		    goto EXITWITHERROR;
+		} 
+	    } # output file without BISDIFF extension
+
+	} # input file with BIASDIFF extension
+
+
+	if ( !rename ($OutEvtFile,  &GetValPar("outfile")) ) {
+	    &PrntChty(2,"$Task{stem}: ERROR: Cannot rename '$OutEvtFile' temporary file\n");
+	    &PrntChty(2,"$Task{stem}: ERROR: to "  .  &GetValPar("outfile") . ": $!\n");
+	}
+	else {
+	    &PrntChty(3,"$Task{stem}: Info: Filtered event file '" .  &GetValPar("outfile")  ."' created\n");
+	    &PrntChty(3,"$Task{stem}: Info: Selections applied:\n");
+	    &PrntChty(3,"$Task{stem}: Info:  TIME: " . &GetValPar("gtiexpr") . " \n");
+	    if ( !&CompUL( &GetValPar("usrgtifile"),$Default{NONE} ) ) {
+		&PrntChty(3,"$Task{stem}: Info:  TIME: user gti file: " . &GetValPar("usrgtifile") . " \n");
+	    }
+	    &PrntChty(3,"$Task{stem}: Info: GRADE: " . &GetValPar("exprgrade") . "\n");
+	    &PrntChty(3,"$Task{stem}: Info: EVENT: " . &GetValPar("expr") . "\n");
+
+
+	    if (&WriteParameterList(&GetValPar("outfile"),-1,@Par)) {goto EXITWITHERROR;}
+	    if ( defined($attrangefile) ) {
+		if (&write_history(&GetValPar("outfile"),-1,"CALDB HKRANGE file : $attrangefile")) { goto EXITWITHERROR;}}
+	    if ( defined($evtrangefile) ) {
+		if (&write_history(&GetValPar("outfile"),-1,"CALDB EVTRANGE file: $evtrangefile")){goto EXITWITHERROR;}}
+	}
+    }
+}
+
+
+my $size_badframe = keys %badFrame;
+
+if($Task{mode} eq "pc" && $size_badframe>0 )
+{
+		my ($par);
+		&PrntChty(2,"$Task{stem}: Warning: The following CCD frames contain events with RAWX/RAWY coordinates out of nominal range and were filtered out: \n");
+		&PrntChty(2,"$Task{stem}: Warning: ");
+		for $par (keys %badFrame)
+		{
+			&PrntChty(2,"$par ");
+		}
+		&PrntChty(2,"\n");		 
+}
+
+&Success;
+
+if ( -f $XselectTmpEventFileName ) {
+    if ( !unlink ( $XselectTmpEventFileName ) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '$XselectTmpEventFileName' file\n");
+    }
+}
+if ( -f $FselectTmpEventFileName ) {
+    if ( !unlink ( $FselectTmpEventFileName ) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '$FselectTmpEventFileName' file\n");
+    }
+}
+
+if ( -f $TmpMkf  && $Task{cleanup} && $Cleaned ) {
+    if ( !unlink ( $TmpMkf ) ) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '$TmpMkf' file. $!\n");
+    }
+}
+
+
+exit (0);
+
+EXITWITHERROR:
+    &Error;
+exit (1);
+
+EXITWITHWARNING:
+
+&Success;    
+exit (0);
+
+
+#------------------------------------------------------------
+# subroutines section
+#-----------------------------------------------------------
+
+#
+# Get Input Parameters 
+#
+
+sub GetInputParameters {
+
+    use vars qw( %Task @Par %Ind $mode);
+  
+    my ( $name, $indref, $p);
+
+    ($indref,@Par) = &GetParameterList();
+
+    %Ind = %$indref;
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	return 1;
+    }
+
+    my @p = ("gtifile","hkrangefile","gtiexpr","infile","outfile","outdir",
+	     "mkffile","evtrangefile","exprgrade","expr","usrgtifile");
+
+    my $pname;
+
+    foreach $pname (@p) {
+	if (&GetValPar($pname,"set") == 0) {
+	    &SetValPar($pname,$Default{NONE});
+	    if ( $Task{status} ) { return 1; }
+	}
+    }
+
+    # If 'gtiscreen' or 'evtscreen' is set the parameters 'evtfile', 'eventsout' 
+    # and 'outdir' are requested
+
+    # get 'gtiscreen' and 'evtscreen' parameters
+    if ( &GetValPar("gtiscreen","set") == 0 ) {
+	my $Stringa = "";
+	chop($Stringa = qx(pquery2 xrtscreen gtiscreen));
+	if ( !$Stringa ) {
+	    print "Error: error running: 'pquery2 xrtscreen gtiscreen'\n";
+	    return 1;
+	}
+	&SetValPar("gtiscreen",$Stringa);
+	if ( $Task{status} ) { return 1; }
+	&SetValPar("gtiscreen",2,"set");
+	if ( $Task{status} ) { return 1; }
+    }
+
+    if ( &GetValPar("evtscreen","set") == 0 ) {
+	my $Stringa = "";
+	chop($Stringa = qx(pquery2 xrtscreen evtscreen ));
+	if ( !$Stringa ) {
+	    print "Error: error running: 'pquery2 xrtscreen evtscreen'\n";
+	    return 1;
+	}
+	&SetValPar("evtscreen", $Stringa);
+	if ( $Task{status} ) { return 1; }
+	&SetValPar("evtscreen",2,"set");
+	if ( $Task{status} ) { return 1; }
+    }
+
+    
+    if ( (&GetValPar("evtscreen") =~ /yes/i ) ||  (&GetValPar("gtiscreen") =~ /yes/i)) {
+	    $Task{screenevt} = 1;
+    }
+    else {
+	# If we do not have to screen the event file
+	# no output event file is needed
+	if ( &GetValPar("outfile","set") != 1 ) {&SetValPar("outfile",2,"set");}
+    }
+
+    # If 'gtiexpr' is set
+    # 'gtiexpr'
+    if ( &GetValPar("gtiexpr","set") == 0 ) {
+	my $Stringa = "";
+	chop($Stringa = qx(pquery2 xrtscreen gtiexpr));
+	if ( !$Stringa ) {
+	    print "$Task{stem}: Error: error running: 'pquery2 xrtscreen gtiexpr'\n";
+	    return 1;
+	}
+	&SetValPar("gtiexpr", $Stringa);
+	if ( $Task{status} ) { return 1; }
+	&SetValPar("gtiexpr",2,"set");
+	if ( $Task{status} ) { return 1; }
+    }	
+    if ( &CompUL(&GetValPar("gtiexpr"),$Default{DEFAULT} ) ) {
+	# 'createattgti'
+	if ( &GetValPar("createattgti","set") == 0 ) {
+	    my $Stringa = "";
+	    chop($Stringa = qx(pquery2 xrtscreen createattgti));
+	    if ( !$Stringa ) {
+		print "Error: error running: 'pquery2 xrtscreen createattgti'\n";
+		return 1;
+		}
+	    &SetValPar("createattgti", $Stringa);
+	    if ( $Task{status} ) { return 1; }
+	    &SetValPar("createattgti",2,"set");
+		if ( $Task{status} ) { return 1; }
+	}
+	
+	# 'createinstrgti'
+	if ( &GetValPar("createinstrgti","set") == 0 ) {
+	    my $Stringa = "";
+	    chop($Stringa = qx(pquery2 xrtscreen createinstrgti));
+		if ( !$Stringa ) {
+		    print "Error: error running: 'pquery2 xrtscreen createinstrgti'\n";
+		    return 1;
+		}
+	    &SetValPar("createinstrgti",$Stringa);
+	    if ( $Task{status} ) { return 1; }
+	    &SetValPar("createinstrgti",2,"set");
+	    if ( $Task{status} ) { return 1; }
+	    }
+	
+	if ( &CompUL( &GetValPar("createinstrgti"),"no" ) &&
+	     &CompUL( &GetValPar("createattgti"),"no" ) ) {
+
+	    &PrntChty(2,"$Task{stem}: Error: The DEFAULT expression for the HK to create GTIs is requested ('gtiexpr'='default')\n");
+	    &PrntChty(2,"$Task{stem}: Error: but both Attitude ('createattgti'='no') and\n");
+	    &PrntChty(2,"$Task{stem}: Error: Instrument ('createinstrgti'='no') parameters are not included\n");
+	    &PrntChty(2,"$Task{stem}: Error: Empty default selection to create GTIs\n");
+		$Task{status} = 1;
+	    return 1;
+	}
+
+	# 'hkrangefile'
+	if ( &GetValPar("hkrangefile","set") == 0 ) {
+	    my $Stringa = "";
+	    chop($Stringa = qx(pquery2 xrtscreen hkrangefile));
+		if ( !$Stringa ) {
+		    print "Error: error running: 'pquery2 xrtscreen hkrangefile'\n";
+		    $Task{status} = 1;
+		    return 1;
+		}
+	    &SetValPar("hkrangefile", $Stringa);
+	    if ( $Task{status} ) { return 1; }
+	    &SetValPar("hkrangefile",2,"set");
+	    if ( $Task{status} ) { return 1; }
+	    }
+    } # gtiexpr = DEFAULT
+    else {
+	my $parm;
+	foreach $parm ( "hkrangefile","createattgti","createinstrgti" ) 
+	{ if ( &GetValPar($parm,"set") != 1 ) {&SetValPar($parm,2,"set"); } }
+    }
+    
+    if ( !&CompUL(&GetValPar("gtiexpr"),$Default{NONE}) ) {
+	$Task{creategti}=1;
+    } # gtiexpr != NONE
+    else {
+	# If no event sfile screening requested 
+	# nothing to be done
+	if ( !$Task{screenevt} ) { return 0; }
+	if ( &CompUL( &GetValPar("usrgtifile"),$Default{NONE} ) && (&GetValPar("gtiscreen") =~ /yes/i) ) {
+	    &PrntChty(2,"$Task{stem}: Error: Screen for attitude and/or instrument HK GTIs requested ('gtiscreen'='yes')\n");
+	    &PrntChty(2,"$Task{stem}: Error: but the expression for the HK to create GTI ('gtiexpr') set to 'none'\n");
+	    &PrntChty(2,"$Task{stem}: Error: and no GTI file supplied by user ('usrgtifile'='none').\n");
+	    return 1;
+	} 
+	
+	# If we do not have to generate the GTIs
+	# no input needed for following parameters
+	    my $parm;
+	foreach $parm ( "mkffile","gtifile","hkrangefile","createattgti","createinstrgti" ) 
+	{ if ( &GetValPar($parm,"set") != 1 ) {&SetValPar($parm,2,"set"); } }
+    } # gtiexpr = NONE
+    
+    # usrgtifile
+    if ( &GetValPar("usrgtifile","set") == 0 ) {
+	my $Stringa = "";
+	chop($Stringa = qx(pquery2 xrtscreen usrgtifile));
+	if ( !$Stringa ) {
+	    print "Error: error running: 'pquery2 xrtscreen usrgtifile'\n";
+	    return 1;
+	}
+	&SetValPar("usrgtifile", $Stringa);
+	if ( $Task{status} ) { return 1; }
+	&SetValPar("usrgtifile",2,"set");
+	if ( $Task{status} ) { return 1; }
+    }
+
+    if (&GetValPar("evtscreen") =~ /yes/i) {
+	# exprgrade & expr
+	if ( &GetValPar("exprgrade","set") == 0 ) {
+	    my $Stringa = "";
+	    chop($Stringa = qx(pquery2 xrtscreen exprgrade));
+	    if ( $Stringa ne 0 && !$Stringa ) {
+		print "Error: error running: 'pquery2 xrtscreen exprgrade'\n";
+		return 1;
+	    }
+	    &SetValPar("exprgrade", $Stringa);
+	    if ( $Task{status} ) { return 1; }
+	    &SetValPar("exprgrade",2,"set");
+	    if ( $Task{status} ) { return 1; }
+	}
+	if ( &GetValPar("exprgrade") =~ /:/ ) {
+	    &PrntChty(2,"$Task{stem}: Error: Syntax error in grade selection expression ('exprgrade')\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please refer to the 'xrtscreen' documentation\n");
+	    &PrntChty(2,"$Task{stem}: Error: available via 'fhelp xrtscreen'\n");
+	    return 1;
+	}
+
+
+	if ( &GetValPar("expr","set") == 0 ) {
+	    my $Stringa = "";
+	    chop($Stringa = qx(pquery2 xrtscreen expr));
+	    if ( !$Stringa ) {
+		print "Error: error running: 'pquery2 xrtscreen expr'\n";
+		return 1;
+	    }
+	    &SetValPar("expr", $Stringa);
+	    if ( $Task{status} ) { return 1; }
+	    &SetValPar("expr",2,"set");
+	    if ( $Task{status} ) { return 1; }
+	}
+	if ( &CompUL( &GetValPar("exprgrade",$Default{DEFAULT}) ) || 
+	     &CompUL( &GetValPar("expr",$Default{DEFAULT}) ) ) {
+	    if ( &GetValPar("evtrangefile","set") == 0 ) {
+		my $Stringa = "";
+		chop($Stringa = qx(pquery2 xrtscreen evtrangefile));
+		if ( !$Stringa ) {
+		    print "Error: error running: 'pquery2 xrtscreen evtrangefile'\n";
+		    return 1;
+		}
+		&SetValPar("evtrangefile", $Stringa);
+		if ( $Task{status} ) { return 1; }
+		&SetValPar("evtrangefile",2,"set");
+		if ( $Task{status} ) { return 1; }
+	    }
+	}
+	else { 
+	    if ( &GetValPar("evtrangefile","set") != 1 ) {&SetValPar("evtrangefile",2,"set");} 
+	}
+    }
+    else {
+	my $parm;
+	foreach $parm ( "exprgrade","expr" )
+	{ if ( &GetValPar($parm,"set") != 1 ) {&SetValPar($parm,2,"set"); } }
+    }
+
+    foreach $p (@Par) {
+	if (($p->{set} == 1) || ($p->{set} == 2)) {
+	    if ( !&RequestParameter($p->{name}) ) {
+		return 1;
+	    }
+	}
+    }
+
+    if (! &LoadParameter()) {
+	return 1;
+    }
+
+    $Task{chatter} = &GetValPar("chatter");
+
+    if ( ! -f &GetValPar("infile") ) {
+	&PrntChty(2,"$Task{stem}: Error: Input event file '" . &GetValPar("infile") . "' not found\n");
+	$Task{errmess} = "Event File '" . &GetValPar("infile") . "' not found";
+	$Task{status} = 1;
+	return 1;
+    }
+    else {
+	$mode = &GetEventDataMode(&GetValPar("infile"));
+	# get fselect expression parameter name
+	if ( $Task{status} ) { return -1; }
+	else { $Task{mode} = $mode; }
+	if ($mode eq "im" && &CompUL(&GetValPar("gtiscreen"),"yes")) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Cannot screen Imaging Mode event file please use xrtimage task";
+	    return 1;
+	}
+    }
+
+    if ( $Task{screenevt} ) {
+	# check if the PI column is present in the evt file
+	# if the file do not have this column the xselect
+        # gives errors
+
+	my $fptr = &GetFitsPointer(&GetValPar("infile"),"EVENTS",undef,READONLY);
+	if ($Task{status}) { 
+	    return 1;
+	}
+
+	my ( $colindex , $status ) = ( 0, 0 );
+	&fits_get_colnum($fptr,0, "PI" , $colindex, $status);
+	if ($status) {
+	    &PrntChty(2,"$Task{stem}: Error: Column 'PI' not found, cannot run 'xselect'\n");
+	    &PrntChty(2,"$Task{stem}: Error: on the input file" . &GetValPar("infile") . "'\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please input a Calibrated Event File\n");
+	    fits_close_file($fptr,$status);
+	    $Task{errmess} = "Column 'PI' not found in the '" . &GetValPar("infile") . "' event file";
+	    return 1;
+	}
+	fits_close_file($fptr,$status);
+	if ($status) { 
+	    $Task{errmess} = "Unable to close file:" . &GetValPar("infile") ;
+	    return 1;
+	}
+    }
+
+    if ( !&CompUL(&GetValPar("expr"),$Default{NONE}) && !&CompUL(&GetValPar("expr"),$Default{DEFAULT})) {
+	&SetValPar("expr", "\"". &GetValPar("expr") . "\""); 
+	if ( $Task{status} ) { return 1; }  }
+    if ( !&CompUL(&GetValPar("gtiexpr"),$Default{NONE}) && !&CompUL(&GetValPar("gtiexpr"),$Default{DEFAULT})) {
+	&SetValPar("gtiexpr", "\"". &GetValPar("gtiexpr") . "\""); 
+	if ( $Task{status} ) { return 1; } }
+    
+    return 0;
+} # GetInputParameters
+
+
+sub RunMaketime {
+    
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %maketime );
+
+    &PrntChty(3,"$Task{stem}: Info: 'maketime' input: '" .  $TmpMkf . "'\n");
+
+    &PrntChty(3,"$Task{stem}: Info: 'maketime' output: '" .  &GetValPar("gtifile") . "'\n");
+
+    &RunningSub("RunMaketime","maketime",".\n$Task{stem}: Info: Creating " .  &GetValPar("gtifile")  .
+		" file using '" .  &GetValPar("gtiexpr") . "' expression");
+
+#
+# Build the command line to run 'maketime'
+#
+
+    %maketime = (
+		 infile   =>  $TmpMkf,
+		 outfile  =>  &GetValPar("gtifile"),
+		 expr     =>  &GetValPar("gtiexpr"),
+		 time     =>  &GetValPar("timecol"),
+		 prefr    =>  0.0,
+		 postfr   =>  1.0,
+		 compact  => "no",
+		 clobber  =>  &GetValPar("clobber"),
+		 );
+
+    $command = "maketime";
+    for $par ( keys %maketime ) { $command .= " $par=$maketime{$par}"; } 
+
+    &RunningComm("RunMaketime",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunMaketime","maketime",$command);
+        $Task{errmess} = "Error: running 'maketime'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    if (!&CopyKeyword(&GetValPar("infile"),&GetValPar("gtifile"))) {return 1;}
+
+    &SuccessSub("RunMaketime","maketime","'" .  &GetValPar("gtifile") . "' created");
+    return 0;
+
+} # RunMaketime
+
+
+sub RunXselect {
+
+    my ($OutEvt, $Mode) = @_;
+    use vars qw( %Task %Default );
+    my ( $command, $par, %xselect, $commfile, $pid );
+    my ( @XselTmpFiles ) = ( "xsel_timefile.asc", "xselect.log", "xautosav.xcm" );
+
+    $pid=getppid();
+
+    &RunningSub("RunXselect","xselect", " on '" .  &GetValPar("infile") . "'");
+
+    # Get Grade Screening expression
+
+    my ( $Grade ) =  &GetValPar("exprgrade");
+#    if ( &CompUL($Grade,$Default{DEFAULT} ) ){
+#	 $Grade = $DefaultGrades{$Mode};
+#	 &PrntChty(3,"$Task{stem}: Warning: 'exprgrade' input parameter set to DEFAULT\n");
+#	 &PrntChty(3,"$Task{stem}: Warning: using default GRADE selection: $Grade\n");
+#    } 
+
+    my ( $InPath, $InFileName );
+    if ( rindex(  &GetValPar("infile"), '/' ) >= 0 ) {
+	$InPath = substr( &GetValPar("infile"),0,rindex(  &GetValPar("infile"), '/' ));
+	$InFileName = substr( &GetValPar("infile"),rindex(  &GetValPar("infile"), '/' )+1);
+    }
+    else {
+	$InPath = "./";
+	$InFileName =  &GetValPar("infile");
+    }
+
+    # Open a temporary file with xselect commands;
+    my ( $XselectFile ) =  &GetValPar("outdir")  . "/$InFileName-xrtscreen.xco";
+    unlink ( $XselectFile );
+    push  @XselTmpFiles , $XselectFile;
+
+    if ( ! open ( XSELECTFILE, ">$XselectFile" )) {
+	PrntChty(2, "$Task{stem}: Error: Cannot create '$XselectFile' file");
+	return 1;
+    }
+    print XSELECTFILE "xsel${pid}\n";
+    print XSELECTFILE "read event\n";
+    print XSELECTFILE "$InPath\n";
+    print XSELECTFILE "$InFileName\n";
+    print XSELECTFILE "yes\n";
+
+    my ( $GtiList ) = "";
+
+    if (  &GetValPar("gtiscreen") =~ /[yY]/) { 
+	my ( $Tmpfile ) =   &GetValPar("usrgtifile");
+	$Tmpfile =~ s/^\@//;
+	if ( !&CompUL( &GetValPar("usrgtifile"),$Default{NONE}) ) {
+	    if ( !-f $Tmpfile ) {
+		PrntChty(3, "$Task{stem}: Error: Input User GTI file '$Tmpfile' not found\n");
+		$Task{errmess} = "file User Gti '$Tmpfile' not found ";
+		return 1;
+	    }
+	    &PrntChty(3, "$Task{stem}: Info: Using the gti file '$Tmpfile' supplied by the user.\n");
+	    &PrntChty(3, "$Task{stem}: Info: Creating a GTI list with all GTIs known.\n");
+	    $GtiList =  &GetValPar("outdir") . "/".$$."gtilist";
+	    if ( ! open ( GTIFILE, ">>$GtiList" )) {
+		PrntChty(2, "$Task{stem}: Error: Cannot open temporary GTI List '$GtiList' file: $!\n");
+		return 1;
+	    }
+	    if (  &GetValPar("usrgtifile") =~ /^\@/ ) {
+		if ( ! open ( USRGTILIST, "<$Tmpfile" )) {
+		    PrntChty(2, "$Task{stem}: Error: Cannot open User GTI '$Tmpfile' file: $!\n");
+		    return 1;
+		}
+		while ( <USRGTILIST> ) { 
+		    print GTIFILE $_; 
+		    chop;
+		    if ( ! -f $_ ) {
+			PrntChty(3, "$Task{stem}: Error: file '$_' not found from user GTI list '$Tmpfile'\n");
+			$Task{errmess} = "file '$_' not found from user GTI list '$Tmpfile'";
+			close ( USRGTIFILE );
+			if ( !unlink ( $GtiList ) ) {
+			    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '$GtiList' file\n");
+			}
+			return 1;
+		    }
+		}
+		close ( USRGTIFILE );
+	    }
+	    else {
+		print GTIFILE  &GetValPar("usrgtifile") . "\n";
+	    }
+	    if ( !&CompUL( &GetValPar("gtifile"),$Default{NONE}) ) {
+		print GTIFILE  &GetValPar("gtifile") . "\n";
+	    }
+	    close ( GTIFILE );
+	    PrntChty(3, "$Task{stem}: Info: TIME selection using GTIs from '$GtiList' file\n");
+	    if ( $Task{chatter} >= 4 ) {
+		if ( ! open ( GTIFILE, "<$GtiList" )) {
+		    PrntChty(2, "$Task{stem}: Warning: Cannot open '$GtiList' file: $!\n");
+		}
+		else {
+		    PrntChty(4, "$Task{stem}: Info: GTI List content:\n"); 
+		    while ( <GTIFILE> ) { 
+			PrntChty(4, "$Task{stem}: Info: $_"); 
+		    }
+		    close ( GTIFILE );		
+		    PrntChty(4, "$Task{stem}: Info: End of GTI list\n"); 
+		}
+	    }
+	    print XSELECTFILE "filter time file \@$GtiList\n"; 
+	}
+	else {
+	    PrntChty(3, "$Task{stem}: Info: TIME selection using GTIs from '" .  &GetValPar("gtifile") . "' file\n");
+	    print XSELECTFILE "filter time file " .   &GetValPar("gtifile") . "\n"; 
+	}
+    }
+    else {
+	PrntChty(3, "$Task{stem}: Info: no TIME expression set\n");
+    }
+
+
+    if (  &GetValPar("evtscreen") =~ /[yY]/ && !&CompUL($Grade,$Default{NONE}) ) { 
+	PrntChty(3, "$Task{stem}: Info: GRADE expression for 'xselect' selection: '$Grade'\n");
+	if ( $Grade !~ /^\"/ && $Grade !~ /\"$/) { $Grade = "\"$Grade\""; }
+	print XSELECTFILE "filter grade $Grade\n"; 
+    }
+    else {
+	PrntChty(3, "$Task{stem}: Info: no GRADE expression set\n");
+    }
+
+    print XSELECTFILE "extract events\n";
+    print XSELECTFILE "yes\n";
+    print XSELECTFILE "save events $OutEvt\n";
+    print XSELECTFILE "yes\n";
+    print XSELECTFILE "quit\n";
+    print XSELECTFILE "no\n";
+
+    close ( XSELECTFILE );
+
+    # Build the command line to run xselect
+
+    $command = "xselect \@$XselectFile";
+
+    &RunningComm("RunXselect",$command);
+
+    # Set Xselect file name to store Xselect outputs
+
+#    my ( $XselectOut ) = &GetValPar("outdir") . "/$InFileName-xrtscreen-xselect.out";
+#    unlink ($XselectOut);
+#    push  @XselTmpFiles , $XselectOut;
+#    &RunCommandAndRedirectOutput( $command, $XselectOut );
+#    if ( $Task{status} ) { return 1; }
+#    if ( $Task{chatter} > 4 ) { system ( "cat $XselectOut" ); }
+
+    my ( $ret ) = 0;
+    $ret = system ( $command );
+    if ( $ret ) {
+	&PrntChty(2,"$Task{stem}: Error: 'system' exit with error: $ret\n"); 
+	$Task{message} = "'system' command error: $ret\n"; 
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    # check errors from 'xselect.log' file
+    $ret = &CheckXselectLog();
+    if ( $ret != 0 ) {
+	&ErrorComm("RunXselect","xselect",$command);
+	&PrntChty(2,"$Task{stem}: Error: Please check ''xselect.log' file\n");
+        $Task{errmess} = "Error: running 'xselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunXselect","xselect","Output file '$OutEvt' created");
+
+    if ( $GtiList ) { push  @XselTmpFiles , $GtiList; }
+    if ( $Task{cleanup} ) {
+	my $tmpfile;
+	foreach $tmpfile (@XselTmpFiles) {
+	    if ( -f $tmpfile ) {
+		if ( !unlink ( $tmpfile ) ) {
+		    &PrntChty(2,"$Task{stem}: Warning: Cannot delete '$tmpfile' file. $!\n");
+		}
+	    }
+	}	
+    }
+    return 0;
+
+} # RunXselect
+
+
+sub RunFselect {
+
+    my ($InEvt, $OutEvt, $ExprFselect) = @_;
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %fselect );
+
+    &RunningSub("RunFselect","fselect", " to select events with expression '$ExprFselect'");
+    
+#
+# Build the command line to run 'fselect'
+#
+
+
+    %fselect = (
+		infile       => $InEvt,
+		outfile      => $OutEvt,
+		expr         => $ExprFselect,
+		histkw       =>  &GetValPar("history"),
+		copyall      => "yes",              
+		keycopy      => "yes",
+		clobber      =>  &GetValPar("clobber"),
+		);
+
+    $command = "fselect";
+    for $par ( keys %fselect ) { $command .= " $par=$fselect{$par}"; } 
+
+    &RunningComm("RunFselect",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunFselect","fselect",$command);
+        $Task{errmess} = "Error: running 'fselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # update checksum
+
+    if ( system("ftchecksum $OutEvt update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Warning: Error updating checksum\n"); 
+        $Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    &SuccessSub("RunFselect","fselect","'$OutEvt' created");
+
+    return 0;
+
+} # RunFselect
+
+
+# sub GetExpr {
+#     my ( $mode ) = @_;
+#     my ( %Expr ) = (
+#		       pc => "exprpc",
+#		       wt => "exprwt",
+#		       lr => "exprpd",
+#		       pu => "exprpd"
+#		       );
+#     return $Expr{$mode};
+# } # GetExpr
+
+
+sub GetGtiExpression {
+
+    my ( $attrangeext, $instrrangeext, $sacrangeext, $instrrangefile, $sacrangefile, $extension );
+    my ( $xrtvsub, $obs_mode, $xbadfram, $foundBadFrame);
+
+    use vars qw($attrangefile $evtrangefile %badFrame) ;
+
+    my ( @ListParam, @ListRanges, @ListSyntax, %ExprListAtt, %ExprListInstr, %ExprListSac);
+
+
+    # Retrieve XRTVSUB keyword
+    if($Task{mode} ne "im"){
+	$extension = "EVENTS";
+	
+	# Get XBADFRAM keyword from input evt file
+	if ( $Task{mode} eq "pc" )
+	{
+			&GetKeyword ( &GetValPar("infile"), $extension, undef, "XBADFRAM", \$xbadfram, 1);
+			if ( $Task{status} ) {
+			    if ($Task{status} == KEY_NO_EXIST){
+								$xbadfram="true";
+								&PrntChty(3,"$Task{stem}: Warning: 'XBADFRAM' keyword not found in '".&GetValPar("infile")."'\n");
+								&PrntChty(3,"$Task{stem}: Warning: using default value 'true'\n");
+								$Task{status}=0;
+			    }
+			    else{
+								&PrntChty(3,"$Task{stem}: Error: cannot read 'XBADFRAM' keyword in file '".&GetValPar("infile")."'\n");
+								return 1;
+			    }
+			}
+			
+			
+			
+	}
+
+	# Get XRTVSUB keyword from input evt file
+	&GetKeyword ( &GetValPar("infile"), $extension, undef, "XRTVSUB", \$xrtvsub, 1);
+	if ( $Task{status} ) {
+	    if ($Task{status} == KEY_NO_EXIST){
+		$xrtvsub="0";
+		&PrntChty(3,"$Task{stem}: Warning: 'XRTVSUB' keyword not found in '".&GetValPar("infile")."'\n");
+		&PrntChty(3,"$Task{stem}: Warning: using default value '0'\n");
+		$Task{status}=0;
+	    }
+	    else{
+		&PrntChty(3,"$Task{stem}: Error: cannot read 'XRTVSUB' keyword in file '".&GetValPar("infile")."'\n");
+		return 1;
+	    }
+	}
+
+	# Get OBS_MODE keyword from input evt file
+	&GetKeyword ( &GetValPar("infile"), $extension, undef, "OBS_MODE", \$obs_mode);
+	if ( $Task{status} ) {
+		&PrntChty(3,"$Task{stem}: Error: cannot read 'OBS_MODE' keyword in file '".&GetValPar("infile")."'\n");
+		return 1;	    
+	}
+	
+    }
+    else{
+	if( &GetImgVSub( &GetValPar("infile"), \$xrtvsub) ){
+
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    &PrntChty(3,"$Task{stem}: Error: cannot read 'XRTVSUB' keyword in file '".&GetValPar("infile")."'\n");
+	    return 1;
+	}
+    }
+
+    if (  &CompUL( &GetValPar("gtiexpr"),$Default{DEFAULT}) ) {
+
+	my ( @TableAtt, @TableInstr, @TableSac, $attmetcolfound, $instrmetcolfound, $sacmetcolfound);
+
+	if ( &GetValPar("createattgti") =~ /[yY]/) {
+	    if ( &CompUL( &GetValPar("hkrangefile"),$Default{CALDB}) ) {
+
+		# Get ATT HKRANGE Calibration File Name
+		my ($refa,$refb)  = &CallQuzcif("HKRANGE",$Task{StartDate},$Task{StartTime},"DATA.eq.ATTITUDE.and.XRTVSUB.eq.$xrtvsub",1);
+		if ( $Task{status} ) {
+		    print"$Task{stem}: Error: cannot retieve HKRANGE file name from CALDB\n";
+		    return 1;
+		}
+		if ( $#{$refa}> 0 ) {
+		    print"$Task{stem}: Error: found more then 1 HKRANGE CALDB file with CBD keyword \"DATA.eq.ATTITUDE.and.XRTVSUB.eq.$xrtvsub\"\n";
+		    return 1;
+		}
+		else {
+		    $attrangefile = @$refa[0];
+		    $attrangeext  = @$refb[0];
+		}
+	    }
+	    else {
+		$attrangefile =  &GetValPar("hkrangefile");
+	    }
+	    &PrntChty(3,"$Task{stem}: Info: Get Expression for ATTITUDE GTIs selection from\n");
+	    &PrntChty(3,"$Task{stem}: Info: '$attrangefile' file\n");
+	    
+	    if ( !-f $attrangefile ) {
+		&PrntChty(3,"$Task{stem}: Error: '$attrangefile' file not found\n");
+		return 1;
+	    }
+	    
+	    $attrangeext = &CheckHkrangeFile ($attrangefile,$attrangeext,"ATTITUDE");
+	    if ( $Task{status} ) { return 1; }
+
+	    my (@columns) ;
+	    &ExistsSyntaxColumn($attrangefile,"ATTRANGE","SYNTAX",\$attmetcolfound);
+	    if ( $Task{status} ) { return 1; }
+
+	    if ( $attmetcolfound ) {
+		@columns = (
+			    { name => 'PARNAME' },
+			    { name => 'RANGE' },
+			    { name => 'SYNTAX' },
+			    );
+	    }
+	    else {
+		@columns = (
+			    { name => 'PARNAME' },
+			    { name => 'RANGE' },
+			    );
+	    }
+ 
+	    @TableAtt = &LoadBinTable($attrangefile,"",$attrangeext,@columns);
+	    if ( $Task{status} ) { return 1; }
+
+	} # Read Attitude expression from hkrangefile
+
+
+	if ( &GetValPar("createattgti") =~ /[yY]/  && $Task{mode} ne "im" && &CompUL($obs_mode,$Default{POINTVALUE})) {
+	    if ( &CompUL( &GetValPar("hkrangefile"),$Default{CALDB}) ) {
+
+		# Get SAC HKRANGE Calibration File Name
+		my ($refa,$refb)  = &CallQuzcif("HKRANGE",$Task{StartDate},$Task{StartTime},"DATA.eq.SAC.and.XRTVSUB.eq.$xrtvsub",1);
+		if ( $Task{status} ) {
+		    print"$Task{stem}: Error: cannot retieve HKRANGE file name from CALDB\n";
+		    return 1;
+		}
+		if ( $#{$refa}> 0 ) {
+		    print"$Task{stem}: Error: found more then 1 HKRANGE CALDB file with CBD keyword \"DATA.eq.SAC.and.XRTVSUB.eq.$xrtvsub\"\n";
+		    return 1;
+		}
+		else {
+		    $sacrangefile = @$refa[0];
+		    $sacrangeext  = @$refb[0];
+		}
+	    }
+	    else {
+		$sacrangefile =  &GetValPar("hkrangefile");
+	    }
+	    &PrntChty(3,"$Task{stem}: Info: Get Expression for SAC GTIs selection from\n");
+	    &PrntChty(3,"$Task{stem}: Info: '$sacrangefile' file\n");
+	    
+	    if ( !-f $sacrangefile ) {
+		&PrntChty(3,"$Task{stem}: Error: '$sacrangefile' file not found\n");
+		return 1;
+	    }
+	    
+	    $sacrangeext = &CheckHkrangeFile ($sacrangefile,$sacrangeext,"SAC");
+	    if ( $Task{status} ) { return 1; }
+
+	    my (@columns) ;
+	    &ExistsSyntaxColumn($sacrangefile,"SACRANGE","SYNTAX",\$sacmetcolfound);
+	    if ( $Task{status} ) { return 1; }
+
+	    if ( $sacmetcolfound ) {
+		@columns = (
+			    { name => 'PARNAME' },
+			    { name => 'RANGE' },
+			    { name => 'SYNTAX' },
+			    );
+	    }
+	    else {
+		@columns = (
+			    { name => 'PARNAME' },
+			    { name => 'RANGE' },
+			    );
+	    }
+ 
+	    @TableSac = &LoadBinTable($sacrangefile,"",$sacrangeext,@columns);
+	    if ( $Task{status} ) { return 1; }
+
+	} # Read Spacecraft expression from hkrangefile
+
+
+	if (  &GetValPar("createinstrgti") =~ /[yY]/) {
+	    if ( &CompUL( &GetValPar("hkrangefile"),$Default{CALDB}) ) {
+		# Get INSTRUMENT HKRANGE Calibration File Name
+		my ($refa,$refb)  = &CallQuzcif("HKRANGE",$Task{StartDate},$Task{StartTime},"DATA.eq.INSTRUMENT.and.XRTVSUB.eq.$xrtvsub",1);
+		if ( $Task{status} ) {
+		    print"$Task{stem}: Error: cannot retieve HKRANGE file name from CALDB\n";
+		    return 1;
+		}
+		if ( $#{$refa} > 0 ) {
+		    print"$Task{stem}: Error: found more then 1 HKRANGE CALDB file with CBD keyword \"DATA.eq.INSTRUMENT.and.XRTVSUB.eq.$xrtvsub\"\n";
+		    return 1;
+		}
+		else {
+		    $instrrangefile = @$refa[0];
+		    $instrrangeext = @$refb[0];
+		}
+	    }
+	    else {
+		if (  &GetValPar("createinstrgti")=~ /[yY]/) {
+		    $instrrangefile =  &GetValPar("hkrangefile");
+		    $instrrangeext = 2;
+		}
+	    }
+	    &PrntChty(3,"$Task{stem}: Info: Get Expression for INSTRUMENT GTIs selection from\n");
+	    &PrntChty(3,"$Task{stem}: Info: '$instrrangefile' file\n");
+	    
+	    if ( !-f $instrrangefile ) {
+		&PrntChty(3,"$Task{stem}: Error: '$instrrangefile' file not found\n");
+		return 1;
+	    }
+
+	    $instrrangeext = &CheckHkrangeFile ($instrrangefile,$instrrangeext,"INSTRUMENT");
+	    if ( $Task{status} ) { return 1; }
+
+	    my (@columns);
+	    &ExistsSyntaxColumn($instrrangefile,"INSTRANGE","SYNTAX",\$instrmetcolfound);
+	    if ( $Task{status} ) { return 1; }
+
+	    if ( $instrmetcolfound ) {
+		@columns = (
+			    { name => 'PARNAME' },
+			    { name => 'RANGE' },
+			    { name => 'SYNTAX' },
+			    );
+	    }
+	    else {
+		@columns = (
+			    { name => 'PARNAME' },
+			    { name => 'RANGE' },
+			    );
+	    }
+ 
+	    @TableInstr = &LoadBinTable($instrrangefile,"",$instrrangeext,@columns);
+	    if ( $Task{status} ) { return 1; }
+
+	} # read insprument parameters expression from hkrangefile
+
+
+	# Build the selection expression
+
+	my ( @ranges );
+
+	my ($param, $expr, $syntax);
+      	my $ii = 0;
+
+	# Loop on Attitude Records
+
+	my $i;
+
+	for ( $i = 0; $i<=$#TableAtt; $i++ ) {
+	    
+	    @ranges = split /,/, $TableAtt[$i]->{RANGE};
+	    $param = $TableAtt[$i]->{PARNAME};
+
+	    my $syntax = 0;
+	    if ( $attmetcolfound ) { $syntax = "$TableAtt[$i]->{SYNTAX}" };
+
+	    if ($#ranges == 0) {
+		# Only one range specified: the parameter must be equal
+		# to this parameter
+		$ExprListAtt{"$syntax"} .= "$param==$ranges[0]";
+	    }
+	    elsif ($#ranges == 1) {
+		# Two ranges specified; look if one of the
+		# two parameters is INDEF
+		if ( $ranges[0] eq "INDEF" ) {
+		    $ExprListAtt{"$syntax"} .= "$param<=$ranges[1]";
+		}
+		elsif ($ranges[1] eq "INDEF" ) {
+		    $ExprListAtt{"$syntax"} .= "$param>=$ranges[0]";
+		}
+		else {
+		    $ExprListAtt{"$syntax"} .= "($param>=$ranges[0]&&$param<=$ranges[1])";
+		}
+	    }
+	    else {
+		&PrntChty(2,"$Task{stem}: Error: Found wrong ranges for '$param' parameter\n");
+		&PrntChty(2,"$Task{stem}: Error: Please Check '$attrangefile' and '$instrrangefile'\n");
+		return 1;
+	    }
+	    
+	    if ( $syntax == 0 ) {
+		$ExprListAtt{$syntax} .= "&&"; 
+	    }
+	    else {
+		$ExprListAtt{$syntax} .= "||"; 
+	    }
+	    $#ranges = -1;
+	    $syntax = 0;
+	}
+
+	# check into string parameter list
+	my ( $par ) ;
+	for $par ( keys %ExprListAtt ) {
+	    $ExprListAtt{$par} =~ s/(\|\||\&\&)$// ;
+	    $expr .= "($ExprListAtt{$par})&&";
+	}
+
+
+	# Loop on Instrument Records
+
+
+	for ( $i = 0; $i<=$#TableInstr; $i++ ) {
+	    @ranges = split /,/, $TableInstr[$i]->{RANGE};
+	    $param = $TableInstr[$i]->{PARNAME};
+
+	    my $syntax = 0;
+	    if ( $instrmetcolfound ) { $syntax = "$TableInstr[$i]->{SYNTAX}" };
+
+	    if ($#ranges == 0) {
+		# Only one range specified: the parameter must be equal
+		# to this parameter
+		$ExprListInstr{"$syntax"} .= "$param==$ranges[0]";
+	    }
+	    elsif ($#ranges == 1) {
+		# Two ranges specified; look if one of the
+		# two parameters is INDEF
+		if ( $ranges[0] eq "INDEF" ) {
+		    $ExprListInstr{"$syntax"} .= "$param<=$ranges[1]";
+		}
+		elsif ($ranges[1] eq "INDEF" ) {
+		    $ExprListInstr{"$syntax"} .= "$param>=$ranges[0]";
+		}
+		else {
+		    $ExprListInstr{"$syntax"} .= "($param>=$ranges[0]&&$param<=$ranges[1])";
+		}
+	    }
+	    else {
+		&PrntChty(2,"$Task{stem}: Error: Found wrong ranges for '$param' parameter\n");
+		&PrntChty(2,"$Task{stem}: Error: Please Check '$attrangefile' and '$instrrangefile'\n");
+		return 1;
+	    }
+	    
+	    if ( $syntax == 0 ) {
+		$ExprListInstr{$syntax} .= "&&"; 
+	    }
+	    else {
+		$ExprListInstr{$syntax} .= "||"; 
+	    }
+	    $#ranges = -1;
+	    $syntax = 0;
+	}
+
+	# check into string parameter list
+	for $par ( keys %ExprListInstr ) {
+	    $ExprListInstr{$par} =~ s/(\|\||\&\&)$// ;
+	    $expr .= "($ExprListInstr{$par})&&";
+	}
+
+
+	# Loop on Sac Records
+
+
+	for ( $i = 0; $i<=$#TableSac; $i++ ) {
+	    @ranges = split /,/, $TableSac[$i]->{RANGE};
+	    $param = $TableSac[$i]->{PARNAME};
+
+	    my $syntax = 0;
+	    if ( $sacmetcolfound ) { $syntax = "$TableSac[$i]->{SYNTAX}" };
+
+	    if ($#ranges == 0) {
+		# Only one range specified: the parameter must be equal
+		# to this parameter
+		$ExprListSac{"$syntax"} .= "$param==$ranges[0]";
+	    }
+	    elsif ($#ranges == 1) {
+		# Two ranges specified; look if one of the
+		# two parameters is INDEF
+		if ( $ranges[0] eq "INDEF" ) {
+		    $ExprListSac{"$syntax"} .= "$param<=$ranges[1]";
+		}
+		elsif ($ranges[1] eq "INDEF" ) {
+		    $ExprListSac{"$syntax"} .= "$param>=$ranges[0]";
+		}
+		else {
+		    $ExprListSac{"$syntax"} .= "($param>=$ranges[0]&&$param<=$ranges[1])";
+		}
+	    }
+	    else {
+		&PrntChty(2,"$Task{stem}: Error: Found wrong ranges for '$param' parameter\n");
+		&PrntChty(2,"$Task{stem}: Error: Please Check '$sacrangefile'\n");
+		return 1;
+	    }
+	    
+	    if ( $syntax == 0 ) {
+		$ExprListSac{$syntax} .= "&&"; 
+	    }
+	    else {
+		$ExprListSac{$syntax} .= "||"; 
+	    }
+	    $#ranges = -1;
+	    $syntax = 0;
+	}
+
+	# check into string parameter list
+	for $par ( keys %ExprListSac ) {
+	    $ExprListSac{$par} =~ s/(\|\||\&\&)$// ;
+	    $expr .= "($ExprListSac{$par})&&";
+	}
+
+
+	$expr =~ s/\&\&$//;
+
+	if ( length($expr) == 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: Empty gti expression from '$attrangefile', '$instrrangefile' and '$sacrangefile'\n");
+	    $Task{status} = 1;
+	    $Task{errmess} = "Empty gti expression from '$attrangefile', '$instrrangefile' and '$sacrangefile'";
+	    return 1;
+	}
+
+	my $gex =  &GetValPar("gtiexpr");
+	$gex = "\"$expr\"";
+	&SetValPar("gtiexpr",$gex);
+	if ( $Task{status} ) { return 1; }
+
+    } # if use HKRAGE Calibration File
+
+    if ( $Task{obsmodescreen} && $Task{mode} ne "im" ) {
+
+	my ($expr);
+
+	&PrntChty(3,"$Task{stem}: Info: obsmodescreen set to 'yes', adding to the gti expression\n");
+	&PrntChty(3,"$Task{stem}: Info: the Observation Mode expression related to the input data.\n");
+	&PrntChty(3,"$Task{stem}: Info: Data taken during '$obs_mode'\n");
+
+	if ( &CompUL($obs_mode,$Default{SLEWVALUE}) ) {
+	    &PrntChty(3,"$Task{stem}: Info: Added the Observation Mode expr: ((SETTLED==0&&TEN_ARCMIN==0)||(SAFEHOLD==1))\n");
+	    $expr = "((SETTLED==0&&TEN_ARCMIN==0)||(SAFEHOLD==1))";
+	}
+	elsif ( &CompUL($obs_mode,$Default{SETTLINGVALUE}) ) {
+	    &PrntChty(3,"$Task{stem}: Info: Added the Observation Mode expr: SETTLED==0&&TEN_ARCMIN==1\n");
+	    $expr = "SETTLED==0&&TEN_ARCMIN==1";
+	}
+	elsif ( &CompUL($obs_mode,$Default{POINTVALUE}) ) {
+	    if($Task{acsscreen}){
+		&PrntChty(3,"$Task{stem}: Info: acsscreen set to 'yes'\n");
+		&PrntChty(3,"$Task{stem}: Info: Added the Observation Mode expr: (SETTLED==1&&TEN_ARCMIN==1)\n");
+		$expr = "(SETTLED==1&&TEN_ARCMIN==1)";
+	    }
+	    else{
+		&PrntChty(3,"$Task{stem}: Info: acsscreen set to 'no'\n");
+		&PrntChty(3,"$Task{stem}: Info: Added the Observation Mode expr: ((SETTLED==1&&TEN_ARCMIN==1)||(SETTLED==1&&TEN_ARCMIN==0&&SAFEHOLD==0))\n");
+		$expr = "((SETTLED==1&&TEN_ARCMIN==1)||(SETTLED==1&&TEN_ARCMIN==0&&SAFEHOLD==0))";
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Error: Keyword OBS_MODE=$obs_mode\n");
+	    &PrntChty(2,"$Task{stem}: Error: not valid in the '". &GetValPar("infile"). "' file\n");
+	    &PrntChty(2,"$Task{stem}: Error: Please check the input file or set the 'obsmodescreen'\n");
+	    &PrntChty(2,"$Task{stem}: Error: parameter to 'no'\n");
+	    $Task{errmess} = "Keyword OBS_MODE not valid in '". &GetValPar("infile") ."' file";
+	    $Task{status} = 1;
+	    return 1;
+	}    
+
+	my $gex =  &GetValPar("gtiexpr");
+	$gex =~ s/^\"//;
+	$gex =~ s/\"$//;
+	$gex = "\"$gex&&$expr\"";
+	&SetValPar("gtiexpr",$gex);
+	if ( $Task{status} ) { return 1; }
+    }
+    
+  if ( $Task{mode} eq "pc" && $xbadfram =~ /[tT]/ )
+	{
+			if (&getBadFrame( &GetValPar("infile"), \$foundBadFrame ))
+			{
+					&PrntChty(3,"$Task{stem}: Error: cannot read BadFrame info from file '".&GetValPar("infile")."'\n");
+		    	return 1;
+			}else
+			{
+				if (  $foundBadFrame =~ /[tT]/ )
+				{
+					my $expr="";
+					for my $par (values %badFrame)
+					{
+						$expr .= "&&(CCDFrame!=$par)";
+					}		
+					
+					my $gex =  &GetValPar("gtiexpr");
+					$gex =~ s/^\"//;
+					$gex =~ s/\"$//;
+					$gex = "\"$gex$expr\"";
+					&SetValPar("gtiexpr",$gex);
+				}
+			}
+	}
+		
+    return 0;
+} # GetGtiExpression
+
+sub getBadFrame {
+		my ($in_filename, $in_foundBadFrame) = @_;
+		
+		my ($fits, $status, $tablerows, $j, $nulval, $anynul);
+    my (@rawx, @rawy, @ccdframe);
+    my ($col_rawx, $col_rawy, $col_ccdframe);
+    
+		use vars qw(%badFrame) ;
+
+		$$in_foundBadFrame = "false";
+		
+		fits_open_file($fits, $in_filename, READONLY, $status);
+		
+		if (not $fits) {
+				&PrntChty(2,"$Task{stem}: Error: Unable to open fits file : $in_filename\n");
+				return 1;
+		}
+		
+		fits_movnam_hdu($fits, ANY_HDU, "EVENTS", 0, $status);
+		
+    if ( $status ) {
+    	&PrntChty(2,"$Task{stem}: Error: Unable to move in EVENTS ext of file $in_filename\n");
+			goto getBadFrame_error;
+    }
+    
+    fits_get_num_rows($fits,$tablerows, $status);
+     
+    if ( $status ) {
+    	&PrntChty(2,"$Task{stem}: Error: Unable to get number of rows in EVENTS ext of $in_filename\n");
+			goto getBadFrame_error;
+    }
+    
+    fits_get_colnum($fits, 0, "RAWX", $col_rawx, $status);
+    
+    if ( $status ) {
+    	&PrntChty(2,"$Task{stem}: Error: Unable to get colnum of 'RAWX' in $in_filename\n");
+			goto getBadFrame_error;
+    }
+    
+    fits_get_colnum($fits, 0, "RAWY", $col_rawy, $status);
+    
+    if ( $status ) {
+    	&PrntChty(2,"$Task{stem}: Error: Unable to get colnum of 'RAWY' in $in_filename\n");
+			goto getBadFrame_error;
+    }
+    
+    fits_get_colnum($fits, 0, "CCDFrame", $col_ccdframe, $status);
+    
+    if ( $status ) {
+			&PrntChty(2,"$Task{stem}: Error: Unable to get colnum of 'CCDFrame' in $in_filename\n");
+			goto getBadFrame_error;
+    }
+    
+    for ($j = 1; $j <= $tablerows; $j++){
+    	
+				fits_read_col($fits, TINT, $col_rawx, $j, 1, 1, $nulval, \@rawx, $anynul, $status);
+				
+				if ($status) {
+						&PrntChty(2,"$Task{stem}: Error: Error reading 'RAWX' column in $in_filename\n");
+						goto getBadFrame_error;
+				}
+				
+				fits_read_col($fits, TINT, $col_rawy, $j, 1, 1, $nulval, \@rawy, $anynul, $status);
+				
+				if ($status) {
+						&PrntChty(2,"$Task{stem}: Error: Error reading 'RAWY' column in $in_filename\n");
+						goto getBadFrame_error;
+				}
+				
+				fits_read_col($fits, TINT, $col_ccdframe, $j, 1, 1, $nulval, \@ccdframe, $anynul, $status);
+				
+				if ($status) {
+						&PrntChty(2,"$Task{stem}: Error: Error reading 'RAWY' column in $in_filename\n");
+						goto getBadFrame_error;
+				}
+				
+				#if (rawx < RAWX_MIN || rawy < RAWY_MIN || rawx > RAWX_MAX || rawy > RAWY_MAX)
+				if($rawx[0] < 0 || $rawy[0] < 0 || $rawx[0] > 599 || $rawy[0] > 599 )
+				{
+						$badFrame{"$ccdframe[0]"}=$ccdframe[0];
+						$$in_foundBadFrame = "true";
+				}
+    }
+    
+    fits_close_file($fits,$status);
+		return 0;    
+    
+
+getBadFrame_error:
+		fits_close_file($fits,$status);
+		return 1;
+}
+
+sub CheckHkrangeFile {
+
+    my ( $filename, $extnum, $datatype ) = @_;
+    my ( $extname, $tmpext );
+
+    if ( $datatype eq "INSTRUMENT" ) { 
+	$extname = "INSTRANGE"; 
+	$tmpext = &GetNumExtName( $filename,$extname ); 
+    } 
+    elsif ( $datatype eq "ATTITUDE" ) { 
+	$extname = "ATTRANGE"; 
+	my ( $stemmode ) = uc($Task{mode}); 
+	$tmpext = &GetNumExtName( $filename, $extname ); 
+    }
+    elsif ( $datatype eq "SAC" ) { 
+	$extname = "SACRANGE"; 
+	$tmpext = &GetNumExtName( $filename, $extname ); 
+    }
+    
+    if ( $tmpext == -1 ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: Extension with EXTNAME = $extname not found\n");
+	return;
+    }
+    elsif ( $Task{status} ) { return; }
+
+    if ( $extnum && $extnum ne $tmpext ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: HDU number '$tmpext' with EXTNAME = '$extname'\n");
+	&PrntChty(2,"$Task{stem}: Error: but currect CALDB dataset in HDU number '$extnum'\n");
+	return;
+    }
+
+    return $tmpext;
+} # CheckHkrangeFile
+
+
+sub GetEventExpression {
+
+    my ( $evtrangeext, $selection );
+    use vars qw( %Task %Default );
+    my ( $tmpmode );
+
+    if ( &CompUL(&GetValPar("expr"),$Default{DEFAULT}) || &CompUL(&GetValPar("exprgrade"),$Default{DEFAULT}) ) {
+
+	# Get DATAMODE keyword from Input Event File
+	&GetKeyword (  &GetValPar("infile") , "EVENTS", undef, "DATAMODE" ,\$tmpmode );
+	if ( $Task{status} ) { return 1;}
+	
+	# Get EVTRANGE Calibration File Name
+	if ( &CompUL( &GetValPar("evtrangefile"),$Default{CALDB}) ) {
+
+	    # set quzcif expression
+	    $selection = "DATAMODE.eq.$tmpmode";
+
+	    # call quzcif
+	    my ( $refa,$refb ) = &CallQuzcif("EVTRANGE",$Task{StartDate},$Task{StartTime},$selection,1);
+	    if ( $Task{status} ) {
+		&PrntChty(2,"$Task{stem}: Error: cannot retieve EVTRANGE file name from CALDB\n");
+		return 1;
+	    }
+	    if ( $#{$refa} != 0 ) {
+		&PrntChty(2,"$Task{stem}: Error: found more than one matches for 'quzcif' query\n");
+		&PrntChty(2,"$Task{stem}: Error: with expression: \"$selection\"\n");
+		return 1;
+	    }
+	    else {
+		$evtrangefile = @$refa[0];
+		$evtrangeext = @$refb[0];
+	    }
+	}
+	else {
+	    $evtrangefile =  &GetValPar("evtrangefile");
+	}
+
+	if ( !-f $evtrangefile ) {
+	    &PrntChty(3,"$Task{stem}: Error: '$evtrangefile' file not found\n");
+	    return 1;
+	}
+
+	$evtrangeext = &CheckEvtrangeFile ($evtrangefile,$evtrangeext);
+	if ( $Task{status} ) { return 1; }
+
+	&PrntChty(3,"$Task{stem}: Info: Event Selection Expressions from\n");
+	&PrntChty(3,"$Task{stem}: Info: '$evtrangefile' file HDU Number $evtrangeext\n");
+	# get expression
+
+	if ( !open PARMLIST, "fdump $evtrangefile+$evtrangeext STDOUT - - prhead=no showcol=no showunit=no showrow=no page=no fldsep=\"|\" 2> /dev/null |" ) {
+	    &PrntChty(3,"$Task{stem}: Error: Can't fork fdump: $!\n");
+	    exit 1;
+	}
+
+	my ( @ListParam, @ListRanges);
+	    
+	while ( <PARMLIST> ) {
+	    my @list;
+	    chop; s/\s+//g;
+	    if ( $_ ) {
+		@list = split /\|/;
+		push @ListParam, $list[0];
+		push @ListRanges, $list[1];
+	    }
+	}
+
+	close PARMLIST;
+
+	my ($param, $expr, $exprgrade, $tmpexpr, @ranges);
+
+	$exprgrade = "";
+	$expr      = "";
+
+	my $ii = 0;
+	foreach $param (@ListParam) {
+	    @ranges = split /,/, $ListRanges[$ii];
+	    if ( $param eq "GRADE" ) {
+		if ($#ranges == 0) {
+		    # Only one range specified: the parameter must be equal
+		    # to this parameter
+		    $tmpexpr = "$ranges[0]";
+		}
+		elsif ($#ranges == 1) {
+		    # Two ranges specified; look if one of the
+		    # two parameters is INDEF
+		    if ( $ranges[0] eq "INDEF" ) {
+			$tmpexpr = "<=$ranges[1]";
+		    }
+		    elsif ($ranges[1] eq "INDEF" ) {
+			$tmpexpr = ">=$ranges[0]";
+		    }
+		    else {
+			$tmpexpr = "$ranges[0]-$ranges[1]";
+		    }
+		}
+		else {
+		    &PrntChty(2,"$Task{stem}: Error: Found wrong ranges for '$param' parameter\n");
+		    &PrntChty(2,"$Task{stem}: Error: Please Check '$evtrangefile' EVTRANGE table\n");
+		    return 1;
+		}
+	    }
+	    else {
+		if ($#ranges == 0) {
+		    # Only one range specified: the parameter must be equal
+		    # to this parameter
+		    $tmpexpr = "$param==$ranges[0]";
+		}
+		elsif ($#ranges == 1) {
+		    # Two ranges specified; look if one of the
+		    # two parameters is INDEF
+		    if ( $ranges[0] eq "INDEF" ) {
+			$tmpexpr = "$param<=$ranges[1]";
+		    }
+		    elsif ($ranges[1] eq "INDEF" ) {
+			$tmpexpr = "$param>=$ranges[0]";
+		    }
+		    else {
+			$tmpexpr = "$param>=$ranges[0]&&$param<=$ranges[1]";
+		    }
+		}
+		else {
+		    &PrntChty(2,"$Task{stem}: Error: Found wrong ranges for '$param' parameter\n");
+		    &PrntChty(2,"$Task{stem}: Error: Please Check '$evtrangefile' EVTRANGE table\n");
+		    return 1;
+		}
+	    }
+	    my $num;
+	    $num = length($exprgrade);
+	    $num = length($expr);
+
+	    if ( $param eq "GRADE" ) { if ( length($exprgrade) ) { $exprgrade .= ","; } $exprgrade .= $tmpexpr; }
+	    else { if ( length ($expr) ) { $expr .= "&&"; } $expr .= $tmpexpr; }
+
+	    $ii ++;
+	    $#ranges = -1;
+	} # loop on paramaters from evtrange file
+
+	&PrntChty(4,"$Task{stem}: Info: Grade expression from evtrangefile: '$exprgrade'\n");
+	&PrntChty(4,"$Task{stem}: Info: Event Parameters from evtrangefile: '$expr'\n");
+
+	if ( length($exprgrade) == 0 ) {
+	    $exprgrade = $Default{NONE};
+	}
+	if ( length($expr) == 0 ) {
+	    $expr = $Default{NONE};
+	}
+
+	if ( &CompUL(&GetValPar("exprgrade"),$Default{DEFAULT}) ) {
+	    &PrntChty(3,"$Task{stem}: Info: Default 'exprgrade' set to: '$exprgrade'\n");
+	    &SetValPar("exprgrade", "\"$exprgrade\"");
+	}
+	else {
+	    &PrntChty(3,"$Task{stem}: Info: 'exprgrade' set by user to '" . &GetValPar("exprgrade") . "'\n");
+	}
+
+	if ( &CompUL(&GetValPar("expr"),$Default{DEFAULT}) ) {
+	    &PrntChty(3,"$Task{stem}: Info: Default 'expr' set to: '$expr'\n");
+	    &SetValPar("expr", "\"$expr\"");
+	}
+	else {
+	    &PrntChty(3,"$Task{stem}: Info: 'expr' set by user to '" . &GetValPar("expr") . "'\n");
+	}
+
+    } # if default screeneng for grade or event params requested
+
+    return 0;
+} # GetEventExpression
+
+
+sub CheckEvtrangeFile {
+
+    my ( $filename, $extnum ) = @_;
+    my ( $extname, $tmpext );
+
+    if ( $Task{mode} eq "lr" or $Task{mode} eq "pu") {
+	$extname = "PDRANGE";
+	$tmpext = &GetNumExtName( $filename,$extname );
+    }
+    else {
+	$extname = uc($Task{mode})."RANGE";
+	my ( $stemmode ) = uc($Task{mode});
+	$tmpext = &GetNumExtName( $filename, $extname );
+    }
+
+    if ( $tmpext == -1 ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: Not found extension with EXTNAME = $extname\n");
+	return;
+    }
+    elsif ( $Task{status} ) { return; }
+
+    if ( $extnum && $extnum ne $tmpext ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: HDU number '$tmpext' with EXTNAME = '$extname'\n");
+	&PrntChty(2,"$Task{stem}: Error: but currect CALDB dataset in HDU number '$extnum'\n");
+	return;
+    }
+
+    return $tmpext;
+
+} # CheckEvtrangeFile
+
+sub RequestParameter(){
+
+    my ($par_name) = @_;
+
+    if (!(&GetValPar($par_name) =~ /$Default{NONE}/i)) {
+    
+	if ($par_name eq "outfile") {
+	    if ((&GetValPar("evtscreen") =~ /yes/i) ||(&GetValPar("gtiscreen") =~ /yes/i))  {
+		return 1;
+	    } else { 
+		&PrntChty(2,"$Task{stem}: Error: parameters 'evtscreen' and 'gtiscreen' set to 'no' but " . 
+		    " parameter '$par_name' set by command line\n");
+		$Task{errmess} = "Input parameters not compatible";
+		$Task{status} = 1;
+		return 0;
+	    }
+	}
+	
+	if ( ($par_name eq "gtiscreen") ) {
+
+	    if (&CompUL(&GetValPar("createattgti"), "no") && &CompUL(&GetValPar("createinstrgti"),"no") &&
+		&CompUL(&GetValPar("usrgtifile"),$Default{NONE})  && &CompUL(&GetValPar("gtiexpr"),$Default{NONE}) )  {
+		if ( &CompUL(&GetValPar("gtiscreen"),"no") )  {
+		    return 1;
+		} 
+		else { 
+		    &PrntChty(2,"$Task{stem}: Error: parameter '$par_name' set to ". &GetValPar("gtiscreen") . " but 'createattgti' and 'createinstrgti' are set to 'no' \n");
+		    &PrntChty(2,"$Task{stem}: Error: and no input GTI file provided by user ('usrgtifile' input parameter) and/or\n");
+		    &PrntChty(2,"$Task{stem}: Error: no gti expression provided ('gtiexpr' input parameter)\n");
+		    $Task{errmess} = "Input parameters not compatible";
+		    $Task{status} = 1;
+		    return 0;
+		}
+	    }
+	}
+
+	
+	
+	if ($par_name eq "usrgtifile")  {
+	    if ((&GetValPar("gtiscreen") =~ /yes/i))  {
+		return 1;
+	    } else {
+		&PrntChty(2,"$Task{stem}: Error: parameter 'gtiscreen' set to 'no' but parameter '$par_name' set by command line\n");
+		$Task{errmess} = "Input parameters not compatible";
+		$Task{status} = 1;
+		return 0;
+	    }
+	}
+    }
+	
+    return 1;
+} # RequestParameter
+
+
+
+sub CopyKeyword() {
+    my ($input,$output) = @_;
+
+    my ($dc1,$dr1,$dc2,$dr2);
+
+    my ($fptrin,$fptrout,$status,$app,$comm) = (0,0,0);
+    
+    use vars ( %Task);
+
+    my @listkeyerr = ("TELESCOP","INSTRUME");
+
+    my @datatypeerr = (TSTRING,TSTRING);
+    
+    
+    my @listkeywarn = ("TIMESYS","TIMEREF","TASSIGN","TIMEUNIT","CLOCKAPP","OBS_ID","TARG_ID","SEG_NUM",
+		       "EQUINOX","RADECSYS");
+    
+    my @datatypewarn = (TSTRING,TSTRING,TSTRING,TSTRING,  TLOGICAL,TSTRING,TSTRING,TSTRING,
+			TDOUBLE,TSTRING);
+    
+		      
+    &PrntChty(3, "$Task{stem}: Info: Copy Swift keyword to File '$output'\n");
+    
+    fits_open_file($fptrin,$input,READONLY,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : " . $input;
+	return 0;
+    }
+    
+    fits_open_file($fptrout,$output,READWRITE,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file :  $output";
+	return 0;
+    }
+
+
+    my ($existmjdrefi,$existmjdreff,$mjdrefi,$mjdreff,$comm_mjdrefi,$comm_mjdreff);
+    
+    my $extname = "EVENTS";
+
+    if ($Task{mode} eq "im") {
+
+	fits_movabs_hdu($fptrin,2,ANY_HDU,$status);
+	if ( $status ) {
+	    &PrntChty(2,"$Task{stem}: Error: CopyKeyWord: movnabs_hdu: error on '$input' file\n");
+	    &PrntChty(2,"$Task{stem}: Error: CopyKeyWord: unable to move to extension 2\n");
+	    $Task{status} = 1;
+	    return 0;
+	}
+    } else {
+	
+	fits_movnam_hdu($fptrin,ANY_HDU,$extname,0,$status);
+	if ( $status ) {
+	    &PrntChty(2,"$Task{stem}: Error: CopyKeyWord: movnam_hdu: error on '$input' file\n");
+	    &PrntChty(2,"$Task{stem}: Error: CopyKeyWord: unable to move to extname: $extname\n");
+	    $Task{status} = 1;
+	    return 0;
+	}
+    }
+
+
+
+    for (my $y = 1; $y <=2; $y++) {
+	#fits_movabs_hdu($fptrin,1,ANY_HDU,$status);
+	
+	fits_movabs_hdu($fptrout,$y,ANY_HDU,$status);
+	if ( $status ) {
+	    &PrntChty(2,"$Task{stem}: Error: CopyKeyWord: movnam_hdu: error on '$output' file\n");
+	    &PrntChty(2,"$Task{stem}: Error: CopyKeyWord: unable to move to ext $y\n");
+	    $Task{status} = 1;
+	    return;
+	}
+	for (my $i = 0; $i <= $#listkeyerr; $i++) {
+	    
+	    if ($datatypeerr[$i] == TSTRING) {
+		fits_read_key_str($fptrin,$listkeyerr[$i],$app,$comm,$status);       
+	    } else {
+		fits_read_keyword($fptrin,$listkeyerr[$i],$app,$comm,$status);       
+	    }
+	    
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Error reading keyword $listkeyerr[$i] from file $input";
+		return 0;
+	    }
+	    
+	    if ($datatypeerr[$i] == TLOGICAL) {
+		if ($app eq "T") { $app =1;}
+		else {$app = 0;}
+	    }
+	    
+	   # fits_write_key($fptrout,$datatypeerr[$i], $listkeyerr[$i],$app,$comm,$status);
+	    fits_update_key($fptrout, $datatypeerr[$i], $listkeyerr[$i],$app,$comm,$status);
+	    
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Error writing keyword $listkeyerr[$i] to file $output";
+		print("errore update ".$#listkeyerr." key: $listkeyerr[$i] to file $output\n");
+		return 0;
+	    }else
+	    {
+	      print("update ".$#listkeyerr." key($i): $listkeyerr[$i] to file $output\n");
+	    }
+	    
+	    
+	}
+	for (my $i = 0; $i <= $#listkeywarn; $i++) {
+	    
+	    if ($datatypewarn[$i] == TSTRING) {
+		fits_read_key_str($fptrin,$listkeywarn[$i],$app,$comm,$status);       
+	    } else {
+		fits_read_keyword($fptrin,$listkeywarn[$i],$app,$comm,$status);       
+	    }
+	    
+	    if ($status) {
+		&PrntChty(4,"$Task{stem}: Warning: Unable to read keyword $listkeywarn[$i] from file $input\n");
+		$status=0;
+	    next;
+	    }
+	
+	    if ($datatypewarn[$i] == TLOGICAL) {
+		if ($app eq "T") { $app =1;}
+		else {$app = 0;}
+	    }
+
+	    fits_update_key($fptrout,$datatypewarn[$i], $listkeywarn[$i],$app,$comm,$status);
+	    
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Error writing keyword $listkeywarn[$i] to file $output";
+		return 0;
+	    }
+	    else
+	    {
+	      print("update ".$#listkeywarn." key($i): $listkeywarn[$i] to file $output\n");
+	    }
+	    
+	}
+	
+	$existmjdrefi = 1;
+	$status = 0;
+	fits_read_keyword($fptrin,"MJDREFI",$mjdrefi,$comm_mjdrefi,$status); 
+	if ($status && $status != KEY_NO_EXIST) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Error reading keyword MJDREFI from file " . &GetValPar("hdfile");
+	    return 0;
+	}
+	elsif ($status == KEY_NO_EXIST) {
+	    $existmjdrefi = 0;
+	}
+	
+	$existmjdreff = 1;
+	$status = 0;
+	fits_read_keyword($fptrin,"MJDREFF",$mjdreff,$comm_mjdreff,$status); 
+	if ($status && $status != KEY_NO_EXIST) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Error reading keyword MJDREFF from file " . &GetValPar("hdfile");
+	    return 0;
+	}
+	elsif ($status == KEY_NO_EXIST) {
+	    $existmjdreff = 0;
+	}
+
+
+
+	if ($existmjdreff && $existmjdrefi) {
+	     fits_write_key($fptrout,TDOUBLE, "MJDREFI",$mjdrefi,$comm_mjdrefi,$status);
+	     if ($status) {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Error writing keyword MJDREFI to file $output";
+		return 0;
+	     }
+
+	     fits_write_key($fptrout,TDOUBLE, "MJDREFF",$mjdreff,$comm_mjdreff,$status);
+	     if ($status) {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Error writing keyword MJDREFF to file $output";
+		 return 0;
+	     }
+	 } elsif ($existmjdreff || $existmjdrefi) {
+	     if ($existmjdreff) { #NOT exist MJDREFI
+		 $Task{status} = 1;
+		 $Task{errmess} = "Expected keyword MJDREFI to file  " . &GetValPar("hdfile") . " not found";
+		 return 0;
+	     } else {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Expected keyword MJDREFF to file  " . &GetValPar("hdfile") . " not found";
+		 return 0;
+	     }
+	 } else {
+	     $status = 0;
+	     fits_read_keyword($fptrin,"MJDREF",$app,$comm,$status); 
+	     if ($status == 0) {
+		 fits_write_key($fptrout,TDOUBLE, "MJDREF",$app,$comm,$status);
+		 if ($status) {
+		     $Task{status} = 1;
+		     $Task{errmess} = "Error writing keyword MJDREF to file $output";
+		     return 0;
+		 }
+	     } elsif ($status) {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Error reading keyword MJDREF from file " . &GetValPar("hdfile");
+		 return 0;
+	     } 
+	     
+	 }
+	
+	fits_write_chksum($fptrout,$status);
+    }
+
+    fits_close_file($fptrin,$status);
+    fits_close_file($fptrout,$status);
+
+    return 1;
+
+} #CopyKeyword
+    
+sub ExistsSyntaxColumn {
+
+    my ($filename,$extname,$colname,$flag) = @_;
+
+    $$flag = 0;
+
+    my $fptr = &GetFitsPointer($filename,$extname,undef,READONLY);
+    if ($Task{status}) { 
+	return 1;
+    }
+
+    my ( $colindex , $status ) = ( 0, 0 );
+    &fits_get_colnum($fptr,0, $colname , $colindex, $status);
+    if ($status==COL_NOT_FOUND) {
+	&PrntChty(2,"$Task{stem}: Warning: Column '$colname' not found,\n");
+	&PrntChty(2,"$Task{stem}: Warning: old format for '$filename' file\n");
+	$status = 0;
+    }
+    elsif ( $status ) {
+	my ( $str );
+	fits_get_errstatus($status,$str);
+	&PrntChty(2,"$Task{stem}: Error: Getting from '$filename' the '$colname' column number\n");
+	&PrntChty(2,"$Task{stem}: Error: GetKeyword: FITSIO error: $str\n");
+	fits_close_file($fptr,$status);
+	$Task{errmess} = "Error Reading '$filename' file";
+	$Task{status}= 1;
+	return 1;
+    }
+    else { $$flag = 1; };
+    
+    fits_close_file($fptr,$status);
+    if ($status) { 
+	$Task{status}=1;
+	$Task{errmess} = "Unable to close file:" . &GetValPar("infile") ;
+	return 1;
+    }
+
+    return 0;
+
+} #ExistsSyntaxColumn
+
+sub  GetImgVSub {
+    my ($infile, $xrtvsub) = @_;
+    my ($ffp, $numext);
+    my $status=0;
+    my $imgnum=0;
+    my $type;
+    my ($comm,$value,$str);
+    
+    fits_open_file($ffp,$infile,READONLY,$status);
+    
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "GetImgVSub : Unable to open fits file '$infile'";
+	return 1; 
+    }
+
+    fits_get_num_hdus($ffp,$numext,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "GetImgVSub : Unable to get number of extensions from file '$infile'";
+	fits_close_file($ffp,$status);
+	return 1;
+    }    
+
+    for (my $i = 1; $i <= $numext; $i++) 
+    {
+
+   	fits_movabs_hdu($ffp, $i, $type, $status);
+	if ($status) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "GetImgVSub : Running movabs_hdu (num extension: $i) in $infile";
+	    return 1;
+	}
+	
+	if ($type eq IMAGE_HDU)
+	{
+	    fits_read_keyword($ffp,"XRTVSUB",$value,$comm,$status);
+	    if ($status) {
+		if ( $status!=KEY_NO_EXIST) 
+		{
+		    $Task{status} = $status;
+		    fits_get_errstatus($status,$str);
+		    $Task{errmess} =  "GetImgVSub : Error reading keyword XRTVSUB in file '$infile' : $str";
+
+		    fits_close_file($ffp,$status);
+		    return 1;
+		}
+		else
+		{
+		    $status=0;
+		}
+	    }
+	    else 
+	    {
+		$value =~ s/^\s+//; # remove leading spaces
+		$value =~ s/\s+$//; # remove trailing spaces	
+		$value =~ s/^'//g; #Remove apex
+                $value =~ s/'$//g;; #Remove apex
+		$value =~ s/\s+$//g;; #Remove right space
+		
+		$$xrtvsub = $value;
+
+		fits_close_file($ffp,$status);
+		return 0;
+	    }
+	    
+	    $imgnum++;
+	}
+    }
+
+    fits_close_file($ffp,$status);
+
+    if($imgnum)
+    {
+	&PrntChty(2,"$Task{stem}: Warning: 'XRTVSUB' keyword not found in '$infile'\n");
+	&PrntChty(2,"$Task{stem}: Warning: using default value '0'\n");
+	$$xrtvsub="0";
+	return 0;
+    }
+    else
+    {
+	$Task{status} = 1;
+	$Task{errmess} = "GetImgVSub : Unable to find IMAGE extension in file '$infile'";
+	return 1;
+    }
+
+} # GetImgVSub

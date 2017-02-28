@@ -1,0 +1,278 @@
+#!/usr/bin/perl
+#
+# bat-survey-catmux - save one catalog with many sources into many catalogs with one source each
+#
+# $Id: batsurvey-catmux,v 1.2 2010/11/23 22:33:09 craigm Exp $
+#
+# $Log: batsurvey-catmux,v $
+# Revision 1.2  2010/11/23 22:33:09  craigm
+# Allow user to specify an @filename.txt with a list of transformations, in addition to specifying the list directly on the command line --CM
+#
+# Revision 1.1  2010/05/11 07:26:03  craigm
+# Add new tool batsurvey-catmux, which can be used to split a catalog with many sources into many files with one source each; new unit tests were added for this utility routine, and of course they pass --CM
+#
+# 
+
+use strict;
+use HEACORE::HEAINIT;
+use Time::Local;
+use POSIX;
+
+my $taskname = "batsurvey-catmux";
+my $taskvers = "0.1";
+
+# ===================================
+# Execute main subroutine, with error trapping
+my $status = 0;
+my @tmpfiles = ();
+my ($tmpfile, $atstatus, $cleanup);
+$cleanup = 1;
+eval {
+    $status = headas_main(\&bat_survey_catmux);
+};
+$atstatus = $@;
+
+# ==================================
+# Remove any scratch file
+if ($cleanup) {
+  foreach $tmpfile (@tmpfiles) {
+    if ( -f $tmpfile) { unlink($tmpfile); }
+  }
+}
+
+# ===================================
+# Check for errors and report them to the console
+if ($atstatus) {
+    if ($status == 0) { $status = -1; }
+    warn $atstatus;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Main subroutine
+sub bat_survey_catmux {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &bat_survey_catmux_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+sub bat_survey_catmux_work {
+
+  # ===== 
+  # Initialization
+  # The HEAUTILS module provides access to HDpar_stamp()
+  # set_toolname(), set_toolversion(), and headas_clobberfile()
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  
+  use Astro::FITS::CFITSIO qw(:longnames :constants);
+  
+  my $chatter;
+  $status = PILGetInt("chatter",$chatter);
+  my $verbose = ($chatter >= 5)?(1):(0);
+  # Ordered parameters, usually ask parameters which must come first
+  my @parmlist = ("infile", "outfile");
+  my %parms = (
+	       infile => \&PILGetString,
+	       outfile => \&PILGetString,
+	       keycolumn => \&PILGetString,
+	       exclude => \&PILGetString,
+	       translate_map => \&PILGetString,
+	       logfile => \&PILGetString,
+	       clobber => \&PILGetBool, 
+	      );
+  
+  print "$taskname v$taskvers\n" if ($chatter >= 1);
+  print "----------------------------------------------------------\n" 
+    if ($chatter >= 2);
+  
+  my ($parm, $func, $val);
+  # ... first read ordered parameters, then anything else
+  foreach $parm ( @parmlist, keys(%parms) ) {
+    my $func = $parms{$parm};
+    next if (ref($func) ne "CODE");  # Skip if we already did this parm
+    undef($val);
+    $status = &$func("$parm", $val);
+    die "ERROR: could not retrieve parameter '$parm'" if ($status);
+    $parms{$parm} = $val;
+    print "$parm=$val\n" if ($verbose);
+  }
+
+
+  my $infile = $parms{infile};
+  my $outpat = $parms{outfile};
+  my $keycol = $parms{keycolumn};
+  my $status = 0;
+
+  my (%done,%clobbered,%map);   # listing of items which have been done already
+  my ($key, $exists);
+  my ($infits, $fits, $handle);
+  my (@keydata);
+  my ($i);
+
+  # Mark the sources meant to be excluded
+  if ($parms{exclude} ne "NONE") {
+    my @exclude = split(/ *, */,$parms{exclude});
+    foreach $key (@exclude) {
+      $done{$key} = 1;
+    }
+  }
+
+  # Mark the sources to be remapped
+  if ($parms{translate_map} ne "NONE") {
+    my (@tmap, $filename);
+    # Check for @-file
+    if ($parms{translate_map} =~ m/^@(.*)$/) {
+      $filename = "$1";
+      open(TRFILE,"<$filename") or die "ERROR: could not open '$filename'";
+      @tmap = <TRFILE>;
+      close(TRFILE);
+    } else {
+      @tmap = split(/ *, */,$parms{translate_map});
+    }
+
+    foreach my $tmap1 (@tmap) {
+      chomp($tmap1);
+      if ($tmap1 =~ m/^(.*)->(.*)$/) {
+	my $from = $1; my $to = $2;
+	$map{$from} = "$to";
+      } else {
+	die "ERROR: unrecognized translate_map expression '$tmap1'";
+      }
+    }
+  }
+
+  # XXX: modify catalog by adding observation-related columns
+  #  {RA,DEC,PA}_PNT
+  #  {OBS,IMAGE}_ID
+  #  {BSURVER,BSURSEQ}
+  # Maybe delete some useless columns
+
+  # Read original input table
+  Astro::FITS::CFITSIO::fits_open_data($infits,"$infile",READONLY,$status);
+  die "ERROR: could not open '$infile'" if ($status);
+
+  # Open an internal table which we will use many many times
+  Astro::FITS::CFITSIO::fits_create_file($handle, "mem://internal", $status);
+  die "ERROR: could not create internal table" if ( $status );
+
+  # Copy original input to internal table
+  $infits->copy_hdu($handle,0,$status);
+  $infits->close_file($status);
+  die "ERROR: could not copy infile to internal table" if ($status);
+
+  # Read key column
+  $handle->get_colnum(CASEINSEN, "$keycol", my $colnum, $status);
+  die "ERROR: column '$keycol' not found in input" if ($status);
+  $handle->get_num_rows(my $nrows,$status);
+  $handle->get_coltype($colnum,my $typecode,my $colrepeat,my $colwidth,$status);
+  die "ERROR: column '$keycol' parameters not found in input" if ($status);
+  $handle->read_col($typecode, $colnum, 1, 1, $nrows, undef, \@keydata, undef, $status);
+  die "ERROR: could not read '$keycol' from input" if ($status);
+
+  # Loop through each row and process it!
+  foreach $i (0 .. $#keydata) {
+    my ($outfile, $outfilename, $outfilename_orig, $outhand, $outfits);
+    my ($expr);
+    my ($safekey, $origkey);
+
+    undef $outfile;
+    undef $outfilename;
+    $status = 0;
+
+    # Find the next key, and make sure we don't re-do a key we've already done.
+    $origkey = $keydata[$i];
+    next if ($done{$origkey});
+    $key = $origkey;
+    $key = $map{$origkey} if ($map{$origkey});
+
+    # Protect from bad characters. Note the special use of
+    # close-bracket at beginning of [] character class to match any
+    # brackets in the file name.
+    $safekey = "$key";
+    $safekey =~ s/[][!\$%^&*;\(\)\{\}\<\>\?\|\/\\\s]/_/g;
+
+    # Determine the output file name by using pattern
+    $outfilename = sprintf($outpat, "$safekey");
+    $outfilename =~ s/ /_/g;  # Replace blanks
+
+    $exists = ( -f "$outfilename" ) ? "EXISTS" : "NEW";
+
+    if ( $exists eq "NEW" || ($parms{clobber} && ! $clobbered{$outfilename}) ) {
+      unlink("$outfilename") if ( $exists eq "EXISTS" );
+      # We must create the file
+      Astro::FITS::CFITSIO::fits_create_file($outhand,"$outfilename",$status);
+      if ($status) {
+	warn "ERROR: could not create '$outfilename'";
+	next;
+      }
+      $clobbered{$outfilename} = 1;
+
+      # Copy input header to output so we have the right column names, etc
+      # Note that copy_header() will automatically create a dummy primary HDU
+      $handle->copy_header($outhand, $status);
+      $outhand->update_key(TINT,"NAXIS2",0,0,$status);  # Make sure zero rows
+      $outhand->set_hdustruc($status);
+      if ($status) {
+	warn "ERROR: could not initialize '$outfilename'";
+	next;
+      }
+    } else {
+      # File exists, we must open it
+      Astro::FITS::CFITSIO::fits_open_data($outhand, "$outfilename", READWRITE, $status);
+      if ($status) {
+	warn "ERROR: could open '$outfilename' for read/write access";
+	next;
+      }
+    }
+
+    # Copy the relevant values to the output (append)
+    if ($typecode == TSTRING) {
+      $expr = "$keycol == '$origkey'";
+    } else {
+      $expr = "$keycol == $origkey";
+    }
+    print " $origkey | $key | $safekey | $outfilename | $exists | '$expr' \n" if ($chatter >= 5);
+
+    $status = 0;
+    $handle->select_rows($outhand, $expr, $status);
+    warn "ERROR: selection '$expr' failed" if ($status);
+
+    $status = 0;
+    $outhand->close_file($status);
+
+    # Record that we did this element, so we don't re-do it again.
+    $done{$origkey} = 1;
+  }
+
+  # Close memory table
+  $handle->close_file($status);
+  
+  return 0;
+}
+

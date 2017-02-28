@@ -1,0 +1,407 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batsurvey/ut_batsurvey,v $
+# $Revision: 1.10 $
+# $Date: 2010/05/06 05:22:56 $
+#
+#	ut_batsurvey
+#		validate batsurvey (overall BAT survey imaging pipeline analysis)
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "batsurvey";
+$ut_taskname   = "ut_batsurvey";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output obsid chatter fudgemap cleanup dryrun
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS CALDB )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+  my ($self) = @_;
+  
+  my $headas = $ENV{HEADAS};
+  my $caldb = $ENV{CALDB};
+  my $input = $self->args->{input};
+  my $output = $self->args->{output};
+  my $obsid  = $self->args->{obsid};
+  my $fudgemap = $self->args->{fudgemap};
+  my $cleanup = $self->args->{cleanup};
+  $fudgemap =~ s/\@INPUT\@/$input/;
+  
+  if ($cleanup =~ m/^y/i) { $cleanup = 1; } else { $cleanup = 0; }
+  
+  my $templatedir = "$input/$obsid"."-template";
+  my $outdir = "$output/$obsid"."-results";
+  
+  # ******************* FILL IN PARAMETERS HERE ********
+  my %task = (
+	      indir         => "$input/$obsid", 
+	      outdir        => "$outdir",
+	      global_pattern_mask => "$input/batsurvey-pattmask.detmask",
+	      global_pattern_map  => "$input/batsurvey-pattmap.dpi",
+	      balance       => "InOut",  ## To mimic bug in batclean
+	      incatalog     => "$input/batsurvey-catalog.fits",
+	      bsurseq       => "UT",
+	      # NOTE: this pulsercal file was used for unit test before we re-analyzed
+	      # pulser calibration
+	      pulserfile    => "$caldb/data/swift/bat/bcf/swbpulsecal20030101v003.fits",
+	      chatter       => 0,
+	      clobber       => "Yes",
+	     );	
+  
+  if (not -d $task{indir}) {
+    $self->fatal(BAD_INPUT,
+		 "invalid $key directory: $task{indir}");
+  }
+  
+  # build command line
+  my $command = "$taskname";
+  
+  foreach my $p (keys %task) {
+    $command .= " $p='$task{$p}'";
+  }
+  $rootname = "sw$obsid"."b_";
+  
+  if ($self->args->{dryrun} =~ m/^y/i) {
+    warn "WARNING:  ************ TEST IS NOT OPERATIONAL! **********";
+    sleep(3);
+  } else {
+    # ================== Run the command
+    $self->doCommand("rm -rf $task{outdir}");
+    # Save a copy
+    my $result = $self->doCommand("$command 2>&1 | tee $output/batsurvey.log");
+  }
+  return $result->{status} if ($result->{status});
+  
+  
+  # ***************** VERIFY OUTPUT OF TASK HERE ***********
+
+  # Defaults:
+  #   type => "table"
+  #   ext  => "[1]"  or "[0]" for image
+  #   format => "FITS"
+  
+  @files = (
+# ASCII file with numerical precision problems
+#            { name => "#DIR#/#POINT#/#POINT#_status.txt",
+#	      format => "ASCII",
+#	    },
+	    { name => "#DIR#/#POINT#/#POINT#.att",
+	      reltol => 1.5e-5,
+	      abstol => 1e-5,
+	    },
+
+#           Output catalog is a mess of different precisions, so it is
+#           difficult to test.  Also the catalog is at the mercy of
+#           batcelldetect changes.  Although the catalog output is the
+#           "high level" output of batsurvey, the images are
+#           equivalent, and should prove that the filtering/cleaning
+#           stages have worked properly.  Therefore the catalog test
+#           is being removed.
+#
+#	    { name => "#DIR#/#POINT#/#POINT#_2.cat",
+#	      reltol => 1e-4,
+#	      abstol => 1e-6,
+#	    },
+
+	    { name => "#DIR#/#POINT#/#POINT#_pnt.gti",
+	      ext  => "",   # All extensions
+	      abstol => 0.001,
+	      reltol => 1e-9,
+	    },
+	    { name => "#DIR#/#POINT#/#POINT#_2.bkgdpi",
+	      ext => "",   # All extensions
+	      type => "image",
+	      exclude => "BGPAR*,CHISQ,SRPAR*,TOTCOUNT",
+	      fudge => 0,
+	      abstol => 2e-3,
+	      reltol => 1e-3,
+	      maxdif => 10,
+	    },
+	    { name => "#DIR#/#POINT#/#POINT#_1.dpi",
+	      ext => "",   # All extensions
+	      type => "image",
+	      exclude => "TOTCOUNT",
+	      fudge => 0,
+	      abstol => 2e-3,
+	      reltol => 1e-3,
+	      maxdif => 10,
+	    },
+	    { name => "#DIR#/#POINT#/#POINT#_2.detmask",
+	      ext => "",   # All extensions
+	      type => "image",
+	      exclude => "TOTCOUNT",
+	      fudge => 0,
+	      abstol => 1e-7,  ## Needed for some keywords which are float
+	      maxdif => 5, 
+	    },
+	    { name => "#DIR#/#POINT#/#POINT#_2.img",
+	      ext => "",   # All extensions
+	      type => "image",
+	      exclude => "OCCFILE",
+	      nvectimages => 8,
+	      abstol => 5e-4,
+	      reltol => 0.02,
+	      maxdif => 40,
+	    },
+	    { name => "#DIR#/#POINT#/#POINT#_2.var",
+	      ext => "",   # All extensions
+	      type => "image",
+	      exclude => "OCCFILE",
+	      nvectimages => 8,
+	      abstol => 1e-4,
+	      reltol => 0.02,
+	      maxdif => 40,
+	    },
+	    {
+	     name => "#DIR#/stats_obs.dat",
+	     format => "ASCII",
+	    },
+            # ASCII file with numerical precision problems
+	    {
+	     name => "#DIR#/stats_point.dat",
+	     format => "ASCII",
+	     grep_string => "1 ok",
+	    },
+	   );
+  
+  
+  if (not -f "$fudgemap") {
+    $self->fatal(BAD_INPUT,
+		 "input 'fudge map' was not found");
+    return -1;
+  }
+
+  @points = glob("$templatedir/point_*");
+  if ($#points == -1 || ! -d $points[0]) {
+    $self->fatal(BAD_INPUT, "no results were found in template");
+    return -1;
+  }
+    
+  foreach $point (@points) {
+    $point =~ s|^.*point_|point_|;  # Normalize to just point_YYYYDDDhhmm
+    print "point=$point\n";
+    
+    foreach $file (@files) {
+      $outputfile = $file->{name};
+      $outputfile =~ s/#DIR#/$outdir/g;
+      $outputfile =~ s/#POINT#/$point/g;
+      $templatefile = $file->{name};
+      $templatefile =~ s/#DIR#/$templatedir/g;
+      $templatefile =~ s/#POINT#/$point/g;
+      
+      # ==== Check for presence of template file
+      if (not -f $templatefile) {
+	print "NOTE: skipping $templatefile because it does not exist\n";
+	next;
+      }
+      # ==== Check for presence of output file
+      if (not -f $outputfile) {
+	$self->fatal(BAD_OUTPUT, "Output file $outputfile does not exist");
+	next;
+      }
+
+      $format = "FITS";
+      $format = $file->{format} if ($file->{format});
+      if ($format eq "FITS") {
+	# ==== Verify that output file was valid FITS file
+	$command = "ftverify infile=$outputfile outfile=STDOUT heasarc=yes";
+	$result = $self->doCommand($command);
+	if ($result->{output} !~ m/Verification found.*and 0 error/) {
+	  $self->error(BAD_OUTPUT, "Ftverify failed on $outputfile");
+	}
+
+	$fudge = 1;
+	$fudge = $file->{fudge} if (defined($file->{fudge}));
+	$type = "table";
+	$type = $file->{type} if ($file->{type});
+	if ($type eq "table") { $ext = "[1]"; } else { $ext = "[0]"; }
+	$ext = $file->{ext} if (defined($file->{ext}));
+	undef($reltol); undef($abstol);
+	if (defined($file->{reltol})) {
+	  $reltol = "reltol=$file->{reltol}";
+	}
+	if (defined($file->{abstol})) {
+	  $abstol = "tolerance=$file->{abstol}";
+	}
+	$exclude = "CREATOR,DATE-OBS,DATE-END,FILIN*,MJD-OBS,NPIXSOU,".
+	  "ORIGIN,USER,TIMEZER*,BSURVER,BSURSEQ,DATASUM,OCCVER";
+	$exclude = $exclude.",".$file->{exclude} if ($file->{exclude});
+	$maxdif = 0;
+	$maxdif = $file->{maxdif} if (defined($file->{maxdif}));
+	$hdumaxdiff = 25;
+	if ($hdumaxdiff < 2*$maxdif) { $hdumaxdiff = 2*$maxdif; }
+	
+	if ($type eq "image" && $fudge) {
+	  $outputfile_fudged = $outputfile.".fudge";
+	  $templatefile_fudged = $templatefile.".fudge_template";
+	  $modexpr = "";
+	  $modexpr = $file->{modexpr} if ($file->{modexpr});
+	  
+	  $nvectimages = 1;
+	  $nvectimages = $file->{nvectimages} if ($file->{nvectimages});
+	  
+	  $command = "ftimgcalc $outputfile_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B$modexpr)' a='$outputfile$ext' b='$fudgemap' nvectimages=$nvectimages replicate=YES clobber=YES otherext=NONE ";
+	  $self->doCommand($command);
+	  
+	  $command = "ftimgcalc $templatefile_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B$modexpr)' a='$templatefile$ext' b='$fudgemap' nvectimages=$nvectimages replicate=YES clobber=YES otherext=NONE ";
+	  $self->doCommand($command);
+	  
+	  $command = "ftdiff '$templatefile_fudged$ext' '$outputfile_fudged$ext' hdumaxdiff=$maxdif exclude='$exclude' $reltol $abstol ";
+	} elsif ($type eq "table" || $type eq "image") {
+	  # Unfudged image
+	  
+	  $command = "ftdiff '$templatefile$ext' '$outputfile$ext' hdumaxdiff=$hdumaxdiff exclude='$exclude' $reltol $abstol ";
+	}
+	
+	$result = $self->doCommand(" ( $command  ; true )");
+
+	# Keyword mismatches *always* cause a failure
+	if ($result->{output} =~ m/ card \d+:/) {
+	  $self->error(BAD_OUTPUT, "keyword mismatch in files");
+	  $lines = $result->{output};
+	  if ($self->chatter(5)) {
+	    print "=======================================================\n";
+	    print "$command\n";
+	    print "-----\n";
+	    print "$lines\n";
+	    print "=======================================================\n";
+	  }
+
+	# Pixel mismatches only cause an error if they exceed the threshold
+	} elsif ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	  $ndiffs = $1;
+	  print "   -->  FTDIFF reports $ndiffs differences\n";
+	  if ($ndiffs > $maxdif) {
+	    $lines = $result->{output};
+	    print "$lines\n" if $self->chatter(5);
+	    print "=======================================================\n"
+	      ."=======================================================\n"
+		."=======================================================\n"
+		  ."=======================================================\n";
+	    warn "WARNING: output data do not match exactly.  Is this fatal?";
+	    print "=======================================================\n"
+	      ."=======================================================\n"
+		."=======================================================\n"
+		  ."=======================================================\n";
+	    $self->error(BAD_OUTPUT, "error because of bad compare");
+	  } else {
+	    print "   -->  OK\n";
+	  }
+	}
+
+	# End of FITS file comparisons
+
+      } elsif ($format eq "ASCII") {
+
+	# Begin ASCII tests
+
+	if ($file->{grep_string}) {
+	  $target = $file->{grep_string};
+	  print "Greping for target string '$target'...\n";
+	  $command = "grep '$target' '$outputfile'";
+	  $result = $self->doCommand("$command");
+	  if ($result->{status} != 0) {
+	    print "     NOT FOUND\n";
+	    $self->error(BAD_OUTPUT, "missing target string in output");
+	  } else {
+	    print "     Found it, good!\n";
+	  }
+	} else {
+	  $command = "diff '$templatefile' '$outputfile'";
+	  $result = $self->doCommand("$command");
+	  if ($result->{status} != 0) {
+	    print "   --> DIFF reports differences\n";
+	    print "=======================================================\n"
+	      ."=======================================================\n"
+		."=======================================================\n"
+		  ."=======================================================\n";
+	    warn "WARNING: output data do not match exactly.  Is this fatal?";
+	    print "=======================================================\n"
+	      ."=======================================================\n"
+		."=======================================================\n"
+		  ."=======================================================\n";
+	    $self->error(BAD_OUTPUT, "error because of bad compare");
+	  }
+	}
+
+	
+      } # End ASCII
+
+    } # End loop over files
+  } # End of loop over @point (snapshots)
+  
+} # End runtask
+	
+
+

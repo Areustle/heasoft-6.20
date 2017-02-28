@@ -1,0 +1,373 @@
+#!/usr/bin/perl
+# gis3bitfix.pl
+# Adapted from GIS3BITFIX.E, BY ERIC GOTTHELF (NASA/GSFC), 1994.
+# Automatic script to fix science files affected by the GIS3 3 bit LSB error.
+# 
+#   Modification history:
+#
+#   Sept 1994, EVG. Modified to follow XPI change, replaced pquery -> pget.
+#    Oct 1994, EVG. Modified to follow another XPI change, operation of mode=h.
+#                   Added HISTORY card.
+#    Jan 1998, EVG. Correctly sets the ra/dec values for PHA=256 mode.
+#    Jul 1998, EJS  Converted to perl.
+#                   Now obtains TSTOP and TSTART keywords instead of
+#                   ORBITBEG and ORBITEND, with a corresponding change
+#                   in the range of allowed values.
+##############################################################################
+use File::Basename;
+$SCRIPTNAME=basename($0);
+
+################################################################
+# give a descriptive message if invoved with too few arguments
+################################################################
+if (($#ARGV + 1) < 4) {
+    print "\n";
+    print "   All GIS3 PH data acquired in PHA mode between Feb 10";
+    print " and Apr 8 1994 suffer\n";
+    print "   from an on-board software related problem. The 3 LSB PHA bits";
+    print " are stuck\n";
+    print "   in the pattern 101; some time resolution may be lost.";
+    print " This script makes\n";
+    print "   a set of reprocessed, fixed GIS3 PHA science files.";
+    print " However the digital\n";
+    print "   resolution of the resultant spectra is necessarily decreased";
+    print " to 7 bits.\n";
+    print "\n";
+    print "   The arguments are: 1) a file containing a list of";
+    print " (previously processed)\n";
+    print "   affected GIS3 event files, 2) those necessary to run";
+    print " ASCALIN.\n";
+    print "   The resultant files have the extension .fix appended to";
+    print " the file name.\n";
+    print "\n";
+    print "   Questions? e-mail ascahelp\@legacy.gsfc.nasa.gov\n";
+    print "\n";
+    print " Usage: $SCRIPTNAME evtlist calfile timfile attfile    ";
+    print "(Process evtlist files)\n";
+    print "\n";
+    print " where\n";
+    print "   evtlist = name of file containing a list of event files to";
+    print " be corrected\n";
+    print "   calfile = name of teldef file       (the gis3_phnew* file)\n";
+    print "   timfile = name of gain history file (the ft*.ghf     file)\n";
+    print "   attfile = name of attitude file     (the fa*         file)\n";
+    if (($#ARGV + 1) != 0) {
+	print " Too few command line arguments, please try again.\n";
+    }
+    exit;
+}
+
+#########################################################################
+# The following are the border times for the PHA bit problem and the
+# rise time stuch bit problems
+########################################################################
+$lsb_stuck_start_time=3.507200000000000E+07;
+$lsb_stuck_end_time=3.996396500000000E+07;
+$rise_stuck_start_time=3.996369400000000E+07;
+$rise_stuck_end_time=3.998221000000000E+07;
+
+######################################
+# read the command line arguments
+######################################
+$file=$ARGV[0];
+$calfile=$ARGV[1];
+$timfile=$ARGV[2];
+$attfile=$ARGV[3];
+
+################################
+# set some ascalin parameters
+################################
+`pset ascalin pointing=user`;
+`pset ascalin calfile=$calfile`;
+`pset ascalin tempofile=$timfile`;
+`pset ascalin attitude=$attfile`;
+
+$fixfile="$file.fix";
+
+`fkeypar $file+1 TCRVL2`;
+chomp($ranom=`pget fkeypar value | sed "s/'//g"`);
+
+`fkeypar $file+1 TCRVL3`;
+chomp($decnom=`pget fkeypar value | sed "s/'//g"`);
+
+`pset ascalin ranom=$ranom`;
+`pset ascalin decnom=$decnom`;
+`pset ascalin datafile=$fixfile`;
+`pset ascalin mode=h`;
+
+`rm -f gis3bitfix.kw`;
+
+#########################################
+# make sure the event file exists
+#########################################
+if (! -f $file) {
+    print " File $file not found.\n";
+    exit 1;
+}
+
+################################
+# make sure this is a GIS3 file
+################################
+`fkeypar $file+0 INSTRUME`;
+chomp($inst=`pget fkeypar value | sed "s/'//g"`);
+
+if($inst ne "GIS3    ") {
+    print "$inst files are not affected by the stuck bit problem\n";
+    exit 1;
+}
+
+
+########################
+# read TSTART and TSTOP
+########################
+`fkeypar $file+0 TSTART`;
+chomp($start_mjd=`pget fkeypar value | sed "s/'//g"`);
+print "START TIME:  $start_mjd\n";
+
+`fkeypar $file+0 TSTOP`;
+chomp($stop_mjd=`pget fkeypar value | sed "s/'//g"`);
+print "STOP  TIME:  $stop_mjd\n";
+
+$mod_the_header=0;
+open GIS3BITFIX, '>>gis3bitfix.kw';
+print GIS3BITFIX "G3BITFIX= FIXED / The file was modified by the script $SCRIPTNAME /\n";
+
+#########################
+# fixed file name
+#########################
+
+if ($start_mjd >= $lsb_stuck_start_time && $stop_mjd <= $lsb_stuck_end_time) {
+    ###################################
+    # this file has stuck PHA bits
+    ###################################
+    print "Fixing problem with stuck PHA bits\n";
+
+    ################################
+    # read the number of PHA bins
+    ################################
+    `fkeypar $file+0 PHA_BINS`;
+    chomp($phabins=`pget fkeypar value | sed "s/'//g"`);
+    print "PHA_BINS   :  $phabins\n";
+
+    if ($phabins == 1024) {
+        ##########################
+        # 10 PHA bits
+        ##########################
+	`fkeypar $file+0 TIMEBINS`;
+	chomp($timebins=`pget fkeypar value | sed "s/'//g"`);
+	print "TIMEBINS   :  $timebins\n";
+
+	`fkeypar $file+0 BIT_RATE`;
+	chomp($bitrate=`pget fkeypar value | sed "s/'//g"`);
+	print "BIT_RATE   :  $bitrate\n";
+
+	`rm -f $fixfile`;
+
+        ######################################################
+        # shift all the PHA value to the right by three bits
+        ######################################################
+	`fcalc $file+1 $fixfile PHA 'PHA/8' copycol=yes histkw=yes copyall=yes`;
+
+        ####################################
+        # check for errors
+        ######################################
+	unless (-f $fixfile) {
+	    print "Error creating $fixfile, exiting\n";
+	    exit 1;
+	}
+
+        ###################################################################
+        # adjust the timing keywords to mark the loss of timing resolution
+        ###################################################################
+	if ($timebins == 512) {
+            ####################
+            # 9 timing bits
+            ####################
+	    if ($bitrate eq "HIGH    ") {
+		$timedel="1.220703E-4";
+	    } elsif ($bitrate eq "MEDIUM  ") {
+		$timedel="0.976525E-4";
+	    } elsif ($bitrate eq "LOW     ") {
+		$timedel="3.90625E-3";
+	    }
+
+	    `fparkey $timedel $fixfile+0 TIMEDEL`;
+	    `fparkey $timedel $fixfile+1 TIMEDEL`;
+	    print GIS3BITFIX "HISTORY    The timing has been reset to $timedel \\\n";
+	} elsif ($timebins == 1024) {
+            ################################
+            # 10 timing bits
+            ################################
+	    if (bitrate eq "HIGH    ") {
+		$timedel="6.103515E-5";
+	    } elsif ( bitrate eq "MEDIUM  ") {
+		$timedel="4.8828125E-4";
+	    } elsif ($bitrate eq "LOW     ") {
+		$timedel="1.953125E-3";
+	    }
+
+	    `fparkey $timedel $fixfile+0 TIMEDEL`;
+	    `fparkey $timedel $fixfile+1 TIMEDEL`;
+	    print GIS3BITFIX "HISTORY    The timing has been reset to $timedel \\\n";
+	}
+
+        ####################################
+        # reset the PHA binning keywords
+        ####################################
+	`fparkey 128 $fixfile+0 PHA_BINS`;
+	`fparkey 128 $fixfile+1 PHA_BINS`;
+	`fparkey 127 $fixfile+1 TLMAX4`;
+	`fparkey 0 $fixfile+1 TLMAX5`;
+	print GIS3BITFIX "HISTORY    The PHA/PI values in this file have been reset to 7 bits\n";
+
+
+        #########################
+        # re-run ascalin
+        #######################
+	`ascalin`;
+
+        ##########################################
+        # set the flag to later modify the header
+        ##########################################
+	$mod_the_header=1;
+
+    } elsif ($phabins == 256) {
+       #####################################
+       # 8 PHA bits
+       #####################################
+	`fkeypar $file+0 TIMEBINS`;
+	chomp($timebins=`pget fkeypar value | sed "s/'//g"`);
+	print "TIMEBINS   :  $timebins\n";
+
+	`fkeypar $file+0 BIT_RATE`;
+	chomp($bitrate=`pget fkeypar value | sed "s/'//g"`);
+	print "BIT_RATE   :  $bitrate\n";
+
+	`rm -f $fixfile`;
+
+        ##############################################
+        # shift the PHA values to the right by 1 bit
+        ##############################################
+	`fcalc $file+1 $fixfile PHA 'PHA/2' copycol=yes histkw=yes copyall=yes`;
+
+
+        ##########################
+        # check for errors
+        ##########################
+	unless (-f $fixfile) {
+	    print "Error creating $fixfile, exiting\n";
+	    exit 1;
+	}
+
+	if ($timebins == 512) {
+            ###########################
+            # 9 timing bits
+            ##########################
+	    if ($bitrate eq "HIGH    ") {
+		$timedel="1.220703E-4";
+	    } elsif ($bitrate eq "MEDIUM  ") {
+		$timedel="0.976525E-4";
+	    } elsif ($bitrate eq "LOW     ") {
+		$timedel="3.90625E-3";
+	    }
+
+	    `fparkey $timedel $fixfile+0 TIMEDEL`;
+	    `fparkey $timedel $fixfile+1 TIMEDEL`;
+	    print GIS3BITFIX "HISTORY    The timing has been reset to '$timedel' \\\n";
+	} elsif ($timebins == 1024) {
+            ########################### 
+            # 10 timing bits
+            ########################## 
+
+	    if ($bitrate eq "HIGH    ") {
+		$timedel="6.103515E-5";
+	    } elsif ($bitrate eq "MEDIUM  ") {
+		$timedel="4.8828125E-4";
+	    } elsif ($bitrate eq "LOW     ") {
+		$timedel="1.953125E-3";
+	    }
+
+	    `fparkey $timedel $fixfile+0 TIMEDEL`;
+	    `fparkey $timedel $fixfile+1 TIMEDEL`;
+	    print GIS3BITFIX "HISTORY    The timing has been reset to $timedel \\\n";
+	}
+
+        #############################
+        # reset the PHA bin keywords
+        #############################
+	`fparkey 128 $fixfile+0 PHA_BINS`;
+	`fparkey 128 $fixfile+1 PHA_BINS`;
+	`fparkey 127 $fixfile+1 TLMAX4`;
+	`fparkey 0 $fixfile+1 TLMAX5`;
+	print GIS3BITFIX "HISTORY    The PHA/PI values in this file have been reset to 7 bits\n";
+
+        #########################
+        # re-run ascalin
+        #######################
+        `ascalin`;
+
+        ##########################################
+        # set the flag to later modify the header
+        ##########################################
+        $mod_the_header=1;
+
+
+    } # end if there are 8 PHA bits
+}
+else {
+    print "Observation not during period of stuck PHA bits\n";
+}
+
+##########################################################
+# check if this is during the period of stuck rise bits
+##############################################################
+if ($start_mjd >= $rise_stuck_start_time && $stop_mjd <= $rise_stuck_end_time) {
+
+    print "Fixing stuck RISE_TIME bit problem\n";
+
+
+    unless (-f $fixfile) {
+        ######################################################
+        # file has rise bits problem but not PHA bits problem
+        ######################################################
+	`cp $file $fixfile`;
+	if ($? != 0) {
+	    print "Error creating $fixfile, exiting\n";
+	    exit 1;
+	}
+    }
+
+    $mod_the_header=1;
+
+    #################################################
+    # reset RISEBINS to mark no rise time info
+    #################################################
+    `fparkey 1 $fixfile+0 RISEBINS`;
+
+    print GIS3BITFIX "HISTORY    The RISE_TIME information in this file has been lost due to a bug related to the GIS3 bit problem  \\\n";
+
+    print GIS3BITFIX "HISTORY    The RISEBINS keyword has been reset to 1 (ignore rise time info) \\\n";
+}
+else {
+    print "Observation not during period of stuck rise times,\n";
+}
+
+########################################################
+# Add history comments to the header of the fixed file
+# $mod_the_header should be 1 iff $fixfile exists
+########################################################
+if ($mod_the_header) {
+
+    print "FIXED FILE :  $fixfile\n";
+
+    `fmodhead $fixfile+0 gis3bitfix.kw`;
+    `fmodhead $fixfile+1 gis3bitfix.kw`;
+
+    $mod_the_header=0;
+}
+
+`rm -f gis3bitfix.kw`;
+
+`pset ascalin mode=ql`;
+
+exit;

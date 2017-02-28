@@ -1,0 +1,21 @@
+HD_COMPONENT_NAME	= swift
+
+HD_COMPONENT_VERS	= 
+
+HD_CTASK		= uvotsim
+
+HD_CTASK_SRC_c		= uvotsim.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_CLIBS		= ${HD_LFLAGS} -lrew ${HD_STD_LIBS} ${SYSLIBS}
+
+HD_INSTALL_TASKS	= ${HD_CTASK}
+
+HD_TEST_PERL_SCRIPTS	= ut-uvotsim
+
+HD_INSTALL_PFILES	= uvotsim.par
+
+HD_INSTALL_HELP		= uvotsim.html
+
+include ${HD_STD_MAKEFILE}

@@ -1,0 +1,1079 @@
+#! /usr/bin/perl 
+# File name: xrttam
+# 
+# Task name: xrttam
+# 
+# Description:  
+#                  
+# 
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 :  RP 21/07/2003 - First version
+#      0.1.1 :  BS 26/11/2003 - Bug fixed
+#      0.1.2 :  RP 27/11/2003 - Added check to attitude time interval
+#                               Bug fixed
+#      0.1.3 :  RP 27/11/2003 - Bug fixed
+#      0.1.4 :  RP 19/12/2003 - Added function RequestParameter, change GetInputParameters
+#                               add call GetParameterList, LoadParameterFromCmdLine,LoadParameter
+#      0.1.5:   RP 27/01/2004 - Added call WriteParameterList and write_history    
+#      0.1.6:   RP 18/3/2004  - Create outfile file tam correction in fits format
+#                               Added ledfile parameter and function GetLed
+#      0.1.7:   FT 23/03/2004 - Minor changes on comments
+#      0.1.8:   RP 24/4/2004  - Minor changes
+#      0.1.9 :  RP 19/04/2004 - Change calls to GetKeyword 
+#      0.1.10 : RP 21/04/2004 - Bug fixed
+#      0.1.11 : RP 27/04/2004 - Added check if led change 
+#      0.1.12 : RP 28/04/2004 - Check if exist keyword TIME-OBS
+#      0.1.13 : RP 11/05/2004 - Change parameter name caldbtamfile -> tamfile, teldeffile -> teldef, attcorrout -> outattfile
+#      0.1.14 : RP 28/05/2004 - Check if exist MJDREFI and MJDREFF to write or only MJDREF keyword
+#      0.1.15 : BS 24/06/2004 - Bug fixed
+#      0.1.16 : RP 27/07/2004 - Bug fixed
+#      0.1.17 : FT 28/08/2004 - Changed 'TAMLED' Calibration Database DAtaset into 'TAMREF' 
+#      0.1.18 : FT 05/08/2004 - Added path to 'outtamfile' when not set to DEFAULT 
+#      0.1.19 : RP 24/09/2004 - Added cleanup parameter
+#      0.1.20 : RP 24/09/2004 - Change default cleanup parameter value
+#      0.1.21 : RP 04/10/2004 - Added keyword XRTTAM to attitude output file to mark if processed.
+#                               Check if attitude input file is already processed
+#      0.1.22 : FT 07/10/2004 - Added initialization of $fptr and $status to 0,
+#                               this change has been suggested by Bob Wiegand
+#                               (undefined variables give warnings with
+#                               Astro::FITS::CFITSIO library)
+#                             - bug fixed on logical keyword added "XRTTAM"
+#                             - changes due to warnings
+#      0.1.23 : BS 21/01/2005 - Deleted 'ledfile' input parameter
+#      0.2.0  : FT 11/03/2005 - Append to the corrected attitude file
+#                               the extension ACS_DATA from the inut attitude
+#                               file if exists
+#      0.2.1  : FT 21/03/2005 - The call to ftcopy has been substituted qith the ftappend
+#                               one to preserve the HDUs of the input file 
+#      0.2.2  : BS 31/08/2005 - Bug fixed checking if hd time covers attitude time
+#      0.2.3  : FT 06/09/2005 - Discharge Bias Map and Null frames from TAM DET corrections
+#      0.2.4  : BS 06/09/2005 - Bug fixed checking if hd time covers attitude time
+#      0.2.5  : BS 09/09/2005 - Added 'alignfile' and 'interpolation' new 'attcombine' input parameter
+#      0.2.6  : NS 24/10/2006 - Query to CALDB for teldef file with 'DATE-OBS' and 'TIME-OBS'
+#                               of input hd file
+#      0.2.7 :  NS 16/01/2014 - Added check of the 'ATTFLAG' keyword of the input attitude file
+#      0.2.8 :  NS 17/02/2014 - Modified check of the 'ATTFLAG' keyword of the input attitude file
+#                               
+# Notes:        
+# 
+#   type "fhelp xrttam" for parameters description
+#
+# Usage:     
+# 
+#   xrttam  
+#
+# Input files:  
+#
+#   
+# Output files: 
+#
+#
+#
+# HEADAS tasks needed:
+#        pquery2 
+#        det2att
+#        attcombine
+#
+# LHEASOFT tasks needed:
+#
+#
+#
+#============================================================#
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+
+#require "/data2/nino/build19/headas-6.1/swift/xrt/lib/xrtperl/libswxrtperl.pl";
+require "libswxrtperl.pl";
+
+use strict;
+
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+
+use Math::Complex;
+
+use constant PI  => 4 * atan2  1 , 1;
+use vars qw( %Task %Default @Par %Ind);
+
+my($regionfile, $caldbtamfilename, $teldeffilename);
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+
+$Task{status} = 0;
+#
+# Specific of the task
+#
+%Task = (
+         start   => `date`,
+         name    => "xrttam",
+         version => "0.2.8",
+         releasedate => "2014-02-17",
+         stem    => "xrttam_0.2.8",
+         emptystem => "               ",
+	 cleanup   => 0,
+         clobber => 0,  # it means 'clobber=no'
+         chatter => 3,
+         status  => 0,
+         errmess => "",
+         psccd => 2.357,
+	 numsec => 600  #Number of seconds of tollerance attitude file
+         );
+
+#
+#  Defaults
+#
+
+%Default = (
+	    DEFAULT => "DEFAULT",
+	    NONE    => "NONE",
+	    NOTVALDPARNUMB => -999999999
+            );
+
+
+
+my @keylist;
+
+$keylist[0]{keyname} = '';
+$keylist[0]{value} = '';
+$keylist[0]{comment} = '';
+
+
+
+#  
+#   Keywords name
+#
+
+my @xheadtable;
+
+my $stemchar = 13;
+
+
+my ($attcorrout,$tamcorrout);
+
+
+#
+# Get Input Parameters 
+#
+
+
+if ( &GetInputParameters ) {
+    $Task{errmess} = "Error parsing input parameters";
+    goto EXITWITHERROR;
+}
+ 
+
+if ( &GetValPar("cleanup") =~ /[yY]/ ) {
+    $Task{cleanup} = 1;
+}
+
+&RunningTask();
+
+if ( &GetValPar("clobber") =~ /[yY]/ ) {
+    $Task{clobber} = 1;
+}
+
+
+if (&CompUL(&GetValPar("tamfile"),"CALDB")) {
+    my ($tamreffile,$refext) = &CallQuzcif ("tamref", "now","now","-",1);
+    my @tamfile = @$tamreffile;
+    my @extfile = @$refext;
+
+   if ($Task{status}) { goto EXITWITHERROR;} 
+    else {
+	$caldbtamfilename =  $tamfile[0] . "+" . $extfile[0];
+    }
+
+} else {
+    $caldbtamfilename = &GetValPar("tamfile");
+ if (! -f $caldbtamfilename ) {
+            $Task{errmess} = "CALDB Tam File: '$caldbtamfilename' not found";
+            goto EXITWITHERROR;
+        }
+}
+&PrntChty(3,"$Task{stem}: Info: Using $caldbtamfilename caldb tam file\n");
+
+
+if (! -f &GetValPar("hdfile") ) {
+    $Task{errmess} = "XHead File: '" . &GetValPar("hdfile") ."' not found";
+    goto EXITWITHERROR;
+}
+
+my $headfilename = substr(&getFileName(&GetValPar("hdfile")),0,$stemchar);
+
+# Get Observation Start Date from the input hd file
+my ( $StartDate, $StartTime );
+&GetHdStartDate(&GetValPar("hdfile"),\$StartDate,\$StartTime);
+if ( $Task{status} ) { goto EXITWITHERROR; }
+
+$Task{StartDate} = $StartDate;
+$Task{StartTime} = $StartTime;
+
+
+if (&CompUL(&GetValPar("teldef"),"CALDB")) {
+    my ($telreffile,$refext) = &CallQuzcif ("teldef", $Task{StartDate},$Task{StartTime},"-",1);
+    my @telfile = @$telreffile;
+    my @extfile = @$refext;
+
+   if ($Task{status}) { goto EXITWITHERROR;} 
+    else {
+	$teldeffilename =  $telfile[0] . "+" . $extfile[0];
+	
+    }
+
+} else {
+    $teldeffilename = &GetValPar("teldef");
+    if (! -f $teldeffilename ) {
+	$Task{errmess} = "CALDB Teldef File: '$teldeffilename' not found";
+	goto EXITWITHERROR;
+    }
+}
+&PrntChty(3,"$Task{stem}: Info: Using $teldeffilename caldb teldef file\n");
+
+
+if ( !&CompUL(&GetValPar("outattfile"),$Default{NONE})){
+
+    #Check existence of attfile 
+
+    my $atfile = &GetValPar("attfile");
+    if (! -f  $atfile ) {
+	$Task{errmess} = "Attitude file : '" .  &GetValPar("attfile") . "' not found";
+	goto EXITWITHERROR;
+    }
+
+    # Check ATTFLAG keyword from the input Attitude File
+    my ( $attflag );
+    &GetAttitudeATTFLAG(&GetValPar("attfile"), \$attflag);
+    if ($Task{status}){ 
+	goto EXITWITHERROR;
+    }
+
+    if( $attflag eq "111" || $attflag eq "101" ){
+	&PrntChty(2,"$Task{stem}: Error: input attitude file sw*uat.fits not suitable for XRT data processing,\n");
+	&PrntChty(2,"$Task{stem}: Error:  use the sw*sat.fits or sw*pat.fits one.\n");
+	goto EXITWITHERROR;
+    }
+
+    my $check;
+
+    &GetKeyword($atfile,"ATTITUDE",undef, "XRTTAM",\$check,1);
+    if (($Task{status} != KEY_NO_EXIST) && ($check eq "T")) {
+	&PrntChty(2,"$Task{stem}: WARNING Nothing to be done\n");
+	$Task{status} = 1;
+	$Task{errmess} = "Attitude file $atfile already processed";
+	goto EXITWITHERROR;
+    }
+    $Task{status} =0;
+
+
+    if (&CheckTimeStartStop( &GetValPar("attfile"), &GetValPar("hdfile"))<0) {
+	goto EXITWITHERROR;
+    }
+
+    if (&CompUL( &GetValPar("outattfile"),$Default{DEFAULT})) {
+	$attcorrout =  &GetValPar("outdir") . "/" . $headfilename . "sattm.fits";
+    } else {$attcorrout = &GetValPar("outdir") . "/" . &GetValPar("outattfile");}
+    if (-f $attcorrout) {
+	if (!$Task{clobber} ) {
+	    &PrntChty(2, "$Task{stem}: Error: the '$attcorrout' exists\n");
+	    &PrntChty(2, "$Task{stem}: Error: please delete '$attcorrout' or\n");
+	    &PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Cannot overwrite '$attcorrout' file";
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	} else { 
+	    &DeleteFile($attcorrout);
+	}
+    }
+}
+
+
+
+if (&CompUL( &GetValPar("outtamfile"),$Default{DEFAULT})) {
+    $tamcorrout =  &GetValPar("outdir") . "/" . $headfilename . "xtmdtcr.fits";
+} else {$tamcorrout =  &GetValPar("outdir") . "/" . &GetValPar("outtamfile");}
+
+if (  (-f $tamcorrout)) {
+    if (!$Task{clobber} ) {
+	&PrntChty(2, "$Task{stem}: Error: the '$tamcorrout' exists\n");
+	&PrntChty(2, "$Task{stem}: Error: please delete '$tamcorrout' or\n");
+	&PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	$Task{errmess} = "Cannot overwrite '$tamcorrout' file";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    } else { 
+	&DeleteFile($tamcorrout);
+    }
+}
+
+
+
+
+if ( &CreateDir( &GetValPar("outdir")) ) {goto EXITWITHERROR;}
+
+
+
+
+my @columnsxhead = (
+	       { name => "XRTMode" },
+	       { name => "XposTam1" },
+	       { name => "YposTam1" },
+	       { name => "XposTam2" },
+	       { name => "YposTam2" },
+	       { name => "TIME" },
+
+	       );
+
+my @columnstam = (
+		    { name => 'XTRFC1L1' },
+		    { name => 'YTRFC1L1' },
+		    { name => 'XTRFC1L2' },
+		    { name => 'YTRFC1L2' },
+		    { name => 'XTRFC2L1' },
+		    { name => 'YTRFC2L1' },
+		    { name => 'XTRFC2L2' },
+		    { name => 'YTRFC2L2' },
+		  { name => 'TAMPLSW1' },
+		  { name => 'TAMPLSW2' },
+		  { name => 'XBOSCTHA' },
+		  { name => 'TAMSCTHA' },
+		  { name => 'TAMPSOPG' },
+		  { name => "LED" },
+		  { name => 'TIME' }
+   );
+
+@xheadtable = &LoadBinTable( &GetValPar("hdfile"),"",1,@columnsxhead);
+if ( $Task{status} ) { goto EXITWITHERROR; }
+
+my (@caldbtamfile) =  &LoadBinTable($caldbtamfilename,"",1,@columnstam);
+if ( $Task{status} ) { goto EXITWITHERROR; }
+
+
+my $led;
+
+#if (! &WriteAsciiFile($tamcorrout . ".txt")) { goto EXITWITHERROR;}
+if (! &CreateFitsFile($tamcorrout)) { goto EXITWITHERROR;}
+
+if ( !&CompUL( &GetValPar("outattfile"),$Default{NONE})){
+
+    my $tmpdet2attfile =  &GetValPar("outdir") . "/" . $headfilename . "xdet2att.tmp";
+    
+    if (  (-f $tmpdet2attfile)) {
+	if (!$Task{clobber} ) {
+	    &PrntChty(2, "$Task{stem}: Error: the '$tmpdet2attfile' exists\n");
+	    &PrntChty(2, "$Task{stem}: Error: please delete '$tmpdet2attfile' or\n");
+	    &PrntChty(2, "$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Cannot overwrite '$tmpdet2attfile' file";
+	    $Task{status} = 1;
+	    goto EXITWITHERROR;
+	} else { 
+	    &DeleteFile($tmpdet2attfile);
+	}
+    }
+    
+    
+    my $command= "det2att teldef=" .  $teldeffilename . " infile=$tamcorrout outfile=$tmpdet2attfile chatter=" .  
+	&GetValPar("chatter");
+    &RunningComm("$Task{stem}",$command);
+    
+    my $ret = system( $command);
+    
+    if ($ret != 0) {
+	&ErrorComm("$Task{stem}","xrttam",$command);
+	$Task{errmess} = "ERROR running det2att command: $command";
+	$Task{status} = 1;
+	goto EXITWITHERROR;  
+    } else {  &PrntChty(4,"$Task{stem}: Info: Execute command :$command\n"); }
+    
+
+
+    $command= "attcombine first=" . &GetValPar("attfile") ." second=$tmpdet2attfile combined=$attcorrout"." alignfile=".&GetValPar("alignfile")." interpolation=".&GetValPar("interpolation")." chatter=" . 
+	&GetValPar("chatter");
+    &RunningComm("$Task{stem}",$command);		   
+    $ret = system( $command);
+
+    if ($ret != 0) {
+	&ErrorComm("$Task{stem}","xrttam",$command);
+	$Task{errmess} = "ERROR running attcombine command: $command";
+	$Task{status} = 1;
+	goto EXITWITHERROR;  
+    } else {  &PrntChty(4,"$Task{stem}: Info: Execute command :$command\n"); }
+    
+
+    my $logical = 1;
+    if(!&AddKeywordExt($attcorrout,"ATTITUDE",TLOGICAL,"XRTTAM",$logical,"Is the attitude TAM corrected (T/F)?")) {
+	goto EXITWITHERROR;
+    }
+    
+    if (&WriteParameterList($attcorrout,-1,@Par)) {goto EXITWITHERROR;}
+    if (&write_history($attcorrout,-1,"CALDB Tam file : $caldbtamfilename")) { goto EXITWITHERROR0};
+    if (&write_history($attcorrout,-1,"CALDB Teldef file: $teldeffilename")){goto EXITWITHERROR;}
+
+    if ( $Task{cleanup} ) {
+	&DeleteFile($tmpdet2attfile);
+    }
+
+}
+
+# 20050311 FT add to the output file the ACS_DATA extension
+
+# Check if th ACS_DATA exists in the input attfile. If yes, copy the
+# extension in the output attitude file corrected by TAM
+
+my $currchatter = $Task{chatter};
+my $extname = "ACS_DATA";
+
+&PrntChty(3,"$Task{stem}: Info: Copying the '$extname' extension from the input attitude:\n");
+&PrntChty(3,"$Task{stem}: Info: " . &GetValPar("attfile") . "\n");
+&PrntChty(3,"$Task{stem}: Info: in the output corrected attitude file:\n");
+&PrntChty(3,"$Task{stem}: Info: $attcorrout\n");
+
+$Task{chatter} = 0;
+
+if ( &GetNumExtName(&GetValPar("attfile"),$extname ) >= 0 ) {
+
+    $Task{chatter} = $currchatter;
+    &AddExtension(&GetValPar("attfile"),$attcorrout,$extname);
+    if ($Task{status}) {goto EXITWITHERROR;}
+
+}
+else {
+
+    $Task{chatter} = $currchatter;
+    &PrntChty(2,"$Task{stem}: Warning: Cannot find '$extname' extension in the\n");
+    &PrntChty(2,"$Task{stem}: Warning: " . &GetValPar("attfile") . " file\n");
+    &PrntChty(2,"$Task{stem}: Warning: The input attitude file has an old file format\n");
+    &PrntChty(2,"$Task{stem}: Warning: Cannot put the '$extname' in the output attitude file\n");
+
+}
+
+
+&Success("Processed '" .  &GetValPar("hdfile"). "'");
+
+exit (0);
+
+ EXITWITHERROR:
+    &Error;
+
+exit (1);
+
+
+sub DeleteFile(){
+    my ($namefile) = @_;
+    if (! unlink($namefile)) {
+	&PrntChty(2,"$Task{stem}: Warning: Cannot delete '$namefile' file. $!\n");
+	$Task{errmess} = "Cannot Unlink $namefile. $!";
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+}
+
+sub CreateFitsFile() {
+    my ($tamcorrout) = @_;
+    my ($fptr,$status) = (0,0);
+
+    my ($dc1,$dr1,$dc2,$dr2);
+    
+    use vars (@xheadtable , %Task);
+
+    my @listkey = ("TELESCOP","INSTRUME","OBS_ID","TARG_ID","SEG_NUM","DATE-OBS","DATE-END","TIMESYS","TIMEUNIT",
+		    "CLOCKAPP","TSTART","TSTOP","ORIGIN","DATE","TIME-END");
+
+    my @datatype = (TSTRING,TSTRING,TSTRING,TSTRING,TSTRING,TSTRING,TSTRING,TSTRING,TSTRING,
+		    TLOGICAL,TDOUBLE,TDOUBLE,TSTRING,TSTRING,TSTRING);
+
+    &PrntChty(3, "$Task{stem}: Info: Creating File '$tamcorrout'\n");
+
+    fits_create_file($fptr,$tamcorrout,$status);
+ 
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Cannot create '$tamcorrout' file";
+	return 0;
+   }
+
+
+    fits_write_imghdr($fptr,16,0,0,$status);
+
+    my $tform = [ qw(1D 1E 1E) ];
+    my $ttype = [ qw(TIME DELTADETX DELTADETY) ];
+    my $tunit = [ ( 's', '', '') ];
+    
+    my $nrows = 0;
+    my $tfields = 3;
+    my $pcount = 0;
+    my $binname = "TAMCORR";
+
+    my($comm,$app);
+
+    fits_insert_btbl($fptr,$nrows,$tfields,$ttype,$tform,$tunit,$binname,0,$status);
+
+    my $fptrin = 0;
+    fits_open_file($fptrin,&GetValPar("hdfile"),READONLY,$status);
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to open fits file : " . &GetValPar("hdfile");
+	return 0;
+    }
+    
+
+    my ($existmjdrefi,$existmjdreff,$mjdrefi,$mjdreff,$comm_mjdrefi,$comm_mjdreff);
+    
+    for (my $y = 1; $y <=2; $y++) {
+
+	fits_movabs_hdu($fptrin,1,ANY_HDU,$status);
+	fits_movabs_hdu($fptr,$y,ANY_HDU,$status);
+
+	for (my $i = 0; $i < $#listkey; $i++) {
+	    
+	    if ($datatype[$i] == TSTRING) {
+		fits_read_key_str($fptrin,$listkey[$i],$app,$comm,$status);       
+	    } else {
+		fits_read_keyword($fptrin,$listkey[$i],$app,$comm,$status);       
+	    }
+
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Error reading keyword $listkey[$i] from file " . &GetValPar("hdfile");
+		return 0;
+	    }
+
+	    if ($datatype[$i] == TLOGICAL) {
+		if ($app eq "T") { $app =1;}
+		else {$app = 0;}
+	    }
+
+	    fits_write_key($fptr,$datatype[$i], $listkey[$i],$app,$comm,$status);
+#	print "$i)Write $listkey[$i] - $datatype[$i] - $app - $comm\n";
+	    
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Error writing keyword $listkey[$i] to file $tamcorrout";
+		return 0;
+	    }
+	    
+	}
+
+	
+	fits_read_key_str($fptrin,"TIME-OBS",$app,$comm,$status); 
+	if ($status == 0) {
+	    fits_write_key($fptr,TSTRING, "TIME-OBS",$app,$comm,$status);
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "Error writing keyword TIME-OBS to file $tamcorrout";
+		return 0;
+	    }
+	} elsif ($status && $status != KEY_NO_EXIST) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Error reading keyword TIME-OBS from file " . &GetValPar("hdfile");
+	    return 0;
+	} else { $status = 0;}
+
+
+
+	$existmjdrefi = 1;
+	$status = 0;
+	fits_read_keyword($fptrin,"MJDREFI",$mjdrefi,$comm_mjdrefi,$status); 
+	if ($status && $status != KEY_NO_EXIST) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Error reading keyword MJDREFI from file " . &GetValPar("hdfile");
+	    return 0;
+	}
+	elsif ($status == KEY_NO_EXIST) {
+	    $existmjdrefi = 0;
+	}
+	
+	$existmjdreff = 1;
+	$status = 0;
+	fits_read_keyword($fptrin,"MJDREFF",$mjdreff,$comm_mjdreff,$status); 
+	if ($status && $status != KEY_NO_EXIST) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "Error reading keyword MJDREFF from file " . &GetValPar("hdfile");
+	    return 0;
+	}
+	elsif ($status == KEY_NO_EXIST) {
+	    $existmjdreff = 0;
+	}
+
+
+
+	if ($existmjdreff && $existmjdrefi) {
+	     fits_write_key($fptr,TDOUBLE, "MJDREFI",$mjdrefi,$comm_mjdrefi,$status);
+	     if ($status) {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Error writing keyword MJDREFI to file $tamcorrout";
+		return 0;
+	     }
+
+	     fits_write_key($fptr,TDOUBLE, "MJDREFF",$mjdreff,$comm_mjdreff,$status);
+	     if ($status) {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Error writing keyword MJDREFF to file $tamcorrout";
+		 return 0;
+	     }
+	 } elsif ($existmjdreff || $existmjdrefi) {
+	     if ($existmjdreff) { #NOT exist MJDREFI
+		 $Task{status} = 1;
+		 $Task{errmess} = "Expected keyword MJDREFI to file  " . &GetValPar("hdfile") . " not found";
+		 return 0;
+	     } else {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Expected keyword MJDREFF to file  " . &GetValPar("hdfile") . " not found";
+		 return 0;
+	     }
+	 } else {
+	     $status = 0;
+	     fits_read_keyword($fptrin,"MJDREF",$app,$comm,$status); 
+	     if ($status == 0) {
+		 fits_write_key($fptr,TDOUBLE, "MJDREF",$app,$comm,$status);
+		 if ($status) {
+		     $Task{status} = 1;
+		     $Task{errmess} = "Error writing keyword MJDREF to file $tamcorrout";
+		     return 0;
+		 }
+	     } elsif ($status) {
+		 $Task{status} = 1;
+		 $Task{errmess} = "Error reading keyword MJDREF from file " . &GetValPar("hdfile");
+		 return 0;
+	     } 
+	     
+	 }
+	
+
+#	fits_write_chksum($fptr,$status);
+	
+	my $hist = "File create by $Task{stem} at " . &getHistoryTime();
+	fits_write_history($fptr,$hist,$status);
+	if ($status) {  
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    return 0;
+	}
+
+	fits_write_chksum($fptr,$status);
+
+    }
+
+    fits_close_file($fptrin,$status);
+   
+   
+#    fits_insert_btbl($fptr,$nrows,$tfields,$ttype,$tform,$tunit,$binname,0,$status);
+    
+
+    my (@col1,@col2,@time, $dxp, $dyp);
+    
+    #Check led
+
+    my $diffled = 0;
+
+    my $firstled = $caldbtamfile[0]->{LED};
+    $led = $caldbtamfile[0]->{LED};
+    for (my $i = 0; $i <= $#caldbtamfile ; $i++) {
+	if ($caldbtamfile[$i] != $firstled) {
+	    $diffled = 1;
+	}
+    }
+
+    my $ii = 0;
+    for (my $i = 0; $i <= $#xheadtable ; $i++) {
+
+	# Discharge Bias Map and NULL frames
+
+	if ( $xheadtable[$i]->{XRTMode} >= 2 && $xheadtable[$i]->{XRTMode} <= 8 ) {
+	
+	    if ($diffled) { $led = &GetLed($xheadtable[$i]->{TIME}); }
+
+	    ($dc1,$dr1) = &calculate($xheadtable[$i]->{XposTam1},$xheadtable[$i]->{YposTam1},
+				     $xheadtable[$i]->{TIME},1,$led,\$dxp,\$dyp);
+	    ($dc2,$dr2) = &calculate2($xheadtable[$i]->{XposTam2},$xheadtable[$i]->{YposTam2},
+				      $xheadtable[$i]->{TIME},2,$led,$dxp,$dyp);	
+
+	    $col1[$ii] = sprintf ("%.4f",($dc1+$dc2));
+	    $col2[$ii] = sprintf ("%.4f",($dr1+$dr2));
+	    
+	    $time[$ii] = $xheadtable[$i]->{TIME};
+
+	    $ii++;
+	}
+    }
+
+    fits_write_col($fptr,TDOUBLE,1,1,1,$#time+1,\@time,$status);
+
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write column TIME to file $tamcorrout";
+	return 0;
+	
+    }
+
+    fits_write_col($fptr,TFLOAT,2,1,1,$#col1+1,\@col1,$status);
+
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write column DELTADETX to file $tamcorrout";
+	return 0;
+	
+    }
+    
+    fits_write_col($fptr,TFLOAT,3,1,1,$#col2+1,\@col2,$status);
+
+    if ($status) {
+	$Task{status} = 1;
+	$Task{errmess} = "Unable to write column DELTADETY to file $tamcorrout";
+	return 0;
+	
+    }
+
+    fits_close_file($fptr,$status);
+
+    if (&WriteParameterList($tamcorrout,-1,@Par)) {goto EXITWITHERROR;}
+    if (&write_history($tamcorrout,-1,"CALDB Tam file : $caldbtamfilename")) { goto EXITWITHERROR0};
+    if (&write_history($tamcorrout,-1,"CALDB Teldef file: $teldeffilename")){goto EXITWITHERROR;}
+
+#   if (&AddKeyword("$outwt+1","PACKET1","F")) {goto EXITWITHERROR; }
+    return 1;
+
+}
+    
+
+sub GetLed() {
+    my ($time) = @_;
+
+    use vars qw (@caldbtamfile);
+
+    my $i = -1;
+    for ($i = 0; $i <= $#caldbtamfile ; $i++) {
+
+	if ($caldbtamfile[$i]->{TIME}> $time) {
+	    return $caldbtamfile[$i-1]->{LED};}
+    }
+
+    return $caldbtamfile[$i-1]->{LED};
+}
+
+
+sub WriteAsciiFile() {
+
+    my ($tamcorrout) = @_;
+
+    my ($dc1,$dr1,$dc2,$dr2);
+
+    use vars (@xheadtable);
+
+
+    if ( ! open ( TAMCORR, ">$tamcorrout" )) {
+	$Task{errmess} = "ERROR Cannot create '$tamcorrout' file";
+	$Task{status} = 1;
+	return 0; 
+    }
+
+
+    
+    for (my $i = 0; $i <= $#xheadtable ; $i++) {
+	
+	($dc1,$dr1) = &calculate($xheadtable[$i]->{XposTam1},$xheadtable[$i]->{YposTam1},$xheadtable[$i]->{TIME},1,$led);
+	($dc2,$dr2) = &calculate2($xheadtable[$i]->{XposTam2},$xheadtable[$i]->{YposTam2},$xheadtable[$i]->{TIME},2,$led);
+	
+	printf TAMCORR sprintf ("$xheadtable[$i]->{TIME} %.2f %.2f\n",($dc1+$dc2) , ($dr1+$dr2));
+	
+    }
+
+    close(TAMCORR);
+
+    return 1;
+}
+
+
+#------------------------------------------------------------
+# subroutines section
+#-----------------------------------------------------------
+
+sub GetInputParameters {
+
+    use vars qw( %Task @Par %Ind);
+    my ( $name, $indref, $p);
+
+    ($indref,@Par) = &GetParameterList();
+
+    %Ind = %$indref;
+    
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    return 1;
+	}
+
+
+    if ($Par[$Ind{hdfile}]->{set} == 0 )  {
+	my $Stringa = "";
+	chop($Stringa = `pquery2 xrttam hdfile`);
+	if ( !$Stringa) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 xrttam hdfile'\n");
+	    return 1;
+	}
+	&SetValPar("hdfile", $Stringa);
+	&SetValPar("hdfile",2,"set");
+
+    }
+  
+ 
+    if ($Par[$Ind{outattfile}]->{set} == 0)  {
+	my $Stringa = "";
+	chop($Stringa = `pquery2 xrttam outattfile `);
+	if ( !$Stringa) {
+	    &PrntChty(2,"$Task{stem}: Error: running: 'pquery2 outattfile hdfile'\n");
+	    return 1;
+	}
+	&SetValPar("outattfile", $Stringa);
+	&SetValPar("outattfile",2,"set");
+	
+    }
+ 
+
+    foreach $p (@Par) {
+	if (($p->{set} == 1) && (!&RequestParameter($p->{name}))) {
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    return 1;
+	}
+    }
+
+
+    if (! &LoadParameter()) {
+	    &PrntChty(2,"$Task{stem}: Error: $Task{errmess}\n");
+	    return 1;
+	}
+
+    $Task{chatter} = &GetValPar("chatter");
+
+    return 0;
+} # GetInputParameters
+
+
+
+#Return name file without path
+
+sub getFileName() {
+
+	my ($fn) = @_;
+	my $pos = rindex($fn,"/");
+	if ($pos == -1) {return $fn;}
+	else {return substr($fn,$pos+1);}
+} 
+
+
+
+
+sub RequestParameter(){
+    use vars qw (%Default);
+    my ($par_name) = @_;
+   
+    if (&CompUL(&GetValPar("outattfile"),$Default{NONE}) && ($par_name eq "attfile")) { 
+	$Task{errmess} = "Do not inout $par_name when outattfile is NONE";
+	return 0;
+    }
+
+    $Task{errmess} = "";
+
+    return 1;
+} # RequestParameter
+
+
+sub GetNumRowTamFile() {
+
+    my ($time) = @_;
+
+    use vars qw(@caldbtamfile);
+
+    my $i = -1;
+    for ($i = 0; $i <= $#caldbtamfile ; $i++) {
+
+	if ($caldbtamfile[$i]->{TIME}> $time) {
+	    return $i-1;
+	}
+    }
+
+
+
+    return $i-1;
+    
+}
+
+sub CheckTimeStartStop() {
+    my ($attfile,$hdfile) = @_;
+
+    use vars qw(%Task);
+    
+    my ($att_tstart,$att_tstop,$xhead_tstart,$xhead_tstop);
+
+    &GetKeyword($attfile,"ATTITUDE",undef, "TSTART",\$att_tstart);
+    if ( $Task{status} ) {return -1; }
+
+    &GetKeyword($attfile,"ATTITUDE",undef,"TSTOP",\$att_tstop);
+    if ( $Task{status} ) {return -1; }
+    
+    &GetKeyword($hdfile,"FRAME",undef,"TSTART",\$xhead_tstart);
+    if ( $Task{status} ) {return -1; }
+    
+    &GetKeyword($hdfile,"FRAME",undef,"TSTOP",\$xhead_tstop);
+    if ( $Task{status} ) {return -1; }
+
+    if ((($xhead_tstart>=$att_tstart&&$xhead_tstart<=$att_tstop)||($xhead_tstop>=$att_tstart&&$xhead_tstop<=$att_tstop))|| ($xhead_tstart<=$att_tstart && $xhead_tstop>=$att_tstop)) {
+	return 1;
+    } else {	
+	&PrntChty(2,"$Task{stem}: Error: The attitude does not cover the observation time interval\n");
+	$Task{errmess} = "Cannot perform TAM Correction";
+	$Task{status} = 1;
+	return -1;
+    }  
+}
+
+
+sub calculate() {
+
+    my ($tamx,$tamy,$time,$ps,$led,$dx,$dy) = @_;
+
+    my ($sq,$dc,$alfa,$w,$dr,$calx,$caly,$s,$teta_t_rad,$teta_x_rad);
+
+    use vars qw(@caldbtamfile %Task );
+
+    my $index = &GetNumRowTamFile($time);
+
+    my $str = "TRFC" . $ps . "L" . "$led";
+
+    my $strx = "X" . $str;
+    my $stry =  "Y" . $str;
+   
+    $s = "tamrefx" . $ps;
+
+    if ( &GetValPar($s) < 0 ) {
+	$calx = $caldbtamfile[$index]->{$strx};
+    }else {
+	$calx =  &GetValPar($s);
+    }
+
+    $s = "tamrefy" . $ps;
+
+    if ( &GetValPar($s) <0 ) {
+	$caly = $caldbtamfile[$index]->{$stry};
+    }else {
+	$caly =  &GetValPar($s);
+    }
+
+    &PrntChty(4,"$Task{stem}: Info: Using: time: $time tamrefx$ps = $calx tamrefy$ps = $caly\n");
+
+    $$dx = $tamx - $calx;
+    $$dy = $tamy - $caly;
+
+
+    $sq = sqrt(($$dx**2) + ($$dy**2));
+
+
+    $alfa = atan2(($$dy),($$dx));
+
+    $teta_t_rad = $caldbtamfile[$index]->{TAMSCTHA} * PI / 180.;
+    $teta_x_rad = $caldbtamfile[$index]->{XBOSCTHA} * PI / 180.;
+
+    $w = $alfa + $teta_t_rad + $teta_x_rad;
+
+
+    $str = "TAMPLSW" . $ps;
+
+    $dc = $sq * ($caldbtamfile[$index]->{$str} / $Task{psccd}) * cos($w);
+    $dr = -$sq * ($caldbtamfile[$index]->{$str} / $Task{psccd}) * sin($w);
+
+    #print "dx dy (PRIMARY) = $$dx $$dy \n";
+
+    return ($dc,$dr);
+
+
+}
+
+
+
+
+sub calculate2() {
+
+    my ($tamx,$tamy,$time,$ps,$led,$dxp,$dyp) = @_;
+
+    my ($dx,$dy,$sq,$dc,$alfa,$w,$dr,$calx,$caly,$s,$teta_t_rad,$teta_x_rad);
+    use vars qw(@caldbtamfile %Task );
+
+    my $index = &GetNumRowTamFile($time);
+
+    my $str = "TRFC" . $ps . "L" . "$led";
+
+
+    my $strx = "X" . $str;
+    my $stry =  "Y" . $str;
+   
+    $s = "tamrefx" . $ps;
+
+    if ( &GetValPar($s) < 0 ) {
+	$calx = $caldbtamfile[$index]->{$strx};
+    }else {
+	$calx =  &GetValPar($s);
+    }
+
+    $s = "tamrefy" . $ps;
+
+    if ( &GetValPar($s) <0 ) {
+	$caly = $caldbtamfile[$index]->{$stry};
+    }else {
+	$caly =  &GetValPar($s);
+    }
+
+    &PrntChty(4,"$Task{stem}: Info: Using: time: $time tamrefx$ps = $calx tamrefy$ps = $caly\n");
+
+#    $dx = $tamx - $calx;
+#    $dy = $tamy - $caly;
+
+    $dx = $tamx - $calx - $dxp * $caldbtamfile[$index]->{TAMPSOPG};
+    $dy = $tamy - $caly - $dyp * $caldbtamfile[$index]->{TAMPSOPG};
+
+
+    $sq = sqrt(($dx**2) + ($dy**2));
+
+
+    $alfa = atan2((-$dy),($dx));
+
+
+    $teta_t_rad = $caldbtamfile[$index]->{TAMSCTHA} * PI / 180.;
+    $teta_x_rad = $caldbtamfile[$index]->{XBOSCTHA} * PI / 180.;
+
+    $w = $alfa - $teta_t_rad - $teta_x_rad;
+
+    $str = "TAMPLSW" . $ps;
+
+    $dc = $sq * ($caldbtamfile[$index]->{$str} / $Task{psccd}) * cos($w);
+    $dr = $sq * ($caldbtamfile[$index]->{$str} / $Task{psccd}) * sin($w);
+
+    return ($dc,$dr);
+
+}
+
+sub AddExtension {
+
+    my ( $infile, $outfile, $extension ) = @_ ;
+    
+    # check the 
+
+    my $command = "ftappend infile=$infile\[$extension\] outfile=$outfile";
+    my $ret = 0;
+
+    $ret = system( $command );
+
+    &PrntChty(4,"$Task{stem}: Info: running $command\n");
+
+    if ( $ret != 0 ) {
+	my ($mess) = "" ;
+	&ErrorComm("AddExtension","ftappend",$command);
+	$Task{errmess} = "Error: running 'ftappend': $ret";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    return 0;
+
+} # AddExtension

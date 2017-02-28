@@ -1,0 +1,837 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>batsurvey HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+batsurvey - perform BAT survey imaging analysis
+
+<h2>USAGE</h2>
+
+<tt>batsurvey indir outdir</tt>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+The task batsurvey performs basic analysis of BAT "survey" data, also
+known as detector plane histograms or DPHs.  As opposed to event data,
+BAT survey data is accumulated in histograms on-board the spacecraft,
+with typical integration times of 300 seconds.  An 80-channel binned
+spectrum is recorded for each of the 32768 detectors and saved in the
+DPH files.
+
+<p>
+The batsurvey task reduces a set of "raw" observed DPHs.  Most
+importantly, it performs data screening that the BAT team has found
+vital for obtaining good quality results.  It produces sky images and
+source fluxes for each independent "snapshot," corresponding to a
+single pointed visit by Swift.  Users may choose a set of independent
+energy bins, and the batsurvey will record the images and fluxes in
+each of those bands separately.  A practical number of energy bands is
+eight to twelve.
+
+<h2>INPUTS</h2>
+
+<p>
+batsurvey operates on a single Swift observation.  It relies on the
+"bat" and "auxil" data.  If you wish to reduce multiple observations,
+then you must call batsurvey once for each observation.
+
+<p>
+By default batsurvey will detect any new sources above the specified
+blind signal-to-noise threshold.  However, you may wish to enter an
+analysis catalog which specifies any additional sources that you
+expect *might* be detectable, regardless of the blind threshold.  The
+format of this catalog is defined in the help-file for batcelldetect
+and batclean.  Upon completion, the fluxes of all known and newly
+detected sources will be recorded in the *.cat output files.
+
+<h2>OUTPUTS</h2>
+<p>batsurvey places its results in the directory specified by the
+'outdir' parameter.  The results can be divided into two categories:
+global results which apply to the entire analysis, and
+exposure-specific results.
+
+<p>The global results are stored in subdirectories underneath the
+'outdir' directory.  The important global results are:
+<ol>
+<li>gti - contains various good time intervals identified by the
+prcessing script.  Most of these intervals are derived by the various
+tests of batsurvey-gti.  The combination of all temporal filters is
+stored in gti/master.gti.
+<li>dph - contains the energy-corrected survey DPHs, as produced by 
+batsurvey-erebin.  There should be two files in this subdirectory for 
+each DPH file: a corrected DPH file named like swNNNNNNNNNNN_erebin.dph,
+and a detector quality mask file.
+<li>outventory.dat - an ASCII text file containing the summary of the
+processing for each eposure.</li>
+</ol>
+
+<p>The exposure-specific results are stored in subdirectories
+underneath the 'outdir' directory.  In the case of batsurvey, an
+exposure is considered to be one contiguous exposure of minimum
+duration.  While one Swift snapshot might be a single exposure, it is
+also possible for a snapshot to be divided into two or more exposures
+if the script detects something problematic during the snapshot.
+
+<p>
+The snapshot directory names are formatted like "point_YYYYDDDhhmm"
+where YYYY, DDD, hh, mm are the year, day of year, hour and minute of
+the start of a snapshot.
+
+<p>
+There are many outputs within the each exposure subdirectory.  The
+following outputs are documented to be present.  If the output is not
+documented here, then you must not assume it will be present in future
+releases of the batsurvey software.
+<ol>
+<li>point_YYYYDDDhhmm_1.dpi - detector plane images, one for each energy band.</li>
+<li>point_YYYYDDDhhmm_2.detmask - final detector plane quality map for this image.  NOTE: currently this is a single map which applies to all energy bands, but in the future, there may be a quality map for each energy band.</li>
+<li>point_YYYYDDDhhmm_2.bkgdpi - final detector background map for this detector image, one for each energy band.</li>
+<li>point_YYYYDDDhhmm_2.img - final sky flux map constructed from the above detector/quality maps, one for each energy band.  The units are "RATE."</li>
+<li>point_YYYYDDDhhmm_2.var - final sky noise map constructed from the sky image, one for each energy band.</li>
+<li>point_YYYYDDDhhmm_2.cat - flux catalog for sources in the sky image.  This catalog contains sources listed in the input catalog as well as sources detected by blind search.  The flux columns will be vectors, one measurement for each energy band.</li>
+<li>point_YYYYDDDhhmm_chi.fits - Chi-square value for each detector plane image.</li>
+<li>point_YYYYDDDhhmm.occimg - occultation map for this exposure.</li>
+<li>point_YYYYDDDhhmm.poivar - sky noise map based on propagation of Poisson errors.  This should be the lower limit for sensitivity.</li>
+<li>point_YYYYDDDhhmm.att - cleaned attitude file for this exposure.</li>
+<li>point_YYYYDDDhhmm_pnt.gti - good time interval for this exposure.</li>
+<li>point_YYYYDDDhhmm_status.txt - ASCII file, containing status of processing.</li>
+</ol>
+
+<p>
+Many of the outputs listed above have a file name like "*_2.*".  These
+files are the result of two processing iterations, which defaults to
+two (ncleaniter=2).  If you request more iterations, then this suffix
+number will be different.  For example, if you choose ncleaniter=3,
+then all of the "*_2.*" files listed above will actually be "*_3.*".
+
+<p>
+NOTE: if processing succeeded for a given exposure, then the
+_status.txt file will contain the string 'status="SUCCESS"'.  For a
+processing failure, the status file will not contain this string.  A
+failure will be indicated by a particular reason="XXXX" code.
+
+<h2>DETAILS of OPERATION</h2>
+
+<p>
+Unlike most FTOOLS, which are usually intended to be basic "building
+block" type tasks, the batsurvey is a complex pipeline task which has
+many steps and logical paths.  The basic processing steps are: energy
+correction (batsurvey-erebin); temporal filtering (batsurvey-gti and
+batsurvey-aspect); spatial filtering (batsurvey-detmask); cleaning;
+and generation of sky maps.
+
+<p>
+When not responding to a gamma-ray burst, the BAT instrument monitors
+the sky in "survey" mode. In this mode, detected events are binned
+into histograms by the instrument flight software, and the histogram
+counts are telemetered to the ground periodically (typically with a 5
+minute period).  These histograms maintain detector (spatial) and
+pulse height (energy) information with 80 energy bins.  On the ground,
+the histograms are further adjusted to place all detectors on the same
+energy scale (using batsurvey-erebin), and then re-binned into the 
+user-requested energy bands (specified by the 'energybins' parameter).
+
+<p>
+Several quality filters are applied.  Temporal filters are applied by
+the task 'batsurvey-gti', the operation of which is summarized here.
+First, the spacecraft must be in stable pointing mode, which means
+that the attitude control "10 arcmin settled" flag must be set, the
+spacecraft star tracker must be reporting "OK" status, and the
+boresight direction must be at least 30 deg above the earth's limb.
+Second, BAT must be producing quality data, which means that the
+overall array event rate must not be too high or low (specified by the
+'rateminthresh' and 'ratemaxthresh' parameters); a minimum number of
+detectors must be enabled (specified by the 'detthresh' parameter);
+and no histogram bins reported as missing data.  In addition,
+histogram time intervals that cross the UTC midnight boundary are
+discarded, since the spacecraft has at times been commanded to make
+small maneuvers during that time.  These temporal filters produce a
+set of good time intervals over which the histograms are summed.  The
+finest time sampling of this survey analysis is approximately a single
+pointed snapshot (with ~500-2000 s durations).  These intervals
+are further checked so that the spacecraft pointing does not change
+appreciably during the interval (1.5 arcmin in pointing, 5 arcmin in
+roll), and are trimmed accordingly if not.  Intervals of 150 seconds
+or shorter are discarded.
+
+<p>
+After temporal filtering, each pointed snapshot has been reduced to a
+set of detector count maps, one for each energy band.  Since the
+systematic noise in the sky images depends on the quality of
+detectors, significant effort has been made in spatial filtering of
+the data (i.e. masking of undesirable detectors), using the algorithms
+in 'batsurvey-detmask'.  As a matter of course, all detectors disabled
+by the BAT flight software are masked.  In addition, a count map is
+searched for noisy ("hot") detectors, using the "bathotpix" algorithm,
+and those detectors are masked.  Finally, detectors with known noisy
+properties (i.e. high variance compared to Poisson statistics), are
+discarded.  It is also possible to subtract a fixed "pattern noise"
+from each map (the user is responsible for creating such maps and
+specifying them using the 'global_pattern_mask' and
+'global_pattern_maps' parameters).
+
+<p>
+The contribution of bright sources and the bright diffuse background
+are subtracted using the "batclean" algorithm.  This algorithm fits
+the amplitudes of a smooth polynomial function of position to the
+diffuse background, plus the amplitudes of templates for each bright
+source.  The templates are generated by ray tracing the shadow
+patterns of the known bright sources onto the detector plane.  In
+reality, this cleaning process involves two iterations: a first
+iteration to detect bright sources (if any), and a second one after
+the sources have been cleaned from the detector maps.  A source
+detected at 'cleansnr' significance or better in any energy band is
+cleaned.  The user can also specify custom cleaning criteria via the
+'cleanexpr' parameter.  In the BAT team experience &mdash; and based on
+the properties of the BAT mask &mdash; extending the number of iterations
+to three or more does not improve the sensitivity to detecting sources
+in a single snapshot pointing.
+
+<p>
+At the "batclean" stage, the maps are also "balanced," so that
+systematic count rate offsets between large scale geographic regions
+are removed.  This process involves dividing the array into detector
+module sides (128 detectors, 16 &times; 8), which are separated by
+gaps of 8.4--12.6 mm from neighboring detector module sides.  The mean
+counts in both the outer edge detectors (44 detectors), and the inner
+detectors (84 detectors), were subtracted for each module separately,
+so that the mean rate is as close as possible to zero.  Count rate
+variations from module to module are believed to occur because of
+variations in the quality of CZT detector material used in the
+fabrication stage, and also because of dead time variations.
+Variations between outer edge and inner detectors in each module are
+due to cosmic ray scattering and X-ray illumination of detector sides.
+The BAT coded mask modulates the count rate of cosmic sources on
+essentially detector to detector spatial scales, so the subtraction of
+the mean count rates averaged over many tens of detectors does not
+stronly affect the coded signal for a point source.
+
+<p>
+Very bright sources which are partially coded will produce X-rays that
+pass through both the coded mask and mask support structures around
+the edge of the mask, which physically extend upward from the mask.
+These shadows are not coded by the mask, and are highly energy
+dependent, and thus the shadows which projected onto the detector
+plane must be ignored.  This is done by ignoring mask-edge regions for
+bright sources via ray tracing (approx. 0.3 Crab or brighter,
+specified by the 'brightthresh' parameter).
+
+<p>
+After subtracting bright sources and background, detectors whose
+counts are more than 4 sigma from the mean are discarded (or as
+specified by the 'badpixthresh' parameter).  After all of the spatial
+filtering described above, the number of active detectors may be
+significantly reduced.  If the number of detectors is less than
+'detthresh2' then the snapshot is discarded.
+
+<p>
+Sky maps are produced using the "batfftimage" algorithm, which
+cross-correlates the detector count maps with the mask aperture
+pattern.  The sky maps cover a solid angle approximately 120&deg;
+&times; 60&deg;, where the BAT has some non-zero response, although
+the sensitivity is much reduced at the edges of the field of view due
+to geometric projection effects and partial coding.  The maps are
+corrected for partial coding, geometric projection effects, and
+normalized by the number of detectors.  Thus, the represent the BAT
+count rate per fully illuminated detector, corrected approximately to
+on-axis.  Sky maps are sampled at 8.6 arcmin on-axis, which is twice
+as fine as the natural mask spacing for the BAT coded mask.  The
+natural sky projection is tangent-plane.  Thus, the sky-projected grid
+spacing becomes finer by a factor of ~2 at the extreme edges of
+the field of view.  Partial coding and noise maps are created for each
+pointed snapshot which represent the partial exposure of each pixel in
+the sky map.  The partial coding maps are further adjusted by the
+considering that some parts of the sky are occulted by the earth
+during the observation.  The noise maps are generated by computing the
+local r.m.s. of pixel values in small segments across each sky image.
+
+<p>
+In addition to the sky maps, source intensities are reported in the
+output catalog using the 'batcelldetect' algorithm.  Sources in the
+input analysis catalog, and newly discovered sources, have entries in
+the output catalog (as described above in the 'OUTPUTS' section).  The
+output catalog will have the following output columns, for each
+source appearing in the catalog:
+
+<ol>
+<li>The standard output columns produced by 'batcelldetect' (the reader is referred to the documentation for 'batcelldetect' for more information on these columns).</li>
+<li>Columns supplied by the user in the input catalog will transfer directly to the output catalog.</li>
+<li><tt>CLEANLEV</tt>: number of clean iterations applied to all sources in the snapshot. Type=Integer.</li>
+<li><tt>CLEANED</tt>: whether this particular source was cleaned or not during processing. Type=Logical.</li>
+<li><tt>VECTSNR</tt>: the detection significance for this source in each energy band as reported by batcelldetect. Type=Double, Vector.</li>
+<li><tt>TOTSNR</tt>: the total detection significance in all energy bands combined into a scalar quantity, computed as <tt>TOTAL(RATE)/SQRT(SUM(BKG_VAR**2))</tt>.  Type=Double.</li>
+<li><tt>MAXSNR</tt>: the maximum detection significance in any of the energy bands or the total, computed as <tt>MAX({VECTSNR,TOTSNR})</tt>.  Type=Double.</li>
+</ol>
+
+<p>
+Output catalogs will be produced, on for each snapshot.  A common
+desire of users will be to combine multiple output catalogs and
+arrange them by source instead of snapshot.  The 'batsurvey-catmux'
+task is designed to do this kind of operation.  The user is referred
+to the separate documentation for that task.
+
+<h2>IMPORTANT NOTES</h2>
+
+<p>
+While batsurvey performs many important steps required for the
+processing of BAT survey data, there are some issues that need
+attention.
+
+<p>
+<b>Default parameters.</b>
+This task has many parameters controlling the filtering and adjustment
+of the data.  Most of the defaults have been set by the BAT team after
+some considerable experience with processing much data.  Generally,
+users should not need to modify these parameters.  The most important
+parameters are: 'incatalog', which allows the user to specify their a
+priori sources of interest; 'energybins', to select the energy bins
+(but see below); and 'timesep' to determine the coarseness of time
+sampling.
+
+<p>
+<b>Check for errors.</b>
+Before using any processing results, you must check the status of a
+pointing to make sure of the success conditions (as described above).
+Also, the point_YYYYDDDhhmm_chi.fits file can be used to filter any
+images with poor chi-square value, which indicates a bad-quality fit.
+
+<p>
+<b>Count rate distortions.</b>
+The image and catalog results for off-axis sources will be distorted
+by the known effects of passive absorption in the BAT imaging system,
+as already documented on the BAT Analysis Issues section of the BAT
+Digest web page.  Therefore, at the present, the BAT team recommends
+users to limit analysis to on-axis sources until a more generic
+approach can be made available.
+
+<p>
+<b>Requested energy bins.</b>
+Regarding energy bins, the BAT team recommends either 4 energy bins
+("14-24,24-50,50-100,100-195") or 8 energy bins
+("14-20,20-24,24-35,35-50,50-75,75-100,100-150,150-195").  Other
+energy bin selections are certainly possible, however, the above
+selections will allow the most support from the BAT team in the
+future.  Choosing fewer than four energy bins is not recommended
+since, the response of the instrument changes with energy and angle;
+lumping all energies together will lower sensitivity.  Choosing many
+energy bins is also not recommended.  With many energy bins, the
+number of counts per detector per energy bin becomes small, and the
+statistical properties of this condition have not been fully
+investigated.
+
+<p>
+<b>BAT DPH data with truncated energy bins.</b>
+During a few episodes beginning in 2012, BAT data is present with
+truncated energy binning.  These products have 20 energy bins covering
+14-50 keV, instead of the usual 80 energy bins covering 14-200 keV.
+The data are otherwise of good quality, except for missing energy coverage.
+These data files are recognizable because they will have file names of
+the form 'sw*e20.dph' where the 'e20' indicates 20 energy bins instead
+of the default number.
+
+<p>
+By default, batsurvey will not process this type of data, since it is
+not compatible in dimension or energy coverage with most of the BAT
+data in the Swift archive.  In order to process this data, using the
+following parameter setting:
+<pre>
+      dph_pattern="INDIR/bat/survey/sw*.dph*"
+</pre>
+This setting will allow processing of all kinds of survey data,
+regardless of the number of bins.
+
+<p>
+<b>Memory usage.</b>
+This task is heavily memory intensive!  Expect to
+require about 50 megabytes of available memory per energy band listed
+in 'energybins'.
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>indir [directory]
+
+<dd>Name of Swift observation directory.  This directory should have
+the layout and contents of a single standard Swift observation
+segment.  The directories "indir/bat" and "indir/auxil" are required.
+<p>
+
+<dt>outdir [directory]
+
+<dd>Name of output directory where the processed results are stored.
+If necessary, this directory will be created.  The structure and
+contents of the output directory are documented above.
+<p>
+
+<dt>(incatalog="NONE") [string]
+
+<dd>Name of input analysis catalog.  This catalog should be in the 
+format that batcelldetect accepts.
+<p>
+
+<dt>(ncleaniter=2) [integer]
+
+<dd>Number of cleaning iterations to perform.  Setting ncleaniter=1
+will prevent bright sources from being removed.  The BAT team has
+found that a setting of 3 or more provides no additional benefit over
+ncleaniter=2.
+<p>
+
+<dt>(energybins = "14-20,20-24,24-35,35-50,50-75,75-100,100-150,150-195") [string]
+
+<dd>List of energy bins, in keV and comma-separated.  The bins must
+not overlap.  See above for a discussion of limitations regarding
+energy bins.  Note that if you change the lower- or upper-most bin
+then you should also adjust the 'elimits' parameter to match.
+<p>
+
+<dt>(elimits = "14-195") [string]
+
+<dd>Energy limits for DPI quality checking, in keV.  The energy limits
+should match bin edges specified by the 'energybins' parameter.
+<p>
+
+<dt>(timesep = "SNAPSHOT") [string]
+
+<dd>Method of time separation, either "SNAPSHOT" or "DPH".  For
+"SNAPSHOT", snapshot observations are processed separately,
+corresponding to the coarsest possible time sampling.  For "DPH", the
+individual survey DPHs are processed separately, corresponding to the
+finest possible time sampling.
+<p>
+
+<dt>(keepbits = "7") [string]
+
+<dd>Integer number of bits of precision to keep in the output images.
+A value of ALL means keep all bits.  A positive value indicates that
+'keepbits' bits of precision should be preserved, and the other bits
+should be set to zero.  See the documentation for 'batfftimage' for
+more information.
+<p>
+
+<dt>(keep_sky_images = "LAST") [string]
+
+<dd>Number of sky images to keep, one of "ALL" "NONE" or "LAST".  A
+value of "ALL" indicates that sky images from all clean iterations
+should be kept.  A value of "LAST" indicates that only the last
+iteration should be kept (the default).  A value of "NONE" indicates
+that sky images should be discarded.
+<p>
+
+<dt>(poivarmap = "YES") [boolean]
+
+<dd>Indicates whether a Poisson-based noise map should be created.
+The Poisson-based noise map is not used in the analysis, but may be of
+interest in post-processing.  Regardless of this setting, batsurvey
+always creates and uses a noise map from batcelldetect.
+<p>
+
+<dt>(pointing_check = "YES") [boolean]
+
+<dd>Indicates whether periods of bad spacecraft pointing should be
+filtered.  Here "bad pointing" means that the spacecraft was drifting
+or settling a significant distance from the final stable pointing
+direction (as determined by the "point_toler" and "roll_toler"
+parameters).  Regardless of this setting, batsurvey always excludes
+data where the spacecraft declares it is slewing, and where a star
+tracker problem is indicated in the telemetry.
+<p>
+
+<dt>(filter_midnight = "YES") [boolean]
+
+<dd>Indicates whether DPHs which cross the midnight boundary should be
+excluded.  The purpose of this filter is to remove cases where Swift
+executes a "roll-in-place" maneuver at the hand-over from one daily
+observing plan to the next.
+<p>
+
+<dt>(ratemaxthresh = 12000) [real]
+
+<dd>Maximum allowed count rate in a DPH, in units of counts/sec.  The
+purpose of this filter is to exclude periods of high background.
+<p>
+
+<dt>(rateminthresh = 3000) [real]
+
+<dd>Minimum allowed count rate in a DPH, in units of counts/sec.  The
+purpose of this filter is to exclude anomalously low count rates.
+<p>
+
+<dt>(detthresh = 22000) [integer]
+
+<dd>The minimum allowed number of enabled detectors, out of 32768
+total detectors.  The purpose of this filter is to exclude periods of
+time where much of the BAT array was disabled.
+<p>
+
+<dt>(detthresh2 = 16000) [integer]
+
+<dd>The minimum allowed number of unmasked detectors.  The purpose of
+this filter is to exclude data sets where too many detectors were
+masked.  This filtering occurs <i>after</i> detectors are masked by
+various quality checks, whereas the filtering associated with
+"detthresh" occurs before.
+<p>
+
+<dt>(filtnames = "all") [string]
+
+<dd>Comma-separated list of standard time filtering methods to apply.
+See the help file for batsurvey-gti for a list of possible methods, or
+use 'all' to activate all appropriate filtering techniques.
+<p>
+
+<dt>(gtifile = "NONE") [string]
+
+<dd>User requested good time interval filter, or NONE.  This good time
+interval filter is intersected with the standard quality filtering
+done by batsurvey-gti.  In other words, the user-requested gtifile can
+only reduce exposure, not increase it.  A value of "NONE" indicates no
+extra temporal filtering beyond the standard filtering.  NOTE that
+small amounts of time outside of the 'gtifile' may be accepted for
+processing, as controlled by the parameters 'min_dph_frac_overlap',
+'min_dph_time_overlap' and 'max_dph_time_nonoverlap' of the task
+batbinevt.
+<p>
+
+<dt>(filtexpr = "NONE") [string]
+
+<dd>Additional filtering expression based on filter file, beyond the
+standard methods specified by 'filtnames' and 'saofiltexpr'.  A value
+of "NONE" indicates no extra temporal filtering beyond what is done by
+batsurvey-gti.
+<p>
+
+<dt>(saofiltexpr = "ELV > 30.0") [string]
+
+<dd>Filter expression based on columns in the "prefilter" file, usually
+based on spacecraft position or pointing.
+<p>
+
+<dt>(stlossfcnthresh = 1.0E-9) [real]
+
+<dd>Maximum allowed star tracker "loss function."  The loss function
+provides an indicator of the quality of the star tracker attitude
+solution.
+<p>
+
+<dt>(expothresh = 150.0) [real]
+
+<dd>Minimum allowed exposure per snapshot, in seconds.
+<p>
+
+<dt>(timeslop = 0.0) [real]
+
+<dd>Amount to enlarge each snapshot GTI.  It is not recommended to
+change this setting.
+<p>
+
+<dt>(snrthresh = 5.0) [real]
+
+<dd>Minimum signal-to-noise threshold for detecting new sources in a
+sky image.
+<p>
+
+<dt>(cleansnr = 9.0) [real]
+
+<dd>Minimum signal-to-noise threshold for cleaning.  Sources detected
+at a greater significance will be cleaned via batclean, while sources
+with a smaller significance will not be cleaned.
+<p>
+
+<dt>(cleanexpr = "NONE") [string]
+
+<dd>Selection expression used to enable cleaning on additional
+sources, using standard CFITSIO filtering criteria (see fhelp for
+'rowfilter').  This expression is applied to the output catalog from
+batcelldetect; any columns produced by batcelldetect - including those
+columns supplied by the user in their input catalog - are available to
+be filtered on.  Sources to be cleaned will have either SNR >
+'cleansnr' OR 'cleanexpr' true.  A value of "NONE" indicates only
+filtering by 'cleansnr'.
+<p>
+
+<dt>(balance = "ShortEdges,LongEdges,InOut") [string]
+
+<dd>Type of balancing to do when calling batclean.  See documentation
+for batclean for more information.
+<p>
+
+<dt>(brightthresh = 0.017) [real]
+
+<dd>Minimum source count rate to activate mask edge removal, in
+count/s/det.  For sources brighter than this intensity, the shadows of
+the perimeter of the mask are removed.  The purpose of this spatial
+filter are to remove difficult-to-model shadows associated with
+passive materials at the edge of the BAT mask structure.
+<p>
+
+<dt>(pcodethresh = 0.05) [real]
+
+<dd>Minimum partial coding for sources detected in sky images, where
+partial coding is measured as a fraction.
+<p>
+
+<dt>(bkgpcodethresh = 0.01) [real]
+
+<dd>Minimum partial coding for background estimates from sky images,
+where partial coding is measured as a fraction.
+<p>
+
+<dt>(badpixthresh = 4.0) [real]
+
+<dd>Maximum allowed residuals after cleaning, in units of sigma.
+Detectors with larger residuals indicate faulty cleaning, and those
+detectors are excluded in subsequent cleaning iterations.
+<p>
+
+<dt>(copy_cleaned_sources = "YES") [boolean]
+
+<dd>After one cleaning iteration, bright sources will have been
+removed from the sky images.  Setting this parameter to "YES" will
+transfer the bright sources from the previous cleaning iteration to
+the current image, thus keeping "all" of the source intensity
+information.  For each source more significant than "cleansnr", a
+circular disk of radius "copy_cleaned_radius" is transferred from the
+previous iteration to the current iteration.  Note that since a bright
+source can induce its own noise, setting this parameter to "YES" can
+make bright sources appear to have unphysical significances.
+<p>
+
+<dt>(copy_cleaned_radius = 0.008) [real]
+
+<dd>Radius around each cleaned source to copy, in radians, when
+copy_cleaned_sources is set to YES.
+<p>
+
+<dt>(batclean_backexp = NO) [boolean]
+
+<dd>If set, then the diagnostic 'backexp' output of batclean is saved
+for each snapshot.  The name of the file is point_YYYYDDDhhmm.backexp.
+See the documentation for batclean for more information.  If
+batclean_backexp=NO (the default), then no batclean diagnostic file is
+saved.
+<p>
+
+<dt>(batclean_bkgmodel = "SIMPLE") [string]
+
+<dd>Requested background model used by 'batclean' task.  See the
+documentation of the 'bkgmodel' parameter for that task.  The default
+value is "SIMPLE" indicating the default behavior of 'batclean'.  The
+user can add custom model templates, for example.  If effective area
+maps are used (see below), it is possible that the bkgmodel file could
+have a variable number of entries.  In the case where the user
+specifies batclean_bkgmodel, but no entries would have been written,
+the default will be, "SIMPLE".
+<p>
+
+<dt>(eff_area_map = "NONE") [string]
+
+<dd>Requested per-detector sensitivity maps used for bright source
+cleaning, or "NONE" for uniform sensitivity.  This may be a
+comma-separated list or an @filename.txt file list.  For this
+parameter to have effect, the batclean_bkgmodels listing must include
+the token string "EFF_AREA_TEMPLATES", which will be replaced by actual
+templates for bright sources and bright sky.
+<p>
+
+
+<dt>(point_toler = 0.025) [real]
+
+<dd>The "bad pointing" threshold radius, in degrees.  When the
+spacecraft pointing is more than "point_toler" degrees from the final
+pointing direction, it is declared "bad".
+<p>
+
+<dt>(roll_toler = 0.083) [real]
+
+<dd>The "bad pointing" threshold in roll, in degrees. When the
+spacecraft roll is more than "roll_toler" degrees from the final roll
+angle, it is declared "bad".
+<p>
+
+<dt>(pointerr_frac_time = 0.15) [real]
+
+<dd>For a given DPH, if the pointing is "bad" for a fractional
+duration that exceeds "pointerr_frac_time" then that DPH is
+excluded. For example, if the pointing is "bad" for 14% of the
+exposure of a DPH, then the DPH would be kept with the default
+setting, and rejected if pointerr_frac_time=0.10.
+<p>
+
+<dt>(pointerr_abs_time = 35.0) [real]
+
+<dd>For a given DPH, if the pointing is "bad" for a duration that
+exceeds "pointerr_abs_time" then that DPH is
+excluded. pointerr_abs_time is measured in seconds.
+<p>
+
+<dt>(min_dph_frac_overlap = 0.75) [real]
+
+<dd>When deciding whether to include or exclude a DPH in a snapshot
+based on the GTI filter, the amount of overlap between the DPH and the
+GTI are determined.  If the fractional overlap exceeds
+"min_dph_frac_overlap" then the DPH is kept, otherwise it is discarded.
+<p>
+
+<dt>(min_dph_time_nonoverlap = 40.0) [real]
+
+<dd>When deciding whether to include or exclude a DPH in a snapshot
+based on the GTI filter, the amount of <i>non-</i>overlap between the
+DPH and the GTI are determined.  If the non-overlap exceeds
+"min_dph_time_nonoverlap" (in seconds) then the DPH is discarded,
+otherwise it is kept.
+<p>
+
+<dt>(bsurseq = "NONE") [string]
+
+<dd>String value to be assigned to the BSURSEQ keyword in output
+files.  The contents of the BSURSEQ are not used by BAT software; the
+user may use this keyword to identify data for their own purposes.  A
+value of NONE indicates that the BSURSEQ keyword should not be
+written.
+<p>
+
+<dt>(aperture = "CALDB") [string]
+
+<dd>Name of the BAT mask aperture to use, or "CALDB".
+<p>
+
+<dt>(mask_edge_aperture = "CALDB") [string]
+
+<dd>Name of the BAT mask edge aperture to use, or "CALDB".
+<p>
+
+<dt>(global_pattern_map = "NONE") [string]
+
+<dd>Name of global detector pattern map to use for bias subtraction of
+each image.  The revised count rate is computed as NEW_RATE =
+(OLD_RATE - PATTERN_MAP). The number of images in the file must match
+the number of requested energy bands.  A value of "NONE" indicates no
+bias subtraction.
+<p>
+
+<dt>(global_pattern_mask = "NONE") [string]
+
+<dd>Name of global quality map file, to be used for spatial filtering
+of known "bad" detectors.  This should be a single standard detector
+quality map which applies to all energy bands.  Note that detectors
+already flagged as bad by batdetmask do not need to be re-flagged.
+<p>
+
+<dt>(alignfile = "CALDB") [string]
+
+<dd>Spacecraft alignment file name, or "CALDB".
+<p>
+
+<dt>(off_axis_corr = "NO") [boolean]
+
+<dd>Whether to correct for known off-axis effects.  This parameter is
+not fully implemented, and should always be set to NO.
+<p>
+
+<dt>(offcorrfile = "NONE") [string]
+
+<dd>Name of off-axis correction file.  This parameter is not fully
+implemented, and should always be set to NONE.
+<p>
+
+<dt>(check_centroiding = "NO") [boolean]
+
+<dd>Verify centroiding process.  This parameter is not fully
+implemented, and should always be set to NO.
+<p>
+
+<dt>(dph_pattern = "INDIR/bat/survey/sw*g????.dph*") [string]
+<dd>Filename wildcard pattern match for BAT DPH files.  
+This should be a Unix-compatible wildcard string which selects the
+required files.  The special phrase "INDIR" appearing at the beginning
+of the string is replaced by the 'indir' parameter value.
+<p>
+
+<dt>(attitude_pattern = "INDIR/auxil/sw*sat.fits*") [string]
+<dd>Filename wildcard pattern match for Swift attitude file.
+This should be a Unix-compatible wildcard string which selects the
+required files.  The special phrase "INDIR" appearing at the beginning
+of the string is replaced by the 'indir' parameter value.
+<p>
+
+<dt>(sao_pattern = "INDIR/auxil/sw*sao.fits*") [string]
+<dd>Filename wildcard pattern match for Swift SAO filter file.
+This should be a Unix-compatible wildcard string which selects the
+required files.  The special phrase "INDIR" appearing at the beginning
+of the string is replaced by the 'indir' parameter value.
+<p>
+
+<dt>(go_pattern = "INDIR/bat/hk/sw*bgocb.hk*") [string]
+<dd>Filename wildcard pattern match for BAT Gain/offset files.
+This should be a Unix-compatible wildcard string which selects the
+required files.  The special phrase "INDIR" appearing at the beginning
+of the string is replaced by the 'indir' parameter value.
+<p>
+
+<dt>(de_pattern = "INDIR/bat/hk/sw*bdecb.hk*") [string]
+<dd>Filename wildcard pattern match for BAT detector disable/enable files.
+This should be a Unix-compatible wildcard string which selects the
+required files.  The special phrase "INDIR" appearing at the beginning
+of the string is replaced by the 'indir' parameter value.
+<p>
+
+<dt>(clobber = YES) [boolean]
+
+<dd>If the output files already exist, then setting "clobber = yes"
+will cause it to be overwritten. Note that files will always be
+clobbered.  Setting clobber=NO will have no effect.
+<p>
+
+<dt>(chatter = 2) [integer, 0 - 5]
+
+<dd>Verbosity level of output.  Note that this setting is of limited
+use, since most sub-tasks are run with a standard level of verbosity.
+<p>
+
+<dt>(history = YES) [boolean]
+
+<dd>Ignored.
+
+</dl>
+<h2>EXAMPLES</h2>
+
+<p>
+
+1. Run BAT survey processing on observation 00035025015 and place the
+results in the 00035025015-results directory.  The default energy bins
+are used.
+
+<p>
+<pre>
+     batsurvey 00035025015 00035025015-results
+</pre>
+
+<h2>SEE ALSO</h2>
+
+<p>
+<a href="batsurvey-aspect.html">batsurvey-aspect</a>, 
+<a href="batsurvey-detmask.html">batsurvey-detmask</a>, 
+<a href="batsurvey-erebin.html">batsurvey-erebin</a>, 
+<a href="batsurvey-detmask.html">batsurvey-detmask</a>, 
+<a href="batsurvey-gti.html">batsurvey-gti</a>
+</p>
+
+<h2>LAST MODIFIED</h2>
+
+Jan 2013
+
+</body>
+</html>

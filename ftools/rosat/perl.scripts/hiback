@@ -1,0 +1,177 @@
+#!/usr1/local/bin/perl
+#
+# script to test background level and set a flag if it's high
+#
+# Lawrence E. Brown 1/13/95
+# HSTX for NASA/GSFC
+#
+# from an AWK script by 
+# Frank Primini (fap@cfa239.harvard.edu Mon Dec 12 14:39:25 1994)
+#
+#version 1.0.0 1/13/95
+$task = "hiback 1.0.0";
+$bailroutine = "bailout";
+
+$threshold = 8;    # writes BKG_SUSP = T if average background in cts/pix/sec
+		   # is greater than this
+
+
+require "utils.pl";
+if(@ARGV==0) 
+    {print $task.":  Type 'hiback -h' for instructions.\n";}
+@args = grep(!/=/,@ARGV); #lose a=b arguments
+while ($ARGV[0] =~ /^(\w+)=(.*)/ && shift){ # get a=b arguments --> $a=b
+    $var_name = $1;
+    $var_name =~ tr/A-Z/a-z/;		# Note A-->a
+    eval "\$$var_name=\$2;"
+}
+@flags = grep (/-/,@args);      # get flags
+@arguments = grep (!/-/,@args); # lose flags
+if (grep(/v/,@flags)) {$verbose = 1;}
+
+
+if (grep(/h/,@flags)) {
+$~ = "TEXT1";
+$paragraph_string = "This script calculates the average background for
+an HRI _bas file, creates a _qsrc file (by running mkqsrc on an _src file),
+and  writes a BKG_SUSP keyword to the qsrc file.  You may specify the _bas
+file by putting bas=bas_file_name on the command line.
+If you don't specify a file on the command line, you will be prompted.
+The script will look for 
+an _src file based on the *name* of the _bas file. If it can't find one, 
+the script will ask for one; this may be overridden by specifying 
+src=src_file_name on the command line.
+BKG_SUSP is true if the average background is > 8x10^-7 cts/pix/sec.
+If you specify '-v' on the command line, hiback will print out
+a histogram showing the time at each level.  1 is low, 14 or so is high.
+Units are cts/sec/pixel.  Sample output for:";
+write;
+print '%hiback rh110267n00_bas.fits';
+print "\n\n2 557.998\n3 740\n4 430\n5 120\n6 150\n7 110\n8 10\n1 30\nAverage Background Level:  3.46183\n";
+exit;
+}
+
+
+
+#get legal BAS file
+until (-r $bas && length($bas) != 0 ){
+    print "***\n";
+    if(length($bas) != 0) 
+	{print "I can't read input 'bas' file: \"$bas\"\n";}
+    &print_likely_files('*bas.fits','(^rp\d|_abas)');
+    print "Basic (bas) Filename: "; 
+    chop($bas = <STDIN>); 
+    if(($bas =~ /^\s*(\d*)\s*$/)&&($bas <= @likely_files)){
+	$bas=$likely_files[$1-1];} 
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}		
+#scan BAS file
+chop(@keyprintout = &runcom("fkeyprint $bas+4 \"EXTNAME\"",$bailroutine,
+"Couldn't find 4th extension on $bas"));                                  #'
+die "$bas extension 4 is not the Temporal Status Intervals extension.\nI can't cope.\n"                                                                  #'
+    if(join(' ',@keyprintout) !~ /TSI/);
+
+unless (length($src)>0 && -r $src) {			# find _src file
+    $src = $bas;
+    $src =~ s/_bas.fits$/_src.fits/;
+    $i=0;
+    until (length($src)>0 && -r $src) {			
+	print "***\n";		
+	if(length($src) != 0)	
+	{print "I can't read input 'src' file: \"$src\"\n";}
+	&print_likely_files('*src.fits','(^rp\d|qsrc)');
+	print "SRC Filename: "; 
+	chop($src = <STDIN>); 
+	if(($src =~ /^\s*(\d*)\s*$/)&&($src <= @likely_files)){
+	    $src=$likely_files[$1-1];} 
+	die "Can't seem to find a file. Exiting.\n" if $i > 5;
+	$i++;
+    }
+}
+$qsrc = $src;
+unless ($qsrc =~ s/src/qsrc/) {
+    print "What output qsrc file?";
+    $qsrc = <STDIN>;
+}
+$i=0;
+while (-e $qsrc || length($qsrc) == 0) {
+    unless(length($qsrc) == 0) {
+	print "Output file $qsrc already exists, do you want to overwrite it? ";
+	$yorn = <STDIN>; 
+    } else {
+	$yorn = "no";
+    }			
+    unless($yorn  =~ /^y/i) {
+	print "What output qsrc file? ";
+	chop($qsrc = <STDIN>);
+	die "Can't seem to find an output file. Exiting.\n" if $i > 5;
+	$i++;
+    } else {last;}
+}
+unlink($qsrc);	#note if we're here, the file $qsrc either doesn't exist
+                #or the user wants it nuked
+
+&yakker("mkqsrc infile=$src outfile=$qsrc clobber=no",$verbose,$bailroutine,
+	"Couldn't write qsrc file.\n");
+
+@data = &runcom('fdump "'.$bas.'[4]" STDOUT "TIME,FAILED,HIBACK" "-" prhead=no page=no',
+$bailroutine,"Couldn't process 4th extension of bas file.\n");
+
+# awk program to compile histogram of high background levels in TSI
+# file.  translated by a2p and then hacked on by LEB 1/13/95
+#
+# 11/21/94 fap
+#
+$, = ' ';		# set output field separator
+$\ = "\n";		# set output record separator
+
+$TIME = 0.0;
+$FAILED = 1;
+$HIBACK = -1;
+$TOTAL = 0.0;
+
+#Nuke first 3 lines
+shift(@data);
+shift(@data);
+shift(@data);
+
+foreach (@data) {
+    ($Fld1,$Fld2,$Fld3,$Fld4) = split(' ', $_, 9999);
+    $deltaT = $Fld2 - $TIME;
+    if ($FAILED == 0) {
+	$bkhist{$HIBACK} += $deltaT;
+	$TOTAL += $deltaT;
+    }
+    $TIME = $Fld2;
+    $FAILED = $Fld3;
+    $HIBACK = $Fld4;
+}
+
+foreach $bklev (keys %bkhist) {
+    if($verbose) {print $bklev, $bkhist{$bklev};}
+    $avbk += $bklev * $bkhist{$bklev} / $TOTAL;
+}
+if($verbose) {print 'Average Background Level: ', $avbk;}
+if($avbk>$threshold){$t_or_f = 'T'} else { $t_or_f = 'F'}
+&yakker("fparkey $t_or_f $qsrc+1 BKG_SUSP add=yes comm=\"high background\" ",$verbose,$bailroutine,"Couldn't write BKG_SUSP keyword.\n");                 #'
+if($verbose) {print "Written... BKG_SUSP = $t_or_f";}
+
+sub bailout{
+  die("\n$task: $_[0]\n$task: Fatal Error\n");
+}
+
+
+format TEXT1 =
+@|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+$task
+
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph_string
+.
+
+format TEXT2=
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph_string
+.
+

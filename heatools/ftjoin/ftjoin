@@ -1,0 +1,593 @@
+#!/usr/bin/perl
+#
+# ftjoin - Join the columns of two tables according to a matching criterium
+#
+# The ftjoin task joins the columns of two tables into one table, using
+# an arbitrary matching expression.  In the languages of databases, this
+# is known as a "database join."  The two tables to be joined are
+# designated the "left" and "right" tables.
+#
+# See the help file for more user documentation ...
+#
+# METHOD OF OPERATION
+# 
+# Consider two tables, L and R, with N and M rows respectively:
+#
+#   {     L1    }      {     R1    }   where Li is the ith row of L
+#   {     .     }      {     .     }   and   Rj is the jth row of R   
+#   {     .     }      {     .     }
+#   {     LN    }      {     .     }
+#                      {     RM    }
+#
+# A combined table is made with the columns of both tables, and M
+# rows, and the column names are renamed by the renaming algorithm.
+# The R table is filled in, but not the L table.  Also, a column is
+# made to hold the row number of the right hand table,
+#
+#   {   blank    |      R1     | 1 }
+#   {   blank    |      .      | 2 }
+#   {   blank    |      .      | 3 }
+#   {   blank    |      .      | . }
+#   {   blank    |      RM     | M }
+#
+# Then, one at a time, each row of the table L is filled into the
+# combined table.  First,
+#
+#   {    L1      |      R1     | 1 }
+#   {    L1      |      .      | . }
+#   {    .       |      .      | . }
+#   {    L1      |      RM     | M }
+#
+# and then the matching function is performed.  Any matches are sent
+# to the output table.  There is a special case for the LEFT OUTER or
+# FULL OUTER join, which if there is no match, sends a single row to
+# the output with null values for the right hand side.
+#
+# Next, the 2nd row is filled in,
+#
+#   {    L2      |      R1     | 1 }
+#   {    L2      |      .      | . }
+#   {    .       |      .      | . }
+#   {    L2      |      RM     | M }
+#
+# and the matching is repeated, etc. until all the rows of the left
+# hand table have been compared.  
+#
+# If performing a RIGHTOUTER or FULLOUTER join, a check is done to
+# find out which rows of the right table haven't been saved, and those
+# are saved, with null values filling in the left hand side of the
+# table.
+#
+# For efficiency, the combined table is maintained in memory.
+#
+# $Id: ftjoin,v 1.10 2011/08/30 21:01:18 craigm Exp $
+#
+# $Log: ftjoin,v $
+# Revision 1.10  2011/08/30 21:01:18  craigm
+# Now add warnings if the user requests an 'OUTER' join (i.e. union) when column-null values are not defined; Add history keywords if requested by user; unit tests still pass --CM
+#
+# Revision 1.9  2009/11/16 09:38:53  craigm
+# Reinitialize variable to empty; fixes a bug with FULLOUTER and RIGHTOUTER modes, where too many rows were written to the output table (with duplicates); unit tests now pass --CM
+#
+# Revision 1.8  2009/08/26 02:01:37  craigm
+# Allow users to use the expressions #L_ROW and #R_ROW to easily work with row numbers of left and right table --CM
+#
+# Revision 1.7  2006/05/05 18:52:06  craigm
+# Bump to version 1.1; allow jointype=INTERSECTION and jointype=UNION; additional documentation; unit tests still pass --CM
+#
+# Revision 1.6  2006/04/07 20:52:48  craigm
+# Add a CVS id and log variable --CM
+#
+#
+
+use HEACORE::HEAINIT;
+
+# ===================================
+# Execute main subroutine, with error trapping
+$status = 0;
+undef $memfile;
+eval {
+    $status = headas_main(\&ftjoin);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+# ===================================
+# Utility routine to return the number of rows in a FITS table
+sub nrows {
+    my ($fits,$status) = (@_);
+    my ($nrows);
+
+    $fits->get_num_rows($nrows, $status);
+    $_[1] = $status;
+    return $nrows;
+}
+
+# ===================================
+# Utility routine to return the number of columns in a FITS table
+sub ncols {
+    my ($fits,$status) = (@_);
+    my ($ncols);
+
+    $fits->get_num_cols($ncols, $status);
+    $_[1] = $status;
+    return $ncols;
+}
+
+
+# ===================================
+# Main subroutine
+sub ftjoin {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+    my $taskname = "ftjoin";
+    my $version = "1.2";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($version);
+
+    eval {
+	$status = &ftjoin_work();
+    };
+
+    # Make a special effort to close the temporary file, so that it
+    # can be inspected for debugging purposes.
+    if (defined($memfile)) {
+	$mystatus = 0;
+	$memfile->close_file($mystatus);
+	undef $memfile;
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+    return $status;
+}
+
+sub ftjoin_work {
+
+    # --------------- parameters
+    ($status = PILGetFname('leftfile', $leftfile)) == 0 || die "error getting leftfile parameter";
+    ($status = PILGetFname('rightfile', $rightfile)) == 0 || die "error getting rightfile parameter";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+
+
+    ($status = PILGetString('expr', $selexpr)) == 0 || die "error getting 'expr' parameter";
+
+    ($status = PILGetString('leftnameprefix', $leftnameprefix)) == 0 || die "error getting 'leftnameprefix' parameter";
+    ($status = PILGetString('leftnamesuffix', $leftnamesuffix)) == 0 || die "error getting 'leftnamesuffix' parameter";
+    ($status = PILGetString('rightnameprefix', $rightnameprefix)) == 0 || die "error getting 'rightnameprefix' parameter";
+    ($status = PILGetString('rightnamesuffix', $rightnamesuffix)) == 0 || die "error getting 'rightnamesuffix' parameter";
+
+    ($status = PILGetString('outcolumns', $outcolumns)) == 0 || die "error getting 'outcolumns' parameter";
+
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting 'cleanup' parameter";
+    ($status = PILGetString('debugfile', $debugfile)) == 0 || die "error getting 'debugfile' parameter";
+    ($status = PILGetBool('dupcolnames', $dupcolnames)) == 0 || die "error getting 'dupcolnames' parameter";
+
+    ($status = PILGetString('jointype', $jointype)) == 0 || die "error getting 'jointype' parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+    if ($chatter >= 5) { $verbose = 1; }
+
+    # Reset the match values in the parameter file
+    PILPutInt('nbothmatch',0);
+    PILPutInt('nleftmatch',0);
+    PILPutInt('nrightmatch',0);
+
+    # ---------------- error checking of parameters
+
+    # Check if output is a pipe; we have to do something different
+    # about the scratch files then.
+    $outfile1 = $outfile;
+    if ($debugfile =~ m/none/i) { undef $debugfile; }
+
+    $jointype =~ s/ //g;
+    $jointype =~ tr/a-z/A-Z/;
+    print "jointype=$jointype\n" if ($verbose);
+
+    # Mix in standard set-wise aliases
+    if ($jointype =~ m/^INTERSECT/) { $jointype = "INNER"; }
+    if ($jointype eq "UNION")       { $jointype = "FULLOUTER"; }
+
+    if ($jointype ne "INNER" && $jointype ne "LEFTOUTER" &&
+	$jointype ne "RIGHTOUTER" && $jointype ne "FULLOUTER") {
+	die "ERROR: jointype must be one of INNER, \"LEFT OUTER\", \"RIGHT OUTER\", or \"FULL OUTER\"";
+    }
+
+    if ($leftnameprefix  =~ m/none/i) { $leftnameprefix = ""; }
+    if ($leftnamesuffix  =~ m/none/i) { $leftnamesuffix = ""; }
+    if ($rightnameprefix =~ m/none/i) { $rightnameprefix = ""; }
+    if ($rightnamesuffix =~ m/none/i) { $rightnamesuffix = ""; }
+
+    $status = 0;
+
+    $leftrownum  = "LROW_$$";
+    $rightrownum = "RROW_$$";
+
+    $leftfile1  = "$leftfile";
+    $rightfile1 = "$rightfile";
+
+    # ------------- Open the input files
+    Astro::FITS::CFITSIO::fits_open_table($left,"$leftfile1",READONLY,$status);
+    $left->get_hdu_type($lhdutype,$status);
+    die "ERROR: could not open $leftfile1" if ($status);
+    Astro::FITS::CFITSIO::fits_open_table($right,"$rightfile1",READONLY,$status);
+    $right->get_hdu_type($rhdutype,$status);
+    die "ERROR: could not open $rightfile1" if ($status);
+
+    # Check the table type
+    if ($lhdutype != $rhdutype) {
+	$status = NOT_BTABLE;
+	die "ERROR: input tables must be of the same type (binary or ASCII)";
+    }
+
+    # ------------- 
+    # Temporary table for doing the selections
+    if ($debugfile) {
+	headas_clobberfile("$debugfile");
+	$memfile = Astro::FITS::CFITSIO::create_file("$debugfile",$status);
+    } else {
+	$memfile = Astro::FITS::CFITSIO::create_file("mem://tmp",$status);
+    }
+    die "ERROR: could not create temporary file" if ($status);
+    $left->copy_hdu($memfile,0,$status);
+    $nrows = &nrows($memfile,$status);
+    $ncols = &ncols($memfile,$status);
+    $left ->read_key(TLONG,"NAXIS1",$naxis_left, $comment,$status);
+    $right->read_key(TLONG,"NAXIS1",$naxis_right,$comment,$status);
+
+    # ------------- Remove all the rows
+    $memfile->delete_rows(1,$nrows,$status);
+    # Create a column to hold the left table row number
+    die "ERROR: could not create internal table" if ($status);
+
+    # ------------- 
+    # Copy all the column related keywords to the temporary file,
+    # but be sure to re-write the column numbers
+    $nkeys = 0;
+    $right->get_hdrspace($nkeys,$morekeys,$status);
+    foreach $keynum (1 .. $nkeys) {
+	$right->read_record($keynum,$card,$status);
+	$keyname = substr($card,0,8);
+	print " keyname = $keyname  " if ($verbose);
+	next if ($keyname eq "        ");
+	# Find column-related keywords:
+	#                   TAAAAnA |iCAAAna   |ijPC/CDna   |iV/Sn_ma  |WCSAX/SNna
+	if ($keyname =~ m/^(T.*[A-Z]|\dC.*[A-Z]|\d\d[PC][CD]|\d[VS]\d+_|WC[AS][XN]|LONP|LATP|EQUI|MJDOB|MJDA|RADE|DAVG)(\d+)([A-Z])? */) {
+	    $keyroot = $1;
+	    $colnum  = $2;
+	    $wcscoor = $3;
+	    $newcolnum = $colnum + $ncols;
+	    $newkeyname = $keyroot . $newcolnum . $wcscoor;
+	    print "   --> $newkeyname  " if ($verbose);
+
+	    # Special handling for TBCOLn keywords, which need to be updated
+	    # for the new character position
+	    if ($lhdutype == ASCII_TBL && $keyroot eq "TBCOL") {
+		$right->read_keyn($keynum,$keyname,$value,$comment,$status);
+		$value += $naxis_left;
+		$memfile->update_key(TLONG,$newkeyname,$value,$comment,$status);
+	    } else {
+		$newcard = sprintf("%-8s%s",$newkeyname, substr($card,8));
+		print "\n    :$newcard:" if ($verbose);
+#		$memfile->write_record($newcard,$status);
+		$memfile->update_card($newkeyname,$newcard,$status);
+	    }
+	}
+	print "\n" if ($verbose);
+    }
+    die "ERROR: could not transfer RIGHT keywords to internal table" if ($status);
+
+    # ------------- Update the NAXIS1 and TFIELDS values
+
+    $ncols_left  = &ncols($left,$status);
+    $ncols_right = &ncols($right,$status);
+    $nrows_left  = &nrows($left,$status);
+    $nrows_right = &nrows($right,$status);
+    $naxis_tot   = $naxis_left+$naxis_right;
+    $ncols_tot   = $ncols_left+$ncols_right;
+    $memfile->update_key(TLONG,"NAXIS1",$naxis_tot," Number of bytes per row",
+		     $status);
+    $memfile->update_key(TLONG,"TFIELDS",$ncols_tot,undef,$status);
+
+    if ($chatter >= 2) {
+	print "Left:  $ncols_left columns; $nrows_left rows; $naxis_left bytes/row;\n";
+	print "Right: $ncols_right columns; $nrows_right rows; $naxis_right bytes/row;\n";
+    }
+
+    # ------------- Perform the column renaming
+    for $col (1 .. $ncols_tot) {
+	# Read original column name
+	$memfile->read_key(TSTRING,"TTYPE$col",$colname,$comment,$status);
+	print "  colname $col = $colname  " if ($verbose);
+	last if ($status);
+
+	# Re-name column using template rules
+	if ($col <= $ncols_left) {
+	    $newcolname = $leftnameprefix . $colname . $leftnamesuffix;
+	} else {
+	    $newcolname = $rightnameprefix . $colname . $rightnamesuffix;
+	}
+	$colnames[$col] = "$newcolname";
+
+	# Update column name
+	if ($colname ne $newcolname) {
+	    $memfile->update_key(TSTRING,"TTYPE$col",$newcolname,undef,$status);
+	    print "     --> $newcolname  " if ($verbose);
+	}
+	print "\n" if ($verbose);
+
+	# Check for duplicates
+	if ($collist{$newcolname}) {
+	    warn "Duplicate columns named $newcolname are present" if ($dupcolnames);
+	    die  "Duplicate columns named $newcolname are present" if (!$dupcolnames);
+	}
+
+	# Record this name
+	$collist{$newcolname} = 1;
+    }
+    die "ERROR: Could not create internal table 1 (status = $status)" if ($status);
+
+    # Update internal table structure
+    $memfile->set_hdustruc($status);
+
+    # Insert two new columns to contain the row numbers
+    if ($lhdutype == ASCII_TBL) {
+	$tform_long = "I12";
+    } else {
+	$tform_long = "1J";
+    }
+    $lrowcol = $ncols_tot + 1; $rrowcol = $ncols_tot + 2;
+    $memfile->insert_col($lrowcol,"$leftrownum",$tform_long,$status);
+    $memfile->update_key(TLONG,"TNULL$lrowcol",-1," null value",$status);
+    $memfile->insert_col($rrowcol,"$rightrownum",$tform_long,$status);
+    $memfile->update_key(TLONG,"TNULL$rrowcol",-1," null value",$status);
+
+    die "ERROR: Could not create internal table 2 (status = $status)" if ($status);
+
+    # ------------- 
+    # Create the output file and copy the blank temporary file to it
+    headas_clobberfile("$outfile1");
+    $out = Astro::FITS::CFITSIO::create_file("$outfile1",$status);
+    die "ERROR: could not create output file" if ($status);
+    $memfile->copy_hdu($out,0,$status);
+    die "ERROR: could not copy internal table to output (status=$status)" 
+	if ($status);
+
+    # ------------- Copy the right table into the temporary table
+    $memfile->insert_rows(0,$nrows_right,$status);
+    foreach $row (1 .. $nrows_right) {
+	$right->read_tblbytes ($row,1,$naxis_right,$values,$status);
+	$memfile  ->write_tblbytes($row,$naxis_left+1,
+			       $naxis_right,$values,$status);
+    }
+    $right->close_file($status);
+    die "ERROR: Could not copy RIGHT table to internal buffer (status=$status)"
+	if ($status);
+
+    # Add row numbers
+    @rrow = (1 .. $nrows_right);
+    $memfile->write_col(TLONG, $rrowcol, 1, 1, $#rrow+1, \@rrow, $status);
+    die "ERROR: Could not add row numbers to internal buffer (status=$status)"
+	if ($status);
+
+    # Check if selection expression refers to row number
+    if ($selexpr =~ m/#L_ROW\b/i) {
+      $has_lrowname = 1;
+      $selexpr =~ s/#L_ROW\b/$leftrownum/ig;
+    }
+    if ($selexpr =~ m/#R_ROW\b/i) {
+      $has_rrowname = 1;
+      $selexpr =~ s/#R_ROW\b/$rightrownum/ig;
+    }
+
+    # Initialize statistics
+    $nbothmatch = 0;
+    $nleftmatch = 0;
+    $nrightmatch = 0;
+    
+    # ================================================================
+    # ================================================================
+    # ------------- Main loop
+    $nrows_tmp = 0;
+    foreach $row (1 .. $nrows_left) {
+
+	if ($row % 100 == 1 && $verbose) {
+	    print "\nRow $row: ";
+	}
+	print "." if ($verbose);
+
+	# ------------ Read one row from left and write it to all rows of tmp
+	$left->read_tblbytes ($row,1,$naxis_left,$values,$status);
+	# Pack them once so that we avoid the overhead of repeated
+	# re-packings.
+	$values = pack("C*",@$values);
+	for $trow (1 .. $nrows_right) {
+	    $memfile  ->write_tblbytes($trow,1,$naxis_left,\$values,$status);
+	}
+	# Write left column number if we are selecting on it.
+	if ($has_lrowname) {
+	  @rrow = ($row) x $nrows_right;
+	  $memfile->write_col(TLONG, $lrowcol, 1, 1, $#rrow+1, \@rrow, $status);
+	}
+	
+	# ------------ Perform selection operation
+	$memfile->select_rows($out,"$selexpr",$status);
+	if ($status) {
+	    die "ERROR: selection expression '$selexpr' failed with error code $status.  Did you remember to use the 'renamed' column names in the filter expression?";
+	}
+
+	# ------------ Special process for outer joins
+	$nrows = &nrows($out,$status);
+	$nbothmatch += ($nrows-$nrows_tmp);
+	if ($nrows == $nrows_tmp && 
+	    ($jointype eq "LEFTOUTER" || $jointype eq "FULLOUTER")) {
+	    $nleftmatch ++;
+
+	    # Mis-match on the left table: write the left table
+	    print "n" if ($verbose);
+	    $out->insert_rows($nrows,1,$status);
+	    # Write the left table data
+	    $out->write_tblbytes($nrows+1,1,$naxis_left,\$values,$status);
+
+	    # Write nulls for the right columns; precompute them once
+	    # so we don't have to keep re-writing null values in a 
+	    # slow loop.
+	    if ($nullbytes) {
+		# Pre-computed null row
+		$out->write_tblbytes($nrows+1,$naxis_left+1,
+				     $naxis_right,\$nullbytes,$status);
+	    } else {
+		foreach $tcol ($ncols_left+1 .. $ncols_left+$ncols_right) {
+		    $out->get_coltype($tcol,$typecode,$repeat,$width,$status);
+		    if ($typecode == TSTRING) {
+			#  Note that strings are treated differently 
+			$repeat /= $width;
+		    }
+		    $out->write_col_null($tcol,$nrows+1,1,$repeat,$status);
+		    if ($status == NO_NULL) {
+		      if (! defined($nullwarn{$tcol}) ) {
+			warn "WARNING: no null value is defined for output column $tcol ($colnames[$tcol]); there may be garbage values for that output column.";
+			$nullwarn{$tcol} = 1;
+		      }
+		      $status = 0;
+		    }
+		}
+		# Save this set of nulls for the next time
+		$out->read_tblbytes($nrows+1,$naxis_left+1,
+				    $naxis_right,$nullbytes,$status);
+		$nullbytes = pack("C*",@$nullbytes);
+	    }
+	}
+
+	if ($nrows > $nrows_tmp && $verbose) { print "+"; }
+	$nrows_tmp = &nrows($out,$status);
+    }
+    print "\n" if ($verbose);
+
+    # End of main loop
+    # ==================================================================
+    # ==================================================================
+
+    $left->close_file($status);
+    $nrows = &nrows($out,$status);
+
+    # Follow-up work if the join is FULL or RIGHT outer.  In that
+    # case, we have to make a sweep to be sure that we haven't missed
+    # any right-side rows.
+
+{
+    if (($jointype eq "RIGHTOUTER" || $jointype eq "FULLOUTER") &&
+	($status == 0)) {
+	$nrows_out = &nrows($out,$status);
+
+	# Read the right equivalent of #ROW
+	undef @rrow;
+	$out->get_colnum(CASEINSEN,"$rightrownum",$colnum,$status);
+	$out->get_coltype($colnum,$typecode,$repeat,$width,$status);
+	$out->read_col($typecode,$colnum,1,1,$nrows_out,undef,
+		       \@rrow,undef,$status);
+
+	# ----------- Check whether each right row was output or not
+	if ($status == 0) {
+	    # Find the selected right-hand rows
+	    foreach $value (@rrow) {
+		$xrows{$value} = 1 if ($value >= 1 && $value <= $nrows_right);
+	    }
+	    @rrow = sort {$a <=> $b} keys(%xrows);
+	    $status = 0;
+	    print "number of rows already written = $#rrow + 1\n" if ($verbose);
+
+	    # Delete the rows in the temporary table which have already
+	    # been written;
+	    print "deleting rows...\n" if ($verbose);
+	    $memfile->delete_rowlist(\@rrow, $#rrow+1, $status);
+
+	    # Write the first row of nulls into the left hand side
+	    # of the table
+	    $nrows_tmp = &nrows($memfile,$status);
+	    print "remaining rows in memory file = $nrows_tmp + 1\n" if ($verbose);
+	    $nrightmatch += $nrows_tmp;
+	    if ($status == 0 && $nrows_tmp > 0) {
+		foreach $tcol (1 .. $ncols_left) {
+		    $memfile->get_coltype($tcol,$typecode,$repeat,$width,$status);
+		    if ($typecode == TSTRING) {
+			#  Note that strings are treated differently 
+			$repeat /= $width;
+		    }
+		    $memfile->write_col_null($tcol,1,1,$repeat,$status);
+		    if ($status == NO_NULL) {
+		      if (! defined($nullwarn{$tcol}) ) {
+		        warn "WARNING: no null value is defined for output column $tcol ($colnames[$tcol]); there may be garbage values for that output column.";
+			$nullwarn{$tcol} = 1;
+		      }
+		      $status = 0;
+		    }
+		}
+		# Save this set of nulls for the following rows
+		$memfile->read_tblbytes(1,1,$naxis_left,$nullbytes,$status);
+		$nullbytes = pack("C*",@$nullbytes);
+		# Write the remaining null bytes wholesale
+		foreach $row (2 .. $nrows_tmp) {
+		    $memfile->write_tblbytes($row,1,$naxis_left,
+					  \$nullbytes,$status);
+		}
+		# Transfer this data to the output
+		$memfile->select_rows($out,"1 == 1",$status);
+	    }
+	}
+    }
+}
+
+# {
+#     if ("$outcolumns" ne "*") {
+# 	
+#     }
+# }
+
+    # Update the statistics in the parameter file
+    PILPutInt('nbothmatch',$nbothmatch);
+    PILPutInt('nleftmatch',$nleftmatch);
+    PILPutInt('nrightmatch',$nrightmatch);
+    if ($chatter >= 2) {
+	print "Matches: $nbothmatch both; $nleftmatch left; $nrightmatch right;\n";
+    }
+
+    if ($cleanup) {
+	print "Cleaning up output table (columns $lrowcol & $rrowcol)...\n" if ($verbose);
+	# Order is important, because we are deleting them in place
+	$out->delete_col($rrowcol,$status);
+	$out->delete_col($lrowcol,$status);
+    }
+    $memfile->close_file($status);
+    undef $memfile;
+
+    # Write history keywords
+    HDpar_stamp($out, 0, $status);
+    $out->close_file($status);
+
+    return $status;
+}
+
+

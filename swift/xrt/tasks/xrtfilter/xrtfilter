@@ -1,0 +1,1452 @@
+#! /usr/bin/perl
+# File name: xrtfilter
+# 
+# Task name: xrtfilter
+# 
+# Description:	
+#              This  task creates a file containing all the housekeeping 
+#              information, requested by the user, to be used for 
+#              data screening.
+#		   
+# 
+# Author/Date: Italian Swift Archive Center (Frascati)
+# 
+# History:
+# 
+#      0.1.0 : BS 17/12/2002 - First version
+#      0.1.1 : FT 24/02/2003 - Added call to fchecksum
+#      0.1.2 : BS 14/05/2003 - Added screening parameters Vod1,Vod2,Vrd1,Vrd2
+#      0.1.3 : FT 28/07/2003 - Bug fixed: Output directory not handled for 
+#                              Attitude Orbit File.
+#      0.1.4 : FT 01/08/2003 - Added ranom and decnom input parameters.
+#      0.1.5 : FT 24/10/2003 - Added default columns to DEFAULT 'makefilter' 
+#                              configuration file. To be implemented the read
+#                              of this parameters from 'hkparm' calibration file
+#      0.1.6 : FT 20/11/2003 - If 'configure' input paramater is set to 'DEFAULT'
+#                              the task reads default configuration parameters from
+#                              a FITS XRT Makefilter Configuration File, taken
+#                              from CALDB ( 'mkfconfigfile' input parameter set to CALDB ) 
+#                              or supply by User ('mkfconfigfile' set to 'filename' )
+#      0.1.7 : RP 19/12/2003 - Added function RequestParameter, change GetInputParameters
+#                              add call GetParameterList, LoadParameterFromCmdLine,LoadParameter
+#      0.2.0 : FT 16/03/2004 - Added 'alignfile' input parameter needed by prefilter v3.2;
+#                               changed defaults for 'orbmode' and 'orbfile' in xrtpipeline.par
+#      0.2.1 : RP 16/03/2004 - Added write history mkfconfigfile
+#      0.2.2 : RP 13/04/2004 - Change calls GetKeyword
+#      0.2.3 : RP 21/04/2004 - Bug fixed
+#      0.2.4 : BS 11/05/2004 - Modified some input parameters name and comments
+#      0.2.5 : BS 13/05/2004 - Using NONE instead of DEFAULT for "configfile" parameter
+#      0.2.6 : FT 28/07/2004 - Changed RA/DEC_NOM keywords into RA/DEC_PNT
+#                            - read HK Header file keywords (RA_PNT and DEC_PNT)
+#                              if the input parameters ranom and decnom are set to
+#                              a value < -91
+#                            - Changed input parameters name: hkfile -> dhfile, hkstem -> hdstem
+#     0.2.7 : RP 03/08/2004  - Control if outcols parameter is equal to CALDB
+#     0.2.8 : FT 10/02/2005  - Added input parameter 'nonulls' to apply fselect on
+#                              mkffile to discharge rows with TIME set to NULL. If 'nonulls'
+#                              is set run fselect on mkffile to apply selection "!isnull(TIME)"
+#     0.2.9 :                - Added "TIME!=-1" to the screening from TIME NULLS
+#     0.3.0 : FT 01/03/2005  - Add to the .mkf file columns 'TEN_ARCMIN, SETTLED, ACS_SAA, SAFEHOLD'
+#                              taken from the attitude file ACS_DATA extension FLAGS column
+#     0.3.1 : FT 07/06/2005  - Erase the $$.acsdata file
+#                            - Check the existence of TIME values set to NULL in the 
+#                              .mkf file before running 'ftselect' to erase
+#                              rows with TIME == NULL (nonulls=yes)
+#     0.3.2 : FT 27/06/2005  - Removed Cleanup routine
+#     0.3.3 : FT 30/06/2005  - Changed GetAttOrbFileName call 
+#     0.3.4 : FT 04/07/2005  - Do not delete the output '.acsdata' file, needed to
+#                              create the .mkf file
+#     0.3.5 : FT 20/07/2005  - For a ftcalc bug on Cygwin platform (input and output files cannot be
+#                              same on this platform), use a temporary output file and overwrite
+#                              the input only if 'ftcalc' works
+#     0.3.6 : BS 08/11/2005  - Bug fixed on 'outfile' input parameter handling  
+#     0.3.7 :    09/03/2006  - Added 'gtiexpr' new input parameter to 
+#                              filter mkf file for attitude GTI if parameter set to 
+#                              an expression for example "time-time{-1}<5.1.or.ISNULL(time{-1})"
+#     0.3.8 :    15/03/2006  - emoved the temporary GTI file
+#     0.3.9 : NS 05/11/2007  - Added 'enfile' input parameter
+#     0.4.0 :    08/05/2008  - Replaced 'makefilter' task call with 'newmakefilter' task call
+#                            - Removed 'tprec' input parameter
+#     0.4.1 :    24/09/2008  - Fixed compatibility problem with new perl 5.10
+#                            - Replaced 'newmakefilter' task call with the new 'makefilter' task call
+#     0.4.2 :    16/01/2014  - Added check of the 'ATTFLAG' keyword of the input attitude file
+#     0.4.3 :    17/02/2014  - Modified check of the 'ATTFLAG' keyword of the input attitude file
+#     0.4.4 : RF 17/11/2016  - Added parameter timeadj=DEFAULT to the call task prefilter
+#                            - Added subfunction getUtcfInit, get UTCFINIT keyword from 'attfile' or 'enfile' input
+#
+#
+# Notes:	
+# 
+#       type "fhelp xrtfilter" for parameters description
+#
+# Usage:     
+#       xrtfilter hdfile=<input file name>  outdir=<output-dir> attfile=<attitude-file-name> [parameter=value ... ]
+# 
+# Input files:  
+#       XRT 'xhead' file;
+#       XRT Attitude File;
+#       XRT FITS Makefilter Configuration File from CALDB or supply by user
+#
+#
+# Output files: 
+#       Attitude Orbit file ('prefilter' output)
+#       Attitude File  ('makefilter' output)
+#               
+# HEADAS tasks needed:
+#          - ftstat
+#          - ftselect
+#          - ftchecksum
+#          - ftcalc
+#          - ftcopy
+#          - pget
+#
+# LHEASOFT tasks needed:
+#
+#============================================================#
+
+require "libswxrtperl.pl";
+#require "/home/tamburelli/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#require "/home/primavera/src/xrt/lib/xrtperl/libswxrtperl.pl";
+#use diagnostics -verbose;
+#enable  diagnostics;
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use strict;
+
+use vars qw( %Task %Default @Par $mkfconfigfile @Cleanuplist  %mkfconfigencol $exist_utcfinit $utcfinit);
+
+$Task{status} = 0;
+
+$exist_utcfinit = 0;
+#
+# Specific of the task
+#
+%Task = (
+	 start => `date`,
+	 name  => "xrtfilter",
+	 version => "0.4.4",
+	 releasedate => "2016-11-17",
+	 stem => "xrtfilter_0.4.4",
+	 emptystem => "               ",
+	 clobber => 0,  # it means 'clobber=no'
+	 nonulls => 0,  # it means 'nonulls=no'
+	 chatter => 0,
+	 status => 0,
+	 errmess => "",
+	 history => "",
+	 );
+
+#
+#  Defaults
+#
+
+#
+#  Defaults
+#
+%Default = (
+	    DEFAULT => "DEFAULT",
+	    CALDB   => "CALDB",
+	    NONE    => "NONE",
+	    NOTVALDPARNUMB => -9999999999,
+	    NOTVALDRADEC   => -91,
+	    MISSIONEPOCH   => "2001-01-01T00:00:00.000",
+	    KNM_TSTART => "TSTART",
+	    KNM_TSTOP  => "TSTOP",
+	    KNM_TELESCOP => "TELESCOP",
+	    KNM_RA_PNT   => "RA_PNT",
+	    KNM_DEC_PNT  => "DEC_PNT",
+	    MKCONFEXTENSION => "smkf.conf",
+	    MKFILEEXTENSION => "s.mkf",
+	    HDFILEEXTENSION => "xhdtc.hk",   # TBC
+	    ACSDATAFILEEXTENSION => ".acsdata",   # TBC
+	    );
+
+#
+# Get Input Parameters 
+#
+
+if ( &GetInputParameters ) {
+    $Task{errmess} = "Error: parsing input parameters";
+    goto EXITWITHERROR;
+}
+
+
+$Task{history} = &GetValPar("history");
+
+#my $p;
+#
+# foreach $p (@Par) {
+#     print "param: $p->{name} -  $p->{val}\n";
+# }
+
+
+
+my $od = &GetValPar("outdir");
+
+$od =~ s/\/$// ;
+
+&SetValPar("outdir",$od); ;
+
+if ( &GetValPar("clobber") =~ /[yY]/ ) {
+    $Task{clobber} = 1;
+}
+
+if ( &GetValPar("nonulls") =~ /[yY]/ ) {
+    $Task{nonulls} = 1;
+}
+
+&RunningTask;
+
+if ( ! -f &GetValPar("attfile") ) {
+    $Task{errmess} = "File Attitude: '" . &GetValPar("attfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+
+if ( &getUtcfInit ) 
+{ 
+    goto EXITWITHERROR; 
+}
+
+
+# Check ATTFLAG keyword from the input Attitude File
+my ( $attflag );
+&GetAttitudeATTFLAG(&GetValPar("attfile"), \$attflag);
+if ($Task{status}){ 
+    goto EXITWITHERROR;
+}
+if( $attflag eq "111" || $attflag eq "101" ){
+    &PrntChty(2,"$Task{stem}: Error: input attitude file sw*uat.fits not suitable for XRT data processing,\n");
+    &PrntChty(2,"$Task{stem}: Error:  use the sw*sat.fits or sw*pat.fits one.\n");
+    goto EXITWITHERROR;
+}
+
+if ( ! -f &GetValPar("hdfile") ) {
+    $Task{errmess} = "Observation Header File: '" . &GetValPar("hdfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if ( &CompUL(&GetValPar("configfile"), $Default{NONE}) && ! -f &GetValPar("enfile") ) {
+    $Task{errmess} = "Observation Spacecraft Housekeeping File: '" . &GetValPar("enfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+if (  ! &CompUL( &GetValPar("alignfile"),$Default{NONE} ) && ! -f &GetValPar("alignfile") ) {
+    $Task{errmess} = "Attitude Alignment File: '" . &GetValPar("alignfile") . "' not found";
+    goto EXITWITHERROR;
+}
+
+
+if ( ! -d &GetValPar("outdir") ) {
+    if ( ! mkdir &GetValPar("outdir"), 0777) {
+        $Task{errmess} = "$Task{stem}: Error: Unable to create the output directory '" . &GetValPar('outdir') . ": $!'";
+	goto EXITWITHERROR;
+    }
+}
+
+my $noneconfigfile=1;
+
+if ( ! &CompUL(&GetValPar("configfile"), $Default{NONE}) ){
+    $noneconfigfile=0;
+}
+
+
+if ( &RunPrefilter ) { goto EXITWITHERROR; }
+
+# my $p;
+# foreach $p (@Par) {
+#     print "2 - param: $p->{name} -  $p->{val}\n";
+# }
+
+
+if ( &RunMakefilter ) { goto EXITWITHERROR; }
+
+
+# Add STLOCKFL and STLOCKST columns
+# and Delete temporary columns
+
+if($noneconfigfile){
+
+    my ($fits, $status, $colnum);
+    my ($stlockfl_ok, $stlockst_ok) = (1, 1);    
+    my ($command, $ret);
+    my @delcolumns;
+
+
+    &PrntChty(3,"$Task{stem}: Info: Adding 'STLOCKFL' and 'STLOCKST' columns to the\n");
+    &PrntChty(3,"$Task{stem}: Info: " .  &GetValPar("mkffile"). " makefilter file\n");
+
+
+    # Check if needed columns exist
+
+    fits_open_file($fits, &GetValPar("mkffile"), READONLY, $status);
+    
+    if (not $fits) {
+	$Task{errmess} = "Unable to open fits file : ".&GetValPar("mkffile");
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+    
+    fits_movnam_hdu($fits, ANY_HDU, "FILTER", 0, $status);
+    if ( $status ) {
+	$Task{errmess} = "Unable to move in FILTER ext of file : ".&GetValPar("mkffile");
+	$Task{status} = 1;
+	goto EXITWITHERROR;
+    }
+
+
+    fits_get_colnum($fits, 0, "SAC_MODESTAT", $colnum, $status);
+    if ( $status ) {
+
+	&PrntChty(3,"$Task{stem}: Warning: 'SAC_MODESTAT' column not found\n");
+	&PrntChty(3,"$Task{stem}: Warning: 'STLOCKFL' column will not be computed in makefilter file\n");
+
+	$stlockfl_ok=0;
+	$status=0;
+    }
+
+    fits_get_colnum($fits, 0, "STA0VALID", $colnum, $status);
+    if ( $status ) {
+	&PrntChty(3,"$Task{stem}: Warning: 'STA0VALID' column not found\n");
+	$stlockst_ok=0;
+	$status=0;
+    }
+
+    fits_get_colnum($fits, 0, "STA1VALID", $colnum, $status);
+    if ( $status ) {
+	&PrntChty(3,"$Task{stem}: Warning: 'STA1VALID' column not found\n");
+	$stlockst_ok=0;
+	$status=0;
+    }
+
+    fits_get_colnum($fits, 0, "STA2VALID", $colnum, $status);
+    if ( $status ) {
+	&PrntChty(3,"$Task{stem}: Warning: 'STA2VALID' column not found\n");
+	$stlockst_ok=0;
+	$status=0;
+    }
+
+    fits_get_colnum($fits, 0, "STA3VALID", $colnum, $status);
+    if ( $status ) {
+	&PrntChty(3,"$Task{stem}: Warning: 'STA3VALID' column not found\n");
+	$stlockst_ok=0;
+	$status=0;
+    }
+
+    fits_get_colnum($fits, 0, "STA4VALID", $colnum, $status);
+    if ( $status ) {
+	&PrntChty(3,"$Task{stem}: Warning: 'STA4VALID' column not found\n");
+	$stlockst_ok=0;
+	$status=0;
+    }
+
+    fits_get_colnum($fits, 0, "STA5VALID", $colnum, $status);
+    if ( $status ) {
+	&PrntChty(3,"$Task{stem}: Warning: 'STA5VALID' column not found\n");
+	$stlockst_ok=0;
+	$status=0;
+    }
+
+    if(!$stlockst_ok)
+    { &PrntChty(3,"$Task{stem}: Warning: 'STLOCKST' column will not be computed in makefilter file\n"); }
+
+
+    fits_close_file($fits,$status);
+
+
+    # Add columns
+
+    my (@newcolnames, @expressions, @mkfext, @tform);
+
+    if($stlockfl_ok){	
+	push @newcolnames, "STLOCKFL";
+	push @expressions, "(SAC_MODESTAT/32)%2";
+	push @mkfext, "FILTER";
+	push @tform, "1B";
+    }
+
+    if($stlockst_ok){
+	push @newcolnames, "STLOCKST";
+	push @expressions, "(isnull(STA0VALID)?0:STA0VALID)+(isnull(STA1VALID)?0:STA1VALID)+(isnull(STA2VALID)?0:STA2VALID)+(isnull(STA3VALID)?0:STA3VALID)+(isnull(STA4VALID)?0:STA4VALID)+(isnull(STA5VALID)?0:STA5VALID)";
+	push @mkfext, "FILTER";
+	push @tform, "1B";
+    }
+
+    
+    for ( my $ii = 0 ; $ii <=  $#newcolnames ; $ii++ ) {
+	
+	my $TmpFile = &GetValPar("mkffile").$$."tmp";
+	if ( -f $TmpFile ) { unlink ($TmpFile); }
+	
+	$command = "ftcalc infile=\"".&GetValPar("mkffile")."[$mkfext[$ii]]\" outfile=$TmpFile column=$newcolnames[$ii] expression=\"$expressions[$ii]\" tform=$tform[$ii] clobber=". &GetValPar("clobber");
+
+	$ret = 0;
+	$ret = system( $command );
+	if ( $ret != 0 ) {
+	    $Task{errmess} = "Error: running '$command'";
+	    goto EXITWITHERROR;
+	}
+	
+	
+	&RenameFile($TmpFile, &GetValPar("mkffile"));
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Error: cannot rename $TmpFile into " . &GetValPar("mkffile"). " \n");
+	    $Task{errmess} = "Error: cannot overwrite the 'mkffile' file\n";
+	    goto EXITWITHERROR;
+	}
+    }
+
+
+    # Delete temporary columns
+
+    if(!($mkfconfigencol{"SAC_MODESTAT"} eq "set"))
+    { push @delcolumns, "SAC_MODESTAT"; }
+    
+    if(!($mkfconfigencol{"STA0VALID"} eq "set"))
+    { push @delcolumns,"STA0VALID"; }
+    
+    if(!($mkfconfigencol{"STA1VALID"} eq "set"))
+    { push @delcolumns,"STA1VALID"; }
+    
+    if(!($mkfconfigencol{"STA2VALID"} eq "set"))
+    { push @delcolumns,"STA2VALID"; }
+    
+    if(!($mkfconfigencol{"STA3VALID"} eq "set"))
+    { push @delcolumns,"STA3VALID"; }
+    
+    if(!($mkfconfigencol{"STA4VALID"} eq "set"))
+    { push @delcolumns,"STA4VALID"; }
+    
+    if(!($mkfconfigencol{"STA5VALID"} eq "set"))
+    { push @delcolumns,"STA5VALID"; }
+
+    
+    &delFitsCol(&GetValPar("mkffile"), "FILTER", @delcolumns);
+    
+    if ( $Task{status} ) {
+	goto EXITWITHERROR;
+    }
+
+    &UpdateCheckSum(&GetValPar("mkffile"));
+
+}
+
+
+# run fselect on mkffile if nonulls = yes
+
+if ( $Task{nonulls} ) {
+    if ( &CleanMkffile() ) { goto EXITWITHERROR; }
+}
+
+
+# if gtiexpr != NONE apply the gti expression on attitude
+# to generate GTIs for mkf screening 
+if ( ! &CompUL( &GetValPar("gtiexpr"),$Default{NONE} )) {
+    if ( !&GetValPar("gtiexpr") ) { goto EXITWITHERROR; }
+    if ( &ScreenMkf() ) { goto EXITWITHERROR; }
+}
+else {
+    &PrntChty(4,"$Task{stem}: Info: No GTI screening applied on " . &GetValPar("mkffile") . "\n");
+}
+
+#
+# end of xrtfilter
+#
+
+print "__________________________\n";
+
+#&Cleanup(@Cleanuplist);
+&Success;
+
+
+
+exit (0);
+
+EXITWITHERROR:
+    &Error;
+    exit(1);
+
+#-------------------------------------------------------------
+#  subroutines section
+#-------------------------------------------------------------
+
+sub getUtcfInit()
+{
+	use vars qw( %Task $exist_utcfinit $utcfinit);
+	
+	my ($input,$fptrin,$fptrin2,$comm_utcfinit,$status,$exist_utcfinit_enfile);
+
+	$input=&GetValPar("attfile");
+	
+	fits_open_file($fptrin,$input,READONLY,$status);
+	if ($status) {
+	    $Task{status} = 1;
+	    $Task{errmess} = "File Attitude: '" . &GetValPar("attfile") . "' not found";
+	    return 1;
+	}
+	
+	fits_movabs_hdu($fptrin,1,ANY_HDU,$status);
+	
+	if ( $status==0 ) 
+	{
+	  $exist_utcfinit = 1;
+	  fits_read_keyword($fptrin,"UTCFINIT",$utcfinit,$comm_utcfinit,$status); 
+	  if ($status && $status != KEY_NO_EXIST) 
+	  {
+	      $exist_utcfinit = 0;
+	  }
+	  elsif ($status == KEY_NO_EXIST) 
+	  {
+	      $exist_utcfinit = 0;
+	  }
+	}
+	else
+	{
+	    $exist_utcfinit = 0;
+	}
+
+	fits_close_file($fptrin,$status);
+
+	if($exist_utcfinit == 1)
+	{
+	    return 0;
+	}
+	elsif($exist_utcfinit == 0)
+	{
+	    
+	    $input=&GetValPar("enfile");
+	    
+	    $status=0;
+	    
+	    fits_open_file($fptrin,$input,READONLY,$status);
+
+	    if ($status) {
+		$Task{status} = 1;
+		$Task{errmess} = "File Spacecraft Housekeeping: '" . &GetValPar("enfile") . "' not found";
+		return 1;
+	    }
+	    
+	    fits_movabs_hdu($fptrin,1,ANY_HDU,$status);
+	    if ( $status ) {
+		&PrntChty(2,"$Task{stem}: Error: movnabs_hdu: error on '$input' file\n");
+		&PrntChty(2,"$Task{stem}: Error: unable to move to extension 1\n");
+		$Task{status} = 1;
+		return 1;
+	    }
+	    
+	    $exist_utcfinit_enfile = 1;
+	    
+	    fits_read_keyword($fptrin,"UTCFINIT",$utcfinit,$comm_utcfinit,$status); 
+	    if ($status && $status != KEY_NO_EXIST) 
+	    {
+		$exist_utcfinit_enfile=0;
+		$Task{status} = 1;
+		$Task{errmess} = "Error reading keyword UTCFINIT from file " . &GetValPar("enfile");
+		return 1;
+	    }
+	    elsif ($status == KEY_NO_EXIST) 
+	    {
+		$exist_utcfinit_enfile=0;
+		$Task{status} = 1;
+		$Task{errmess} = "Error keyword UTCFINIT not found in input " . &GetValPar("enfile") . " prefilter run cannot be executed";
+		return 1;
+	    }
+	}
+	
+# 	if($exist_utcfinit_enfile)
+# 	{
+# 	    print("UTCFINIT(enfile) : ".$utcfinit."' \n");
+# 	}
+	
+	fits_close_file($fptrin,$status);
+	
+} # getUtcfInit
+
+sub GetInputParameters {
+
+    use vars qw( %Task $datamode @Par %Ind);
+  
+    my ( $name, $indref, $p);
+
+    # temporay set of chatter to normal
+    $Task{chatter} = 3;
+
+    # get parameter list from parameter file
+    ($indref,@Par) = &GetParameterList();
+    if ( $Task{status} ) { goto EXITWITHERROR; }
+
+    %Ind = %$indref;
+
+
+    if (! &LoadParameterFromCmdLine(@ARGV)) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+
+    # get 'configfile' parameter
+    if ( &GetValPar("configfile","set") == 0 ) {
+	my $Stringa = "";
+	chop($Stringa = qx(pquery2 xrtfilter configfile));
+	if ( !$Stringa ) {
+	    print "Error: error running: 'pquery2 xrtfilter configfile'\n";
+	    return 1;
+	}
+	&SetValPar("configfile",$Stringa);
+	if ( $Task{status} ) { return 1; }
+	&SetValPar("configfile",2,"set");
+	if ( $Task{status} ) { return 1; }
+    }
+
+    # If configfile!=NONE no spacecraft housekeeping file is needed
+    if ( !&CompUL(  &GetValPar("configfile") , $Default{NONE} ) ){
+
+	if ( &GetValPar("enfile","set") != 1 ) {&SetValPar("enfile",2,"set");}
+    }
+
+
+    if (! &LoadParameter()) {
+	print "$Task{errmess}\n";
+	return 1;
+    }
+        
+    $Task{chatter} = &GetValPar("chatter");
+        
+    return 0;
+} #GetInputParameters
+
+
+#
+# PREFILTER
+#
+
+sub RunPrefilter {
+
+    use vars qw( %Task $exist_utcfinit $utcfinit);
+    my ( $command, $ret, $par, %prefilter );
+
+    if ( &CompUL( &GetValPar("outfile") , $Default{DEFAULT} ) ) {
+	&PrntChty(3,"$Task{stem}: Info: Get Attitud Orbit File Name\n");
+	
+
+	my $DefStemIn = &GetSwXRTDefaultStem (  &GetValPar("hdfile") );
+	if ( $Task{status} ) {
+	    &PrntChty(3,"$Task{stem}: Error: Please set parameter 'outfile' to specific output File Name\n");
+	    return 1;
+	}
+	&SetValPar("outfile", &GetAttOrbFileName(&GetValPar("outfile"), $Default{DEFAULT}, $DefStemIn));
+
+    }
+    &PrntChty(3,"$Task{stem}: Info: Attitude Orbit output will be " .  &GetValPar("outfile") . "\n");
+    
+
+    if ( -f &GetValPar("outdir") . "/" .  &GetValPar("outfile")) {
+	if ( !$Task{clobber} ) {
+	    &PrntChty(3,"$Task{stem}: Error: the '" .  &GetValPar("outdir") . "/" .  &GetValPar("outfile") . "' file exists\n");
+	    &PrntChty(3,"$Task{stem}: Error: but the input parameter 'clobber' set to 'no'\n");
+	    &PrntChty(3,"$Task{stem}: Error: please delete '" .  &GetValPar("outdir") . "/" .  &GetValPar("outfile") . "' or\n");
+	    &PrntChty(3,"$Task{stem}: Error: set the input parameter 'clobber' to 'yes'\n");
+	    $Task{errmess} = "Parameter 'clobber' set to 'no'";
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    unlink (  &GetValPar("outdir") . "/" .  &GetValPar("outfile") );
+	}
+    }
+
+    # Get needed keywords from Event File header:
+    my $KVL_TSTART;
+    &GetKeyword (  &GetValPar("hdfile"), undef, undef,$Default{KNM_TSTART}, \$KVL_TSTART);
+    if ( $Task{status} ) 
+    { 
+	&PrntChty(3,"$Task{stem}: Error: Keyword $Default{KNM_TSTART} does not exist in " .  &GetValPar("hdfile") . "  file.\n");
+	return 1;
+    }
+    my $KVL_TSTOP;
+    &GetKeyword (  &GetValPar("hdfile"), undef, undef,$Default{KNM_TSTOP}, \$KVL_TSTOP);
+    if ( $Task{status} ) 
+    { 
+	&PrntChty(2,"$Task{stem}: Error: Keyword $Default{KNM_TSTOP} does not exist in " .  &GetValPar("hdfile") . " file.\n");
+	return 1;
+    }
+
+    if (  &GetValPar("ranom") <= $Default{NOTVALDRADEC} || 
+	  &GetValPar("decnom") <= $Default{NOTVALDRADEC} ) {
+	
+	my $decnom;
+	my $ranom;
+	&GetPntFromExt( &GetValPar("hdfile"),"FRAME",undef,\$ranom,\$decnom, undef);
+	if ( $Task{status} ) { return 1; }
+
+	&SetValPar("ranom",$ranom);
+	&SetValPar("decnom",$decnom);
+    }
+    &RunningSub($Task{stem},"prefilter");
+
+    &PrntChty(3,"$Task{stem}: Info: Using Nominal Pointing:  RA_PNT = '". &GetValPar("ranom") ."'\n");
+    &PrntChty(3,"$Task{stem}: Info: Using Nominal Pointing: DEC_PNT = '". &GetValPar("decnom") ."'\n");
+
+
+
+
+    my $stroutcols = &GetColumnFilter();
+    if ($Task{status} || $stroutcols eq "") { goto EXITWITHERROR;}
+
+
+#
+# Build the command line to run 'prefilter'
+#
+
+
+    
+
+
+       %prefilter = (
+		  outname      => &GetValPar("outdir") . "/" . &GetValPar("outfile"),
+		  columns      => "\"" . $stroutcols . "\"",
+		  orbmode      => &GetValPar("orbmode"),
+		  orbname      => &GetValPar("orbfile"),
+		  attname      => &GetValPar("attfile"),
+		  leapname     => &GetValPar("leapfile"),
+		  rigname      => &GetValPar("rigfile"),
+		  alignfile    => &GetValPar("alignfile"),
+		  start        => $KVL_TSTART,
+		  end          => $KVL_TSTOP,
+		  interval     => &GetValPar("interval"),
+		  ranom        => &GetValPar("ranom"),
+		  decnom       => &GetValPar("decnom"),
+		  origin       => &GetValPar("origin"),
+		  missepoch    => $Default{MISSIONEPOCH},
+		  history      => &GetValPar("history"),
+		  chatter      => &GetValPar("chatter"),
+		  clobber      => &GetValPar("clobber"),
+		  );
+    
+    $command = "prefilter";
+    if($exist_utcfinit==1)
+    {
+	$command .= " timeadj=DEFAULT";
+    }
+    else
+    {
+	$command .= " timeadj=CONST:$utcfinit";
+    }
+    
+    for $par ( keys %prefilter ) { $command .= " $par=$prefilter{$par}"; } 
+
+    &RunningComm("RunPrefilter",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunPrefilter","prefilter",$command);
+        $Task{errmess} = "Error running 'prefilter'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    # update checksum
+    if ( system("ftchecksum $prefilter{outname} update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Warning: Error updating '$prefilter{outname}' checksum\n"); }
+
+    &SuccessSub($Task{stem},"prefilter","'$prefilter{outname}' created");
+    return 0;
+
+} # RunPrefilter
+
+
+sub RunMakefilter {
+
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %makefilter );
+
+    # Get make filter configuration file
+
+    &MkConfigFile;
+    if ( $Task{status} ) { return 1; }
+
+    # Get output make filter file name
+
+    if ( &CompUL( &GetValPar("mkffile") , $Default{DEFAULT} ) ) {
+	&PrntChty(3,"$Task{stem}: Info: Get makefilter output file name\n");
+
+#	 my $p;
+#	 foreach $p (@Par) {
+#	     print "param: $p->{name} -  $p->{val}\n";
+#	 }
+
+	my $InStem = &GetSwXRTDefaultStem (  &GetValPar("hdfile") ); 
+	if ( $Task{status} ) {
+	    &PrntChty(3,"$Task{stem}: Error: Please set parameter 'mkffile' to specific output File Name\n");
+	    return 1;
+	}
+	&SetValPar("mkffile", &GetValPar("outdir") . "/$InStem$Default{MKFILEEXTENSION}");
+    }
+    &PrntChty(3,"$Task{stem}: Info: Makefilter output will be " .  &GetValPar("mkffile") . "\n");
+
+#
+#    TELESCOP
+#
+
+    my $KVL_TELESCOP;
+    &GetKeyword (  &GetValPar("hdfile") , "FRAME", undef , $Default{KNM_TELESCOP}, \$KVL_TELESCOP);
+    if ( $Task{status} ) 
+    { 
+	&PrntChty(3,"$Task{stem}: Error: Keyword $Default{KNM_TELESCOP} does not exist in " .  &GetValPar("hdfile") . " file.\n");
+	return 1;
+    }
+
+#
+#   makefilter does not handle 'clobber' parameter
+#
+
+    my $mkfoutputfile = &GetValPar("mkffile");
+    if ( -f $mkfoutputfile && $Task{clobber} ) {
+	unlink ( $mkfoutputfile );
+    }
+
+    &RunningSub($Task{stem},"makefilter");
+
+#
+# Build the command line to run 'makefilter'
+#
+    %makefilter = (
+		   configure  =>  &GetValPar("configfile"),
+		   infileroot =>  &GetValPar("hdstem"),
+		   outfile    =>  &GetValPar("mkffile"),
+		   mission    => $KVL_TELESCOP,
+		   clobber    =>  &GetValPar("clobber"),
+		   chatter    => $Task{chatter},
+		   history    => $Task{history},
+		   );
+
+    $command = "makefilter";
+    for $par ( keys %makefilter ) { 
+	if ( $par ne "infileroot" ) { $command .= " $par=$makefilter{$par}"; } 
+    } 
+    $command .= " infileroot=$makefilter{infileroot}"; 
+
+    &RunningComm("RunMakefilter",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    if ( $ret != 0 ) {
+	&ErrorComm("RunMakefilter","makefilter",$command);
+	$Task{errmess} = "Error running 'makefilter' with '" .  &GetValPar("configfile") . "' file";
+	$Task{status} = 1;
+	return 1;
+    }
+    &SuccessSub($Task{stem},'makefilter',"'" .  &GetValPar("mkffile") . "' created");
+ 
+
+    if (&WriteParameterList(&GetValPar("mkffile"),-1,@Par)) {goto EXITWITHERROR;}
+   
+    if (&write_history(&GetValPar("mkffile"),-1,"CALDB mkfconfig file: $mkfconfigfile")){goto EXITWITHERROR;}
+
+    return 0;
+
+} # RunMakefilter
+
+
+sub MkConfigFile {
+
+    use vars qw( %Task %Default $mkfconfigfile %mkfconfigencol);
+    my ( $ConfFileName, $InStem );
+    my ( $acsflagext ) = -1;
+    my ( $flagscol ) = -1;
+
+    if ( &CompUL( &GetValPar("hdstem"),$Default{NONE} ) ) {  &SetValPar("hdstem", "\" \""); }
+    elsif ( &CompUL(  &GetValPar("configfile") , $Default{NONE} ) ) {
+	&PrntChty(3,"$Task{stem}: Error: 'hdstem' cannot be input if 'configfile' equal to 'NONE'\n");
+	$Task{errmess} = "Error: 'hdstem' cannot be input if 'configfile' equal to 'NONE'";
+	$Task{status} = 1;
+	return;
+    } 
+
+    if ( &CompUL(  &GetValPar("configfile") , $Default{NONE} ) ) {
+	&PrntChty(3,"$Task{stem}: Info: Create an ASCII Makefilter configuration file\n");
+	( my $InStem ) = &GetRootStem (  &GetValPar("hdfile") , $Default{HDFILEEXTENSION} );
+	if ( $Task{status} ) {
+	    $Task{status} = 0;
+	    $Task{message} = "";
+	    &SetValPar("configfile", &GetValPar("outdir") . "/" . $$ . "$Default{MKCONFEXTENSION}" );
+	}
+	else {
+	    &SetValPar("configfile", &GetValPar("outdir") . "/$InStem$Default{MKCONFEXTENSION}");
+	}
+
+	my( @MkfConfTable ) = &ReadMkfConfigureFile();
+	if ( $Task{status} ) { return 1; }
+
+	# get from the attitude file the 'ACS_DATA' extension number and the
+        # 'FLAG' column number
+
+	$acsflagext = &GetNumExtName(&GetValPar("attfile"),"ACS_DATA");
+	if ( $Task{status} ) { return 1; }
+
+	if ( $acsflagext >= 0 ) { 
+	    my $fptr = &GetFitsPointer(&GetValPar("attfile"),"ACS_DATA",undef,READONLY);
+	    if ($Task{status}) { 
+		return 1;
+	    }
+
+	    my ( $colindex , $status ) = ( 0, 0 );
+	    &fits_get_colnum($fptr,0, "FLAGS" , $flagscol, $status);
+	    if ($status==COL_NOT_FOUND) {
+		&PrntChty(2,"$Task{stem}: Warning: Column 'FLAGS' not found,\n");
+		&PrntChty(2,"$Task{stem}: Warning: old format for '". &GetValPar("outdir") . "' file\n");
+		$status = 0;
+	    }
+	    elsif ( $status ) {
+		my ( $str );
+		fits_get_errstatus($status,$str);
+		&PrntChty(2,"$Task{stem}: Error: Getting from ". &GetValPar("outdir") . " the 'FLAGS' column number\n");
+		&PrntChty(2,"$Task{stem}: Error: GetKeyword: FITSIO error: $str\n");
+		fits_close_file($fptr,$status);
+		$Task{errmess} = "Error Reading ". &GetValPar("outdir") . " file";
+		$Task{status}= 1;
+		return 1;
+	    }
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Warning: Column 'FLAGS' not found,\n");
+	    &PrntChty(2,"$Task{stem}: Warning: old format for '". &GetValPar("outdir") . "' file\n");
+	}
+
+	if ( !open ( MKCONF, "> " .  &GetValPar("configfile") ) ) {
+
+	    &PrntChty(2,"\n$Task{stem}: Error: Cannot Create '" .  &GetValPar("configfile") . "' Makefilter Configuration File\n");
+	    $Task{errmess} = "Error: Cannot  Create '" .  &GetValPar("configfile") . "'";
+	    $Task{status} = 1;
+	    return;
+
+	}
+
+	for (my $i = 0; $i <= $#MkfConfTable ; $i++) {
+
+	    my $filename;
+
+	    if ( $MkfConfTable[$i]->{ORIGIN} eq "ATTITUDE" ) {
+		$filename =  &GetValPar("outdir") . "/" .  &GetValPar("outfile"); 
+	    }
+	    elsif ( $MkfConfTable[$i]->{ORIGIN} eq "HK" ) { 
+		$filename =  &GetValPar("hdfile"); 
+	    }
+	    elsif ( $MkfConfTable[$i]->{ORIGIN} eq "EN" ) { 
+
+		$filename =  &GetValPar("enfile"); 
+		$mkfconfigencol{$MkfConfTable[$i]->{PARNAME}}="set";
+	    }
+	    else {
+		&PrntChty(2,"\n$Task{stem}: Error: on column 'ORIGIN' row number $i+1 of 'mkconfigfile'\n");
+		&PrntChty(2,"\n$Task{stem}: Error: value not allowed\n");
+		$Task{errmess} = "'mkconfigfile' FITS file with not allowed 'ORIGIN' value";
+		$Task{status} = 1;
+		return;
+	    }   
+
+	    print MKCONF "$MkfConfTable[$i]->{PARNAME} $filename $MkfConfTable[$i]->{EXTENSION} $MkfConfTable[$i]->{INTERP} $MkfConfTable[$i]->{CALIB} $MkfConfTable[$i]->{OUTPARNAME}\n"; 
+	}
+
+
+
+	# Add to the configuration file the columns SAC_MODESTAT STA0VALID STA1VALID STA2VALID STA3VALID STA4VALID and STA5VALID
+	# from spacecraft housekeeping file
+
+	if(1){
+
+	    my $temporarycol="";
+
+	    if(!($mkfconfigencol{SAC_MODESTAT} eq "set")){ 
+		print MKCONF "SAC_MODESTAT ".&GetValPar("enfile")." hk011x001 D D %\n"; 
+		$temporarycol.="SAC_MODESTAT";
+	    }
+
+	    if(!($mkfconfigencol{STA0VALID} eq "set")){
+		print MKCONF "STA0VALID ".&GetValPar("enfile")." hk013x001 D D %\n"; 
+		$temporarycol.=" STA0VALID";
+	    }
+
+ 	    if(!($mkfconfigencol{STA1VALID} eq "set")){ 
+		print MKCONF "STA1VALID ".&GetValPar("enfile")." hk014x001 D D %\n";
+		$temporarycol.=" STA1VALID";
+	    }
+
+	    if(!($mkfconfigencol{STA2VALID} eq "set")){
+		print MKCONF "STA2VALID ".&GetValPar("enfile")." hk010x001 D D %\n"; 
+		$temporarycol.=" STA2VALID";
+	    }
+
+	    if(!($mkfconfigencol{STA3VALID} eq "set")){
+		print MKCONF "STA3VALID ".&GetValPar("enfile")." hk011x001 D D %\n"; 
+		$temporarycol.=" STA3VALID";
+	    }
+
+	    if(!($mkfconfigencol{STA4VALID} eq "set")){
+		print MKCONF "STA4VALID ".&GetValPar("enfile")." hk012x001 D D %\n"; 
+		$temporarycol.=" STA4VALID";
+	    }
+
+	    if(!($mkfconfigencol{STA5VALID} eq "set")){
+		print MKCONF "STA5VALID ".&GetValPar("enfile")." hk013x001 D D %\n"; 
+		$temporarycol.=" STA5VALID";
+	    }
+
+	    if(!($temporarycol eq "")){
+		&PrntChty(3,"$Task{stem}: Info: Added temporary columns: $temporarycol\n");
+		&PrntChty(3,"$Task{stem}: Info: to the " . &GetValPar("configfile"). " configuration file\n");
+		&PrntChty(3,"$Task{stem}: Info: taken from the spacecraft housekeeping file\n");
+	    }
+	}
+
+
+	# 20050301 If the ATTITUDE file has the ACS_DATA extension and FLAGS colun
+	# add to the configuration file the TEN_ARCMIN, SETTLED, ACS_SAA, SAFEHOLD
+	# columns
+
+	if ( $acsflagext > 0 && $flagscol >= 0 ) {
+
+	    my ( $command, $ret  );
+	    my $AcsdataFile = substr(&GetValPar("configfile"),0,rindex(&GetValPar("configfile"),'.')).$Default{ACSDATAFILEEXTENSION};
+
+	    &PrntChty(3,"$Task{stem}: Info: Adding TEN_ARCMIN, SETTLED, ACS_SAA, SAFEHOLD to the\n");
+	    &PrntChty(3,"$Task{stem}: Info: " .  &GetValPar("configfile"). " configuration file\n");
+	    &PrntChty(3,"$Task{stem}: Info: taken from the attitude file\n");
+	    &PrntChty(4,"$Task{stem}: Info: Creating a temporary file with additional columns needed\n");
+
+	    # create the temporary ouput file with TIME and FLAGS columns
+	    $command = "ftcopy infile=\"" . &GetValPar("attfile") . "[ACS_DATA][col TIME; FLAGS]\" outfile=$AcsdataFile copyall=no clobber=". &GetValPar("clobber");
+
+	    $ret = 0;
+	    $ret = system( $command );
+	    if ( $ret != 0 ) {
+		my ($mess) = "" ;
+		&ErrorComm("MkConfigFile","ftcopy",$command);
+		$Task{errmess} = "Error: running 'ftcopy'";
+		$Task{status} = 1;
+		close ( MKCONF );
+		return 1;
+	    }
+
+	    # crate separate colums for each FLAG
+	    my @newcolnames = ("TEN_ARCMIN", "SETTLED", "ACS_SAA", "SAFEHOLD" );
+	    my @expressions = ("FLAGS[1]","FLAGS[2]","FLAGS[3]","FLAGS[4]");
+
+	    for ( my $ii = 0 ; $ii <=  $#newcolnames ; $ii++ ) {
+
+		my $TmpFile = substr($AcsdataFile,0,rindex($AcsdataFile,'.')).".tmp";
+		if ( -f $TmpFile ) { unlink ($TmpFile); }
+		
+		$command = "ftcalc infile=$AcsdataFile outfile=$TmpFile column=$newcolnames[$ii] expression=\"$expressions[$ii]\" tform=1B clobber=". &GetValPar("clobber");
+
+		$ret = 0;
+		$ret = system( $command );
+		if ( $ret != 0 ) {
+		    my ($mess) = "" ;
+		    &ErrorComm("MkConfigFile","ftcalc",$command);
+		    $Task{errmess} = "Error: running 'ftcalc'";
+		    $Task{status} = 1;
+		    close ( MKCONF );
+		    return 1;
+		}
+
+		if ( !unlink ($AcsdataFile) ) {
+		    &PrntChty(2,"$Task{stem}: Error: Cannot delete '$AcsdataFile' file: $!\n");
+		    $Task{errmess} = "Cannot delete '$AcsdataFile' file";
+		    $Task{status} = 1;
+		    close ( MKCONF );
+		    return 1;
+		}
+		
+		if ( &RenameFile($TmpFile, $AcsdataFile) ) {
+		    $Task{status} = 1;
+		    close ( MKCONF );
+		    return 1;
+		}
+
+		$command = "ftcalc infile=$AcsdataFile outfile=$TmpFile column=$newcolnames[$ii] expression=\"$newcolnames[$ii]>0?1:0\" tform=1B clobber=". &GetValPar("clobber");
+
+		$ret = 0;
+		$ret = system( $command );
+		if ( $ret != 0 ) {
+		    my ($mess) = "" ;
+		    &ErrorComm("MkConfigFile","ftcalc",$command);
+		    $Task{errmess} = "Error: running 'ftcalc'";
+		    $Task{status} = 1;
+		    close ( MKCONF );
+		    return 1;
+		}
+
+		if ( !unlink ($AcsdataFile) ) {
+		    &PrntChty(2,"$Task{stem}: Error: Cannot delete '$AcsdataFile' file: $!\n");
+		    $Task{errmess} = "Cannot delete '$AcsdataFile' file";
+		    $Task{status} = 1;
+		    close ( MKCONF );
+		    return 1;
+		}
+		
+		if ( &RenameFile($TmpFile, $AcsdataFile) ) {
+		    $Task{status} = 1;
+		    close ( MKCONF );
+		    return 1;
+		}
+	    }
+
+	    print MKCONF "TEN_ARCMIN $AcsdataFile ACS_DATA D D % ACS reports within 10 arcmin of target\n";
+	    print MKCONF    "SETTLED $AcsdataFile ACS_DATA D D % ACS reports settled on target\n";
+	    print MKCONF    "ACS_SAA $AcsdataFile ACS_DATA D D % ACS reports in SAA\n";
+	    print MKCONF   "SAFEHOLD $AcsdataFile ACS_DATA D D % ACS reports in SAFE\n";
+
+	}
+
+	close ( MKCONF );
+	&PrntChty(3,"$Task{stem}: Info: Created '" .  &GetValPar("configfile") . "' file\n");
+    }
+    else {
+	&PrntChty(3,"$Task{stem}: Info: Using '" .  &GetValPar("configfile") . "' ASCII Makefilter configuration file\n");
+    }
+
+    return;
+
+} # MkConfigFile
+
+sub ReadMkfConfigureFile {
+    use vars qw($mkfconfigfile);
+
+    my ( $mkfconfigext );
+
+    if ( &CompUL( &GetValPar("mkfconfigfile") , $Default{CALDB} ) ) {
+
+	# Get CALDB FITS configuration File with datatype 'MKFCONF'
+	my ($refa,$refb)  = &CallQuzcif("MKFCONF","NOW","-","-",1);
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Error: cannot retieve MKFCONF file name from CALDB\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 MKFCONF CALDB file\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Info: Using FITS Makefilter Configuration File from CALDB:\n");
+	    &PrntChty(2,"$Task{stem}: Info: '@$refa[0]' extension '@$refb[0]'\n");
+	    $mkfconfigfile = @$refa[0];
+	    $mkfconfigext  = @$refb[0];
+	}
+    }
+    else {
+	$mkfconfigfile =  &GetValPar("mkfconfigfile");
+    }
+
+    $mkfconfigext  = &CheckMkfConfigFile( $mkfconfigfile, $mkfconfigext );
+    if ( $Task{status} ) { return 1; }
+
+    my @columns = (
+		   { name => 'PARNAME' },
+		   { name => 'ORIGIN' },
+		   { name => 'EXTENSION' },
+		   { name => 'INTERP' },
+		   { name => 'CALIB' },
+		   { name => 'OUTPARNAME' },
+		   );
+
+    my (@table) = &LoadBinTable($mkfconfigfile,"",$mkfconfigext,@columns);
+    if ( $Task{status} ) { return 1; }
+
+    return @table;
+
+} # ReadMkfConfigureFile
+
+
+sub CheckMkfConfigFile {
+
+    my ( $filename, $extnum ) = @_;
+
+    if ( $Task{status} ) { return 1; }
+
+    my $extname = "MKFCONF";
+    my $tmpext = &GetNumExtName( $filename,$extname );
+
+    if ( $tmpext == -1 ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: Not found extension with EXTNAME = $extname\n");
+	return;
+    }
+    elsif ( $Task{status} ) { return; }
+
+    if ( $extnum && $extnum ne $tmpext ) {
+	$Task{status} = 1;
+	$Task{errmess} = "Format of '$filename' not supported";
+	&PrntChty(2,"$Task{stem}: Error: Format of '$filename' not supported\n");
+	&PrntChty(2,"$Task{stem}: Error: HDU number '$tmpext' with EXTNAME = '$extname'\n");
+	&PrntChty(2,"$Task{stem}: Error: but currect CALDB dataset in HDU number '$extnum'\n");
+	return;
+    }
+
+    return $tmpext;
+
+} # CheckMkfConfigFile
+
+
+# if parameter outcols is CALDB return astring of list columns name
+# else if is a file return the same file
+# If string is empty there are errors
+
+sub GetColumnFilter {
+
+    my ( $preconffile,$preconfigext,$strret,$i );
+
+    if ( &CompUL( &GetValPar("outcols") , $Default{CALDB} ) ) {
+
+	# Get CALDB FITS configuration File with datatype 'PRECONF'
+	my ($refa,$refb)  = &CallQuzcif("PRECONF","NOW","-","-",1);
+	if ( $Task{status} ) {
+	    &PrntChty(2,"$Task{stem}: Error: cannot retrieve PRECONF file name from CALDB\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	if ( $#{$refa}> 0 ) {
+	    &PrntChty(2,"$Task{stem}: Error: found more then 1 PRECONF CALDB file\n");
+	    $Task{status} = 1;
+	    return 1;
+	}
+	else {
+	    &PrntChty(2,"$Task{stem}: Info: Using FITS  PRECONF File from CALDB:\n");
+	    &PrntChty(2,"$Task{stem}: Info: '@$refa[0]' extension '@$refb[0]'\n");
+	    $preconffile = @$refa[0];
+	    $preconfigext  = @$refb[0];
+	}
+   
+
+
+    my @columns = (
+		   { name => 'PARNAME' },
+		   );
+
+    my (@table) = &LoadBinTable($preconffile,"",$preconfigext,@columns);
+    if ( $Task{status} ) { return ""; }
+
+    for ($i = 0; $i <= $#table; $i++) {
+	$strret .= "$table[$i]->{PARNAME} ";
+    }
+
+} else {
+
+	$strret =  &GetValPar("outcols");
+    }
+
+    return $strret;
+
+
+} # GetColumnFilter
+
+
+sub CleanMkffile {
+
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %fselect );
+
+    my $TmpMkf = &GetValPar("outdir")."/".$$.".mkf" ;
+
+    if (&CleanTimeNulls(&GetValPar("mkffile"), $TmpMkf,"FILTER")) {
+	if ( $Task{status} ) {return 1;}
+	else {
+	    &RenameFile($TmpMkf,&GetValPar("mkffile"));
+	    if ( $Task{status} ) {
+		&PrntChty(1,"$Task{stem}: Error: cannot rename $TmpMkf into " . &GetValPar("mkffile"). " \n");
+		$Task{errmess} = "Error: cannot overwrite the 'mkffile' file\n";
+		$Task{status} = 1;
+		return 1;
+	    }
+	}
+    }
+
+    return 0;
+
+} # CleanMkffile
+
+sub RequestParameter(){
+    return 1;
+}
+
+sub RunMaketime {
+    
+    use vars qw( %Task %Default );
+    my ( $command, $ret, $par, %maketime );
+
+    my ( $gtifile ) = @_;
+
+    &PrntChty(3,"$Task{stem}: Info: 'maketime' input: '" . &GetValPar("attfile")  . "'\n");
+
+    &PrntChty(3,"$Task{stem}: Info: 'maketime' output: '" .  $gtifile . "'\n");
+
+    &RunningSub("RunMaketime","maketime",".\n$Task{stem}: Info: Creating " .  $gtifile  .
+		" file using '" .  &GetValPar("gtiexpr") . "' expression");
+
+#
+# Build the command line to run 'maketime'
+#
+
+    %maketime = (
+		 infile   =>  &GetValPar("attfile"),
+		 outfile  =>  $gtifile,
+		 expr     =>  "\"" . &GetValPar("gtiexpr") . "\"",
+		 time     =>  "TIME",
+		 prefr    =>  0.0,
+		 postfr   =>  1.0,
+		 compact  => "no",
+		 clobber  =>  &GetValPar("clobber"),
+		 );
+
+    $command = "maketime";
+    for $par ( keys %maketime ) { $command .= " $par=$maketime{$par}"; } 
+
+    &RunningComm("RunMaketime",$command);
+
+    $ret = 0;
+    $ret = system( $command );
+
+    if ( $ret != 0 ) {
+	&ErrorComm("RunMaketime","maketime",$command);
+        $Task{errmess} = "Error: running 'maketime'";
+	$Task{status} = 1;
+	return 1;
+    }
+
+# verificare che keyword copia
+#    if (!&CopyKeyword(&GetValPar("attfile"),$gtifile)) {return 1;}
+
+    &SuccessSub("RunMaketime","maketime","'" .  $gtifile . "' created");
+    return 0;
+
+} # RunMaketime
+
+
+sub ScreenMkf {
+
+    my $gtifile = &GetValPar("outdir")."/".$$.".gti" ;
+
+    my $TmpMkf2 = &GetValPar("outdir")."/".$$.".mkf2" ;
+
+    # create gtis on attitude file based on the input 'gtiexpr' expression
+
+    &RunMaketime($gtifile);
+    if ( $Task{status} ) {return 1;}
+
+    # filter the mkf file using the $gtifile
+    &RunFselect($TmpMkf2,$gtifile);
+    if ( $Task{status} ) {return 1;}
+    else {
+	&RenameFile($TmpMkf2,&GetValPar("mkffile"));
+	if ( $Task{status} ) {
+	    &PrntChty(1,"$Task{stem}: Error: cannot rename $TmpMkf2 into " . &GetValPar("mkffile"). " \n");
+	    $Task{errmess} = "Error: cannot overwrite the 'mkffile' file\n";
+	    $Task{status} = 1;
+	    return 1;
+	}
+    }
+
+
+    &AddKeyword($gtifile."+1", "EXTNAME", "GTI", "name of this binary table extension");
+    if ( $Task{status} ) {return 1;}
+
+    &RunFtappend($gtifile."+1");
+    if ( $Task{status} ) {return 1;}
+
+    if ( -f $gtifile ) { unlink ($gtifile); }
+
+
+    return 0;
+} # ScreenMkf
+
+
+sub RunFselect {
+
+
+    my ($tmpmkffile,$gtifile) = @_;
+    my ($ret, $par, $command, %ftselect);
+
+    %ftselect = (
+		 infile       => &GetValPar("mkffile"),
+		 outfile      => $tmpmkffile,
+		 expression   => "\'gtifilter(\"$gtifile\")\'",
+		 copyall      => "yes",              
+		 clobber      => &GetValPar("clobber"),
+		 chatter      => $Task{chatter},
+		 history      => $Task{history},
+		 );
+	
+    $command = "ftselect";
+    for $par ( keys %ftselect ) { $command .= " $par=$ftselect{$par}"; } 
+    
+    &RunningComm("RunFselect",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    
+    if ( $ret != 0 ) {
+	&ErrorComm("RunFselect","ftselect",$command);
+	$Task{errmess} = "Error: running 'ftselect'";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    # update checksum
+    
+    if ( system("ftchecksum $tmpmkffile update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Error: Error updating checksum on $tmpmkffile\n"); 
+	$Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+
+
+} # RunFselect
+
+
+sub RunFtappend {
+
+
+    my ($gtifile) = @_;
+    my ($ret, $par, $command, %ftappend);
+
+    %ftappend = (
+		 infile       => $gtifile,
+		 outfile      => &GetValPar("mkffile"),
+		 chatter      => $Task{chatter},
+		 history      => $Task{history},
+		 );
+	
+    $command = "ftappend";
+    for $par ( keys %ftappend ) { $command .= " $par=$ftappend{$par}"; } 
+    
+    &RunningComm("RunFtappend",$command);
+    
+    $ret = 0;
+    $ret = system( $command );
+    
+    if ( $ret != 0 ) {
+	&ErrorComm("RunFtappend","ftappend",$command);
+	$Task{errmess} = "Error: running 'ftappend'";
+	$Task{status} = 1;
+	return 1;
+    }
+    
+    # update checksum
+    
+    if ( system("ftchecksum ".&GetValPar("mkffile")." update=yes chatter=0") ) {
+	&PrntChty(1,"$Task{stem}: Error: Error updating checksum on ". &GetValPar("mkffile")." \n"); 
+	$Task{errmess} = "Error: updating checksum";
+	$Task{status} = 1;
+	return 1;
+    }
+
+    return 0;
+
+} # RunFtappend

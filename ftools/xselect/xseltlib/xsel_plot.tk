@@ -1,0 +1,632 @@
+package provide xsl_plot 1.0
+
+# open the fits file, move to the correct extension, and init the
+#.pow.pow.
+
+proc XselPlotInit {filename iext } {
+#The main program has to load  the POW and fitsTcl features 
+#global env
+#load $env(FTOOLS)/lib/libpow.so pow
+#load $env(FTOOLS)/lib/libfitstcl.so fits
+
+powInit 
+set width [winfo screenwidth .]
+set height [winfo screenheight .]
+set x [expr int($width/90.0)]
+set y [expr int($height/7.0)]
+wm geometry .pow +$x+$y
+
+    
+#tell the POW window how big to be
+.pow.pow configure -width 380 -height 380 
+
+
+# open the fits file for reading and move to the desired extension.
+set infilehandle [fits open $filename 0]
+$infilehandle move $iext 
+
+return $infilehandle
+}
+
+
+proc PlotImage {gname infilehandle } {
+
+#load the image data into memory
+set imghandle [$infilehandle load image]
+    
+#get the dimensions of the image
+set dims [$infilehandle info imgdim]
+set n1 [lindex $dims 0]
+set n2 [lindex $dims 1]
+
+#get the data type of the image 
+set data_type [lindex [lindex [$infilehandle get keyword BITPIX] 0] 1]
+
+#Now we work around a bug in the 2.0 version of the plugin, future versions
+#will be able to use the BITPIX value for data type without translation
+    set ppFitsDataType(8) 0
+    set ppFitsDataType(16) 1
+    set ppFitsDataType(32) 2
+    set ppFitsDataType(-32) 3
+    set ppFitsDataType(-64) 4
+    set data_type $ppFitsDataType($data_type)
+
+
+#Now a bit of Voodoo to deal with possible wierd file types:
+
+#If the image has BZERO or BSCALE keywords in the header, fitsTcl will
+#do the appropriate thing with them automatically, but the datatype returned
+#will be floating point doubles (isn't FITS fun:)
+if { ([catch {$infilehandle get keyword BZERO}] == 0) ||
+     ([catch {$infilehandle get keyword BSCALE}] == 0) } {
+    set data_type 4
+}
+
+#make a POW DATA object
+
+powCreateData ${gname}_data $imghandle $data_type [expr $n1 * $n2] 0
+
+#make a POW IMAGE object; the units (pixels, intensity) are arbitrary; since
+#this is a general application, we don't know what they are
+
+powCreateImage ${gname}_img ${gname}_data 0 0 $n1 $n2 0 1 0 1 pixels pixels intensity
+
+#This will setup POW to use the Astronomical coordinate information
+#in the file (if there is any) 
+
+global powWCS
+if { ! [catch  {$infilehandle get imgwcs} wcsString] } {
+    set powWCS(${gname}_img) $wcsString
+}
+
+
+#make a POW Graph object which contains only our image
+
+set n1 [expr $n1*1.2 ]
+set n2 [expr $n2*1.2 ]
+powCreateGraph $gname NULL ${gname}_img \
+    pixels pixels NULL NULL $n1 $n2
+
+}
+
+
+proc PlotTwoColumns {gname infilehandle  \
+xcolumn xerrcolumn ycolumn yerrcolumn} {
+    
+#make a POW X Vector object
+
+set xcolhandle [$infilehandle load column $xcolumn NULL 1 ]
+set colinfo [$infilehandle info column $xcolumn]
+set colinfo [lindex $colinfo 0]
+set xunit [lindex $colinfo 2] 
+set xname [lindex $colinfo 0]
+set data_type [lindex $xcolhandle 1]
+set xlength [lindex $xcolhandle 2] 
+set xdata [lindex $xcolhandle 0]
+powCreateData ${gname}_xdata $xdata $data_type $xlength 1
+powCreateVector xvect ${gname}_xdata 0 NULL 1 
+
+#make a POW X Error Vector object
+set xerrcolumn [string toupper $xerrcolumn]
+if { $xerrcolumn != "NULL" } {
+    set xerrcolhandle [$infilehandle load column $xerrcolumn NULL 1]
+    set colinfo [$infilehandle info column $xerrcolumn]
+    set colinfo [lindex $colinfo 0]
+    set data_type [lindex $xerrcolhandle 1]
+    set data_length [lindex $xerrcolhandle 2] 
+    set xerr [lindex $xerrcolhandle 0]
+    powCreateData ${gname}_xerr $xerr $data_type $data_length 1
+    powCreateVector xerrvect ${gname}_xerr 0 NULL 1 
+    set xerrvect xerrvect
+} else {
+    set xerrvect NULL
+}
+
+#make a POW Y Vector object
+
+set ycolhandle [$infilehandle load column $ycolumn NULL 1 ]
+set colinfo [$infilehandle info column $ycolumn]
+set colinfo [lindex $colinfo 0]
+set yunit [lindex $colinfo 2] 
+set yname [lindex $colinfo 0]
+set data_type [lindex $ycolhandle 1]
+set ylength [lindex $ycolhandle 2] 
+set ydata [lindex $ycolhandle 0]
+powCreateData ${gname}_ydata $ydata $data_type $ylength 1
+powCreateVector yvect ${gname}_ydata 0 NULL 1 
+
+#make a POW Y Error Vector object
+set yerrcolumn [string toupper $yerrcolumn]
+if { $yerrcolumn != "NULL" } {
+    set yerrcolhandle [$infilehandle load column $yerrcolumn NULL 1]
+    set colinfo [$infilehandle info column $yerrcolumn]
+    set colinfo [lindex $colinfo 0]
+    set data_type [lindex $yerrcolhandle 1]
+    set data_length [lindex $yerrcolhandle 2] 
+    set yerr [lindex $yerrcolhandle 0]
+    powCreateData ${gname}_yerr $yerr $data_type $data_length 1
+    eval [concat powCreateData ${gname}_yerr $yerrcolhandle 0 ]
+    powCreateVector yerrvect ${gname}_yerr 0 NULL 1 
+    set yerrvect yerrvect
+} else {
+    set yerrvect NULL
+}
+
+#make a POW curve object which contains  our vectors
+powCreateCurve ${gname}_curve xvect $xerrvect yvect $yerrvect 
+
+#make a POW Graph object which contains only our curve
+powCreateGraph ${gname} ${gname}_curve NULL $xunit $yunit $xname $yname \
+300 300
+}
+
+
+proc PlotXImage {} {
+set infilehandle [ XselPlotInit xsel_image.xsl 1 ]
+
+#plot the image
+PlotImage xsel_image $infilehandle
+
+#we're done reading the file now
+$infilehandle close
+}
+
+proc PlotXSpec {} { 
+set infilehandle [ XselPlotInit xsel_hist.xsl 2 ]
+
+# generate curve 
+PlotTwoColumns xsel_spec $infilehandle channel null counts null
+
+#we're done reading the file now
+$infilehandle close
+}
+
+proc PlotXLCurve {} { 
+set infilehandle [ XselPlotInit xsel_fits_curve.xsl 2 ]
+PlotTwoColumns xsel_lcurve $infilehandle time null rate error 
+
+set mjd0 [lindex [$infilehandle get keyword MJD-OBS ] 0] 
+set tzero [lindex [$infilehandle get keyword TIMEZERO ] 0]
+set mjd0 [lindex $mjd0 1]
+set tzero [lindex $tzero 1]
+set graph xsel_lcurve
+set g [ .pow.pow coords ${graph}box ]
+set xi [lindex $g 0] 
+set yi [lindex $g 1] 
+set xf [lindex $g 2] 
+set yf [lindex $g 3] 
+set dx [expr $xf - $xi ]
+set dy [expr $yf - $yi ] 
+set x1 [expr  1.1 * $dx + $xi ]
+set y1 [expr $dy * -0.1 + $yi]
+set title "Offset: \n   MJD: $mjd0  \n   SC time: ${tzero}(s)"  
+.pow.pow create text $x1 $y1 -text $title \
+-tags [ list $graph ${graph}utext ${graph}text ] \
+-justify left -anchor w 
+.pow.pow xview  moveto 1.0
+#we're done reading the file now
+$infilehandle close
+}
+
+proc FilterTime {} {
+global lines
+global nline
+global mygraph 
+global gtiindex
+PlotXLCurve   
+.pow.pow xview  moveto 1.0
+set mygraph xsel_lcurve
+
+set g [ .pow.pow coords ${mygraph}box ]
+set xi [lindex $g 0] 
+set yi [lindex $g 1] 
+set xf [lindex $g 2] 
+set yf [lindex $g 3] 
+set dx [expr $xf - $xi ]
+set dy [expr $yf - $yi ] 
+set x1 [expr  1.1 * $dx + $xi ]
+set y1 [expr $dy * 0.4 + $yi]
+set instr "To select a time interval: \n  \
+Put the cursor at the begining,  Press the left , \n \
+Drag the cursor to the end, and release the left  \n  \ 
+To delete a selected time interval:   \n \
+Put the cursor on the interval, and click the middle . "
+.pow.pow create text $x1 $y1 -text $instr -tag $mygraph -justify left -anchor w 
+
+set nline 0
+set infilehandle [fits open xsel_fits_curve.xsl 0]
+$infilehandle move 2 
+set mjd0 [lindex [$infilehandle get keyword MJD-OBS ] 0] 
+set tzero [lindex [$infilehandle get keyword TSTART ] 0]
+set mjd0 [lindex $mjd0 1]
+set tzero [lindex $tzero 1] 
+.pow.pow config -cursor plus
+bind  .pow.pow <Button-1> {startline %W %x %y}
+bind  .pow.pow <B1-Motion> {drawhline %W %x %y}
+bind .pow.pow <ButtonRelease-1> {endline %W %x %y}
+bind .pow.pow <Button-2> {destroyline %W %x %y}
+tkwait window .pow.pow
+
+# sort gtis and delete the empty ones. 
+# store the sorted gtis in the gtilists 
+set j 1
+for {set i 0 } { $i < $nline } {incr i} { 
+   if ![ info exist lines($i) ] { 
+       continue
+   }
+   set a [expr [lindex $lines($i) 0] + $tzero ] 
+   set b [expr [lindex $lines($i) 1] + $tzero ] 
+   lappend gtilists [list $a $b ]
+   incr j
+} 
+set nline [expr $j - 1 ]
+
+if ![info exist gtilists ] { 
+    $infilehandle close
+    return
+}
+lsort -command comptime $gtilists
+
+if ![info exist gtiindex ] { 
+    set gtiindex 1
+}
+
+if {$gtiindex < 10 } { 
+    set gtiext "00$gtiindex"
+} elseif {$gtiindex < 100 } { 
+    set gtiext "0$gtiindex"
+} elseif {$gtiindex < 1000 } { 
+    set gtiext $gtiindex
+} else {
+    set gtiext "001"
+    set gtiindex 0
+} 
+incr gtiindex  
+
+set ofilehandle [fits open xsel_cursor_gti${gtiext}.xsl 2 ]
+$ofilehandle  put ihd -p  
+$ofilehandle put bhd $nline 2 {START STOP} {1D 1D} {s s } STDGTI
+regsub -all -- {[\{\}]} [ $infilehandle get keyword MJDREF ]  " " b 
+$ofilehandle put keyword  $b 1
+regsub -all -- {[\{\}]} [ $infilehandle get keyword  TIMEUNIT ]  " " b 
+$ofilehandle put keyword  $b 1
+regsub -all -- {[\{\}]} [ $infilehandle get keyword  TIMEREF ]  " " b 
+$ofilehandle put keyword  $b 1
+regsub -all -- {[\{\}]} [ $infilehandle get keyword  TIMESYS ]  " " b 
+$ofilehandle put keyword  $b 1
+$ofilehandle put keyword  \
+{HDUCLASS OGIP  format conforms to OGIP/GSFC convention }  1 
+$ofilehandle put keyword  \
+{HDUCLAS1 GTI  File contains Good Time intervals }  1 
+$ofilehandle put keyword  \
+{HDUCLAS2 STANDARD  File contains Good Time intervals }  1 
+$ofilehandle put keyword  \
+{TIMEZERO 0  TIME ZERO }  1 
+regsub -all -- {[\{\}]} [ $infilehandle get keyword  TSTART ]  " " b 
+$ofilehandle put keyword  $b 1
+
+# decide the tstart and tstop
+
+foreach item $gtilists {
+   lappend startcol [lindex $item 0]
+   lappend stopcol [lindex $item 1]
+} 
+foreach item $stopcol { 
+     if ![info exist tstop ] { 
+          set tstop $item
+          continue
+     } 
+     if { $tstop < $item }  { 
+          set tstop $item
+     }
+}
+
+set a [lindex [lindex $gtilists 0 ] 0 ]
+set a "TSTART $a data start time in mission time "
+$ofilehandle put keyword  $a 1
+set a "TSTOP $tstop data stop time in mission time "
+$ofilehandle put keyword  $a 1
+
+$ofilehandle put table  START 1 1-$j $startcol
+$ofilehandle put table  STOP 1 1-$j $stopcol
+$ofilehandle close
+$infilehandle close
+}
+
+proc comptime {a b} {  
+  set x [lindex $a 0]
+  set y [lindex $b 0] 
+  if {$x > $y } { 
+     return -1 
+  } else { 
+     return 1
+  }
+}
+ 
+proc startline {w x y} {
+global bcoords 
+set x [.pow.pow canvasx $x ]
+set y [.pow.pow canvasy $y ]
+set bcoords [list $x $y]
+}
+
+proc drawhline {w x y } {
+global nline
+global lines
+global bcoords 
+global mygraph
+set x [.pow.pow canvasx $x ]
+set y [.pow.pow canvasy $y ]
+set loccords $bcoords
+lappend loccoords $x [lindex $bcoords 1]
+$w create line  $loccoords -tags [list  seg${nline} $mygraph ] -fill red 
+}
+
+
+
+proc endline {w x y } {
+global lines
+global nline
+global mygraph
+global bcoords
+set loccords $bcoords
+set x [.pow.pow canvasx $x ]
+set y [.pow.pow canvasy $y ]
+lappend loccords $x [lindex $bcoords 1] 
+.pow.pow delete seg${nline}  
+$w create line $loccords -tags [list seg${nline} $mygraph ] -fill red 
+set s [ powCanvasToGraph $mygraph [lindex $bcoords 0] [lindex $bcoords 1] ]
+set e [ powCanvasToGraph $mygraph [lindex $loccords 2] [lindex $loccords 3] ]
+if { [lindex $s 0] < [lindex $e 0 ] } {
+    lappend lines($nline) [lindex $s 0] [lindex $e 0 ]
+} else {
+    lappend lines($nline) [lindex $e 0] [lindex $s 0 ]
+}
+incr nline
+}
+
+proc destroyline {w x y} { 
+global lines
+global nline
+global mygraph
+set x [.pow.pow canvasx $x ]
+set y [.pow.pow canvasx $y ]
+set here [ powCanvasToGraph $mygraph $x $y ]
+set x0 [lindex $here 0 ]
+for {set i 0 } { $i < $nline } {incr i} { 
+   if ![ info exist lines($i) ] { 
+       continue
+   }
+   set x1  [lindex $lines($i) 0 ]
+   set x2  [lindex $lines($i) 1 ]
+   if { $x0 >= $x1 && $x0 <= $x2 } { 
+  	unset lines($i)
+        .pow.pow delete seg${i}  
+   }
+}
+}
+
+proc xsl_nlist {mylabel} {
+    toplevel .xsllist
+    set width [winfo screenwidth .]
+    set height [winfo screenheight .]
+    set x [expr int(2.0*$width/9.0)]
+    set y [expr int($height/7.0)]
+    wm geometry .xsllist +$x+$y
+
+
+    frame .xsllist.lframe
+    label  .xsllist.lframe.label -text $mylabel 
+   
+    frame .xsllist.lframe.flist
+    set  loadlist [ listbox .xsllist.lframe.flist.list -width 30 -height 20 \
+           -borderwidth 2 -relief raised  -selectmode single \
+           -font "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+           -yscrollcommand {.xsllist.lframe.flist.yscroll set} \
+           -xscrollcommand {.xsllist.lframe.flist.xscroll set} ]
+    scrollbar .xsllist.lframe.flist.yscroll -command \
+           {.xsllist.lframe.flist.list yview}
+    scrollbar .xsllist.lframe.flist.xscroll -command \
+           {.xsllist.lframe.flist.list xview} -orient horizontal
+    pack .xsllist.lframe.label -side top -expand true \
+        -anchor w -pady 5 -padx 5
+    pack .xsllist.lframe.flist -side top -expand true
+    pack .xsllist.lframe.flist.yscroll -side right -expand true -fill y
+    pack .xsllist.lframe.flist.xscroll -side bottom -expand true -fill x
+    pack .xsllist.lframe.flist.list -side right -expand true -fill y
+
+    frame .xsllist.rframe
+    frame .xsllist.rframe.f1
+    frame .xsllist.rframe.f2
+    button .xsllist.rframe.f1.all  -text All  \
+      -command  select_all 
+    button .xsllist.rframe.f1.reset  -text Reset \
+        -command  reset_list 
+    button .xsllist.rframe.f2.ok  -text  Ok \
+        -command  ok_list
+    
+    bind .xsllist.lframe.flist.list <ButtonRelease-1>  select_one
+
+    pack .xsllist.rframe.f2.ok -side bottom -pady 10 -expand true -fill x
+    pack .xsllist.rframe.f1.all -side top  -pady 5 -expand true -fill x
+    pack .xsllist.rframe.f1.reset -side top -pady 5 -expand true -fill x
+    pack .xsllist.rframe.f1 -side top    -anchor n -expand true -fill x
+    pack .xsllist.rframe.f2 -side bottom -anchor s -expand true -fill x
+    pack .xsllist.lframe -side left  -fill y -expand true
+    pack .xsllist.rframe -side left -padx 10 -fill y -anchor n -expand true
+    reset_list
+}
+   
+proc ok_list {} { 
+   global selected 
+   global only_once
+   global xsl_lists
+   if [info exist only_once ] { 
+       unset only_once 
+   }
+   if [info exist selected ] { 
+       unset selected 
+   }
+#  update the original list without the selected items.
+   set last [.xsllist.lframe.flist.list index end ] 
+   if [info exist xsl_lists] {
+        unset xsl_lists
+   }
+   for {set i 0 } { $i < $last } { incr i } { 
+        lappend xsl_lists [.xsllist.lframe.flist.list get $i]
+   } 
+   destroy .xsllist 
+}
+
+proc reset_list {} { 
+    global xsl_list2
+    global xsl_lists
+    global only_once
+    global selected
+
+    if ![info exist xsl_lists] {
+        return 0
+    }
+
+    if [info exist only_once ] { 
+        if [info exist selected ] { 
+            unset selected
+        }
+    }
+    .xsllist.lframe.flist.list delete 0 end
+    set i 0
+    foreach item $xsl_lists {
+       if { $item != ""} { 
+           .xsllist.lframe.flist.list insert $i $item
+       }
+       incr i
+    }
+    if [info exist xsl_list2] {
+        unset xsl_list2
+    }
+}
+
+    
+proc select_all {} {  
+   global xsl_list2
+   global xsl_lists
+   set last [.xsllist.lframe.flist.list index end ] 
+   for {set i 0 } { $i < $last } { incr i } { 
+        lappend xsl_list2 [.xsllist.lframe.flist.list get $i]
+   } 
+   .xsllist.lframe.flist.list delete 0 end
+   return
+}
+
+proc select_one {} {  
+   global xsl_list2
+   global xsl_lists
+   global selected 
+   global only_once
+     
+   if [info exist only_once ] { 
+        if [info exist selected ] { 
+            return 
+        }
+   }
+
+   set pos [.xsllist.lframe.flist.list curselection ]
+   lappend xsl_list2 [.xsllist.lframe.flist.list get $pos]
+#   set xsl_lists [lreplace $xsl_lists $pos $pos "" ]
+   .xsllist.lframe.flist.list delete $pos $pos
+   if [info exist only_once ] { 
+       set selected 1 
+   }
+   return
+} 
+
+
+proc PlotMulti {gname filehandle xerrprofix yerrprofix} {
+   global only_once 
+   global xsl_list2
+   global xsl_lists
+
+   if [info exist xsl_list2 ] { 
+      unset xsl_list2
+   }
+
+   set tmp [$filehandle info column ] 
+   foreach item $tmp { 
+      if {  $xerrprofix != "NULL" } {
+          set a [string first $xerrprofix $item] 
+      } else { 
+          set a -1 
+      }
+      if {  $yerrprofix != "NULL" } {
+          set b [string first  $yerrprofix $item] 
+      } else { 
+          set b -1 
+      }
+      if { $a == -1 && $b == -1 } { 
+         lappend xsl_lists [lindex $item 0 ] 
+      }
+   }
+
+#  get the x column
+   set a "Column for X variable (only once):"  
+   xsl_nlist $a
+   set only_once 1
+   .xsllist.rframe.f1.all configure -state disabled
+   tkwait window .xsllist
+   set xcolname [lindex $xsl_list2 0] 
+
+#  get the y columns
+   unset xsl_list2
+   set a "Columns for Y variables: "  
+   xsl_nlist $a
+   tkwait window .xsllist
+   set ycolnames $xsl_list2  
+   set i 0
+   foreach ycolname $ycolnames {
+      set gcol "$gname$ycolname"
+      if { $xerrprofix != "NULL" } {
+          set xcolerr "$xcolname$xerrprofix" 
+      } else { 
+          set xcolerr NULL 
+      } 
+      if { $yerrprofix != "NULL" } {
+          set ycolerr "$ycolname$yerrprofix" 
+      } else { 
+          set ycolerr NULL
+      } 
+      PlotTwoColumns $gcol $filehandle $xcolname $xcolerr $ycolname $ycolerr
+      if { $i != 0 && $i %3 == 0 } { 
+          powStartNewRow
+      }
+   }
+}
+
+   
+proc PlotXMKF {} { 
+global xsl_lists
+if [info exist xsl_lists ] { 
+  unset xsl_lists
+}
+set infilehandle [ XselPlotInit xsel_ffcurve.fits 2 ]
+
+# generate curve 
+PlotMulti xsl_mkf $infilehandle NULL _Err
+
+#we're done reading the file now
+$infilehandle close
+}
+ 
+proc PlotXHK {} { 
+global xsl_lists
+if [info exist xsl_lists ] { 
+  unset xsl_lists
+}
+
+set infilehandle [ XselPlotInit xsel_hkcurve.fits 2 ]
+
+# generate curve 
+PlotMulti xsl_hk $infilehandle NULL _Err
+
+#we're done reading the file now
+$infilehandle close
+}   

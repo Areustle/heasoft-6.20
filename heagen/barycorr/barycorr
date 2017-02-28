@@ -1,0 +1,988 @@
+#! /usr/bin/perl
+#
+# Mike Tripicco (SSAI)
+# 27 May 2004
+#
+# barycorr: wrapper for hdaxbary standalone
+#
+#  This script is almost identical to faxbary in the ftools/xte package
+#  Major differences are the PIL interface and the call to hdaxbary (which
+#    is axBary modified to accomodate the Swift mission)
+#
+# 06 May 2005: v1.1 does far more error checking of orbit file(s)
+#
+# 24 June 2005
+# v1.2 now has 'clockfile' parameter and sCC (in SwiftClock.pm) now
+#      can deal with either FITS or ascii format
+#      Rearranged to group Swift-specific stuff together
+#
+# 22 July 2005
+# v1.3 has CALDB option enabled for clockfile
+#
+# 18 Nov 2005
+# v1.4 now treats leapseconds properly - since TDB is based on TT
+#      we use TTCF instead of UTCF to correct times and then modify
+#      UTCFINIT to only include the relevant # of leapsecs
+#      Also updating CLOCKAPP keyword now
+#
+# 11 Jan 2006
+# v1.5 has tweaks to the Clock::SwiftClock calls since I changed the
+#      argument list for both sLeap() and sCC(). Now sCC() handles
+#      leapseconds internally so their handling locally has been dropped
+#      This also means that a file spanning a leapsecond should work
+#      properly now (though I hope we'll not have to test this!)
+#
+# v1.6 Moved check for 'clockfile' parameter to Swift-specific section
+#      Revised orbit file "glitch" checking since Swift portion of scorbit
+#      now handles gaps/skips.
+#
+# 10 Oct 2006
+# v1.7 Changed file opens to READONLY where possible
+#      Using CM modifications to scorbit (bug fix plus efficiencies)
+#      Modified error msg when testing hdaxbary executable
+#      Moved clock correction before hdaxbary call since orbit file times
+#       are already accurate (ie, NOT based on the spacecraft clock)
+#      Removing UTCFINIT keyword from final output file if TIMESYS=TDB
+#
+# 16 Feb 2007
+# v1.8 Added support for http: or ftp: remote CALDB access
+#      Also updated cumulative clock drift rate (used with UTCFINIT only)
+#
+# 30 Oct 2008
+# v1.9 Robustify Swift clockfile existence checking
+#
+# 10 Feb 2009
+# v1.10 Added dummy argument to sCC() calls (added 'lastMET' capability,
+#          but it's only used when the routine is called for t="last")
+#       Fixing case of gzipped input file
+#
+# 24 Nov 2010
+# v1.11 Updated fkeypar -> ftkeypar; fkeyprint -> ftlist; 
+#         fparkey / fmodhead -> fthedit
+#         to get around pathlength restrictions in the old futils
+#       Also fixed a bug that was preventing the copying of RA_NOM,
+#         DEC_NOM, and PLEPHEM from the axbary temporary outfile
+
+use HEACORE::HEAINIT;
+exit headas_main(\&barycorr);
+
+sub barycorr{
+  $SIG{INT} = \&sigtrap;
+  $SIG{TERM} = \&sigtrap;
+  $SIG{KILL} = \&sigtrap;
+
+  use Cwd;
+  use File::Path;
+  use File::Copy;
+  use File::stat;
+
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Task qw(:codes);
+
+  use Astro::FITS::CFITSIO qw(:constants :longnames);
+
+  $comtstart = "Elapsed seconds since MJDREF at start of file";
+  $comtstop = "Elapsed seconds since MJDREF at end of file";
+  $comtierab = "Absolute precision of clock correction";
+  $comutcf = "[s] UTCF at TSTART";
+  $comclockapp = "Clock correction applied?";
+
+  my $tool = bless({
+		    tool => 'barycorr',
+		    code => 0,
+		    }, "Task");
+
+  my $tname = 'barycorr';
+  my $tvers = '1.12';
+
+  my $status = 0;
+
+  $invokedir = cwd();
+  $tmpdir = "${invokedir}/barytmp$$";
+  $cmd = "hdaxbary";
+
+  ($status = PILGetFname('infile', $infile)) == 0 ||
+    die "error getting infile parameter";
+  ($status = PILGetFname('outfile', $outfile)) == 0 ||
+    die "error getting outfile parameter";
+  ($status = PILGetString('orbitfiles', $orbitfiles)) == 0 ||
+    die "error getting orbitfiles parameter";
+  ($status = PILGetString('ra', $ra)) == 0 ||
+    die "error getting ra parameter";
+  ($status = PILGetString('dec', $dec)) == 0 ||
+    die "error getting dec parameter";
+  ($status = PILGetBool('barytime', $barytime)) == 0 ||
+    die "error getting barytime parameter";
+  ($status = PILGetString('refframe', $frame)) == 0 ||
+    die "error getting refframe parameter";
+  ($status = PILGetReal('tolerance', $tolerance)) == 0 ||
+    die "error getting tolerance parameter";
+  ($status = PILGetBool('clobber', $clobber)) == 0 ||
+    die "error getting clobber parameter";
+  ($status = PILGetInt('chatter', $chatter)) == 0 ||
+    die "error getting chatter parameter";
+
+  set_toolname($tname);
+  set_toolversion($tvers);
+  if ($chatter > 0) {print "**** Running $tname v$tvers ****\n"}
+
+  if ($chatter >= 4){$cmd .= " -debug"}
+
+  # deal with input ascii orbitlist
+  if (grep(/^@/,$orbitfiles)){
+    open(OFH,substr($orbitfiles,1)) || die "Couldn't open \"".substr($orbitfiles,1)."\"";
+    while (<OFH>) {
+      chop;
+      push(@spud,$_);
+    }
+    close(OFH);
+    $orbitfiles=join(' ',@spud);
+  }
+  @orbitlist = split(' ',$orbitfiles);
+
+  # make sure hdaxbary (standalone) is available
+  $result=`$cmd -h 2>&1`;
+  if (!grep/Usage:/,$result){die "\nError: program \"$cmd\" not found or not executable\n$0 died"}
+
+  # check whether infile is gzipped
+  if ($infile =~ /gz$/ || (! -e $infile && -e "${infile}.gz")){
+    $gzipped = 1;
+    if ($infile =~ /(.*).gz$/){$infile=$1}
+    if ($chatter > 3){print "unzipping ${infile}.gz\n"}
+    `gunzip ${infile}.gz`;
+  }
+
+  foreach $orbfile (@orbitlist){
+    if (! -e $orbfile){&bailout("\nError: orbit file \"$orbfile\" not found\n$0 bailed out")}
+  }
+
+  $status = headas_clobberfile("$outfile");
+  if (-e $outfile){
+    &bailout("\nError: output file \"$outfile\" already exists and cannot be clobbered.");
+  }
+
+  # check for Solar System ephemeris file
+  $refdata = $ENV{"LHEA_DATA"};
+  if ($frame eq "FK5"){$jpleph="JPLEPH.200"}else{$jpleph="JPLEPH.405"}
+  if (! -e "$refdata/$jpleph"){
+    &bailout("\nError: required file: $refdata/$jpleph not found.");
+  }
+
+  # are input and output files in fact the same file?
+  $insitu = "no";
+  $in_stat = stat($infile);
+  $out_stat = stat($outfile);
+  if (-e $outfile and ($in_stat->ino == $out_stat->ino)){$insitu = "yes"}
+
+  # read through the input file - check if Swift and save TIME column
+  $swift="no";
+  $nustar="no";
+  $data_tstart = 9.9E+99;
+  $data_tstop = 0.0;
+  my $fits = Astro::FITS::CFITSIO::open_file($infile, READONLY, $status);
+  if ($status) {&bailout("Unable to open $infile")}
+  my $numhdus = 0;
+  my $status = 0;
+  $fits->get_num_hdus($numhdus, $status);
+  if ($status) {&bailout("Unable to get number of HDUs")}
+  for ($hdu=1; $hdu <= $numhdus; $hdu++){ #NB CFITSIO Primary = HDU1...
+    $fits->movabs_hdu($hdu, $hdutype, $status);
+    my $header = $fits->read_header;
+    push @hdus, $header;
+    if ($header->{TELESCOP} =~ /SWIFT/){$swift="yes"};
+    if ($header->{TELESCOP} =~ /NuSTAR/i){$nustar="yes"};
+    foreach $key (keys(%{$header})){
+      if ($key =~ /TTYPE/ && ($header->{$key} =~ /^\'TIME/i)){
+	$key =~ /TTYPE(\d+)/;
+	$tcol=$1;
+	if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+	my @rawtime=();
+	my $firstrow = 1;
+	my $firstelem = 1;
+	my $nelem = $rowcount;
+	my $nullval = 0;
+	my $anynul = 0;
+	if ($fits->read_col_dbl($tcol, $firstrow, $firstelem,
+				$nelem, $nullval, \@rawtime, $anynul, $status)) {
+	  die "Error reading TIME column (for RAWTIME)";
+	}
+	$rawthash{"HDU".($hdu-1)} = [ @rawtime ];
+	if ($chatter >= 3) {print "$tname: recorded RAWTIME for HDU".($hdu-1)."\n"}
+      }
+      if ($key =~ /TSTART/ && $key !~ /TSTARTF/){ # ignore TSTARTF here
+	if ($header->{$key} < $data_tstart) {$data_tstart = $header->{$key}}
+      }
+      if ($key =~ /TSTOP/ && $key !~ /TSTOPF/){ # ignore TSTOPF here
+	if ($header->{$key} > $data_tstop) {$data_tstop = $header->{$key}}
+      }
+    }
+  }
+  $fits->close_file($status);
+  if ($chatter >= 4) {printf("barycorr: orbit file(s) should cover %12i to %12i\n",$data_tstart,$data_tstop)}
+
+  # make temporary directory (from here on any exit should include
+  # deleting this directory, usually via &bailout routine).
+  mkdir($tmpdir,0755);
+
+  # deal with multiple orbit files: check validity and overlap with data
+  if ($#orbitlist > 0){
+    if ($chatter >= 3) {print "barycorr: Inspecting list of orbit files:\n"}
+    %orb_times_hash=();
+    foreach $orbfile (@orbitlist){
+      chop($exist = `ftkeypar infile=$orbfile keyword=TSTART chatter=0 2>/dev/null;pget ftkeypar exist`);
+      if ($exist eq 'no'){$orb_tstart=0.0}else{
+	chop($orb_tstart = `pget ftkeypar value`);
+	chop($orb_tstop = `ftkeypar infile=$orbfile keyword=TSTOP chatter=0;pget ftkeypar value`);
+      }
+      if ($orb_tstart != 0.0){
+	# this oddly-formed hash facilitates sorting by tstart
+	$orb_times_hash{$orb_tstart}= [ $orb_tstop, $orbfile ];
+	# and this one is for simple lookup of TSTOP by filename
+	$orb_names_hash{$orbfile} = $orb_tstop;
+      }
+    }
+    @ok_orbfiles=();
+    foreach $orb_tstart (sort { $a <=> $b } keys %orb_times_hash){
+      $orb_tstop = $orb_times_hash{$orb_tstart}[0];
+      $orbfile = $orb_times_hash{$orb_tstart}[1];
+      # check orbit file validity (for non-Swift only confirm existence)
+      $orbvalid = &check_orbit($orbfile);
+      if ($orbvalid < 0){
+	&bailout("Error with orbit file \"$orbfile\"..bailing out")
+      }
+      if ($orbvalid > 0 && $swift == "yes"){$orbhdu = $orbvalid-1}else{$orbhdu = 1}
+      # do some checking
+      if (($orb_tstop < $data_tstart) || ($orb_tstart > $data_tstop)){
+	if ($chatter > 0) {print "  $orbfile doesn\'t overlap with $infile...skipping\n"}
+	next;
+      }
+      chop($orb_nrows = `ftkeypar $orbfile+$orbhdu NAXIS2 chatter=0;pget ftkeypar value`);
+      chop($orb_deltat = `ftkeypar $orbfile+$orbhdu DELTAT chatter=0;pget ftkeypar value`);
+      if (($orb_tstop-$orb_tstart)/$orb_deltat != ($orb_nrows-1)){
+	if ($chatter > 0) {print "  $orbfile : glitch detected\n"}
+      } else {
+	if ($chatter > 0) {print "  $orbfile : OK\n"}
+      }
+      push @ok_orbfiles,$orbfile;
+      # see if the current orbit file is sufficient by itself
+      if(($orb_tstart < $data_tstart) && ($orb_tstop > $data_tstop)){
+	if ($chatter > 0) {print "    and fully covers relevant timerange\n"}
+	if ($chatter > 0) {print "    Orbit file processing terminating\n"}
+	@ok_orbfiles=($orbfile);
+	last;
+      }
+    }
+    if ($#ok_orbfiles > 0){ #more than one --> merge them
+      if ($chatter >= 3)
+	{print "Merging ".($#ok_orbfiles+1)." orbit files, skipping duplicate times...\n"}
+      open(OFH,">$tmpdir/orbfiles$$") ||
+	&bailout("Couldn't open \"$tmpdir/orbfiles$$\"");
+      # careful: shifting 1st name off OK list...
+      $current_tstop = $orb_names_hash{$ok_orbfiles[0]};
+      print OFH shift(@ok_orbfiles)."\n";
+      foreach $orbfile (@ok_orbfiles){
+	#use CFITSIO row-filtering to avoid duplicate timestamps
+	#as well as occasional small time offsets between successive files
+	print OFH "$orbfile+$orbhdu[Time > $current_tstop+$orb_deltat-$tolerance]\n";
+	$current_tstop = $orb_names_hash{$orbfile};
+      }
+      close(OFH);
+      $cmdstr="fmerge infiles=\@$tmpdir/orbfiles$$ outfile=$tmpdir/mergedorb$$";
+      $cmdstr.=" columns=- lastkey=TSTOP copyprime=no";
+      my $result = $tool -> doCommand($cmdstr);
+      $axorb="$tmpdir/mergedorb$$";
+    } elsif ($#ok_orbfiles == 0) { #only one useful file --> use it
+      $axorb=$ok_orbfiles[0];
+    } else{
+      &bailout("Error with orbit files..bailing out");
+    }
+  }else{$axorb=$orbitlist[0]} #only one file was input --> use it
+
+  # check final orbit file validity (for non-Swift this only checks existence)
+  $orbvalid = &check_orbit($axorb);
+  if ($orbvalid < 0){
+    &bailout("Error with orbit files..bailing out")
+  }
+  if ($orbvalid > 0 && $swift == "yes"){$orbhdu = $orbvalid -1}else{$orbhdu = 1}
+
+  # check for gaps in final orbit file (an axBary no-no!)...
+  # Swift scorbit routine now handles gaps so warn only
+  chop($orb_tstop = `ftkeypar $axorb+$orbhdu TSTOP chatter=0;pget ftkeypar value`);
+  chop($orb_tstart = `ftkeypar $axorb+$orbhdu TSTART chatter=0;pget ftkeypar value`);
+  chop($orb_nrows = `ftkeypar $axorb+$orbhdu NAXIS2 chatter=0;pget ftkeypar value`);
+  chop($orb_deltat = `ftkeypar $axorb+$orbhdu DELTAT chatter=0;pget ftkeypar value`);
+  $orb_glitch = abs($orb_deltat * ($orb_nrows-1) - ($orb_tstop-$orb_tstart));
+  if ($orb_glitch != 0.0) {
+    $glitchmsg = "$tname: Glitch detected in orbit file ($axorb)\n";
+    $glitchmsg .= "$tname: Glitch size is $orb_glitch s\n";
+    if ($orb_glitch > $tolerance) {
+      if ($swift == "yes"){
+	$glitchmsg .= "$tname: Continuing (working across gaps)\n";
+	if ($chatter > 3){print $glitchmsg}
+      }else{
+	$glitchmsg .= "$tname: Beyond specified tolerance ($tolerance s) -- bailing out";
+	&bailout($glitchmsg);
+      }
+    } else {
+      $glitchmsg .= "$tname: Within specified tolerance ($tolerance s) -- OK\n";
+      if ($chatter >3) {print $glitchmsg}
+    }
+  }
+  if ($orb_tstart > $data_tstart || $orb_tstop < $data_tstop){
+    $overlapmsg = "Orbit file doesn't span data timeframe";
+    &bailout($overlapmsg);
+  }else{
+    if ($chatter >= 3) {print "barycorr: Orbit file properly spans data timeframe\n"}
+  }
+
+  # Clock file setup (NuSTAR only)
+  if ($nustar eq "yes") {
+    ($status = PILGetString('clockfile', $clockfile)) == 0 ||
+      die "error getting clockfile parameter";
+
+    if ("$clockfile" =~ /^none$/i) {
+      print "$tname: NuSTAR clock file: -none selected-\n" if ($chatter >= 4);
+    } else {
+
+      if ("$clockfile" =~ /^caldb$/i){
+	if ($chatter >= 4) {
+	  print "$tname: Querying CALDB for NuSTAR clock correction file\n";
+	}
+	HDgtcalf("NUSTAR", "FPM", "-", "-", "CLOCK", 
+		 "now", "now", "now", "now", "", 1, 1024, 
+		 $filename, $extno, $online, $nret, $nfound, $status);
+	if (! $status and $nfound == 1 and $online->[0] eq "ONLINE"){
+	  $clockfile = "$filename->[0]+$extno->[0]";
+	  if ($chatter >=4) {print "$tname: got clock file: $clockfile\n"}
+	  HDpar_note("clockfile",$clockfile);
+	} else { 
+	  &bailout("problem querying NuSTAR CALDB");
+	}
+      }
+
+      if ("$clockfile" !~ /^(http:|ftp:)/ ) {
+	# defend against stupid extension names tacked at end
+	if ($clockfile =~ m/^(.*)(\[[^]*]\]|\+\d*)$/) {
+	  $clockfilename = "$1"; $clockfileext = "$2";
+	  if (! -f "$clockfilename") {
+	    &bailout("===> Error verifying existence of $clockfile");
+	  }
+	}
+      }
+      
+      # Recalculate correction every 1 second
+      $cmd .= " -clockfile '$clockfile' -dtmaxclock 1";
+      # Set environment variable for barycorr/nCC clock function to use
+      # $ENV{NUSTAR_CLOCK_FILE} = "$clockfile";
+      print "$tname: NuSTAR clock file: $clockfile\n" if ($chatter >= 4);
+    }
+  }
+
+  # Clock file setup (Swift only)
+  if ($swift eq "yes"){
+    use Clock::SwiftClock qw(sCC sLeap);
+    $ep_mjd_ut = 51910; # Swift epoch (2001.0 UTC)
+
+    # SC clock drift (s per 20us, cumulative since launch). Negative drift means clock runs fast
+    #$swdrift = -1375.00; #08Mar2005
+    #$swdrift = -1208.67; #25Jul2005
+    #$swdrift = -1122.05; #18Nov2005
+    $swdrift = -954.343; #15Feb2007
+
+    $swcomsg = "===>  Please note that barycorr could not locate an applicable\n";
+    $swcomsg .= "      entry in the specified Swift clock offset file:\n";
+    $swcomsg .= "      $SCC\n";
+    $swcomsg .= "      You may want to either update your CALDB or\n";
+    $swcomsg .= "      download a newer copy of the (ascii) clock file:\n";
+    $swcomsg .= "        ftp://legacy.gsfc.nasa.gov/xte/calib_data/clock/swco.dat\n";
+    $swcomsg .= "      copy it to ".$ENV{HEADAS}."/refdata/\n";
+    $swcomsg .= "      and then rerun $tname with \"clockfile=swco.dat\"\n";
+    $swcomsg .= "===>  Basing TTCF on UTCFINIT instead.\n";
+    $wroteswmsg = "no"; #We're only going to print this once!!
+
+    # clockfile parameter currently only used for Swift
+    ($status = PILGetString('clockfile', $clockfile)) == 0 ||
+      die "error getting clockfile parameter";
+    if (uc($clockfile) eq "CALDB"){
+      if ($chatter >= 4) {print "$tname: Querying CALDB for Swift clock correction file\n"};
+      HDgtcalf("swift", "SC", "-", "-", "CLOCK", "now", "now", "now", "now", "", 1, 1024, $s1, $s2, $s3, $nret, $nfound, $status);
+      if (! $status and $nfound == 1 and $s3->[0] eq "ONLINE"){
+	$clockfile = "$s1->[0]+$s2->[0]";
+	if ($chatter >=4) {print "$tname: got clock file: $clockfile\n"}
+	HDpar_note("clockfile",$clockfile);
+      }else{ &bailout("problem querying Swift CALDB") }
+    }
+
+    if (substr($clockfile,0,5) eq "http:" or substr($clockfile,0,4) eq "ftp:") {$SCC = $clockfile}
+    else{
+      if (-f $ENV{"TIMING_DIR"}."/$clockfile") {$SCC=$ENV{"TIMING_DIR"}."/$clockfile"}
+      elsif (-f $ENV{"LHEA_DATA"}."/$clockfile"){$SCC=$ENV{"LHEA_DATA"}."/$clockfile"}
+      elsif ($clockfile =~ /(.+)\+\d+$/) {$SCC = $1}
+      else {$SCC = $clockfile}
+      -f $SCC or &bailout("===> Error verifying existence of $SCC");
+    }
+    if ($chatter >= 4) {print "$tname:\n$tname: Correcting Swift timestamps\n$tname: using SCC = $SCC\n"}
+  }
+
+  @axopts=();
+  if ($ra ne "-"){
+    push(@axopts,"-ra $ra");
+  }else{
+    # axBary insists on RA_PNT or RA_NOM but ignores RA_OBJ or plain RA...
+    chop($have_rapnt = `ftkeypar $infile+1 RA_PNT chatter=0 2>/dev/null;pget ftkeypar exist`);
+    chop($have_ranom = `ftkeypar $infile+1 RA_NOM chatter=0 2>/dev/null;pget ftkeypar exist`);
+    if ($have_rapnt eq "no" and $have_ranom eq "no"){
+      chop($have_ra = `ftkeypar $infile+1 RA chatter=0 2>/dev/null;pget ftkeypar exist`);
+      if ($have_ra eq "yes"){
+	chop($ra = `pget ftkeypar value`);
+	push(@axopts,"-ra $ra");
+      } else {
+	chop($have_raobj = `ftkeypar $infile+1 RA_OBJ chatter=0 2>/dev/null;pget ftkeypar exist`);
+	if ($have_raobj eq "yes"){
+	  chop($ra = `pget ftkeypar value`);
+	  push(@axopts,"-ra $ra");
+	}
+      }
+    }
+  }
+  if ($dec ne "-"){
+    push(@axopts,"-dec $dec");
+  }else{
+    # axBary insists on DEC_PNT or DEC_NOM but ignores DEC_OBJ or plain DEC...
+    chop($have_decpnt = `ftkeypar $infile+1 DEC_PNT chatter=0 2>/dev/null;pget ftkeypar exist`);
+    chop($have_decnom = `ftkeypar $infile+1 DEC_NOM chatter=0 2>/dev/null;pget ftkeypar exist`);
+    if ($have_decpnt eq "no" and $have_decnom eq "no"){
+      chop($have_dec = `ftkeypar $infile+1 DEC chatter=0 2>/dev/null;pget ftkeypar exist`);
+      if ($have_dec eq "yes"){
+	chop($dec = `pget ftkeypar value`);
+	push(@axopts,"-dec $dec");
+      } else {
+	chop($have_decobj = `ftkeypar $infile+1 DEC_OBJ chatter=0 2>/dev/null;pget ftkeypar exist`);
+	if ($have_decobj eq "yes"){
+	  chop($dec = `pget ftkeypar value`);
+	  push(@axopts,"-dec $dec");
+	}
+      }
+    }
+  }
+  push(@axopts,"-ref $frame");
+
+  if ($insitu eq 'no'){copy("$infile","$outfile")}
+  if ($barytime == 1){
+    $tmpfile = "$tmpdir/axin$$";
+    copy("$infile","$tmpfile");
+    for ($i=0; $i<$numhdus; $i++){
+      next unless ($hdus[$i]->{XTENSION} eq "BINTABLE");
+      # delete any existing BARYTIME columns
+      $cmdstr="flcol infile=$outfile+$i nlist=1";
+      my $result = $tool -> doCommand($cmdstr);
+      foreach my $line (@{ $result->{lines} }){
+	if ($line =~ /^barytime/i){
+	  if ($chatter > 0) {print "$0: Existing BARYTIME column will be replaced (HDU$i)\n"}
+	  $cmdstr="fdelcol infile=$outfile+$i colname=barytime confirm=no proceed=yes";
+	  my $result = $tool -> doCommand($cmdstr);
+	}
+      }
+    }
+    for ($i=0; $i<$numhdus; $i++){
+      unless (defined $hdus[$i]->{TSTART}){
+	next unless (defined $hdus[$i]->{TSTARTI} && defined $hdus[$i]->{TSTARTF});
+	$tstart=$hdus[$i]->{TSTARTI}+$hdus[$i]->{TSTARTF};
+	$tstop=$hdus[$i]->{TSTOPI}+$hdus[$i]->{TSTOPF};
+	my $command = qq(fthedit value=$tstart infile=$tmpfile+$i keyword=TSTART operation=add);
+	my $result = $tool->doCommand($command);
+	my $command = qq(fthedit value=$tstop infile=$tmpfile+$i keyword=TSTOP operation=add);
+	my $result = $tool->doCommand($command);
+      }
+    }
+
+    # if Swift then correct SC timestamps in $tmpfile first
+    # No need to correct TSTART/TSTOP or GTIs since in this case
+    #  they continue to refer to the SC time system
+    if ($swift eq "yes"){
+      my $fits = Astro::FITS::CFITSIO::open_file($tmpfile, READWRITE, $status);
+      if ($status) {die "Unable to open $tmpfile"}
+      for ($i=0; $i<$numhdus; $i++){
+	if ($fits->movabs_hdu($i+1, $hdutype, $status)){&bailout("Error moving to HDU$i")}
+	$have_timecol="no";
+	foreach $key (keys(%{$hdus[$i]})){
+	  if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'TIME/i)){
+	    $have_timecol="yes";
+	    $key =~ /TTYPE(\d+)/;
+	    $btcol=$1;
+	  }
+	  if ($key =~ /UTCFINIT/){$utcfinit=$hdus[$i]->{$key}}
+	}
+	#Compute leapsecond correction at TSTART (leapsecs since 2001.0)
+	$leapcor = 0;
+	$leapcor = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTART}/86400.0);
+	if ($have_timecol eq "yes" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTART) = $leapcor\n"}
+	#Compute leapsecond correction at TSTOP (leapsecs since 2001.0)
+	$leapcor2 = 0;
+	$leapcor2 = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTOP}/86400.0);
+	if ($have_timecol eq "yes" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTOP) = $leapcor2\n"}
+	# Check whether file spans a leap second. If so we'll have to compute them for each time (slow)
+	if ($leapcor != $leapcor2){$ut2tt = -999}else{$ut2tt = $leapcor}
+	$ttcfinit = $utcfinit + $leapcor;
+	#We've assumed UTCF will be jammed when a leap second occurs
+	#(ie, 1 second subtracted from UTCF for a 'normal' (positive) leap second)
+	#so we want to "undo" that since TDB is based on TT (ie, TTCF instead of UTCF)
+	if ($have_timecol eq "yes"){
+	  if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+	  $tstart = $hdus[$i]->{TSTART};
+
+	  my @time;
+	  my $firstrow = 1;
+	  my $firstelem = 1;
+	  my $nelem = $rowcount;
+	  my $nullval = 0;
+	  my $anynul = 0;
+
+	  if ($chatter >= 3){print "$tname: HDU$i - Correcting TIME column in $tmpfile\n"}
+	  if ($fits->read_col_dbl($btcol, $firstrow, $firstelem,
+				  $nelem, $nullval, \@time, $anynul, $status)) {
+	    &bailout("Error reading TIME column");
+	  }
+	  my @timecorr=();
+	  foreach $t (@time){
+	    if (sCC($t,"t",$ut2tt,$clockfile,$tzero,$correction,$dummy)){
+	      if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	      $correction = $ttcfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds
+	    }
+	    #if ($chatter > 4){print "correcting $t by ".($correction*1e-6)." s\n"}
+	    push @timecorr, $t+$correction*1e-6;
+	  }
+	  if ($fits->write_col_dbl($btcol, $firstrow, $firstelem,
+				   $nelem, \@timecorr, $status)){
+	    &bailout("Error updating TIME column in $tmpfile");
+	  }
+	}
+      }
+    }
+
+    # run hdaxary
+    $cmdstr="$cmd -i $axorb -f $tmpfile @axopts";
+    if ($chatter >= 3) {print "$tname: running $cmdstr\n"}
+    my $result=$tool->doCommand("$cmdstr 2>&1");
+    foreach my $line (@{ $result->{lines} }){
+      if ($chatter >= 3) {print $line,"\n"}
+    }
+    # take advantage of the fact that axBary deletes the output file on exit(!?)
+    if (! -e "$tmpfile"){&bailout("$tmpfile not present")}
+
+    # transfer selected keywords written by axBary in temporary file
+    # but not for GTI extensions!
+    for ($i=0; $i<$numhdus; $i++){
+      next unless (defined $hdus[$i]->{TIMESYS});
+      next unless (defined $hdus[$i]->{XTENSION});
+      next if ($hdus[$i]->{EXTNAME} eq "GTI");
+      next if ($hdus[$i]->{HDUCLAS1} eq "GTI");
+      @comments=();
+      my $command = qq(punlearn ftlist;ftlist infile=$tmpfile+$i option=K include=HISTORY);
+      my $result = $tool -> doCommand($command);
+      foreach my $line (@{ $result->{lines} }){
+	if ($line =~ /TOOL :/) {push(@comments, $line)}
+      }
+      my $command = qq(punlearn ftlist;ftlist infile=$tmpfile+$i option=K include=RA_NOM);
+      my $result = $tool -> doCommand($command);
+      foreach my $line (@{ $result->{lines} }){
+	if ($line =~ /RA_NOM  =/){push(@comments, $line)}
+      }
+      my $command = qq(punlearn ftlist;ftlist infile=$tmpfile+$i option=K include=DEC_NOM);
+      my $result = $tool -> doCommand($command);
+      foreach my $line (@{ $result->{lines} }){
+	if ($line =~ /DEC_NOM =/){push(@comments, $line)}
+      }
+      my $command = qq(punlearn ftlist;ftlist infile=$tmpfile+$i option=K include=RADECSYS);
+      my $result = $tool -> doCommand($command);
+      foreach my $line (@{ $result->{lines} }){
+	if ($line =~ /RADECSYS=/){push(@comments, $line)}
+      }
+      my $command = qq(punlearn ftlist;ftlist infile=$tmpfile+$i option=K include=PLEPHEM);
+      my $result = $tool -> doCommand($command);
+      foreach my $line (@{ $result->{lines} }){
+	if ($line =~ /PLEPHEM =/){push(@comments, $line)}
+      }
+      open(MODFH,">$tmpdir/modf_template");
+      print MODFH join "\n",@comments;
+      close(MODFH);
+      $cmdstr="fthedit infile=$outfile keyword=\@$tmpdir/modf_template";
+      my $result = $tool -> doCommand($cmdstr);
+
+      $have_timecol="no";
+      foreach $key (keys(%{$hdus[$i]})){
+	if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'TIME/i)){$have_timecol="yes"}
+      }
+      if ($have_timecol eq "yes"){
+	$cmdstr="punlearn faddcol;faddcol infile='$outfile\[$i\]' ";
+	if (defined $hdus[$i]->{TIMEZERO}){
+	  $cmdstr .= "colfile=\'$tmpfile\[$i\]";
+	  $cmdstr .= "[col BARYTIME=time-$hdus[$i]->{TIMEZERO}]\' ";
+	}
+	elsif (defined $hdus[$i]->{TIMEZERI} && defined $hdus[$i]->{TIMEZERF}){
+	  $cmdstr .= "colfile=\'$tmpfile\[$i\]";
+	  $cmdstr .= "[col BARYTIME=time-$hdus[$i]->{TIMEZERI}-$hdus[$i]->{TIMEZERF}]\' ";
+	}
+	else {
+	  $cmdstr .= "colfile=\'$tmpfile\[$i\][col BARYTIME=time]\' ";
+	}
+	$cmdstr.="colname=BARYTIME history=no";
+	my $result = $tool -> doCommand($cmdstr);
+      }
+    }
+  }else{ # barytime=no so operate directly on output file
+    for ($i=0; $i<$numhdus; $i++){
+      unless (defined $hdus[$i]->{TSTART}){
+	next unless (defined $hdus[$i]->{TSTARTI} && defined $hdus[$i]->{TSTARTF});
+	$tstart=$hdus[$i]->{TSTARTI}+$hdus[$i]->{TSTARTF};
+	$tstop=$hdus[$i]->{TSTOPI}+$hdus[$i]->{TSTOPF};
+	my $result = $tool -> doCommand("fthedit value=$tstart infile=$outfile+$i keyword=TSTART operation=add");
+	my $result = $tool -> doCommand("fthedit value=$tstop infile=$outfile+$i keyword=TSTOP operation=add");
+      }
+    }
+
+    # if Swift then correct SC times (TIME, GTI:START/STOP, TSTART/TSTOP) in $outfile first
+    if ($swift eq "yes"){
+      my $fits = Astro::FITS::CFITSIO::open_file($outfile, READWRITE, $status);
+      if ($status) {die "Unable to open $outfile"}
+      for ($i=0; $i<$numhdus; $i++){
+	if ($fits->movabs_hdu($i+1, $hdutype, $status)){&bailout("Error moving to HDU$i")}
+	$have_timecol="no";
+	$have_gti="no";
+	$have_tstart="no";
+	$have_tstop="no";
+	foreach $key (keys(%{$hdus[$i]})){
+	  if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'TIME/i)){
+	    $have_timecol="yes";
+	    $key =~ /TTYPE(\d+)/;
+	    $btcol=$1;
+	  }
+	  if ($key =~ /UTCFINIT/){$utcfinit=$hdus[$i]->{$key}}
+	  if ($key =~ /EXTNAME/ && ($hdus[$i]->{$key} =~ /^\'GTI/i)){$have_gti="yes"}
+	  if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'START/i)){
+	    $key =~ /TTYPE(\d+)/;
+	    $gtistartcol=$1;
+	  }
+	  if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'STOP/i)){
+	    $key =~ /TTYPE(\d+)/;
+	    $gtistopcol=$1;
+	  }
+	  if ($key =~ /TSTART/){$have_tstart="yes";$tstart=$hdus[$i]->{$key}}
+	  if ($key =~ /TSTOP/){$have_tstop="yes"}
+	}
+	#Compute leapsecond correction at TSTART (leapsecs since 2001.0)
+	$leapcor = 0;
+	$leapcor = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTART}/86400.0);
+	if ($have_timecol eq "yes" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTART) = $leapcor\n"}
+	#Compute leapsecond correction at TSTOP (leapsecs since 2001.0)
+	$leapcor2 = 0;
+	$leapcor2 = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTOP}/86400.0);
+	if ($have_timecol eq "yes" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTOP) = $leapcor2\n"}
+	# Check whether file spans a leap second. If so we'll have to compute them for each time (slow)
+	if ($leapcor != $leapcor2){$ut2tt = -999}else{$ut2tt = $leapcor}
+	$ttcfinit = $utcfinit + $leapcor;
+	#We've assumed UTCF will be jammed when a leap second occurs
+	#(ie, 1 second subtracted from UTCF for a 'normal' (positive) leap second)
+	#so we want to "undo" that since TDB is based on TT (ie, TTCF instead of UTCF)
+	if ($have_tstart eq "yes"){
+	  if (sCC($hdus[$i]->{TSTART},"t",$ut2tt,$clockfile,$tzero,$correction,$dummy)){
+	    if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	    $correction = $ttcfinit*1e6; #microseconds;
+	  }
+	  $msg = "$tname: HDU$i: TSTART = ".($hdus[$i]->{TSTART}).", ";
+	  $msg .="TSTOP = ".($hdus[$i]->{TSTOP});
+	  if ($chatter >= 4){print "$msg\n"};
+	  if ($chatter >= 4){print "$tname: HDU$i: correcting TSTART ($hdus[$i]->{TSTART}) by ".($correction*1e-6)." s\n"}
+	  $msg = "$tname: HDU$i: TSTART = ".($correction*1e-6+($hdus[$i]->{TSTART})).", ";
+	  if ($fits->update_key_dbl('TSTART',$correction*1e-6+($hdus[$i]->{TSTART}),
+				    15,$comtstart,$status))
+	    {&bailout("Error updating TSTART keyword in HDU$i")}
+	}
+	if ($have_tstop eq "yes"){
+	  if (sCC($hdus[$i]->{TSTOP},"t",$ut2tt,$clockfile,$tzero,$correction,$dummy)){
+	    if ($wroteswmsg eq "no" && ($chatter >= 3)) {print $swcomsg;$wroteswmsg="yes"}
+	    $correction = $ttcfinit*1e6 + ($hdus[$i]->{TSTOP}-$tstart)*20.0/$swdrift; #microseconds;
+	  }
+	  if ($chatter >= 4){print "$tname: HDU$i: correcting TSTOP ($hdus[$i]->{TSTOP}) by ".($correction*1e-6)." s\n"}
+	  $msg .="TSTOP = ".($correction*1e-6+$hdus[$i]->{TSTOP})." (corrected)";
+	  if ($chatter > 4) {print "$msg\n"};
+	  if ($fits->update_key_dbl('TSTOP',$correction*1e-6+($hdus[$i]->{TSTOP}),
+				    15,$comtstop,$status))
+	    {&bailout("Error updating TSTOP in HDU$i")}
+	}
+	if ($have_timecol eq "yes"){
+	  if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+	  $tstart = $hdus[$i]->{TSTART};
+
+	  my @time;
+	  my $firstrow = 1;
+	  my $firstelem = 1;
+	  my $nelem = $rowcount;
+	  my $nullval = 0;
+	  my $anynul = 0;
+
+	  if ($chatter >= 3){print "$tname: HDU$i - Correcting TIME column in $outfile\n"}
+	  if ($fits->read_col_dbl($btcol, $firstrow, $firstelem,
+				  $nelem, $nullval, \@time, $anynul, $status)) {
+	    &bailout("Error reading TIME column");
+	  }
+	  my @timecorr=();
+	  foreach $t (@time){
+	    if (sCC($t,"t",$ut2tt,$clockfile,$tzero,$correction,$dummy)){
+	      if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	      $correction = $ttcfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds
+	    }
+	    #if ($chatter > 4){print "correcting $t by ".($correction*1e-6)." s\n"}
+	    push @timecorr, $t+$correction*1e-6;
+	  }
+	  if ($fits->write_col_dbl($btcol, $firstrow, $firstelem,
+				   $nelem, \@timecorr, $status)){
+	    &bailout("Error updating TIME column in $outfile");
+	  }
+	}
+	if ($have_gti eq "yes"){
+	  if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+
+	  my @time=();
+	  my $firstrow = 1;
+	  my $firstelem = 1;
+	  my $nelem = $rowcount;
+	  my $nullval = 0;
+	  my $anynul = 0;
+	  if ($fits->read_col_dbl($gtistartcol, $firstrow, $firstelem,
+				  $nelem, $nullval, \@time, $anynul, $status)) {
+	    &bailout("Error reading START column");
+	  }
+	  my @timecorr=();
+	  if ($chatter >= 3) {print "$tname: Correcting GTI START column in HDU$i\n"}
+	  foreach $t (@time){
+	    if (sCC($t,"t",$ut2tt,$clockfile,$tzero,$correction,$dummy)){
+	      if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	      $correction = $ttcfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds;
+	    }
+	    #if ($chatter > 4){print "correcting $t by ".($correction*1e-6)." s\n"}
+	    push @timecorr, $t+$correction*1e-6;
+	  }
+	  if ($fits->write_col_dbl($gtistartcol, $firstrow, $firstelem,
+				   $nelem, \@timecorr, $status)){
+	    &bailout("Error updating START column");
+	  }
+	  my @time=();
+	  if ($fits->read_col_dbl($gtistopcol, $firstrow, $firstelem,
+				  $nelem, $nullval, \@time, $anynul, $status)) {
+	    &bailout("Error reading STOP column");
+	  }
+	  my @timecorr=();
+	  if ($chatter >= 3) {print "$tname: Correcting GTI STOP column in HDU$i\n"}
+	  foreach $t (@time){
+	    if (sCC($t,"t",$ut2tt,$clockfile,$tzero,$correction,$dummy)){
+	      if ($wroteswmsg eq "no" && ($chatter > 0)) {print $swcomsg;$wroteswmsg="yes"}
+	      $correction = $ttcfinit*1e6 + ($t-$tstart)*20.0/$swdrift; #microseconds;
+	    }
+	    #if ($chatter > 4){print "correcting $t by ".($correction*1e-6)." s\n"}
+	    push @timecorr, $t+$correction*1e-6;
+	  }
+	  if ($fits->write_col_dbl($gtistopcol, $firstrow, $firstelem,
+				   $nelem, \@timecorr, $status)){
+	    &bailout("Error updating STOP column");
+	  }
+	}
+      }
+      $fits->close_file($status);
+    }
+
+    $cmdstr="$cmd -i $axorb -f $outfile @axopts";
+    if ($chatter >= 3) {print "$tname: running $cmdstr\n"}
+    my $result=$tool -> doCommand("$cmdstr 2>&1");
+    foreach my $line (@{ $result->{lines} }){
+      if ($chatter >= 3) {print $line,"\n"}
+    }
+    # now delete the bogus TSTART/TSTOP keywords (I/F pairs are still there)
+    for ($i=0; $i<$numhdus; $i++){
+      unless (defined $hdus[$i]->{TSTART}){
+	next unless (defined $hdus[$i]->{TSTARTI} && defined $hdus[$i]->{TSTARTF});
+	my $result = $tool -> doCommand("fthedit value=0.0 infile=$outfile+$i keyword=TSTART operation=delete");
+	my $result = $tool -> doCommand("fthedit value=0.0 infile=$outfile+$i keyword=TSTOP operation=delete");
+      }
+    }
+  }
+
+  rmtree($tmpdir);
+
+  # Swift Specific Section
+  # (as of v1.7 setup steps are done earlier)
+  # apply clock correction to keywords as necessary
+  if ($swift eq "yes"){
+    my $fits = Astro::FITS::CFITSIO::open_file($outfile, READWRITE, $status);
+    if ($status) {&bailout("Unable to open $outfile")}
+    my $numhdus = 0;
+    my $status = 0;
+    @hdus=();
+    $fits->get_num_hdus($numhdus, $status);
+    if ($status) {&bailout("Unable to get number of HDUs in $outfile")}
+    for ($hdu=1; $hdu <= $numhdus; $hdu++){ #NB CFITSIO Primary = HDU1...
+      $fits->movabs_hdu($hdu, $hdutype, $status);
+      my $header = $fits->read_header;
+      push @hdus, $header;
+    }
+    # If barytime=yes nothing more needs doing since the TIME values were clock-corrected
+    #  prior to running hdaxbary and no keywords are updated in this case.
+    # If barytime=no we still have to update the time-related keywords and insert RAWTIME
+    if ($barytime == 0){
+      for ($i=0; $i<$numhdus; $i++){
+	if ($fits->movabs_hdu($i+1, $hdutype, $status)){&bailout("Error moving to HDU$i")}
+	$tdb="no";
+	$have_tierabso="no";
+        $have_tcol="no";
+	$have_utcfinit="no";
+	$have_clockapp="no";
+	foreach $key (keys(%{$hdus[$i]})){
+	  if ($key =~ /TIMESYS/ && ($hdus[$i]->{$key} =~ /^\'TDB/)){$tdb="yes"}
+	  if ($key =~ /TIERABSO/){$have_tierabso="yes"}
+	  if ($key =~ /UTCFINIT/){$have_utcfinit="yes";$utcfinit=$hdus[$i]->{$key}}
+	  if ($key =~ /CLOCKAPP/){$have_clockapp="yes"}
+          if ($key =~ /TTYPE/ && ($hdus[$i]->{$key} =~ /^\'TIME/i)){$have_tcol="yes"}
+	}
+	#Compute leapsecond correction at TSTART (leapsecs since 2001.0)
+	$leapcor = 0;
+	$leapcor = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTART}/86400.0);
+	if ($tdb eq "yes" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTART) = $leapcor\n"}
+	#Compute leapsecond correction at TSTOP (leapsecs since 2001.0)
+	$leapcor2 = 0;
+	$leapcor2 = &sLeap($ep_mjd_ut + $hdus[$i]->{TSTOP}/86400.0);
+	if ($tdb eq "yes" && $chatter > 3) {print "$tname: HDU$i: leapseconds since 2001.0 (at TSTOP) = $leapcor2\n"}
+	# Check whether file spans a leap second. If so we'll have to compute them for each time (slow)
+	if ($leapcor != $leapcor2){$ut2tt = -999}else{$ut2tt = $leapcor}
+	$ttcfinit = $utcfinit + $leapcor;
+	if ($tdb eq "yes" && $chatter > 3){print "$tname: HDU$i: UTCFINIT is $utcfinit, TTCFINIT is $ttcfinit\n"}
+	$utcfinit = -1 * $leapcor;
+	#We've assumed UTCF will be jammed when a leap second occurs
+	#(ie, 1 second subtracted from UTCF for a 'normal' (positive) leap second)
+	#so we want to "undo" that since TDB is based on TT (ie, TTCF instead of UTCF)
+	#With TTCF already applied UTCFINIT only needs to account for leapsecs
+	if ($tdb eq "yes"){
+	  if ($have_tierabso eq "yes"){
+	    if ($wroteswmsg eq "yes"){$tierabs=5e-4}else{$tierabs=1e-5}
+	    if ($chatter >= 4) {print "$tname: Correcting TIERABSO in HDU$i (was $hdus[$i]->{TIERABSO})\n"}
+	    if ($fits->update_key_dbl('TIERABSO',$tierabs,6,$comtierab,$status))
+	      {&bailout("Error updating TIERABSO in HDU$i")}
+	  }
+	  if ($have_utcfinit eq "yes"){
+	    if ($chatter >= 4) {print "$tname: Deleting UTCFINIT in HDU$i\n"}
+	    if ($fits->delete_key('UTCFINIT',$status))
+	      {&bailout("Error deleting UTCFINIT in HDU$i")}
+	  }
+	  if ($have_clockapp eq "yes"){
+	    if ($chatter >= 4) {print "$tname: Correcting CLOCKAPP in HDU$i (was $hdus[$i]->{CLOCKAPP})\n"}
+	    if ($fits->update_key_log('CLOCKAPP',1,$comclockapp,$status))
+	      {&bailout("Error updating CLOCKAPP in HDU$i")}
+	  }
+	  if ($have_tcol eq "yes"){
+            if ($fits->get_num_rows($rowcount, $status)){&bailout("Error finding number of rows")}
+	    if ($fits->get_num_cols($colcount, $status)){&bailout("Error finding number of cols")}
+
+            my $firstrow = 1;
+            my $firstelem = 1;
+            my $nelem = $rowcount;
+
+	    if ($chatter >= 3) {print "$tname: Adding RAWTIME to HDU$i\n"}
+	    if ($fits->insert_col($colcount+1,'RAWTIME','1D',$status))
+	      {&bailout("Error inserting RAWTIME column")}
+	    if ($fits->write_col_dbl($colcount+1, $firstrow, $firstelem,
+				     $nelem, \@{$rawthash{"HDU$i"}}, $status))
+	      {&bailout("Error writing RAWTIME column")}
+	  }
+	}else{if ($chatter > 0){print "$tname: HDU$i: TIMESYS is not TDB\n"}}
+      }
+    } #barytime=no
+    $fits->close_file($status);
+  }
+  if ($gzipped){if ($chatter > 3){print "re-zipping $infile\n"};`gzip $infile`}
+
+  $fits = Astro::FITS::CFITSIO::open_file($outfile, READWRITE, $status);
+  HDpar_stamp($fits,1,$status);
+  if ($status){&bailout("Error writing parameter history block")}
+  $fits->close_file($status);
+
+  my $result = $tool -> doCommand("ftchecksum infile=$outfile update=yes");
+
+  return 0;
+}
+
+sub sigtrap{
+  my $signame = shift;
+  &bailout("\n!Trapped a $signame signal!");
+}
+
+sub bailout{
+  my $errmsg = @_[0];
+  rmtree($tmpdir);
+  if ($insitu eq "no"){unlink($outfile)}
+  if ($gzipped){`gzip $infile`}
+  die "$0: $errmsg\nBailing out";
+}
+
+sub check_orbit{
+  my $ofile = @_[0];
+  my $status = 0;
+  my $numhdus = 0;
+  my $hdu = 0;
+
+  my $fits = Astro::FITS::CFITSIO::open_file($ofile, READONLY, $status);
+  if ($status) {&bailout("check_orbit: Unable to open orbit file \'$ofile\'")}
+  if ($swift eq "yes"){ # more extensive checking for Swift only
+    $fits->get_num_hdus($numhdus, $status);
+    if ($status) {&bailout("check_orbit: Unable to get number of HDUs")}
+    for ($hdu=1; $hdu <= $numhdus; $hdu++){ #NB CFITSIO Primary = HDU1...
+      my $orbtime = "no";
+      my $orbpos = "no";
+      my $orbvel = "no";
+      if ($chatter > 3){print "check_orbit: checking HDU $hdu of $ofile\n"}
+      $fits->movabs_hdu($hdu, $hdutype, $status);
+      my $header = $fits->read_header;
+      foreach $key (keys(%{$header})){
+	if ($key =~ /TTYPE/ && ($header->{$key} =~ /^\'TIME/i)) {
+	  $orbtime="yes";
+	  $key =~ /TTYPE(\d+)/;
+	  $tcol=$1;
+	}
+	if ($key =~ /TTYPE/ && ($header->{$key} =~ /^\'POSITION/i)) {
+	  $key =~ /TTYPE(\d+)/;
+	  $pcol=$1;
+	  $fits->get_coltype($pcol, $typecode, $repeat, $width, $status);
+	  if ($repeat == 3) {$orbpos = "yes"} else {
+	    if ($chatter > 4) {print "check_orbit: POSITION column not vector\n"}
+	  }
+	}
+	if ($key =~ /TTYPE/ && ($header->{$key} =~ /^\'VELOCITY/i)) {
+	  $key =~ /TTYPE(\d+)/;
+	  $vcol=$1;
+	  $fits->get_coltype($vcol, $typecode, $repeat, $width, $status);
+	  if ($repeat == 3) {$orbvel = "yes"} else {
+	    if ($chatter > 4) {print "check_orbit: VELOCITY column not vector\n"}
+	  }
+	}
+      }
+      if ($orbtime eq "yes" && $chatter > 4) {
+	print "check_orbit: Found TIME column (col $tcol)\n";
+      }
+      if ($orbpos eq "yes" && $chatter > 4) {
+	print "check_orbit: Found POSITION vector column (col $pcol)\n";
+      }
+      if ($orbvel eq "yes" && $chatter > 4) {
+	print "check_orbit: Found VELOCITY vector column (col $vcol)\n";
+      }
+      if ($orbtime eq "yes" && $orbpos eq "yes" && $orbvel eq "yes") {
+	if ($chatter > 3){print "check_orbit: HDU $hdu of $ofile is VALID\n"}
+	$fits->close_file($status);
+	return $hdu;
+      }
+    }
+    if ($chatter > 3){print "check_orbit: $ofile is an INVALID Swift orbit file\n"}
+    $fits->close_file($status);
+    return -1;
+  }
+  $fits->close_file($status);
+  return 0; #non-Swift
+}

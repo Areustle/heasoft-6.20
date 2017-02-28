@@ -1,0 +1,9 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	= 
+
+HD_INSTALL_PERL_SCRIPTS	= aemkreg
+
+HD_INSTALL_HELP		= aemkreg.txt
+
+include ${HD_STD_MAKEFILE}

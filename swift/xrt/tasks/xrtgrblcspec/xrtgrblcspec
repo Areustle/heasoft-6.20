@@ -1,0 +1,3992 @@
+#!/usr/bin/perl -w
+
+use strict;
+
+## Globals ##
+my @clean = ();
+
+$| = 1;
+
+my $taskName = 'xrtgrblcspec';
+my $taskVers = '1.3';
+
+my %params = (
+    indir       => '',     # input dir
+    instem      => '',     # input stem
+    outdir      => '',     # output dir
+    outstem     => '',     # stem for output files
+    srcra       => 0.0,    # Target RA
+    srcdec      => 0.0,    # Target Dec
+    nhmap       => 0,      # nH map to use
+    usernh      => 0,      # nH
+    trigtime    => 0.0,    # Trigger time (MET)
+    trigfrombat => 0,      # Is the trigtime from the BAT?
+    minenergy   => 0.0,    # minimum energy range
+    maxenergy   => 0.0,    # maximum energy range
+    minwtphacts => 0,      # minimum WT mode counts required in each PHA
+    minpcphacts => 0,      # minimum PC mode counts required in each PHA
+    interactive => 0,      # run in interactive mode
+    autospecfit => 0,      # try to automatically fit spectra?
+    plotftype   => '',     # plotting device
+    plotfext    => '',     # plot extension (based on plot device)
+    brkfrac1    => 0.0,    # fractional drop in rate where time break for bknpow is taken
+    brkfrac2    => 0.0,    # same but for 1st time break of bkn2pow
+    brkfrac3    => 0.0,    # same but for 2nd time break of bkn2pow
+    chatter     => 0,      # chat level
+    clobber     => 0,      # clobber?
+    cleanup     => 0,      # clean up after ourselves?
+    history     => 0       # add history keywords?
+);
+
+my %curves = ( 
+    pc => {
+        curve     => '',             # input PC mode light curve
+        curvebase => '',             # input light curve basename
+        exstart   => [ ],            # start times of user excluded intervals
+        exstop    => [ ],            # stop times of user excluded intervals
+        tbreaks   => [ ],            # time breaks for interval spectra
+        inext     => '_xpcetsra.lc', # extension after $params{instem}
+    },
+    wt => {
+        curve     => '',             # input WT mode light curve
+        curvebase => '',             # input light curve basename  
+        exstart   => [ ],            # start times of user excluded intervals
+        exstop    => [ ],            # stop times of user excluded intervals
+        tbreaks   => [ ],            # time breaks for interval spectra
+        inext     => '_xwtetsra.lc', # extension after $params{instem}
+    }
+);
+
+my ( $object, $targid );
+
+# label for light curve X-axis
+my $lcXAxisLabel = "";
+
+# model related stuff
+my %models = ( );
+
+# time breaks
+my @tbreaks = ( );
+
+# output filenames
+my %outfiles = (
+    pclcbase    => '_xpcetsra_lc', # base for fittable pha files
+    pclcpha     => '',             # fittable "pha" of light curve
+    pclcrsp     => '',             # unit response for lcpha
+    pclcign     => '',             # XSpec ignore script file
+    wtlcbase    => '_xwtetsra_lc', # base for fittable pha files
+    wtlcpha     => '',             # fittable "pha" of light curve
+    wtlcrsp     => '',             # unit response for lcpha
+    wtlcign     => ''              # XSpec ignore script file
+);
+
+# files that need fixing
+my %fixFits = ( );
+
+# RMF filename cache
+my %rmfhash = ( );
+
+# per-interval files and related info
+my %intervalData = ( );
+
+# per-spectral-interval files and related info
+my %specIntervals = ( );
+
+# File pattern match for output, PSF corrected ARFs from xrtgrblc
+# two different patterns are used for backward compat
+my $arfpatt = '\d{11}_(PC|WT)W./(.*?_\d{11}|\d{3})_(pc|wt).._.*?_psf.arf(\.gz)?$';
+
+# Xspec procedures
+
+# this proc gets the rough error estimates from Xspec
+my $xspec_get_bad_error = sprintf << 'EOF';
+proc get_bad_error { pnum } {
+    tclout plink $pnum
+    set records [split $xspec_tclout { }]
+    set islinkd [lindex $records 0]
+    if { $islinkd eq "F" } {
+        return [tcloutr sigma $pnum]
+    } else {
+        return [tcloutr sigma [lindex $records 2]]
+    }
+}
+EOF
+
+##
+
+# HEASoft core libs
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use Astro::FITS::CFITSIO qw( :longnames :constants );
+use libswxrtgrblc;
+
+# Platform independent file manipulation libs, etc
+# These are part of the core modules in standard perl dists
+use File::Spec::Functions;
+use File::Path;
+use File::Copy;
+use File::Basename;
+use File::Find;
+use Env;
+use Cwd;
+
+exit headas_main( \&xrtgrblcspec );
+
+sub xrtgrblcspec {
+
+    # status
+    my $stat = 0;
+
+    # setup chats and par files
+    libswxrtgrblc::setprefix( "${taskName}_${taskVers}: " );
+    libswxrtgrblc::setchat( 2 );
+    set_toolname( $taskName );
+    set_toolversion( $taskVers );
+
+    # get params
+    $stat = getParams( );
+    goto CLEANUP unless $stat == 0;
+
+    # chat with the user a little
+    intro( );
+
+    # check that the plot device is valid
+    $stat = getPlotDevice( );
+    return $stat unless $stat == 0;
+
+    # get the source nH and scale for xspec
+    if ( $params{autospecfit} ) {
+        $stat = getXSpecNH( );
+        return $stat unless $stat == 0;
+    }
+
+    # get/check input files
+    $stat = findInputFiles( );
+    return $stat unless $stat == 0;
+
+    # setup output files
+    setupOutputFiles( );
+
+    # fit the light curve
+    $stat = fitLightCurve( );
+    goto CLEANUP unless $stat == 0;
+
+    # make interval spectra
+    $stat = buildIntervalSpectra( );
+    goto CLEANUP unless $stat == 0;
+
+    # fit the spectra - if asked to
+    if ( $params{autospecfit} ) {
+        $stat = fitIntervalSpectra( );
+        goto CLEANUP unless $stat == 0;
+    }
+
+    # write the info table
+    $stat = writeInfoFile( );
+    goto CLEANUP unless $stat == 0;
+
+    # fix header keys
+    $stat = updateHeaders( \%fixFits );
+    goto CLEANUP unless $stat == 0;
+
+CLEANUP:
+    if ( $params{cleanup} ) {
+        cleanup( );
+    }
+    outtro( $stat );
+    return $stat;
+}
+
+#
+# getParams -
+#
+#       reads input parameters
+#
+sub getParams {
+
+    my $stat = 0;
+
+    ( $stat = getIntParam( 'chatter', \$params{chatter} ) ) == 0 || return $stat;
+    libswxrtgrblc::setchat( $params{chatter} );
+
+    ( $stat = getStrParam( 'indir',   \$params{indir} ) ) == 0   || return $stat;
+    ( $stat = getStrParam( 'instem',  \$params{instem} ) ) == 0  || return $stat;
+    ( $stat = getStrParam( 'outdir',  \$params{outdir} ) ) == 0  || return $stat;
+    ( $stat = getStrParam( 'outstem', \$params{outstem} ) ) == 0 || return $stat;
+    
+    ( $stat = getFltParam( 'trigtime',     \$params{trigtime} ) ) == 0    || return $stat;
+    ( $stat = getBoolParam( 'trigfrombat', \$params{trigfrombat} ) ) == 0 || return $stat;
+
+    ( $stat = getFltParam( 'minenergy', \$params{minenergy} ) ) == 0 || return $stat;
+    ( $stat = getFltParam( 'maxenergy', \$params{maxenergy} ) ) == 0 || return $stat;
+    
+    ( $stat = getIntParam( 'minwtphacts', \$params{minwtphacts} ) ) == 0 || return $stat;
+    ( $stat = getIntParam( 'minpcphacts', \$params{minpcphacts} ) ) == 0 || return $stat;
+
+    ( $stat = getBoolParam( 'interactive', \$params{interactive} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'autospecfit', \$params{autospecfit} ) ) == 0 || return $stat;
+    # the only reason we need the nh is to do the autospecfit
+    if ( $params{autospecfit} ) {
+        ( $stat = getIntParam( 'nhmap', \$params{nhmap} ) ) == 0 || return $stat;
+        if ( $params{nhmap} < 0 ) {
+            ( $stat = getFltParam( 'usernh', \$params{usernh} ) ) == 0 || return $stat;
+        # the only reason we need the RA/Dec is to do the nh calc
+        } else {
+            ( $stat = getStrParam( 'srcra',  \$params{srcra} ) ) == 0  || return $stat;
+            ( $stat = getStrParam( 'srcdec', \$params{srcdec} ) ) == 0 || return $stat;
+            
+            # check the RA/Dec
+            ( $stat, $params{srcra} )  = convertRAStringToDegrees( $params{srcra} );
+            return $stat unless $stat == 0;
+            ( $stat, $params{srcdec} ) = convertDecStringToDegrees( $params{srcdec} );
+            return $stat unless $stat == 0;
+        }
+    }
+    
+    ( $stat = getStrParam( 'plotftype',    \$params{plotftype} ) ) == 0   || return $stat;
+
+    ( $stat = getFltParam( 'brkfrac1', \$params{brkfrac1} ) ) == 0 || return $stat;
+    ( $stat = getFltParam( 'brkfrac2', \$params{brkfrac2} ) ) == 0 || return $stat;
+    ( $stat = getFltParam( 'brkfrac3', \$params{brkfrac3} ) ) == 0 || return $stat;
+    
+    ( $stat = getBoolParam( 'clobber', \$params{clobber} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'cleanup', \$params{cleanup} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'history', \$params{history} ) ) == 0 || return $stat;
+
+    # check out dir
+    if ( -d $params{outdir} && !$params{clobber} ) {
+        error( 1, "output directory $params{outdir} exists and clobber not set!\n" );
+        return -1;
+    } else {
+        eval { mkpath( $params{outdir} ) };
+        if ( $@ ) {
+            error( 1, "failed to make output directory $params{outdir}\n" );
+            return $!;
+        }
+    }
+
+    # setup light curve X-axis label
+    if ( $params{trigfrombat} ) {
+        $lcXAxisLabel = "Time Since BAT Trigger (s)";
+    } else {
+        $lcXAxisLabel = "Time Since Trigger (s)";
+    }
+
+    return $stat;
+}
+
+#
+# findInputFiles -
+#
+#       finds output files from xrtgrblc that are needed for analysis
+#
+sub findInputFiles {
+
+    my $stat = 0;
+
+    # input light curves
+    $curves{pc}{curvebase} = "$params{instem}$curves{pc}{inext}";
+    $curves{wt}{curvebase} = "$params{instem}$curves{wt}{inext}";
+    $curves{pc}{curve} = catfile( $params{indir}, $curves{pc}{curvebase} );
+    $curves{wt}{curve} = catfile( $params{indir}, $curves{wt}{curvebase} );
+    my $pcnoexist = checkFitsExists( $curves{pc}{curve} );
+    my $wtnoexist = checkFitsExists( $curves{wt}{curve} );
+    if ( $pcnoexist && $wtnoexist ) {
+        error( 1, "at least on of $curves{pc}{curvebase} or ",
+                  "$curves{wt}{curvebase} must exist!\n" );
+        return -1;
+    }
+    delete $curves{pc} unless $pcnoexist == 0;
+    delete $curves{wt} unless $wtnoexist == 0;
+    foreach my $mode ( keys %curves ) {
+        my %keywords = ( );
+        ( $stat, %keywords ) = readPHAKeywords( $curves{$mode}{curve}, 0 );
+        map( $curves{$mode}{$_} = $keywords{$_}, keys %keywords );
+    }
+
+    # input spectra - we just look for arfs, and generate the other filenames
+    my @arfs = ( );
+    my $wanted = sub {
+        if ( $File::Find::name =~ /$arfpatt/ ) {
+            push @arfs, $File::Find::name;
+        }
+    };
+    find( { wanted => $wanted, follow => 1, no_chdir => 1 }, $params{indir} );
+    if ( !@arfs ) {
+        error( 1, "failed to find any arfs using glob string $arfpatt\n" );
+        return -1;
+    }
+    foreach my $arf ( @arfs ) {
+        my %interval = ( );
+        
+        # parse the filenames - this should be checked versus xrtgrblc
+        my $base = $arf;
+        $base    =~ s/_psf\.arf(\.(gz|Z))?$//;
+       
+        $interval{arf}     = $arf;
+        $interval{evtfile} = $base . ".evt";
+        $interval{srcpha}  = $base . ".pha";
+        $interval{bkgpha}  = $base . "_bkg.pha";
+        $interval{bkgevt}  = $base . "_bkg.evt";
+        $stat = checkFitsExists( values %interval );
+        if ( $stat != 0 ) {
+            warnhi( 1, "skipping files with base $base\n",
+                    "missing a required file (.evt, .pha, _bkg.pha, or _bkg.evt)\n" );
+            next;
+        }
+
+        # read pertinent keywords from source and background pha
+        my %keywords;
+        ( $stat, %keywords ) = readPHAKeywords( $interval{srcpha} );
+        return $stat unless $stat == 0;
+        next unless keys %keywords;
+        map( $interval{$_} = $keywords{$_}, keys %keywords );
+
+        # skip pha's with not enough counts
+        my $mode = lc( $interval{MODE} );
+        if ( $interval{TOTCTS} < $params{"min${mode}phacts"} ) {
+            warnhi( 1, "skipping $interval{srcpha} due to low counts\n" );
+            next;
+        }
+
+        ( $stat, %keywords ) = readPHAKeywords( $interval{bkgpha} );
+        return $stat unless $stat == 0;
+        next unless keys %keywords;
+        map( $interval{"bkg_$_"} = $keywords{$_}, keys %keywords );
+
+        # get the RMF for each one
+        $stat = getRMFFile( \%interval );
+        return $stat unless $stat == 0;
+       
+        # store 
+        $intervalData{$base} = \%interval;
+    }
+}
+
+#
+# readPHAKeywords -
+#
+#       reads some needed keywords from 1st fits table extension
+#
+sub readPHAKeywords {
+
+    my $pha = shift;
+    my $process = 1;
+    if ( @_ ) {
+        $process = shift;
+    }
+
+    my ( $fptr, $val, $comm, $stat );
+    $stat = 0;
+   
+    chat( 3, "reading header keywords from $pha\n" );
+    my @keys = (
+        { name => 'EXPOSURE', type => TDOUBLE },
+        { name => 'DATAMODE', type => TSTRING },
+        { name => 'OBJECT',   type => TSTRING },
+        { name => 'DATE-OBS', type => TSTRING },
+        { name => 'DATE-END', type => TSTRING },
+        { name => 'TSTART',   type => TDOUBLE },
+        { name => 'TSTOP',    type => TDOUBLE },
+        { name => 'BACKSCAL', type => TDOUBLE },
+        { name => 'TOTCTS',   type => TLONG },
+        { name => 'XRTVSUB',  type => TLONG }
+    );
+    my %readkeys = ( );    
+    $fptr = Astro::FITS::CFITSIO::open_file( $pha, READONLY, $stat );
+    
+    # read the OBS_ID keyword from primary ext
+    $readkeys{OBS_ID} = '';
+    $fptr->read_key( TSTRING, 'OBS_ID', $readkeys{OBS_ID}, undef, $stat );
+    if ( $stat == KEY_NO_EXIST ) {
+        $readkeys{OBS_ID} = '0';
+        $stat = 0;
+    }
+    $fptr->movabs_hdu( 2, ANY_HDU, $stat );
+    foreach my $keyhash ( @keys ) {
+        $readkeys{$keyhash->{name}} = 0;
+        $fptr->read_key( $keyhash->{type}, $keyhash->{name},
+                         $readkeys{$keyhash->{name}}, $comm, $stat );
+        if ( $process && $keyhash->{name} eq 'XRTVSUB' && $stat == KEY_NO_EXIST ) {
+            warnlo( 1, "XRTVSUB keyword not found in $pha, assuming 0\n" );
+            $readkeys{$keyhash->{name}} = 0;
+            $stat = 0;
+        }
+        if ( $keyhash->{type} == TSTRING ) {
+            $readkeys{$keyhash->{name}} =~ s/'//g;
+        }
+        if ( $process && !defined $object && $keyhash->{name} eq 'OBJECT' ) {
+            $object = $readkeys{$keyhash->{name}};
+        }
+
+        # ignore missing keys if !$process
+        if ( !$process && $stat == KEY_NO_EXIST ) {
+            $stat = 0;
+        }
+    }
+
+    # find the grade string
+    for ( my $i = 1; ; $i++ ) {
+        my $keyval;
+        $fptr->read_key_str( "DSTYP$i", $keyval, $comm, $stat );
+        last if $stat != 0;
+        if ( $keyval =~ /GRADE/ ) {
+            $fptr->read_key_str( "DSVAL$i", $keyval, $comm, $stat );
+            $readkeys{GRADESEL} = $keyval;
+            last;
+        }
+    }
+
+    # ignore missing keys if !$process
+    if ( !$process && $stat == KEY_NO_EXIST ) {
+        $stat = 0;
+    }
+    if ( $readkeys{EXPOSURE} == 0.0 || # always required 
+         ( $process &&
+           ( $readkeys{TSTART} == 0 || # not if !$process
+             $readkeys{TSTOP} == 0 ) ) ) {
+        error( 1, "no exposure in $pha, skipping\n" );
+        %readkeys = ( );
+    }
+    if ( exists $readkeys{DATAMODE} && $readkeys{DATAMODE} eq 'WINDOWED' ) {
+        $readkeys{MODE} = 'wt';
+    } elsif ( exists $readkeys{DATAMODE} && $readkeys{DATAMODE} eq 'PHOTON' ) {
+        $readkeys{MODE} = 'pc';
+    } elsif ( exists $readkeys{DATAMODE} && $process ) {
+        error( 1, "data mode $readkeys{DATAMODE} not supported, skipping $pha\n" );
+        %readkeys = ( );
+    }
+    $fptr->close_file( $stat );
+    undef $fptr;
+    return ( $stat, %readkeys );
+}
+    
+#
+# checkFitsExists -
+#
+#       looks for file, or compressed version, and modifies input
+#       references accordingly
+#
+sub checkFitsExists {
+
+    my $stat   = 0;
+    foreach my $file ( @_ ) {
+        debug( "checking if file $file exists\n" );
+        # don't use fits_file_exists -- too many open files (probably)
+        #fits_file_exists( $file, $exists, $stat );
+        my ( $pref, $filen ) = split /:\/\//, $file;
+
+        # type://file notation
+        if ( defined $filen ) {
+
+            # not a disk file - go to next filename
+            if ( $pref ne 'file' ) {
+                next;
+            }
+        } else {
+            $filen = $pref;
+        }
+
+        # check for file, or compressed version on disk
+        if ( -e $filen ) {
+            next;
+        } elsif ( -e "$filen.gz" ) {
+            $file = "$filen.gz";
+        } elsif ( -e "$filen.Z" ) {
+            $file = "$filen.Z";
+        } elsif ( -e "$filen.z" ) {
+            $file = "$filen.z";
+        } elsif ( -e "$filen.zip" ) {
+            $file = "$filen.zip";
+        } else {
+            warnhi( 1, "input file $file does not exist!\n" );
+            $stat = -1;
+        }
+    }
+    return $stat;
+}
+
+#
+# getRMFFile -
+#
+#       queries the caldb for RMFs
+#
+sub getRMFFile {
+
+    my $intref = shift;
+
+    my $stat = 0;
+
+    my ( $calnam, $ext, $online, $numRet, $nFound );
+    $calnam = $ext = $online = $numRet = $nFound = 0;
+
+    # will be the same for a single OBSID (we hope)
+    # so if we already found it, just return it.
+    if ( exists $rmfhash{$intref->{DATAMODE}}{$intref->{OBS_ID}} &&
+         $rmfhash{$intref->{DATAMODE}}{$intref->{OBS_ID}} ne '0' ) {
+        debug( "using cached value for RMF file: $rmfhash{$intref->{DATAMODE}}{$intref->{OBS_ID}}\n" );
+        $intref->{rmffile} = $rmfhash{$intref->{DATAMODE}}{$intref->{OBS_ID}};
+        return $stat;
+    }
+
+    my ( $startd, $startt ) = split /T/, $intref->{'DATE-OBS'};
+    my ( $stopd,  $stopt  ) = split /T/, $intref->{'DATE-END'};
+    
+    my $select = sprintf( "datamode.eq.%s.and.grade.eq.G%s.and.xrtvsub.eq.%s",
+                          $intref->{DATAMODE}, $intref->{GRADESEL}, $intref->{XRTVSUB} );
+
+    $stat = HDgtcalf( 'SWIFT', 'XRT', '-', '-', 'MATRIX',
+                      $startd, $startt, $stopd, $stopt, $select, 1, 1024, 
+                      $calnam, $ext, $online, $numRet, $nFound, $stat );
+    if ( $stat != 0 || $nFound == 0 ) {
+        error( 1, "could not find RMF file for $intref->{srcpha}\n" );
+        return -1;
+    }
+    my $locf = catfile( $params{outdir}, basename( $calnam->[ 0 ] ) );
+    if ( !-e $locf ) {
+        $stat = ftcopy( $calnam->[ 0 ], $locf, 1 );
+    }
+    # save the filename in two places
+
+    # first in the interval hash
+    $intref->{rmffile} = $locf;
+
+    # 2nd in the global rmfhash (for cacheing filenames)
+    $rmfhash{$intref->{DATAMODE}}{$intref->{OBS_ID}} = $locf;
+
+    debug( "using queried value for RMF file: $locf\n" );
+    push @clean, $intref->{rmffile};
+    return $stat;
+}
+
+#
+# getNH -
+#
+#       runs the FTool 'nh', and returns the weighted average NH.
+#
+sub getNH {
+
+    my ( $ra, $dec, $eq, $map ) = @_;
+    if ( !defined $eq ) {
+        $eq = 2000;
+    }
+    if ( $map < 0 || $map > 1 ) {
+        error( 1, "in sub getNH( ), map must be 0 or 1\n" );
+        return ( -1, 0 );
+    }
+    my %nh = (
+               equinox => $eq,
+               ra      => $ra,
+               dec     => $dec,
+               size    => 3,
+               disio   => 1,
+               usemap  => $map,
+               tchat   => 10,
+               lchat   => -1
+    );
+    my $cmd = genCmd( 'nh', \%nh );
+    my ( $stat, $out ) = runSystemNoChat( $cmd );
+    foreach my $line ( @$out ) {
+        chomp $line;
+        if ( $line =~ /Weighted average nH \(cm\*\*-2\)\s+(\S+)$/ ) {
+            return ( $stat, $1 * 1.0 );
+        }
+    }
+    return -1;
+}
+
+#
+# getXSpecNH -
+#
+#       gets the Nh in units that XSpec likes
+#
+sub getXSpecNH {
+    my $nh;
+    my $stat = 0;
+    if ( $params{nhmap} >= 0 ) {
+        ( $stat, $nh ) = getNH( $params{srcra}, $params{srcdec}, 2000, $params{nhmap} );
+    } else {
+        $nh = $params{usernh};
+    }
+    
+    # dump it in params
+    $params{usernh} = $nh / 1.0e22;
+    return $stat;
+}
+
+#
+# setupOutputFiles -
+#
+sub setupOutputFiles {
+    
+    # light curve PHA fitting files
+    $outfiles{pclcbase} = catfile( $params{outdir},
+                                   "$params{outstem}$outfiles{pclcbase}" );
+    $outfiles{pclcpha}  = $outfiles{pclcbase} . ".pha";
+    $outfiles{pclcrsp}  = $outfiles{pclcbase} . ".rsp";
+    $outfiles{pclcign}  = $outfiles{pclcbase} . ".ign";
+    $outfiles{pclctxt}  = $outfiles{pclcbase} . ".txt";
+    
+    $outfiles{wtlcbase} = catfile( $params{outdir},
+                                   "$params{outstem}$outfiles{wtlcbase}" );
+    $outfiles{wtlcpha}  = $outfiles{wtlcbase} . ".pha";
+    $outfiles{wtlcrsp}  = $outfiles{wtlcbase} . ".rsp";
+    $outfiles{wtlcign}  = $outfiles{wtlcbase} . ".ign";
+    $outfiles{wtlctxt}  = $outfiles{wtlcbase} . ".txt";
+    
+    # fitted curve plots
+    # and auto fit scripts
+    $outfiles{mod1gif} = catfile( $params{outdir},
+                                  "$params{outstem}_auto_powerlaw.$params{plotfext}" );
+    $outfiles{mod1xcm} = catfile( $params{outdir}, "$params{outstem}_auto_powerlaw.xcm" );
+
+    $outfiles{mod2gif} = catfile( $params{outdir},
+                                  "$params{outstem}_auto_bknpower.$params{plotfext}" );
+    $outfiles{mod2xcm} = catfile( $params{outdir}, "$params{outstem}_auto_bknpower.xcm" );
+
+    $outfiles{mod3gif} = catfile( $params{outdir},
+                                  "$params{outstem}_auto_bkn2pow.$params{plotfext}" );
+    $outfiles{mod3xcm} = catfile( $params{outdir}, "$params{outstem}_auto_bkn2pow.xcm" );
+
+    $outfiles{autofitplotxcm} = catfile( $params{outdir}, "$params{outstem}_auto_bestfit.xcm" );
+
+    # these are for displaying the plots
+    $outfiles{qdp} = basename( getTmpFile( "qdp" ), ".qdp" );
+    $outfiles{qdp} =~ s/\./_/g;
+    $outfiles{pco} = "$outfiles{qdp}.pco";
+    $outfiles{qdp} = "$outfiles{qdp}.qdp";
+
+    # best fit light curve (either auto or user)
+    $outfiles{fitlcplot} = catfile( $params{outdir},
+                                    "$params{outstem}_xpwetsrmb_lc.$params{plotfext}" );
+
+    # user save file from manual fitting
+    $outfiles{userfitinit} = catfile( $params{outdir}, "$params{outstem}_userfit.xcm" );
+    $outfiles{userfitfile} = catfile( $params{outdir}, "$params{outstem}_userfit.sav" );
+  
+    # interval PHA plot
+    $outfiles{intphaplot} = catfile( $params{outdir},
+                                     "$params{outstem}_xpwetsrt_ph.$params{plotfext}" );
+
+    # total PHA plot
+    $outfiles{totphaplot} = catfile( $params{outdir},
+                                     "$params{outstem}_xpwetsra_ph.$params{plotfext}" );
+
+    # fit info table
+    $outfiles{fitdata} = catfile( $params{outdir},
+                                  "$params{outstem}_fitinfo.fits" );
+    
+    # put these in the clean list
+    #my @cleankeys = qw( pclcpha pclcrsp pclcign 
+    #                    wtlcpha wtlcrsp wtlcign
+    #                    mod1gif mod2gif mod3gif
+    #                    mod1xcm mod2xcm mod3xcm
+    #                    autofitplotxcm
+    #                    userfitfile userfitinit
+    #                    qdp pco );
+    my @cleankeys = qw( userfitfile qdp pco );
+    push @clean, map( $outfiles{$_}, @cleankeys );
+
+}
+
+#
+# fitLightCurve -
+#
+#       tries to fit both PC and WT light curves with power-law,
+#       broken power-law and double broken power-law. Lets the user
+#       decide if the fit is good enough, and if not, lets them fit it 
+#       "manually" (requiring one of the three afore mentioned models).
+#
+sub fitLightCurve {
+
+    my $stat = 0;
+
+    $stat = getLCInitialGuesses( );
+    return $stat unless $stat == 0;
+
+    $stat = writeCurvesToPHA( );
+    return $stat unless $stat == 0;
+
+    setupLCModels( );
+
+    $stat = autoFitLightCurve( );
+    return $stat unless $stat == 0;
+
+    if ( $params{interactive} ) {
+        $stat = getUserOpinion( );
+        return $stat unless $stat == 0;
+    } else {
+        printBestLCModelPars( );
+        setAutoFitTimeBreaks( );
+    }
+
+    return $stat;
+}
+
+#
+# getLCInitialGuesses -
+#
+#       gets initial guesses of slope and normalization for light
+#       curve fitting (on a per mode basis)
+#
+sub getLCInitialGuesses {
+    
+    my $stat = 0;
+   
+    my @totrate;
+    my @tottime;
+    my $totrows = 0;
+    foreach my $mode ( keys %curves ) {
+        
+        my ( $tstart, $tstop, $trig, $tzero,
+             $nrows, $colnum, $any, $comm );
+        my @rate = ( );
+        my @time = ( );
+
+        chat( 2, "getting initial guesses for $curves{$mode}{curvebase}\n" );
+
+        # avoid divide by zero by CFITSIO filtering
+        my $file = "$curves{$mode}{curve}\[RATEBIN\]\[TIME>0.0&&RATECOR>0.0&&!isnull(ERRORCOR)\]"
+                 . "\[col TIME=TIME+TIMEZERO-TRIGTIME;*\]";
+        my $fptr = Astro::FITS::CFITSIO::open_file( $file, READONLY, $stat );
+        
+        $fptr->read_key_dbl( 'TSTART',   $tstart, $comm, $stat );
+        $fptr->read_key_dbl( 'TSTOP',    $tstop,  $comm, $stat );
+        $fptr->read_key_dbl( 'TIMEZERO', $tzero,  $comm, $stat );
+        $fptr->read_key_dbl( 'TRIGTIME', $trig,   $comm, $stat );
+        
+        # trigger time
+        if ( $params{trigtime} <= 0.0 ) {
+            $params{trigtime} = $trig;
+            chat( 2, "MET trigger time is ",
+                     sprintf( "%.14e s\n", $params{trigtime} ) );
+        }
+
+        # use the first and last rate in both
+        # modes to estimate the initial slope and the normalizations
+        # used as initial guesses in Xspec
+        $fptr->get_num_rows( $nrows, $stat );
+        if ( $nrows < 2 ) { 
+            warnlo( 1, "only $nrows data points found in",
+                       "$curves{$mode}{curvebase}\n" );
+
+            # dump it if zero rows
+            if ( $nrows < 1 ) {
+                warnhi( 1, "this is not enough for a light curve fit!\n" );
+                delete $curves{$mode};
+                $fptr->close_file( $stat );
+                next;
+            }
+
+            # flag it otherwise
+            $curves{$mode}{skipphafit} = 1;
+        }
+        $totrows += $nrows;
+
+        $fptr->get_colnum( CASEINSEN, 'TIME', $colnum, $stat );
+        $fptr->read_col_dbl( $colnum, 1, 1, $nrows, 0, \@time, $any, $stat );
+        $fptr->get_colnum( CASEINSEN, 'RATECOR', $colnum, $stat );
+        $fptr->read_col_dbl( $colnum, 1, 1, $nrows, 0, \@rate, $any, $stat );
+        
+        $fptr->close_file( $stat );
+        return $stat unless $stat == 0;
+
+        $curves{$mode}{tstart}   = $tstart;
+        $curves{$mode}{tstop}    = $tstop;
+        $curves{$mode}{trigtime} = $trig;
+        $curves{$mode}{tzero}    = $tzero;
+        $curves{$mode}{rate0}    = $rate[ 0 ];
+        $curves{$mode}{ratelast} = $rate[ $#time ];
+        $curves{$mode}{time0}    = $time[ 0 ];
+        $curves{$mode}{timelast} = $time[ $#time ];
+        push @totrate, @rate;
+        push @tottime, @time;
+    }
+
+    if ( !keys %curves ) {
+        error( 1, "could not process light curves!\n" );
+        return -1;
+    }
+
+    if ( $totrows < 2 ) {
+        warnhi( "total rows for all light curves < 2\n",
+                "no light curve fit will be done\n" );
+        foreach my $mode ( keys %curves ) {
+            $curves{$mode}{skiplcfit} = 1;
+        }
+    }
+
+    # define the breaks based on fractional drop in the rate
+    # this gets all screwed up with flares - why can't they all just
+    # be power-laws?
+    my @order = sort { $totrate[ $b ] <=> $totrate[ $a ] } 0..$#totrate;
+    my @srate = @totrate[ @order ];
+    my @stime = @tottime[ @order ];
+    my $breakrate1 = $params{brkfrac1} * ( $srate[ 0 ] - $srate[ $#srate ] ) + $srate[ $#srate ];
+    my $breakrate2 = $params{brkfrac2} * ( $srate[ 0 ] - $srate[ $#srate ] ) + $srate[ $#srate ];
+    my $breakrate3 = $params{brkfrac3} * ( $srate[ 0 ] - $srate[ $#srate ] ) + $srate[ $#srate ];
+    
+    # snap to data
+    my $i = 0;
+    while( $i <= $#totrate ) {
+        if ( $totrate[ $i ] <= $breakrate1 ) {
+            $breakrate1 = $totrate[ $i ];
+            last;
+        }
+        $i++;
+    }
+    $i = 0;
+    while( $i <= $#totrate ) {
+        if ( $totrate[ $i ] <= $breakrate2 ) {
+            $breakrate2 = $totrate[ $i ];
+            last;
+        }
+        $i++;
+    }
+    $i = 0;
+    while( $i <= $#totrate ) {
+        if ( $totrate[ $i ] <= $breakrate3 ) {
+            $breakrate3 = $totrate[ $i ];
+            last;
+        }
+        $i++;
+    }
+   
+    # get the breaks
+    $i = 0;
+    while ( $i <= $#totrate ) {
+        if ( !defined $models{tbreak21} && $totrate[ $i ] <= $breakrate1 ) {
+            $models{tbreak21} = $tottime[ $i ];
+        }
+        if ( !defined $models{tbreak11} && $totrate[ $i ] <= $breakrate2 ) {
+            $models{tbreak11} = $tottime[ $i ];
+        }
+        if ( !defined $models{tbreak22} && $totrate[ $i ] <= $breakrate3 ) {
+            $models{tbreak22} = $tottime[ $i ];
+        }
+        $i++;
+    }
+    
+    # get the initial guesses for slope and norm
+    $models{initslope11} = safeGetLogSlope( $tottime[ $#tottime ], $totrate[ 0 ],
+                                            $tottime[ 0 ], $totrate[ $#totrate ] );
+    
+    $models{initslope21} = safeGetLogSlope( $models{tbreak11}, $totrate[ 0 ],
+                                            $tottime[ 0 ], $breakrate2 );
+
+    $models{initslope22} = safeGetLogSlope( $tottime[ $#tottime ], $breakrate2,
+                                            $models{tbreak11}, $totrate[ $#totrate ] );
+
+    $models{initslope31} = safeGetLogSlope( $models{tbreak21}, $totrate[ 0 ],
+                                            $tottime[ 0 ], $breakrate1 );
+
+    $models{initslope32} = safeGetLogSlope( $models{tbreak22}, $breakrate1,
+                                            $models{tbreak21}, $breakrate3 );
+
+    $models{initslope33} = safeGetLogSlope( $tottime[ $#tottime ], $breakrate3,
+                                            $models{tbreak22}, $totrate[ $#totrate ] );
+
+    $models{initnorm}  = $totrate[ 0 ] * $models{initslope11}**( $tottime[ 0 ] );
+    if ( $models{initnorm} > 1.0e5 ) {
+        $models{initnorm} = 1.0e5;
+    }
+    if ( $models{initnorm} < 1e-4 ) {
+        $models{initnorm} = 1e-4;
+    }
+
+    $models{time0}    = $tottime[ 0 ] - 1.0;
+    $models{timelast} = $tottime[ $#tottime ] + 1.0;
+
+    chat( 2, "using intial guesses for light curve fit:\n",
+             "  NORMALIZATION    = $models{initnorm}\n\n",
+             "  PHOTON INDEX 1:1 = $models{initslope11}\n\n",
+             "  PHOTON INDEX 2:1 = $models{initslope21}\n",
+             "  TIME BREAK   2:1 = $models{tbreak11}s after trigger\n",
+             "  PHOTON INDEX 2:2 = $models{initslope22}\n\n",
+             "  PHOTON INDEX 3:1 = $models{initslope31}\n",
+             "  TIME BREAK   3:1 = $models{tbreak21}s after trigger\n",
+             "  PHOTON INDEX 3:2 = $models{initslope32}\n",
+             "  TIME BREAK   3:2 = $models{tbreak22}s after trigger\n",
+             "  PHOTON INDEX 3:3 = $models{initslope33}\n\n" );
+    return $stat;
+}
+
+sub safeGetLogSlope {
+    my ( $x1, $y1, $x2, $y2 ) = @_;
+
+    # fudge it as flat (in log space) if we've got wierd inputs
+    if ( $x2 < 0.0 || $x1 <= 0.0 || $x1 == $x2 ||
+         $y2 < 0.0 || $y1 <= 0.0 || $y1 == $y2 ) {
+        return 1.0;
+    }
+
+    my $rise = log10( $y2 / $y1 );
+    my $run  = log10( $x2 / $x1 );
+    return ( $rise / $run );
+}
+
+#
+# writeCurvesToPHA -
+#
+#       does what it says
+#
+sub writeCurvesToPHA {
+
+    my $stat = 0;
+    foreach my $mode ( keys %curves ) {
+        # generate fitable pha, rmf, and ignore script
+        # times from here are relative to trigger time
+        my $table = "$curves{$mode}{curve}\[RATEBIN\]"
+                  . "\[col TIME=TIME+TIMEZERO-TRIGTIME;COUNTS=RATECOR*TIMEDEL;"
+                  . "COUNTSERR=ERRORCOR*TIMEDEL;*\]";
+        $stat = tableToSpec( $table, 'TIME', 'XAX_E', 'COUNTS', 'COUNTSERR',
+                             $outfiles{"${mode}lcbase"}, 1.0 );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+#
+# setupLCModels -
+#
+#       sets up default light curve models
+#
+sub setupLCModels {
+
+    # setup some Xspec parameter output stuff
+    my ( $pref1, $pref2 );
+    my @keys = ( );
+
+    # skip modes with too few bins
+    foreach my $mode ( sort keys %curves ) {
+        if ( !exists $curves{$mode}{skiplcfit} ) {
+            push @keys, $mode;
+        }
+    }
+
+    if ( @keys > 1 ) {
+        $pref1 = 'pc';
+        $pref2 = 'wt';
+    } elsif ( @keys > 0 ) { 
+        $pref1 = $keys[ 0 ];
+        $pref2 = '';
+    } else {
+        warnhi( "no light curve fit possible!\n" );
+        return 0;
+    }
+
+    # setup the models
+    $models{mod1}{name} = "powerlaw";
+    $models{mod2}{name} = "bknpower";
+    $models{mod3}{name} = "bkn2pow";
+    
+    $models{mod1}{pars} = sprintf( "\& %g,,-12,-11,11,12 \& %g,%g \& \& %g,%g", 
+                                   $models{initslope11},
+                                   $models{initnorm},
+                                   $models{initnorm} / 1000.0,
+                                   $models{initnorm},
+                                   $models{initnorm} / 1000.0 );
+    
+    $models{mod2}{pars} = sprintf( "\& %g,,-12,-11,11,12 \& %g,.1,%.8e,%.8e,%.8e,%.8e \& "
+                                 . "%g,,-12,-11,11,12 \& %g,%g \& \& \& \& %g,%g",
+                                   $models{initslope21},
+                                   $models{tbreak11},
+                                   $models{time0},
+                                   $models{time0},
+                                   $models{timelast},
+                                   $models{timelast},
+                                   $models{initslope22},
+                                   $models{initnorm},
+                                   $models{initnorm} / 1000.0,
+                                   $models{initnorm},
+                                   $models{initnorm} / 1000.0 );
+    
+    $models{mod3}{pars} = sprintf( "\& %g,,-12,-11,11,12 \& %g,.1,%.8e,%.8e,%.8e,%.8e \& %g,,-12,-11,11,12 "
+                                 . "\& %g,.1,%.8e,%.8e,%.8e,%.8e \& %g,,-12,-11,11,12 \& %g,%g"
+                                 . "\& \& \& \& \& \& %g,%g",
+                                   $models{initslope31},
+                                   $models{tbreak21},
+                                   $models{time0},
+                                   $models{time0},
+                                   $models{timelast},
+                                   $models{timelast},
+                                   $models{initslope32},
+                                   $models{tbreak22},
+                                   $models{time0},
+                                   $models{time0},
+                                   $models{timelast},
+                                   $models{timelast},
+                                   $models{initslope33},
+                                   $models{initnorm},
+                                   $models{initnorm} / 1000.0,
+                                   $models{initnorm},
+                                   $models{initnorm} / 1000.0 );
+    # setup the ignored channels
+    $models{data}   = "";
+    $models{ignore} = "";
+    foreach my $i ( 0..$#keys ) {
+        my $j = $i + 1;
+        my $phafile = $outfiles{"$keys[ $i ]lcpha"};
+        my $ignfile = $outfiles{"$keys[ $i ]lcign"};
+        
+        # setup the data command
+        $models{data} .= "$j:$j $phafile ";
+        
+        open IGN, "<$ignfile" or die "failed to open file $ignfile\n";
+        my @lines = <IGN>;
+        chomp @lines;
+        close IGN;
+        $models{ignore} .= join "\n", map( "ignore $j:$_", @lines ), "";
+    }
+
+    # now setup script parts for each model
+    # note that these depend on the Xspec procedure: get_bad_error{ }
+    # defined in autoFitLightCurve( )
+
+    ###############
+    ## Power-law ##
+    ###############
+    $models{mod1}{xspecstr} = "
+#
+# power-law model
+#
+setplot command label T Single Power-Law
+model $models{mod1}{name} $models{mod1}{pars}
+scan [tcloutr param 2] \"\%f\" initnorm
+renorm
+scan [tcloutr param 2] \"\%f\" norm
+if { \$initnorm != \$norm } {
+    if { [catch { fit } fid] } {
+        exit
+    }
+}
+tclout dof
+scan \$xspec_tclout \"\%f\" dof1
+tclout stat
+scan \$xspec_tclout \"\%f\" chi1
+set redchi1 [expr \$chi1 / \$dof1]
+tclout param 1
+scan \$xspec_tclout \"\%f\" pl11
+set pler11 [eval get_bad_error 1]
+set pllo11 [expr {\$pl11 - \$pler11 / 2.0}]
+set plhi11 [expr {\$pl11 + \$pler11 / 2.0}]
+tclout param 2
+scan \$xspec_tclout \"\%f\" ${pref1}norm
+set ${pref1}normer [eval get_bad_error 2]
+set ${pref1}normlo [expr {\$${pref1}norm - \$${pref1}normer / 2.0}]
+set ${pref1}normhi [expr {\$${pref1}norm + \$${pref1}normer / 2.0}]
+set numpars [tcloutr modpar]
+if { \$numpars > 2 } {
+    tclout param 4
+    scan \$xspec_tclout \"\%f\" ${pref2}norm
+    set ${pref2}normer [eval get_bad_error 4]
+    set ${pref2}normlo [expr {\$${pref2}norm - \$${pref2}normer / 2.0}]
+    set ${pref2}normhi [expr {\$${pref2}norm + \$${pref2}normer / 2.0}]
+}
+";
+    $models{mod1}{xspecputs} = "
+set xs_echo_script 0
+puts \"mod1_dof       = \$dof1\"
+puts \"mod1_chi       = \$chi1\"
+puts \"mod1_pl1       = \$pl11\"
+puts \"mod1_pllo1     = \$pllo11\"
+puts \"mod1_plhi1     = \$plhi11\"
+puts \"mod1_${pref1}norm   = \$${pref1}norm\"
+puts \"mod1_${pref1}normlo = \$${pref1}normlo\"
+puts \"mod1_${pref1}normhi = \$${pref1}normhi\"
+set numpars [tcloutr modpar]
+if { \$numpars > 2 } {
+    puts \"mod1_${pref2}norm   = \$${pref2}norm\"
+    puts \"mod1_${pref2}normlo = \$${pref2}normlo\"
+    puts \"mod1_${pref2}normhi = \$${pref2}normhi\"
+}
+set xs_echo_script 1
+";
+
+    ######################
+    ## Broken power-law ##
+    ######################
+    $models{mod2}{xspecstr} = "
+
+#
+# broken power law model
+#
+setplot command label T Broken Power-Law
+model $models{mod2}{name} $models{mod2}{pars}
+scan [tcloutr param 4] \"\%f\" initnorm
+renorm
+scan [tcloutr param 4] \"\%f\" norm
+if { \$initnorm != \$norm } {
+    if { [catch { fit } fid] } {
+        exit
+    }
+}
+tclout stat
+scan \$xspec_tclout \"\%f\" chi2
+tclout dof
+scan \$xspec_tclout \"\%f\" dof2
+set redchi2 [expr \$chi2 / \$dof2]
+tclout param 1
+scan \$xspec_tclout \"\%f\" pl21
+set pler21 [eval get_bad_error 1]
+tclout param 2
+scan \$xspec_tclout \"\%f\" tb21
+set tber21 [eval get_bad_error 2]
+tclout param 3
+scan \$xspec_tclout \"\%f\" pl22
+set pler22 [eval get_bad_error 3]
+set pllo21 [expr {\$pl21 - \$pler21 / 2.0}]
+set plhi21 [expr {\$pl21 + \$pler21 / 2.0}]
+set pllo22 [expr {\$pl22 - \$pler22 / 2.0}]
+set plhi22 [expr {\$pl22 + \$pler22 / 2.0}]
+set tblo21 [expr {\$tb21 - \$tber21 / 2.0}]
+set tbhi21 [expr {\$tb21 + \$tber21 / 2.0}]
+tclout param 4
+scan \$xspec_tclout \"\%f\" ${pref1}norm
+set ${pref1}normer [eval get_bad_error 4]
+set ${pref1}normlo [expr {\$${pref1}norm - \$${pref1}normer / 2.0}]
+set ${pref1}normhi [expr {\$${pref1}norm + \$${pref1}normer / 2.0}]
+set numpars [tcloutr modpar]
+if { \$numpars > 4 } {
+    tclout param 8
+    scan \$xspec_tclout \"\%f\" ${pref2}norm
+    set ${pref2}normer [eval get_bad_error 8]
+    set ${pref2}normlo [expr {\$${pref2}norm - \$${pref2}normer / 2.0}]
+    set ${pref2}normhi [expr {\$${pref2}norm + \$${pref2}normer / 2.0}]
+}
+";
+    $models{mod2}{xspecputs} = "
+set xs_echo_script 0
+puts \"mod2_dof       = \$dof2\"
+puts \"mod2_chi       = \$chi2\"
+puts \"mod2_pl1       = \$pl21\"
+puts \"mod2_pllo1     = \$pllo21\"
+puts \"mod2_plhi1     = \$plhi21\"
+puts \"mod2_pl2       = \$pl22\"
+puts \"mod2_pllo2     = \$pllo22\"
+puts \"mod2_plhi2     = \$plhi22\"
+puts \"mod2_tbreak1   = \$tb21\"
+puts \"mod2_tbreaklo1 = \$tblo21\"
+puts \"mod2_tbreakhi1 = \$tbhi21\"
+puts \"mod2_${pref1}norm   = \$${pref1}norm\"
+puts \"mod2_${pref1}normlo = \$${pref1}normlo\"
+puts \"mod2_${pref1}normhi = \$${pref1}normhi\"
+set numpars [tcloutr modpar]
+if { \$numpars > 4 } {
+    puts \"mod2_${pref2}norm   = \$${pref2}norm\"
+    puts \"mod2_${pref2}normlo = \$${pref2}normlo\"
+    puts \"mod2_${pref2}normhi = \$${pref2}normhi\"
+}
+set xs_echo_script 1
+";
+
+    #############################
+    ## Double broken power-law ##
+    #############################
+    $models{mod3}{xspecstr} = "
+#
+# double broken power-law model
+#
+setplot command label T Double Broken Power-Law
+model $models{mod3}{name} $models{mod3}{pars}
+scan [tcloutr param 6] \"\%f\" initnorm
+renorm
+scan [tcloutr param 6] \"\%f\" norm
+if { \$initnorm != \$norm } {
+    if { [catch { fit } fid] } {
+        exit
+    }
+}
+tclout stat
+scan \$xspec_tclout \"\%f\" chi3
+tclout dof
+scan \$xspec_tclout \"\%f\" dof3
+tclout param 2
+scan \$xspec_tclout \"\%f\" tb31
+set tber31 [eval get_bad_error 2]
+tclout param 4
+scan \$xspec_tclout \"\%f\" tb32
+set tber32 [eval get_bad_error 4]
+set redchi3 [expr \$chi3 / \$dof3]
+tclout param 1
+scan \$xspec_tclout \"\%f\" pl31
+set pler31 [eval get_bad_error 1]
+tclout param 3
+scan \$xspec_tclout \"\%f\" pl32
+set pler32 [eval get_bad_error 3]
+tclout param 5
+scan \$xspec_tclout \"\%f\" pl33
+set pler33 [eval get_bad_error 5]
+set pllo31 [expr {\$pl31 - \$pler31 / 2.0}]
+set plhi31 [expr {\$pl31 + \$pler31 / 2.0}]
+set pllo32 [expr {\$pl32 - \$pler32 / 2.0}]
+set plhi32 [expr {\$pl32 + \$pler32 / 2.0}]
+set pllo33 [expr {\$pl33 - \$pler33 / 2.0}]
+set plhi33 [expr {\$pl33 + \$pler33 / 2.0}]
+set tblo31 [expr {\$tb31 - \$tber31 / 2.0}]
+set tbhi31 [expr {\$tb31 + \$tber31 / 2.0}]
+set tblo32 [expr {\$tb32 - \$tber32 / 2.0}]
+set tbhi32 [expr {\$tb32 + \$tber32 / 2.0}]
+tclout param 6
+scan \$xspec_tclout \"\%f\" ${pref1}norm
+set ${pref1}normer [eval get_bad_error 6]
+set ${pref1}normlo [expr {\$${pref1}norm - \$${pref1}normer / 2.0}]
+set ${pref1}normhi [expr {\$${pref1}norm + \$${pref1}normer / 2.0}]
+set numpars [tcloutr modpar]
+if { \$numpars > 6 } {
+    tclout param 12
+    scan \$xspec_tclout \"\%f\" ${pref2}norm
+    set ${pref2}normer [eval get_bad_error 12]
+    set ${pref2}normlo [expr {\$${pref2}norm - \$${pref2}normer / 2.0}]
+    set ${pref2}normhi [expr {\$${pref2}norm + \$${pref2}normer / 2.0}]
+}
+";
+    $models{mod3}{xspecputs} = "
+set xs_echo_script 0
+puts \"mod3_dof       = \$dof3\"
+puts \"mod3_chi       = \$chi3\"
+puts \"mod3_pl1       = \$pl31\"
+puts \"mod3_pllo1     = \$pllo31\"
+puts \"mod3_plhi1     = \$plhi31\"
+puts \"mod3_pl2       = \$pl32\"
+puts \"mod3_pllo2     = \$pllo32\"
+puts \"mod3_plhi2     = \$plhi32\"
+puts \"mod3_pl3       = \$pl33\"
+puts \"mod3_pllo3     = \$pllo33\"
+puts \"mod3_plhi3     = \$plhi33\"
+puts \"mod3_tbreak1   = \$tb31\"
+puts \"mod3_tbreaklo1 = \$tblo31\"
+puts \"mod3_tbreakhi1 = \$tbhi31\"
+puts \"mod3_tbreak2   = \$tb32\"
+puts \"mod3_tbreaklo2 = \$tblo32\"
+puts \"mod3_tbreakhi2 = \$tbhi32\"
+puts \"mod3_${pref1}norm   = \$${pref1}norm\"
+puts \"mod3_${pref1}normlo = \$${pref1}normlo\"
+puts \"mod3_${pref1}normhi = \$${pref1}normhi\"
+set numpars [tcloutr modpar]
+if { \$numpars > 6 } {
+    puts \"mod3_${pref2}norm   = \$${pref2}norm\"
+    puts \"mod3_${pref2}normlo = \$${pref2}normlo\"
+    puts \"mod3_${pref2}normhi = \$${pref2}normhi\"
+}
+set xs_echo_script 1
+";
+
+}
+   
+#
+# autoFitLightCurve -
+#
+#       fits light curve with three models
+#
+sub autoFitLightCurve {
+
+    my $stat = 0;
+    my $out;
+
+    foreach my $mod (qw( mod1 mod2 mod3 )) {
+
+        if ( !exists $models{$mod} ) { 
+            next;
+        }
+
+        chat( 3, "writing script to do auto fit for $models{$mod}{name}\n" );
+
+        my $plotf = basename( getTmpFile( $params{plotfext} ) );
+
+        # overwrite the script
+        my $script = $outfiles{"${mod}xcm"};
+        open SCR, ">$script" or die "failed to open file $script\n";
+
+        # put in the bad-error procedure
+        print SCR $xspec_get_bad_error;
+
+        # and the rest
+        print SCR <<EOF;
+autosave off
+query yes
+data $models{data}
+$models{ignore}
+setplot energy
+setplot command scr white
+setplot command gap error
+setplot command lwidth 4
+setplot command time off
+setplot command label F
+setplot command label OT $object: XRT PC/WT Automatic Light Curve Fit
+setplot command label Y Count Rate (count/s)
+setplot command win 2
+setplot command label X $lcXAxisLabel
+setplot command win all
+setplot command res
+$models{$mod}{xspecstr}
+$models{$mod}{xspecputs}
+setplot command hardcopy ${plotf}$params{plotftype}
+cpd /null
+plot ldata ratio
+quit
+y
+EOF
+        close SCR;
+        chat( 2, "auto-fitting light curve with $models{$mod}{name} model\n" );
+        my $cmd = "xspec - \"$script\"";
+        ( $stat, $out ) = runSystem( $cmd );
+
+        if ( $stat != 0 || !-e $plotf ) {
+            error( 1, "auto-fit of light curve with $models{$mod}{name} model failed!\n" );
+            $stat = 0;
+            next;
+        }
+
+        if ( !move( $plotf, $outfiles{"${mod}gif"} ) ) {
+            error( 1, "fits failed to produce plot file, something went wrong\n" );
+            $stat = 0;
+            next;
+        }
+
+        # get the output values
+        foreach my $line ( @$out ) {
+            chomp $line;
+            if ( $line =~ /^(mod\d)_(\S+)\s+=\s+(\S+)$/ ) {
+                $models{$1}{$2} = 1.0 * $3;
+            }
+        }
+    }
+
+    # count the actually fitted models
+    my $fittedmods = 0;
+    foreach my $mod (qw( mod1 mod2 mod3 )) {
+        if ( exists $models{$mod}{chi} ) {
+            $fittedmods++;
+        }
+    }
+    if ( $fittedmods == 0 ) {
+        error( 1, "FAILED TO FIT ANY MODELS AUTOMATICALLY!\n" );
+        error( 1, "ONLY TOTAL SPECTRA FOR EACH MODE WILL BE PRODUCED!\n" );
+        return 0;
+    }
+   
+    # write the script to test the fits
+    my $plotf = basename( getTmpFile( $params{plotfext} ) );
+    open SCR, ">$outfiles{autofitplotxcm}" 
+        or die "failed to open file $outfiles{autofitplotxcm}\n";
+
+    # put in the bad-error proc
+    print SCR $xspec_get_bad_error;
+    
+    # and the rest
+    print SCR <<EOF;
+autosave off
+query yes
+data $models{data}
+$models{ignore}
+setplot energy
+setplot command scr white
+setplot command gap error
+setplot command lwidth 4
+setplot command time off
+setplot command label F
+setplot command label OT $object: XRT PC/WT Automatic Light Curve Fit
+setplot command label Y Count Rate (count/s)
+setplot command win 2
+setplot command label X $lcXAxisLabel
+setplot command win all
+setplot command res
+EOF
+    if ( exists $models{mod2}{chi} && exists $models{mod1}{chi} ) {
+        print SCR <<EOF;
+#
+# test model 2 vs model 1 
+#
+if { $models{mod2}{chi} <= $models{mod1}{chi} } {
+    ftest $models{mod2}{chi} $models{mod2}{dof} $models{mod1}{chi} $models{mod1}{dof}
+    tclout ftest
+    scan \$xspec_tclout "\%f" prob21
+} else {
+    set prob21 100
+}
+EOF
+    }
+
+    if ( exists $models{mod3}{chi} && exists $models{mod1}{chi} ) {
+        print SCR <<EOF;
+#
+# test model 3 vs other models
+#
+if { $models{mod3}{chi} <= $models{mod1}{chi} } {
+    ftest $models{mod3}{chi} $models{mod3}{dof} $models{mod1}{chi} $models{mod1}{dof}
+    tclout ftest
+    scan \$xspec_tclout "\%f" prob31
+} else {
+    set prob31 100
+}
+EOF
+    }
+
+    if ( exists $models{mod3}{chi} && exists $models{mod2}{chi} ) {
+        print SCR <<EOF;
+if { $models{mod3}{chi} <= $models{mod2}{chi} } {
+    ftest $models{mod3}{chi} $models{mod3}{dof} $models{mod2}{chi} $models{mod2}{dof}
+    tclout ftest
+    scan \$xspec_tclout "\%f" prob32
+} else {
+    set prob32 100
+}
+EOF
+    }
+
+    print SCR <<EOF;
+#
+# get the best fit and plot it
+#
+if { [info exists prob21] && \$prob21 < 0.005 } {
+    if { [info exists prob32] && \$prob32 < 0.005 } {
+        set mybest "mod3"
+        $models{mod3}{xspecstr}
+    } else {
+        set mybest "mod2"
+        $models{mod2}{xspecstr}
+    }
+} else {
+    if { [info exists prob31] && \$prob31 < 0.005 } {
+        set mybest "mod3"
+        $models{mod3}{xspecstr}
+    } else {
+        set mybest "mod1"
+        $models{mod1}{xspecstr}
+    }
+}
+
+#
+# label the time breaks
+#
+set tbreak {}
+set numpar [tcloutr modpar]
+for { set i 1 } { \$i < \$numpar } { incr i } {
+    set parinfo [tcloutr pinfo \$i]
+    if { [regexp {^BreakE} \$parinfo] } {
+        scan [tcloutr param \$i] "\%f" tmp
+        lappend tbreak \$tmp
+    }
+}
+set tbreak [lsort -real -unique \$tbreak]
+set tstart 1e20
+set tstop  -1e20
+set numspec [tcloutr datasets]
+for { set i 1 } { \$i <= \$numspec } { incr i } {
+    set noticeden [tcloutr noticed energy \$i]
+    scan [lindex \$noticeden 0] "\%f-" tmp1
+    scan [lindex \$noticeden end] "\%f-\%f" tmp tmp2
+    if { [info exists tmp1] && \$tmp1 < \$tstart } {
+        set tstart \$tmp1
+    }
+    if { [info exists tmp2] && \$tmp2 > \$tstop } {
+        set tstop \$tmp2
+    }
+    set ispcmode [regexp {xpc} [file tail [tcloutr filename \$i]]]
+    if { \$ispcmode == 1 } {
+        set prefix "pc"
+    } else {
+        set prefix "wt"
+    }
+    if { [info exists tmp1] } {
+        set tmp1b [format \%6g \$tmp1]
+        set tmp2b [format \%6g \$tmp2]
+        puts "\${prefix}TSTART = \$tmp1b"
+        puts "\${prefix}TSTOP = \$tmp2b"
+    } else {
+        puts "\${prefix}TSTART = 1e20"
+        puts "\${prefix}TSTOP = -1e20"
+    }
+
+    # set the colors for the plot groups
+    if { [info exists tmp1] } {
+        set j [expr 3*(\$i-1)+1]
+        set dgrstr [format "\%d \%d \%d" \$j [expr \$j+1] [expr \$j+2]]
+        if { \$ispcmode == 1 } {
+            setplot command "color 2 on \$dgrstr"
+        } else {
+            setplot command "color 4 on \$dgrstr"
+        }
+    }
+}
+lappend tbreak \$tstart
+lappend tbreak \$tstop
+setplot command win 1
+set top [llength \$tbreak]
+
+# label the time breaks
+for { set i 0 } { \$i < \$top } { incr i } {
+    if { [lindex \$tbreak \$i] == -1 } {
+        continue
+    }
+    set lab [expr \$i + 20]
+    set val [lindex \$tbreak \$i] 
+    setplot command "label \$lab pos \$val 0 line 90 10000 lstyle 2 \" \""
+}
+cpd /null
+setplot command win 2
+setplot command lab 2 color 1
+setplot command hardcopy ${plotf}$params{plotftype}
+if { $params{interactive} } {
+    setplot command wh $outfiles{pco}
+    setplot command wd $outfiles{qdp}
+}
+cpd /null
+plot ldata ratio
+puts "best = \$mybest"
+quit
+y
+EOF
+    close SCR;
+
+    chat( 2, "finding best fit light curve\n" );
+    my $cmd = "xspec - \"$outfiles{autofitplotxcm}\"";
+    ( $stat, $out ) = runSystem( $cmd );
+
+    if ( $stat != 0 || !-e $plotf ) {
+        error( 1, "failed to find best fit light curve!\n" );
+        return ( $stat == 0 ? -1 : $stat );
+    }
+
+    if ( !move( $plotf, $outfiles{fitlcplot} ) ) {
+        error( 1, "fits failed to produce plot file, something went wrong\n" );
+        return -1;
+    }
+
+    # get the output values
+    foreach my $line ( @$out ) {
+        chomp $line;
+        if ( $line =~ /^best\s+=\s+(\S+)$/ ) {
+            $models{best} = $1;
+        } elsif ( $line =~ /^(pc|wt)(TSTART|TSTOP)\s+=\s+(\S+)$/ ) {
+            $curves{$1}{$2} = $3 * 1.0 + $params{trigtime};
+        }
+    }
+
+    return $stat;
+}
+
+#
+# getUserOpinion -
+#
+sub getUserOpinion {
+
+    my $stat = 0;
+
+    # print some stuff about the best model
+    printBestLCModelPars( );
+
+    # display the best plot
+    if ( exists $models{best} && -e $outfiles{qdp} ) {
+        my $spc = "               ";
+        my $str = "** Best Fit ** ";
+        print "\n++++++++++++++++++++++++++++++++++++++++++++++++\n\n";
+        print "Automatic fitting generated the following plots:\n\n";
+        foreach my $mod (qw( mod1 mod2 mod3 )) {
+            my $str = $models{best} eq $mod ? $str : $spc;
+            $str   .= $outfiles{"${mod}gif"} . "\n";
+            print $str;
+        }
+
+        print "\nRunning QDP/PLT with the best fit...\n";
+        print "You will be prompted for a display device, choose wisely\n\n";
+        system( "qdp $outfiles{qdp}" );
+    } else {
+        print "\n+++++++++++++++++++++++++\n\n";
+        print "Automatic fitting failed!\n\n";
+    }
+
+    # see what they think
+    print "\n\n";
+    print "Can you do better (y or n)? ";
+    my $ans = <STDIN>;
+    chomp $ans;
+    while ( $ans !~ /^[yYnN]/ ) {
+        print "Please enter y or n: ";
+        $ans = <STDIN>;
+        chop( $ans );
+    }
+
+    # if they don't like it, let them do it
+    if ( $ans =~ /^[yY]/ ) {
+        $stat = manualFitLightCurve( );
+        return $stat unless $stat == 0;
+
+        $stat = parseXspecLCSaveFile( );
+    } else {
+        setAutoFitTimeBreaks( );
+    }
+
+    return $stat;
+}
+ 
+#
+# printBestLCModelPars -
+#
+#       prints (or chats) info about best light curve autofit
+#
+sub printBestLCModelPars {
+
+    if ( !exists $models{best} ) { return; }
+    my %best = %{$models{$models{best}}};
+    $models{best} =~ /mod(\d)/;
+    my $num = $1;
+    my $str = sprintf "\n\nBest auto-fit model is $best{name}\n";
+    $str   .= sprintf "Auto-fit parameters for this model:\n\n";
+    $str   .= sprintf "  Chi-squared:       %.5g\n", $best{chi};
+    $str   .= sprintf "  Deg of Freedom:    %d\n",   $best{dof};
+    for ( my $i = 1; $i <= $num; $i++ ) {
+        $str .= sprintf "  Power-law Index $i: %.8g (%.8g - %.8g)\n", 
+                        $best{"pl$i"}, $best{"pllo$i"}, $best{"plhi$i"};
+    }
+    for ( my $i = 1; $i < $num; $i++ ) {
+        $str .= sprintf "  Time Break $i:      %.8g (%.8g - %.8g)\n", 
+                        $best{"tbreak$i"}, $best{"tbreaklo$i"}, $best{"tbreakhi$i"};
+    }
+    if ( $params{interactive} ) {
+        print $str;
+    } else {
+        chat( 2, $str );
+    }
+}
+
+#
+# manualFitLightCurve -
+#
+#       sets up XSpec for user to do fit - in a complicated fashion
+#
+sub manualFitLightCurve {
+
+    my $stat = 0;
+    my $out;
+    
+    my $plotf = basename( getTmpFile( $params{plotfext} ) );
+
+    open SCR, ">$outfiles{userfitinit}" or
+        die "failed to open file $outfiles{userfitinit}\n";
+
+    # put in the xspec_get_bad_error script
+    print SCR $xspec_get_bad_error;
+
+    # and the rest
+    print SCR <<EOF;
+set xs_echo_script 0
+
+#
+# redefine quit and exit so we can auto save the fit and plot
+#
+proc quitfunc {} {
+    global tbreak
+    puts "Finishing up..."
+
+    # clobber the save file
+    if { [file exists {$outfiles{userfitfile}}] } {
+        file delete {$outfiles{userfitfile}}
+    }
+
+    # setup some plot labels
+    # and get the time breaks, if model is supported
+    tclout model
+    if { [scan \$xspec_tclout "\%s" mymodel] < 0 } {
+        set mymodel "None"
+    } else {
+        scan \$xspec_tclout "\%s" mymodel
+        if { ![info exists tbreak] } {
+            set tbreak {}
+            if { [regexp {^(powerlaw|bknpower|bkn2pow)} \$mymodel] } {
+                set numpar [tcloutr modpar]
+                for { set i 1 } { \$i < \$numpar } { incr i } {
+                    set parinfo [tcloutr pinfo \$i]
+                    if { [regexp {^BreakE} \$parinfo] } {
+                        scan [tcloutr param \$i] "\%f" tmp
+                        lappend tbreak \$tmp
+                    }
+                }
+                set tbreak [lsort -real -unique \$tbreak]
+            }
+        }
+    }
+
+    # setup pretty string for plotting
+    if { [regexp {^powerlaw} \$mymodel] } {
+        set mymodel "Power-Law"
+    } elseif { [regexp {^bknpower} \$mymodel] } {
+        set mymodel "Broken Power-Law"
+    } elseif { [regexp {^bkn2pow} \$mymodel] } {
+        set mymodel "Double Broken Power-Law"
+    }
+
+    # put the first and last noticed channels into the time breaks
+    set numgrps [tcloutr datasets]
+    set tstart 1e20
+    set tstop  -1e20
+    for { set i 1 } { \$i <= \$numgrps } { incr i } {
+        set noticeden [tcloutr noticed energy \$i]
+        scan [lindex \$noticeden 0] "\%f-" tmp1
+        scan [lindex \$noticeden end] "\%f-\%f" tmp tmp2
+        if { [info exists tmp1] && \$tmp1 < \$tstart } {
+            set tstart \$tmp1
+        }
+        if { [info exists tmp2] && \$tmp2 > \$tstop } {
+            set tstop \$tmp2
+        }
+
+        set ispcmode [regexp {xpc} [file tail [tcloutr filename \$i]]]
+        if { [info exists tmp1] } {
+            if { \$ispcmode == 1 } {
+                set pcstart \$tmp1
+                set pcstop \$tmp2
+            } else {
+                set wtstart \$tmp1
+                set wtstop  \$tmp2
+            }
+        } else {
+            if { \$ispcmode == 1 } {
+                set pcstart -1e20
+                set pcstop  -1e20
+            } else {
+                set wtstart -1e20
+                set wtstop  -1e20
+            }
+        }
+
+        # set the colors for the plot groups
+        if { [info exists tmp1] } {
+            if { \$mymodel ne "None" && \$mymodel ne "Unknown" } {
+                set j [expr 3*(\$i-1)+1]
+                set dgrstr [format "\%d \%d \%d" \$j [expr \$j+1] [expr \$j+2]]
+            } else {
+                set dgrstr [format "\%d" \$i]
+            }
+            if { \$ispcmode == 1 } {
+                setplot command "color 2 on \$dgrstr"
+            } else {
+                setplot command "color 4 on \$dgrstr"
+            }
+        }
+
+        # clear the temporary vars
+        unset -nocomplain tmp1 tmp2
+    }
+    lappend tbreak \$tstart
+    lappend tbreak \$tstop
+
+    # label the time breaks
+    setplot command win 1
+    set top [llength \$tbreak]
+    
+    for { set i 0 } { \$i < \$top } { incr i } {
+        if { [lindex \$tbreak \$i] == -1 } {
+            continue
+        }
+        set lab [expr \$i + 20]
+        set val [lindex \$tbreak \$i] 
+        setplot command "label \$lab pos \$val 0 line 90 10000 lstyle 2 \" \""
+    }
+
+    # plot it
+    setplot energy
+    setplot command scr white
+    setplot command gap error
+    setplot command res
+    setplot command lwidth 4
+    setplot command time off
+    setplot command label F 
+    setplot command win 1
+    setplot command label OT $object: XRT PC/WT User Fit Light Curve
+    setplot command label T Fit Model: \$mymodel
+    setplot command label Y Count Rate (count/s)
+    cpd /null
+    if { \$mymodel ne "None" } {
+        setplot command win 2
+        setplot command lab 2 color 1
+        setplot command label X $lcXAxisLabel
+        setplot command hardcopy {${plotf}$params{plotftype}} 
+        plot ldata ratio
+    } else {
+        setplot command label X $lcXAxisLabel
+        setplot command hardcopy {${plotf}$params{plotftype}}
+        plot ldata
+    }
+
+    # save the session with some extras
+    save all {$outfiles{userfitfile}}
+    set outf [open {$outfiles{userfitfile}} a]
+    puts -nonewline \$outf "MYTBREAK: "
+    puts \$outf \$tbreak
+    if { [info exists pcstart] } {
+        puts \$outf "pcTSTART = \$pcstart"
+        puts \$outf "pcTSTOP = \$pcstop"
+    }
+    if { [info exists wtstart] } {
+        puts \$outf "wtTSTART = \$wtstart"
+        puts \$outf "wtTSTOP = \$wtstop"
+    }
+    if { \$mymodel ne "None" } {
+        set numpar [tcloutr modpar]
+        for { set i 1 } { \$i <= \$numpar } { incr i } {
+            set prefix "pc"
+            set j \$i
+            if { [info exists pcstart] && [info exists wtstart] } {
+                if { \$i > [expr \$numpar / 2] } {
+                    set prefix "wt"
+                    set j [expr \$i - \$numpar / 2]
+                }
+            } elseif { [info exists wtstart] } {
+                set prefix "wt"
+            }
+            scan [tcloutr param \$i] "\%f" tmp
+            puts \$outf "\${prefix}MYPARAM\$j = \$tmp"
+            set parer [eval get_bad_error \$i]
+            puts \$outf "\${prefix}MYPARLO\$j = [expr \$tmp - \$parer / 2.0]"
+            puts \$outf "\${prefix}MYPARHI\$j = [expr \$tmp + \$parer / 2.0]"
+        }
+        puts \$outf "MYCHI = [tcloutr stat]"
+        scan [tcloutr dof] "\%d" dof
+        puts \$outf "MYDOF = \$dof"
+    }
+    close \$outf
+}
+rename quit xs_old::quit
+rename exit xs_old::exit
+proc exit {} {
+    eval quitfunc
+    xs_old::exit
+}
+proc quit {} {
+    eval quitfunc
+    xs_old::quit
+}
+
+#
+# define function for manually entering time breaks (up to two)
+#
+proc set_timebreaks { args } {
+    global tbreak
+    set tbreak {}
+    if { [llength \$args] < 1 } {
+        set mode "MST"
+    } elseif { [regexp {^(MET|MST)\$} [lindex \$args 0]] != 1 } {
+        puts {Error: Single argument must be blank, MET or MST}
+        return
+    } else {
+        set mode [lindex \$args 0]
+    }
+    if { \$mode eq "MST" } {
+        set prompt {Enter the time ([s] since Trigger) of break}
+    } else {
+        set prompt {Enter the time (MET [s]) of break}
+    }
+
+    set ready [::tclreadline::readline read "Have you excluded the flares that you want to (y or n)? "]
+    while { ![regexp {^[yYnN]} \$ready] } {
+        set ready [::tclreadline::readline read "Please enter y or n: "]
+    }
+    if { [regexp {^[nN]} \$ready] } {
+        puts "Please do so before running this command"
+        return
+    }
+    set tbreak1 -100
+    set i 1
+    while { \$tbreak1 != -1 && \$i <= 2 } {
+        set ans1 [::tclreadline::readline read "\$prompt \$i (-1 to end): "]
+        scan \$ans1 "\%f" tbreak1
+        if { \$tbreak1 == -1 } {
+            continue
+        }
+        if { \$mode eq "MET" } {
+            lappend tbreak [expr \$tbreak1 - $params{trigtime}]
+        } else {
+            lappend tbreak \$tbreak1
+        }
+        incr i
+    }
+}
+
+#
+# load the data
+#
+set xs_echo_script 1
+autosave off
+data $models{data}
+setplot energy
+chatter 0
+$models{ignore}
+set xs_echo_script 0
+chatter 10
+puts {
+***********************************************************************
+*                                                                     *
+* Fit the light curve using ONLY powerlaw, bknpower or bkn2pow models *
+* Exclude any flares that you don't want included in the spectral fit *
+* by using the ignore command. When you are finished quit Xspec.      *
+*                                                                     *
+* If you have both PC and WT data, then the parameters MUST be linked *
+* for the rest of the script to function as expected. The exeption to *
+* this is the normalization parameter - this can be independent for   *
+* each mode.                                                          *
+*                                                                     *
+* If you are unable to get a decent fit with these models, do:        *
+*                                                                     *
+* XSPEC12> set_timebreaks [ MST | MET ]                               *
+*                                                                     *
+* and follow the prompts to manually enter the time breaks            *
+* to use for spectral fitting intervals. Currently only two           *
+* time breaks are allowed. Then quit as usual. Above, MST stands      *
+* for MET Since Trigger, and MET is Mission Elapsed Time.             *
+*                                                                     *
+*                                                                     *
+* NOTE: If time breaks are entered manually, the fit is assumed not   *
+*       to give valid time breaks, and the user-entered values will   *
+*       be used instead.                                              *
+*                                                                     *
+* NOTE: If you are unable to exit Xspec, use:                         *
+*                                                                     *
+* XSPEC12> xs_old::exit                                               *
+*                                                                     *
+***********************************************************************
+}
+set xs_echo_script 1
+EOF
+    close SCR;
+
+    # run interactive Xspec session
+RERUNMANFIT:
+    my $cmd = "xspec - \"$outfiles{userfitinit}\"";
+    system( $cmd );
+    $stat = $? << 8;
+    if ( $stat != 0 ) {
+        print "\n\n******************** ERROR ********************\n\n";
+        print "Xspec seems to have failed. Try again (y or n)? ";
+        my $ans = <STDIN>;
+        chomp $ans;
+        while ( $ans !~ /^[yYnN]/ ) {
+            print "Please enter y or n: ";
+            $ans = <STDIN>;
+            chop( $ans );
+        }
+        if ( $ans =~ /^[nN]/ ) {
+            return $stat;
+        }
+        goto RERUNMANFIT;
+    }
+
+    if ( !move( $plotf, $outfiles{fitlcplot} ) ) {
+        error( 1, "no valid plots produced from user fit! check results!\n" );
+    }
+    return $stat;
+}
+
+#
+# parseXspecLCSaveFile -
+#
+#       determines time breaks and ignored channels from the
+#       Xspec save file (time breaks are not output by xspec)
+#
+sub parseXspecLCSaveFile {
+
+    my $stat = 0;
+
+    my $plotf = basename( getTmpFile( $params{plotfext} ) );
+
+    chat( 2, "parsing output from user light curve fit\n" );
+    
+    # open the user fit save file, parse
+    open SAV, "<$outfiles{userfitfile}" or
+        die "failed to open file $outfiles{userfitfile}\n";
+    my @lines = <SAV>;
+    close SAV;
+
+    my $ignored = "";
+    foreach my $line ( @lines ) {
+        chomp $line;
+        if ( $line =~ /^MYTBREAK:\s+(.*?)$/ ) {
+            @tbreaks = map( 1.0 * $_ + $params{trigtime}, split /\s+/, $1 );
+            @tbreaks = sort { $a <=> $b } @tbreaks;
+            # NOTE: here we shift and pop the array to remove
+            #       the TSTART and TSTOP of the entire thing
+            #       since we know those times already (to higher precision)
+            shift @tbreaks;
+            pop @tbreaks;
+        } elsif ( $line =~ /^ignore\s+([12].*?)$/ ) {
+            $ignored = $1;
+        } elsif ( $line =~ /^(pc|wt)(TSTART|TSTOP)\s+=\s+(\S+)$/ ) {
+            $curves{$1}{$2} = $3 * 1.0;
+            if ( $curves{$1}{$2} != -1e20 ) {
+                $curves{$1}{$2} += $params{trigtime};
+            }
+        } elsif ( $line =~ /^(pc|wt)MYPARAM(\d+)\s+=\s+(\S+)$/ ) {
+            $models{user}{"$1param$2"} = $3 * 1.0;
+        } elsif ( $line =~ /^(pc|wt)MYPAR(LO|HI)(\d+)\s+=\s+(\S+)$/ ) {
+            my $key = "$1par" . lc( $2 ) . $3;
+            $models{user}{$key} = $4 * 1.0;
+        } elsif ( $line =~ /^model\s+(.*?)$/ ) {
+            $models{user}{name} = $1;
+        } elsif ( $line =~ /MY(CHI|DOF)\s+=\s+(\S+)$/ ) {
+            my $key = lc( $1 );
+            $models{user}{$key} = $2 * 1.0;
+        }
+    }
+
+    # parse the ignore string, and get the corresponding
+    # time ranges from the text light curve (since it is a 
+    # direct mapping from channel to time)
+    # These times will be excluded from the spectral fit
+    # but exclude those that are marked as bad by the tableToSpec( )
+    # sub, since those are just filler for space between bins
+    my @keys    = keys %curves;
+    my $numkeys = scalar( @keys );
+    if ( $numkeys == 2 ) {
+        if ( $ignored =~ /^1:([\-\d,]+)\s*$/ ) {
+            $curves{pc}{ignored} = $1;
+        } elsif ( $ignored =~ /^2:([\-\d,]+)\s*$/ ) {
+            $curves{wt}{ignored} = $1;
+        } elsif ( $ignored =~ /^1:([\-\d,]+)\s+2:([\-\d,]+)\s*$/ ) {
+            $curves{pc}{ignored} = $1;
+            $curves{wt}{ignored} = $2;
+        }
+    } else {
+        my $mode = $keys[ 0 ];
+        if ( $ignored =~ /^1:([\-\d,]+)\s*$/ ) {
+            $curves{$mode}{ignored} = $1;
+        }
+    }
+
+    # now get the times to ignore
+    debug( "parsing ignored channels from Xspec output\n" );
+    foreach my $mode ( @keys ) {
+        if ( !exists $curves{$mode}{ignored} ) { next; }
+        if ( !-e $outfiles{"${mode}lctxt"} ) { next; }
+        if ( !-e $outfiles{"${mode}lcign"} ) { next; }
+
+        # get the dummy channels
+        open TXT, "<" . $outfiles{"${mode}lcign"}
+            or die "failed to open file " . $outfiles{"${mode}lcign"} . "\n";
+        my %dummies = ( );
+        while ( <TXT> ) {
+            chomp;
+            $dummies{$_} = 1;
+        }
+        close TXT;
+
+        # now get the really excluded intervals
+        open TXT, "<" . $outfiles{"${mode}lctxt"}
+            or die "failed to open file " . $outfiles{"${mode}lctxt"} . "\n";
+        my %linenums = ( );
+        foreach my $key ( split( /,/, $curves{$mode}{ignored} ) ) {
+            my @line = split /\-/, $key;
+            for ( my $i = $line[ 0 ]; $i <= $line[ $#line ]; $i++ ) {
+                # if we have a range then exclude them all
+                if ( $#line != 0 ) {
+                    $linenums{$i} = 1;
+                    debug( "excluding \"channel\" $i from $mode mode data\n" );
+                # if we have a single excluded channel, that's not a dummy
+                # exclude it
+                } elsif ( !exists $dummies{$i} ) {
+                    debug( "excluding \"channel\" $i from $mode mode data\n" );
+                    $linenums{$i} = 1;
+                }
+            }
+        }
+        my $linenum = 0;
+        foreach my $line ( <TXT> ) {
+            chomp $line;
+            $line =~ s/^\s*(.*?)\s*$/$1/;
+            next unless length $line;
+            
+            $linenum++;
+            if ( !exists $linenums{$linenum} ) { next; }
+            delete $linenums{$linenum};
+            
+            my @splitline = split /\s+/, $line;
+            push @{$curves{$mode}{exstart}}, $splitline[ 0 ] * 1.0 + $params{trigtime};
+            push @{$curves{$mode}{exstop}},  $splitline[ 1 ] * 1.0 + $params{trigtime};
+            debug( sprintf( "excluding interval [MET] from $mode mode data: %.5f - %.5f\n",
+                             $splitline[ 0 ] * 1.0 + $params{trigtime},
+                             $splitline[ 1 ] * 1.0 + $params{trigtime} ) );
+        }
+        close TXT;
+        
+        # time sort
+        my $nvals = scalar( @{$curves{$mode}{exstart}} ) - 1;
+        my @order = sort { $curves{$mode}{exstop}->[ $a ] <=> $curves{$mode}{exstop}->[ $b ] } 0..$nvals;
+        @{$curves{$mode}{exstart}} = @{$curves{$mode}{exstart}}[ @order ];
+        @{$curves{$mode}{exstop}}  = @{$curves{$mode}{exstop}}[ @order ];
+
+        # merge consecutive intervals (to within 1 sec)
+        for ( my $i = 1; $i < @{$curves{$mode}{exstart}}; $i++ ) {
+            if ( $curves{$mode}{exstart}->[ $i ] - $curves{$mode}{exstop}->[ $i - 1 ] <= 1.0 ) {
+                $curves{$mode}{exstop}->[ $i - 1 ] = $curves{$mode}{exstop}->[ $i ];
+                splice @{$curves{$mode}{exstart}}, $i, 1;
+                splice @{$curves{$mode}{exstop}},  $i, 1;
+                $i--;
+            }
+        }
+    }
+    return $stat;
+}
+
+#
+# setAutoFitTimeBreaks -
+#
+sub setAutoFitTimeBreaks {
+    if ( exists $models{best} ) {
+        foreach my $key ( keys %{$models{$models{best}}} ) {
+            if ( $key =~ /^tbreak\d$/ ) {
+                push @tbreaks, $models{$models{best}}{$key} + $params{trigtime};
+            }
+        }
+        @tbreaks = sort { $a <=> $b } @tbreaks;
+    }
+
+    # if there are not any, assume the fits failed
+    # and just use total interval
+    if ( !@tbreaks ) {
+        foreach my $mode ( keys %curves ) {
+            if ( uc( $mode ) ne 'PC' || uc( $mode ) ne 'WT' ) { next; }
+            $curves{$mode}{TSTART} = $curves{$mode}{tstart};
+            $curves{$mode}{TSTOP}  = $curves{$mode}{tstop};
+        }
+    }
+}
+
+#
+# buildIntervalSpectra -
+#
+sub buildIntervalSpectra {
+
+    my $stat = 0;
+
+    my $intnum = 1;
+    chat( 2, "building spectra for each interval and each mode\n" );
+    for ( my $i = 0; $i <= @tbreaks && 0 < @tbreaks; $i++ ) {
+       
+        my @intervals = ( );
+        foreach my $mode ( keys %curves ) {
+            if ( $curves{$mode}{TSTART} == -1e20 && $curves{$mode}{TSTOP} == -1e20 ) {
+                warnlo( 2, "skipping $mode mode, interval $intnum, all bins ignored in user fit\n" );
+                next;
+            }
+            chat( 3, "doing $mode mode for interval $intnum...\n" );
+            foreach my $interval ( values %intervalData ) {
+                my $lcmode = lc( $interval->{MODE} );
+                if ( $lcmode ne lc( $mode ) ) { next; }
+                my $tstart = $i == 0 ? $curves{$lcmode}{TSTART} : $tbreaks[ $i - 1 ];
+                my $tstop  = $i == @tbreaks ? $curves{$lcmode}{TSTOP} : $tbreaks[ $i ];
+
+                # sanity check!
+                if ( $tstart >= $curves{$lcmode}{TSTOP} ) {
+                    next;
+                }
+                if ( $tstop <= $curves{$lcmode}{TSTART} ) {
+                    next;
+                }
+
+                # check if this initial interval is in our spectral interval
+                if ( $interval->{TSTART} < $tstop && $interval->{TSTOP} > $tstart ) {
+
+                    # make the gti
+                    my @exstart = @{$curves{$lcmode}{exstart}};
+                    my @exstop  = @{$curves{$lcmode}{exstop}};
+                    my @gtistart = ( $tstart );
+                    my @gtistop  = ( $tstop );
+                    for ( my $i = 0; $i < @exstart; $i++ ) {
+                        if ( $exstop[ $i ] <= $tstart ) { next; }
+                        if ( $exstart[ $i ] >= $tstop ) { next; }
+                        if ( $exstart[ $i ] <= $tstart && $exstop[ $i ] < $tstop ) {
+                            shift @gtistart;
+                            unshift @gtistart, $exstop[ $i ];
+                            $tstart = $exstop[ $i ];
+                        } elsif ( $exstop[ $i ] >= $tstop && $exstart[ $i ] > $tstart ) {
+                            pop @gtistop;
+                            push @gtistop, $exstart[ $i ];
+                            $tstop = $exstart[ $i ];
+                        } elsif ( $exstart[ $i ] > $tstart && $exstop[ $i ] < $tstop ) {
+                            my $oldstop = pop @gtistop;
+                            push @gtistop, $exstart[ $i ];
+                            push @gtistop, $oldstop;
+                            push @gtistart, $exstop[ $i ];
+                        }
+                    }
+                    debug( "GTI for this interval:\n", 
+                           map( "$gtistart[ $_ ] $gtistop[ $_ ]\n", 0..$#gtistart ) );
+                        
+                    # check if we need to re-run extractor
+                    my $runextractor = 0;
+                    my $includeinter = 0;
+                    foreach my $i ( 0..$#gtistart ) {
+                        if ( ( $gtistart[ $i ] > $interval->{TSTART} &&
+                               $gtistart[ $i ] < $interval->{TSTOP} ) ||
+                             ( $gtistop[ $i ] > $interval->{TSTART} &&
+                               $gtistop[ $i ] < $interval->{TSTOP} ) ) {
+                            $runextractor = 1;
+                            last;
+                        } elsif ( $interval->{TSTART} >= $gtistart[ $i ] &&
+                                  $interval->{TSTART} <= $gtistop[ $i ] ) {
+                            $includeinter = 1;
+                        }
+                    }
+                    
+                    # do it
+                    if ( $runextractor ) {
+                        chat( 2, "time break or ignored times intersect with $interval->{srcpha}\n",
+                                 "re-extracting source and background spectrum\n",
+                                 "new interval MET [s]: $gtistart[ 0 ] to $gtistop[ $#gtistop ]\n" );
+
+                        my %newinterval = extractNewInterval( $interval, \@gtistart, \@gtistop );
+                        next unless keys %newinterval;
+
+                        push @intervals, \%newinterval;
+                    } elsif ( $includeinter ) {
+                        push @intervals, $interval;
+                    }
+                }
+            }
+
+            # merge them
+            next unless @intervals;
+            @intervals = sort { $a->{TSTART} <=> $b->{TSTART} } @intervals;
+            chat( 2, "merging PHAs from MET [s]: ",
+                     "$intervals[ 0 ]->{TSTART} to $intervals[ $#intervals ]->{TSTOP}\n" );
+            $stat = mergeIntervalSpectra( \@intervals, $mode, $intnum );
+            $specIntervals{$intnum}{$mode}{TSTART} = $intervals[ 0 ]->{TSTART};
+            $specIntervals{$intnum}{$mode}{TSTOP}  = $intervals[ $#intervals ]->{TSTOP};
+            return $stat unless $stat == 0;
+        }
+        
+        # determine the plot label
+        my $mint = 1e20;
+        my $maxt = -1e20;
+        foreach my $mode ( keys %curves ) {
+            if ( exists $specIntervals{$intnum}{$mode} &&
+                 $specIntervals{$intnum}{$mode}{TSTART} - $params{trigtime} < $mint ) {
+                $mint = $specIntervals{$intnum}{$mode}{TSTART} - $params{trigtime};
+            }
+            if ( exists $specIntervals{$intnum}{$mode} &&
+                 $specIntervals{$intnum}{$mode}{TSTOP} - $params{trigtime} > $maxt ) {
+                $maxt = $specIntervals{$intnum}{$mode}{TSTOP} - $params{trigtime};
+            }
+        }
+        $specIntervals{$intnum}{label} = 
+                sprintf( "Interval [T\\Do\\U + s]: %10.1f - %10.1f", $mint, $maxt );
+
+        # NEXT!
+        $intnum++;
+    }
+    
+    # now get the total spectrum for each mode
+    chat( 2, "building total spectra for each mode\n" );
+    foreach my $mode ( keys %curves ) {
+        my @intervals = ( );
+        my $tstart = $curves{$mode}{TSTART};
+        my $tstop  = $curves{$mode}{TSTOP};
+        foreach my $interval ( values %intervalData ) {
+            next unless lc( $interval->{MODE} ) eq lc( $mode );
+
+            # check if this initial interval is in our spectral interval
+            if ( $interval->{TSTART} < $tstop && $interval->{TSTOP} > $tstart ) {
+
+                # make the gti
+                my @exstart = @{$curves{$mode}{exstart}};
+                my @exstop  = @{$curves{$mode}{exstop}};
+                my @gtistart = ( $tstart );
+                my @gtistop  = ( $tstop );
+                for ( my $i = 0; $i < @exstart; $i++ ) {
+                    if ( $exstop[ $i ] <= $tstart ) { next; }
+                    if ( $exstart[ $i ] >= $tstop ) { next; }
+                    if ( $exstart[ $i ] <= $tstart && $exstop[ $i ] < $tstop ) {
+                        shift @gtistart;
+                        unshift @gtistart, $exstop[ $i ];
+                        $tstart = $exstop[ $i ];
+                    } elsif ( $exstop[ $i ] >= $tstop && $exstart[ $i ] > $tstart ) {
+                        pop @gtistop;
+                        push @gtistop, $exstart[ $i ];
+                        $tstop = $exstart[ $i ];
+                    } elsif ( $exstart[ $i ] > $tstart && $exstop[ $i ] < $tstop ) {
+                        my $oldstop = pop @gtistop;
+                        push @gtistop, $exstart[ $i ];
+                        push @gtistop, $oldstop;
+                        push @gtistart, $exstop[ $i ];
+                    }
+                }
+                    
+                # check if we need to re-run extractor
+                my $runextractor = 0;
+                my $includeinter = 0;
+                foreach my $i ( 0..$#gtistart ) {
+                    if ( ( $gtistart[ $i ] > $interval->{TSTART} &&
+                           $gtistart[ $i ] < $interval->{TSTOP} ) ||
+                         ( $gtistop[ $i ] > $interval->{TSTART} &&
+                           $gtistop[ $i ] < $interval->{TSTOP} ) ) {
+                        $runextractor = 1;
+                        last;
+                    } elsif ( $interval->{TSTART} >= $gtistart[ $i ] &&
+                              $interval->{TSTART} <= $gtistop[ $i ] ) {
+                        $includeinter = 1;
+                    }
+                }
+                
+                # do it
+                if ( $runextractor ) {
+                    chat( 2, "time break or ignored times intersect with $interval->{srcpha}\n",
+                             "re-extracting source and background spectrum\n",
+                             "new interval MET [s]: $gtistart[ 0 ] to $gtistop[ $#gtistop ]\n" );
+
+                    my %newinterval = extractNewInterval( $interval, \@gtistart, \@gtistop );
+                    next unless keys %newinterval;
+
+                    push @intervals, \%newinterval;
+                } elsif ( $includeinter ) {
+                    push @intervals, $interval;
+                }
+            }
+        }
+        next unless @intervals;
+        @intervals = sort { $a->{TSTART} <=> $b->{TSTART} } @intervals;
+        chat( 2, "merging PHAs from MET [s]: ",
+                 "$intervals[ 0 ]->{TSTART} to $intervals[ $#intervals ]->{TSTOP}\n" );
+        my $intnum = 't';
+        $stat = mergeIntervalSpectra( \@intervals, $mode, $intnum );
+        $specIntervals{$intnum}{$mode}{TSTART} = $intervals[ 0 ]->{TSTART};
+        $specIntervals{$intnum}{$mode}{TSTOP}  = $intervals[ $#intervals ]->{TSTOP};
+        return $stat unless $stat == 0;
+
+        # determine the plot label
+        my $mint = 1e20;
+        my $maxt = -1e20;
+        foreach my $mode ( keys %curves ) {
+            if ( exists $specIntervals{$intnum}{$mode} &&
+                 $specIntervals{$intnum}{$mode}{TSTART} - $params{trigtime} < $mint ) {
+                $mint = $specIntervals{$intnum}{$mode}{TSTART} - $params{trigtime};
+            }
+            if ( exists $specIntervals{$intnum}{$mode} &&
+                 $specIntervals{$intnum}{$mode}{TSTOP} - $params{trigtime} > $maxt ) {
+                $maxt = $specIntervals{$intnum}{$mode}{TSTOP} - $params{trigtime};
+            }
+        }
+        $specIntervals{$intnum}{label} = 
+                sprintf( "Interval [T\\Do\\U + s]: %10.1f - %10.1f", $mint, $maxt );
+    }
+    return $stat;
+}
+
+#
+# extractNewInterval -
+#
+sub extractNewInterval {
+
+    my $interval = shift;
+    my @gtistart = @{$_[ 0 ]};
+    my @gtistop  = @{$_[ 1 ]};
+
+    my $stat = 0;
+    my %newinterval = ( );
+
+    my $gti = getTmpFile( "gti" );
+    open GTI, ">$gti" or die "failed to open file $gti\n";
+    print GTI map( sprintf( "%.14g %.14g\n", 
+                            $gtistart[ $_ ], $gtistop[ $_ ] ),
+                   0..$#gtistart );
+    close GTI;
+    
+    # run extractor
+    my $srcpha = catfile( $params{outdir}, basename( getTmpFile( "pha" ) ) );
+    my $bkgpha = catfile( $params{outdir}, basename( getTmpFile( "pha" ) ) );
+    push @clean, $srcpha, $bkgpha;
+    
+    my $extractor = {
+        filename   => $interval->{evtfile},
+        eventsout  => 'NONE',
+        imgfile    => 'NONE',
+        phafile    => $srcpha,
+        fitsbinlc  => "NONE",
+        regionfile => 'NONE',
+        timefile   => $gti,
+        xcolf      => 'X',
+        ycolf      => 'Y',
+        tcol       => 'TIME',
+        ecol       => 'PI',
+        xcolh      => 'DETX',
+        ycolh      => 'DETY',
+        copyall    => 'yes',
+        clobber    => 'yes'
+    };
+    my $cmd = genCmd( 'extractor', $extractor );
+    $stat   = runSystem( $cmd );
+    return %newinterval unless $stat == 0;
+
+    $extractor->{filename} = $interval->{bkgevt};
+    $extractor->{phafile}  = $bkgpha;
+    
+    $cmd  = genCmd( 'extractor', $extractor );
+    $stat = runSystem( $cmd );
+    return %newinterval unless $stat == 0;
+
+    # read the resultant keywords
+    my %srckeywords;
+    ( $stat, %srckeywords ) = readPHAKeywords( $srcpha );
+    return %newinterval unless ( $stat == 0 && keys %srckeywords );
+
+    my %bkgkeywords;
+    ( $stat, %bkgkeywords ) = readPHAKeywords( $bkgpha );
+    return %newinterval unless ( $stat == 0 && keys %bkgkeywords );
+
+    map( $newinterval{$_}       = $srckeywords{$_}, keys %srckeywords );
+    map( $newinterval{"bkg_$_"} = $bkgkeywords{$_}, keys %bkgkeywords );
+    $newinterval{srcpha}  = $srcpha;
+    $newinterval{bkgpha}  = $bkgpha;
+    $newinterval{arf}     = $interval->{arf};
+    $newinterval{rmffile} = $interval->{rmffile};
+
+    push @clean, $gti;
+    return %newinterval;
+}
+
+#
+# mergeIntervalSpectra -
+#
+sub mergeIntervalSpectra {
+
+    my ( $intervals, $mode, $intnum ) = @_;
+
+    my $stat = 0;
+
+    # this stuff is to get around the stupid filename limits
+    # of the older tools
+    # get the current working dir
+    my $cwd = getcwd( );
+
+    #####################################################
+    ## Determine groups of spectra to merge (and save) ##
+    #####################################################
+    my %groups = ( );
+    my $totexpo = 0.0;
+    my $totcnts = 0.0;
+    my $totbksc = 0.0;
+    my $totbgex = 0.0;
+
+    # get weights for background spectra and arfs
+    # and get the mode-specific intervals
+    my @modeinter = ( );
+    foreach my $interval ( @$intervals ) {
+        next unless lc( $interval->{MODE} ) eq lc( $mode );
+        $totexpo   += $interval->{EXPOSURE};
+        $totcnts   += $interval->{TOTCTS};
+        $totbgex   += $interval->{bkg_EXPOSURE};
+        $totbksc   += $interval->{EXPOSURE} * $interval->{BACKSCAL} / $interval->{bkg_BACKSCAL};
+        push @modeinter, $interval;
+    }
+    return $stat unless @modeinter;
+
+    # output filename bases
+    my $srcphabase = catfile( $params{outdir}, "$params{outstem}_x${mode}etsrt$intnum" );
+    my $bkgphabase = catfile( $params{outdir}, "$params{outstem}_x${mode}etbgt$intnum" );
+   
+    # get groups of intervals based on which rmf they require
+    my $gnum   = 0;
+    my @glab   = ( '', qw( a b c d e f g h i j k l m n o p q r s t u v w x y z ) );
+    foreach my $interval ( @modeinter ) {
+        my $rmffile = $interval->{rmffile};
+        if ( !exists $groups{$rmffile} ) {
+            $groups{$rmffile} = {
+                intervals => [ $interval ],
+                exposure  => $interval->{EXPOSURE},
+                totcnts   => $interval->{TOTCTS},
+                bkgexpo   => $interval->{bkg_EXPOSURE},
+                backfact  => $interval->{EXPOSURE} * 
+                             $interval->{BACKSCAL} / $interval->{bkg_BACKSCAL},
+                srcpha    => $srcphabase . "$glab[ $gnum ].pha",
+                bkgpha    => $bkgphabase . "$glab[ $gnum ].pha",
+                totrmf    => $srcphabase . "$glab[ $gnum ].rmf",
+                totarf    => $srcphabase . "$glab[ $gnum ].arf"
+            };
+            $gnum++;
+
+            # add these to the list of files that need keyword updates
+            $fixFits{$groups{$rmffile}{srcpha}} = { intnum => $intnum,
+                                                    mode => $mode,
+                                                    templ => $curves{$mode}{curve} }; 
+            $fixFits{$groups{$rmffile}{bkgpha}} = { intnum => $intnum,
+                                                    mode => $mode,
+                                                    templ => $curves{$mode}{curve} }; 
+            $fixFits{$groups{$rmffile}{totarf}} = { intnum => $intnum,
+                                                    mode => $mode,
+                                                    templ => $curves{$mode}{curve} }; 
+        } else {
+            push @{$groups{$rmffile}{intervals}}, $interval;
+            $groups{$rmffile}{exposure} += $interval->{EXPOSURE};
+            $groups{$rmffile}{totcnts}  += $interval->{TOTCTS},
+            $groups{$rmffile}{bkgexpo}  += $interval->{bkg_EXPOSURE};
+            $groups{$rmffile}{backfact} += $interval->{EXPOSURE} * 
+                                           $interval->{BACKSCAL} / $interval->{bkg_BACKSCAL};
+        }
+    }
+
+    ##################################################################
+    # Add the arfs for each group and merge the source/back spectra ##
+    ##################################################################
+    my $marfrmf = {
+        ebfil     => '%',
+        rmfversn  => '1.3.0',
+        qoverride => 'no',
+        chatter   => 9,
+        clobber   => 'yes',
+        qdivide   => 'no',
+        arfcol    => 'SPECRESP'
+    };
+
+    # here we have to be careful about filename length, since the older
+    # pha/arf/rmf tools are not capable of dealing with long names (or
+    # really even reasonable names in these modern times)!!
+    foreach my $group ( keys %groups ) {
+
+        # get the actual backscale
+        if ( $groups{$group}{backfact} != 0.0 ) {
+            $groups{$group}{backscal} = $groups{$group}{exposure} / $groups{$group}{backfact};
+            $groups{$group}{constfac} = $groups{$group}{bkgexpo} / $groups{$group}{backfact};
+        } else {
+            $groups{$group}{backscal} = 0.0;
+            $groups{$group}{constfac} = 0.0;
+        }
+        
+        # add the arfs
+        my @arfs = ( );
+        my @wgts = ( );
+        foreach my $interval ( @{$groups{$group}{intervals}} ) {
+            my $newarf = catfile( $params{outdir}, basename( getTmpFile( "arf" ) ) );
+            if ( !copy( $interval->{arf}, $newarf ) ) {
+                error( 1, "failed to make temporary copy of $interval->{arf} in $newarf\n" );
+                return -1;
+            }
+            push @arfs, basename( $newarf );
+            push @wgts, $interval->{EXPOSURE};
+            push @clean, $newarf;
+        }
+        next unless @arfs;
+        chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+        $stat = addARFs( basename( $groups{$group}{totarf} ), \@arfs,
+                         \@wgts, $groups{$group}{exposure} );
+        chdir $cwd;
+        return $stat unless $stat == 0;
+        
+        # copy around the src/bkg spectra - j.f.c.
+        my @srcphas = ( );
+        my @bkgphas = ( );
+        my @bkgwgts = ( );
+        foreach my $interval ( @{$groups{$group}{intervals}} ) {
+            # make darn (yes, darn) copies of them in the output dir
+            my $newsrc = catfile( $params{outdir}, basename( getTmpFile( "pha" ) ) );
+            my $newbkg = catfile( $params{outdir}, basename( getTmpFile( "pha" ) ) );
+            push @clean, $newsrc, $newbkg;
+            if ( !copy( $interval->{srcpha}, $newsrc ) ) {
+                error( 1, "failed to make temporary copy of $interval->{srcpha} in $newsrc\n" );
+                return -1;
+            }
+            if ( !copy( $interval->{bkgpha}, $newbkg ) ) {
+                error( 1, "failed to make temporary copy of $interval->{bkgpha} in $newbkg\n" );
+                return -1;
+            }
+
+            # do the math
+            # no math for sources, except addition
+            push @srcphas, basename( $newsrc );
+
+            # weighting for back
+            push @bkgphas, basename( $newbkg );
+            push @bkgwgts, $groups{$group}{constfac} * 
+                           $interval->{BACKSCAL} / $interval->{bkg_BACKSCAL};
+        }
+
+        # merge source spectra
+        chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+        $stat = addPHAs( \@srcphas, undef, basename( $groups{$group}{srcpha} ), 1.0, 
+                         basename( $groups{$group}{bkgpha} ),
+                         basename( $groups{$group}{totarf} ),
+                         basename( $group ) );
+        chdir $cwd;
+        return $stat unless $stat == 0;
+
+        # merge background spectra
+        chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+        $stat = addPHAs( \@bkgphas, \@bkgwgts, basename( $groups{$group}{bkgpha} ), 
+                         $groups{$group}{backscal},
+                         'NONE', 'NONE', 'NONE' );
+        chdir $cwd;
+        return $stat unless $stat == 0;
+
+        # multiply by the rmf
+        # when we query the caldb, we copy the rmf to the outdir
+        # so use it from there
+        $marfrmf->{rmfil}  = basename( $group );
+        $marfrmf->{arfil}  = basename( $groups{$group}{totarf} );
+        $marfrmf->{outfil} = basename( $groups{$group}{totrmf} );
+
+        my $cmd = genCmd( 'marfrmf', $marfrmf );
+        chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+        $stat = runSystem( $cmd );
+        chdir $cwd;
+        return $stat unless $stat == 0;
+        push @clean, $groups{$group}{totrmf};
+    }
+
+    ###################################################################
+    ## Combine All spectra for this mode/interval, regardless of RMF ##
+    ## These are the PHAs and background PHAs that get fitted        ##
+    ###################################################################
+    $srcphabase  = catfile( $params{outdir}, "$params{outstem}_x${mode}etsrt${intnum}_tot" );
+    $bkgphabase  = catfile( $params{outdir}, "$params{outstem}_x${mode}etbgt${intnum}_tot" );
+    my $plotbase = catfile( $params{outdir}, "$params{outstem}_xpwetsrt${intnum}" );
+    
+    my $srcpha   = $srcphabase . ".pha";
+    my $bkgpha   = $bkgphabase . ".pha";
+    my $totrmf   = $srcphabase . ".rmf";
+    my $grouppha = $srcphabase . "_grp.pha";
+    push @clean, $srcpha, $bkgpha, $totrmf, $grouppha;
+
+    # add all of the rmfs for this mode (they are already weighted by the arfs)
+    my @rmfs = map( sprintf( "%s    1.0", basename( $groups{$_}{totrmf} ) ), keys %groups );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+    $stat = addRMFs( \@rmfs, basename( $totrmf ) );
+    chdir $cwd;
+    return $stat unless $stat == 0;
+
+    # merge background spectra
+    my @bkgphas = map( basename( $groups{$_}{bkgpha} ), keys %groups );
+    my @bkgwgts = map( $totbgex / ( $groups{$_}{backscal} * $totbksc ), keys %groups );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+    $stat = addPHAs( \@bkgphas, \@bkgwgts, basename( $bkgpha ), $totexpo / $totbksc,
+                     'NONE', 'NONE', 'NONE' );
+    chdir $cwd;
+    return $stat unless $stat == 0;
+
+    # merge source spectra
+    my @srcphas = map( basename( $groups{$_}{srcpha} ), keys %groups );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+    $stat = addPHAs( \@srcphas, undef, basename( $srcpha ), 1.0, 
+                     basename( $bkgpha ), 'NONE', basename( $totrmf ) );
+    chdir $cwd;
+    return $stat unless $stat == 0;
+
+    # group the source spectrum
+    my $grppha = {
+        infile  => basename( $srcpha ),
+        outfile => basename( $grouppha ),
+        chatter => 5,
+        comm    => "group min 20",
+        tempc   => "exit",
+        clobber => 'yes'
+    };
+    my $cmd = genCmd( 'grppha', $grppha );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+    $stat = runSystem( $cmd );
+    chdir $cwd;
+    return $stat unless $stat == 0;
+
+    # check that we have more than 4 pha channels
+    my %stats = ( );
+    my $minp = int( 100.0 * $params{minenergy} );
+    my $maxp = int( 100.0 * $params{maxenergy} );
+    my $filt = "CHANNEL>=$minp&&CHANNEL<=$maxp&&QUALITY!=2&&GROUPING==1";
+    ( $stat, %stats ) = fStatistic( "$grouppha\[SPECTRUM\]\[$filt\]", 'QUALITY' );
+    if ( $stat != 0 || $stats{numb} < 3 ) {
+        if ( exists $stats{numb} ) {
+            warnhi( 1, "only found $stats{numb} good channels in $grouppha\n" );
+        }
+        warnhi( 1, "refusing to fit this spectrum\n" );
+        return 0;
+    }
+
+    # save the data for this interval/mode
+    # read the resultant keywords
+    my %srckeywords;
+    ( $stat, %srckeywords ) = readPHAKeywords( $srcpha, 0 );
+    return $stat unless ( $stat == 0 && keys %srckeywords );
+
+    my %bkgkeywords;
+    ( $stat, %bkgkeywords ) = readPHAKeywords( $bkgpha, 0 );
+    return $stat unless ( $stat == 0 && keys %bkgkeywords );
+
+    map( $specIntervals{$intnum}{$mode}{$_}       = $srckeywords{$_}, keys %srckeywords );
+    map( $specIntervals{$intnum}{$mode}{"bkg_$_"} = $bkgkeywords{$_}, keys %bkgkeywords );
+    $specIntervals{$intnum}{$mode}{srcpha}  = $srcpha;
+    $specIntervals{$intnum}{$mode}{grppha}  = $grouppha;
+    $specIntervals{$intnum}{$mode}{bkgpha}  = $bkgpha;
+    $specIntervals{$intnum}{$mode}{rmffile} = $totrmf;
+    $specIntervals{$intnum}{plotbase} = $plotbase;
+    return $stat;
+}
+
+#
+# addPHAs -
+#
+sub addPHAs {
+
+    my ( $list, $wgts, $outfile, $backscl, $backfile, $arfile, $rmfile ) = @_;
+
+    my $stat = 0;
+
+    # mathpha arbitrary limits
+    my $mathphaMaxExprLen = 15000; # actually it's a little bigger
+    my $mathphaMaxFiles   = 1000;
+
+    # check the input list
+    if ( !@$list ) {
+        warnhi( 1, "no PHAs to add in addPHAs( )\n" );
+        return 0;
+    }
+
+    # Kludgy!
+    my $cwd = getcwd( );
+    chdir $params{outdir};
+
+    # generate mathpha expression
+    my $expr = "";
+    for ( my $i = 0; $i < @$list; $i++ ) {
+
+        # calculate the expression length if we include this pha
+        my $appendstr = "";
+        if ( defined $wgts ) {
+            $appendstr = sprintf( "%.8f*'%s'", $wgts->[ $i ], $list->[ $i ] );
+        } else {
+            $appendstr = sprintf( "'%s'", $list->[ $i ] );
+        }
+        $expr = $expr eq "" ? $appendstr : "$expr+$appendstr";
+
+        # see if we've butted against mathpha's limits
+        if ( length( $expr ) > $mathphaMaxExprLen || $i >= $mathphaMaxFiles ) {
+
+            # we have, so do the calculation manually
+            warnlo( 2, "bypassing mathpha - too many pha files to add\n" );
+            $stat = bypassMathPHA( $list, $wgts, $outfile, $backscl, 
+                                   $backfile, $arfile, $rmfile );
+            chdir $cwd;
+            return $stat;
+        }
+    }
+    
+    # setup mathpha
+    my $tmpf = "$taskName.mathpha.$$.input";
+    open TMP, ">$tmpf" or die "failed to open file $tmpf\n";
+    print TMP "$expr\n";
+    close TMP;
+
+    my %mathpha = (
+        expr      => "\@$tmpf",
+        outfil    => "\!$outfile",
+        units     => 'C',
+        exposure  => 'CALC',
+        areascal  => 1.0,
+        properr   => 'no',
+        errmeth   => 'GAUSS',
+        auxfiles  => 'NONE',
+        backfile  => $backfile,
+        backscal  => $backscl,
+        corrfile  => 'NONE',
+        corrscal  => 'NONE',
+        arfile    => $arfile,
+        rmfile    => $rmfile,
+        ncomments => 0,
+        phaversn  => '1.2.0',
+        chatter   => 9,
+        divzero   => -99,
+        clobber   => 'yes'
+    );
+
+    my $cmd = genCmd( 'mathpha', \%mathpha );
+    $stat = runSystem( $cmd );
+    unlink $tmpf;
+    if ( $stat != 0 ) {
+        chdir $cwd;
+        return $stat;
+    }
+
+    # update the stupid keys
+    $stat = runSystem( genCmd( 'fparkey', { value => $backfile,
+                                            fitsfile => "$outfile\[1\]",
+                                            keyword  => 'BACKFILE',
+                                            add => 'yes' } ) );
+    if ( $stat != 0 ) {
+        chdir $cwd;
+        return $stat;
+    }
+    $stat = runSystem( genCmd( 'fparkey', { value => $arfile,
+                                            fitsfile => "$outfile\[1\]",
+                                            keyword  => 'ANCRFILE',
+                                            add => 'yes' } ) );
+    if ( $stat != 0 ) {
+        chdir $cwd;
+        return $stat;
+    }
+    $stat = runSystem( genCmd( 'fparkey', { value => $rmfile,
+                                            fitsfile => "$outfile\[1\]",
+                                            keyword  => 'RESPFILE',
+                                            add => 'yes' } ) );
+    if ( $stat != 0 ) {
+        chdir $cwd;
+        return $stat;
+    }
+    $stat = runSystem( genCmd( 'fparkey', { value => $backscl,
+                                            fitsfile => "$outfile\[1\]",
+                                            keyword  => 'BACKSCAL',
+                                            add => 'yes' } ) );
+    chdir $cwd;
+    return $stat;
+}
+
+#
+# bypassMathPHA -
+#
+#       gets around string length/file # limits of mathpha
+#       by simply creating the PHA by hand
+#       
+#       This assumes GAUSSIAN errors (sqrt(N))!
+#
+sub bypassMathPHA {
+
+    my ( $list, $wgts, $outfile, $backscl, $backfile, $arfile, $rmfile ) = @_;
+
+    my $stat = 0;
+
+    my $hdfile = basename( getTmpFile( "hdr" ) );
+    my $cdfile = basename( getTmpFile( "col" ) );
+    my $dafile = basename( getTmpFile( "dat" ) );
+
+    # read each input spectrum
+    my $totexpo = 0.0;
+    my ( $fptr, $nrows, $col, $typ, $any );
+    my %channels = ( );
+
+    debug( "adding PHAs manually\n" );
+    for ( my $i = 0; $i < @$list; $i++ ) {
+        
+        # read the channel and counts columns
+        my @chan = ( );
+        my @cnts = ( );
+        my $expo;
+        debug( "reading data from PHA $list->[ $i ]\n" );
+        $fptr = Astro::FITS::CFITSIO::open_file( $list->[ $i ], READONLY, $stat );
+        $fptr->movnam_hdu( ANY_HDU, 'SPECTRUM', 0, $stat );
+        if ( !defined $nrows ) {
+            $fptr->get_num_rows( $nrows, $stat );
+        }
+        $fptr->read_key_dbl( "EXPOSURE", $expo, undef, $stat );
+        $fptr->get_colnum( CASEINSEN, 'CHANNEL', $col, $stat );
+        $fptr->get_coltype( $col, $typ, undef, undef, $stat );
+        $fptr->read_col( $typ, $col, 1, 1, $nrows, undef, \@chan, undef, $stat );
+        $fptr->get_colnum( CASEINSEN, 'COUNTS', $col, $stat );
+        $fptr->get_coltype( $col, $typ, undef, undef, $stat );
+        $fptr->read_col( $typ, $col, 1, 1, $nrows, undef, \@cnts, undef, $stat );
+        $fptr->close_file( $stat );
+        if ( $stat != 0 ) {
+            return $stat;
+        }
+
+        # calculate the weighted counts in each channel
+        if ( defined $wgts ) {
+            debug( "weight for this pha is:\n" );
+            debug( "$wgts->[ $i ]\n" );
+        }
+        debug( "accumulating counts per channel\n" );
+        for ( my $j = 0; $j < $nrows; $j++ ) {
+            if ( !exists $channels{$chan[ $j ]} ) {
+                if ( defined $wgts ) {
+                    $channels{$chan[ $j ]} = $wgts->[ $i ] * $cnts[ $j ];
+                } else {
+                    $channels{$chan[ $j ]} = $cnts[ $j ];
+                }
+            } else {
+                if ( defined $wgts ) {
+                    $channels{$chan[ $j ]} += $wgts->[ $i ] * $cnts[ $j ];
+                } else {
+                    $channels{$chan[ $j ]} += $cnts[ $j ];
+                }
+            }
+        }
+
+        # calculate the total exposure
+        $totexpo += $expo;
+    }
+    if ( !keys %channels ) {
+        debug( "no channel data found\n" );
+        return 0;
+    }
+
+    # fixup the total exposure as a string (no higher precision than mathpha)
+    $totexpo = sprintf( "%1.6e", $totexpo );
+
+    # open and write the data file
+    open DAT, ">$dafile" or die "failed to open file $dafile\n";
+    foreach my $channel ( sort { $a <=> $b } keys %channels ) {
+        # round the counts to the nearest integer (ala mathpha)
+        $channels{$channel} = int( $channels{$channel} + 0.5 );
+        printf DAT "%d %d 0\n", $channel, $channels{$channel};
+    }
+    close DAT;
+
+    # open and write the cdfile
+    open CDF, ">$cdfile" or die "failed to open file $cdfile\n";
+    print CDF <<EOF;
+CHANNEL         J
+COUNTS          J       count
+QUALITY         I
+EOF
+    close CDF;
+
+    # open and write the header file
+    open HDR, ">$hdfile" or die "failed to open file $hdfile\n";
+    print HDR <<EOF;
+HDUCLASS= 'OGIP    '           / format conforms to OGIP standard
+HDUCLAS1= 'SPECTRUM'           / PHA dataset (OGIP memo OGIP-92-007)
+HDUVERS1= '1.2.0   '           / Obsolete - included for backwards compatibility
+HDUVERS = '1.2.0   '           / Version of format (OGIP memo OGIP-92-007)
+HDUCLAS2= 'DERIVED '           / WARNING This is NOT an OGIP-approved value
+HDUCLAS3= 'COUNT   '           / PHA data stored as Counts (not count/s)
+CREATOR = '$taskName v$taskVers' / s/w task which wrote this dataset
+TLMIN1  =                    0 / Lowest legal channel number
+TLMAX1  =                 1023 / Highest legal channel number
+TELESCOP= 'SWIFT   '           / mission/satellite name
+INSTRUME= 'XRT     '           / instrument/detector name
+FILTER  = 'NONE    '           / filter in use
+EXPOSURE= $totexpo / exposure (in seconds)
+AREASCAL=         1.000000E+00 / area scaling factor
+BACKFILE= '$backfile'           / associated background filename
+BACKSCAL= $backscl / background file scaling factor
+CORRFILE= 'NONE    '           / associated correction filename
+CORRSCAL=         1.000000E+00 / correction file scaling factor
+RESPFILE= '$rmfile'           / associated redistrib matrix filename
+ANCRFILE= '$arfile'           / associated ancillary response filename
+PHAVERSN= '1992a   '           / obsolete
+DETCHANS= $nrows / total number possible channels
+CHANTYPE= 'PI      '           / channel type (PHA, PI etc)
+POISSERR=                    T / Poissonian errors to be assumed
+STAT_ERR=                    0 / no statistical error specified
+SYS_ERR =                    0 / no systematic error specified
+GROUPING=                    0 / no grouping of the data has been defined
+EOF
+    close HDR;
+
+    # create the fits file
+    debug( "writing pha\n" );
+    $stat = ftCreate( $cdfile, $dafile, $outfile, 'SPECTRUM', $hdfile );
+    unlink $cdfile, $dafile, $hdfile;
+    return $stat unless $stat == 0;
+
+    # fixup some keywords
+    # 0th extension first
+    my $primedit = sprintf <<EOF;
+BITPIX  =                  -32 / number of bits per data pixel
+CONTENT = 'PHA SPECTRUM'       / SPECTRUM xtens (at least) present
+CREATOR = '$taskName v$taskVers' / s/w task which wrote this dataset
+EOF
+    
+    my $primedfile = dumpListToTxt( $primedit );
+
+    my %fthedit = (
+        infile     => "$outfile\[0\]",
+        keyword    => "\@$primedfile",
+        operation  => 'add',
+        value      => 0,
+        protect    => 'no',
+        longstring => 'no',
+        chatter    => $params{chatter},
+        history    => 'no'
+    );
+    $stat = runSystem( genCmd( 'fthedit', \%fthedit ) );
+    unlink $primedfile;
+    return $stat unless $stat == 0;
+
+    # then the 1st ext
+    my $secedit = sprintf <<EOF;
+-TUNIT1
+-TUNIT3
+EOF
+    
+    my $secedfile = dumpListToTxt( $secedit );
+
+    $fthedit{infile}  = "$outfile\[1\]";
+    $fthedit{keyword} = "\@$secedfile";
+    $stat = runSystem( genCmd( 'fthedit', \%fthedit ) );
+    unlink $secedfile;
+    return $stat;
+}
+
+sub addARFs {
+
+    my ( $outf, $arfs, $wgts, $totwgt ) = @_;
+
+    my @dumplist = map( sprintf( "%s %.8g\n", $arfs->[$_], $wgts->[$_] / $totwgt ),
+                        ( 0..$#{$arfs} ) );
+    my $tmpf = dumpListToTxt( @dumplist );
+    my %addarf = (
+        list    => "\@$tmpf",
+        out_ARF => "!$outf",
+        clobber => 'yes',
+        #chatter => 9
+        chatter => 0
+    );
+    my $cmd  = genCmd( 'addarf', \%addarf );
+    my $stat = runSystem( $cmd );
+
+    unlink $tmpf;
+    return $stat;
+}
+
+sub addRMFs {
+
+    my ( $rmfs, $outf ) = @_;
+
+    my $tmpf = dumpListToTxt( @$rmfs );
+    
+    my $addrmf = {
+        list    => "\@$tmpf",
+        rmffile => "!$outf",
+        clobber => 'yes'
+    };
+    my $cmd  = genCmd( 'addrmf', $addrmf );
+    my $stat = runSystem( $cmd );
+
+    unlink $tmpf;
+    
+    return $stat;
+}
+
+#
+# fStatistic -
+#
+#       runs the fstatistic ftool and parses output
+#
+sub fStatistic {
+
+    my ( $file, $coln, $rows, $min, $max ) = @_;
+    $rows = '-'     unless defined $rows;
+    $min  = 'INDEF' unless defined $min;
+    $max  = 'INDEF' unless defined $max;
+    my $fstatistic = {
+        infile  => $file,
+        colname => $coln,
+        rows    => $rows,
+        outfile => 'STDOUT',
+        maxval  => $min,
+        minval  => $max,
+        clobber => 'no'
+    };
+
+    my $cmd = genCmd( 'fstatistic', $fstatistic );
+    my ( $stat, $out );
+    if ( $params{chatter} >= 4 ) {
+        ( $stat, $out ) = runSystem( $cmd );
+    } else {
+        ( $stat, $out ) = runSystemNoChat( $cmd );
+    }
+
+    my %patts = (
+        sum   => qr/^ The sum of the selected column is\s+(\S+)$/,
+        mean  => qr/^ The mean of the selected column is\s+(\S+)$/,
+        sigma => qr/^ The standard deviation of the selected column is\s+(\S+)$/,
+        min   => qr/^ The minimum of selected column is\s+(\S+)$/,
+        max   => qr/^ The maximum of selected column is\s+(\S+)$/,
+        numb  => qr/^ The number of points used in calculation is\s+(\S+)$/
+    );
+
+    my %stats = ( );
+    foreach my $line ( @$out ) {
+        foreach my $key ( keys %patts ) {
+            if ( $line =~ /$patts{$key}/ ) {
+                # carefully, now...
+                my @ret = eval { 
+                    my @msg = ( );
+                    $SIG{__WARN__} = sub { @msg = @_; };
+                    $stats{$key} = $1 * 1.0;
+                    return @msg;
+                };
+                if ( @ret ) {
+                    warn @ret;
+                    warnlo( 1, "there were non-numeric values ",
+                               "encountered in fstatistic output!\n" );
+                    $stats{$key} = 0.0;
+                }
+                delete $patts{$key};
+            }
+        }
+    }
+    return ( $stat, %stats );
+}
+
+sub fitIntervalSpectra {
+
+    my $stat = 0;
+    my $out;
+
+    # colors and labels
+    my %colormap = (
+          pc  => { name => 'Red',  num => 2, label => "PC Mode" },
+          wt  => { name => 'Blue', num => 4, label => "WT Mode" }
+    );
+
+    # nice labels
+    my %numname = (
+        1 => 'First Interval',
+        2 => 'Second Interval',
+        3 => 'Third Interval',
+        t => 'Total'
+    );
+               
+    # energy strings
+    my $minene = sprintf( "%.1f", $params{minenergy} );
+    my $maxene = sprintf( "%.1f", $params{maxenergy} );
+
+    # change to out dir, so that basename'd keywords work (e.g. BACKFILE, RESPFILE...)
+    my $cwd = getcwd( );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+
+    # do each interval
+    foreach my $intnum ( keys %specIntervals ) {
+        next unless exists $specIntervals{$intnum};
+
+        chat( 2, "Fitting spectra for $numname{$intnum}\n" );
+
+        # save the interval name
+        my @splitlab = split /\s+/, $numname{$intnum};
+        $specIntervals{$intnum}{intname} = uc( $splitlab[ 0 ] );
+
+        # setup labels, colors, data and models
+        my $model  = "wabs(wabs(po)) & $params{usernh},-1 & 0.001 & 2 & 1";
+        my $data   = "";
+        my $ign    = "";
+        my $color  = "";
+        my $labelf = "setplot command \{label file \"";
+        my $labelo = "$object: XRT PC/WT $numname{$intnum} Spectra ($minene-$maxene keV)";
+        my $labelt = $specIntervals{$intnum}{label};
+        my $cind   = 1;
+        my $haswt  = 0;
+        my $haspc  = 0;
+        foreach my $mode (qw( pc wt )) {
+            next unless exists $specIntervals{$intnum}{$mode}{grppha};
+            if ( exists $curves{$mode}{skipphafit} ) {
+                warnhi( 1, "not trying to fit spectrum for mode ", uc( $mode ),
+                           "\nnot enough bins\n");
+                next;
+            }
+            if ( !$haswt && uc( $mode ) eq 'WT' ) { $haswt = 1; }
+            if ( !$haspc && uc( $mode ) eq 'PC' ) { $haspc = 1; }
+            my $phafil = basename( $specIntervals{$intnum}{$mode}{grppha} );
+            next unless -e $phafil;
+            if ( $cind > 1 ) {
+                $model .= " & & & & 1";
+            }
+            $data   .= " $cind:$cind \{$phafil\}";
+            $ign    .= " $cind:**-$minene $maxene-**";
+            $labelf .= sprintf( "%s - %s ", $colormap{$mode}{name}, $colormap{$mode}{label} );
+            $color  .= sprintf( "setplot command color %d on %d %d\n", 
+                               $colormap{$mode}{num}, 3 * ( $cind - 1 ) + 1, 3 * ( $cind - 1 ) + 3 );
+            $color  .= sprintf( "setplot command color 1 on %d\n", 3 * ( $cind - 1 ) + 2 );
+            $cind++;
+        }
+        if ( $cind == 1 ) {
+            warnhi( 1, "no good spectra to fit for $numname{$intnum}\n" );
+            next;
+        }
+        $labelf .= "\"\}\n";
+
+        my $tmpplt = basename( getTmpFile( $params{plotfext} ) );
+        my $plotf  = basename( $specIntervals{$intnum}{plotbase} ) . "_ph.$params{plotfext}";
+        
+        my $script = basename( getTmpFile( "xcm" ) );
+        push @clean, catfile( $params{outdir}, $script );
+        open SCR, ">$script" or die "failed to open file $script\n";
+
+        # put in the bad-error script
+        print SCR $xspec_get_bad_error;
+
+        # and the rest
+        print SCR <<EOF;
+query yes
+setplot energy
+data $data
+ignore bad
+ignore $ign
+model $model
+renorm
+fit 10000
+set xs_echo_script 0
+scan [tcloutr stat] "\%f" chi
+puts "chi = \$chi"
+scan [tcloutr dof] "\%d" dof
+puts "dof = \$dof"
+set npars [tcloutr modpar]
+set j 1
+set k 1
+for { set i 1 } { \$i <= \$npars } { incr i } {
+    if { $haspc == 1 && \$i <= 4 } {
+        set prefix "pc"
+    } else {
+        set prefix "wt"
+    }
+    tclout param \$i
+    scan \$xspec_tclout \"\%f\" par
+
+    # only get errors for non-fixed params
+    # the errors for WT and PC are the same
+    # except for normalization
+    #if { \$i == 2 || \$i == 3 || \$i == 4 || \$i == 6 || \$i == 7 || \$i == 8 } {
+    #    set parer [get_bad_error \$j]
+    #    incr j
+    #    if { \$j > 3 } {
+    #        set j 1
+    #    }
+    #} else {
+    #    set parer 0.0
+    #}
+    set parer [get_bad_error \$i]
+    set parlo [expr {\$par - \$parer / 2.0}]
+    set parhi [expr {\$par + \$parer / 2.0}]
+    puts "\${prefix}param\$k = \$par"
+    puts "\${prefix}parlo\$k = \$parlo"
+    puts "\${prefix}parhi\$k = \$parhi"
+    incr k
+    if { \$k > 4 } {
+        set k 1
+    }
+}
+flux $minene $maxene err 1000 68
+set ndsets [tcloutr datasets]
+if { \$ndsets == 1 } {
+    scan [tcloutr flux] "\%f \%f \%f" flux fluxlo fluxhi
+    if { $haswt == 1 } {
+        puts "wtflux = \$flux"
+        puts "wtfluxlo = \$fluxlo"
+        puts "wtfluxhi = \$fluxhi"
+    } else {
+        puts "pcflux = \$flux"
+        puts "pcfluxlo = \$fluxlo"
+        puts "pcfluxhi = \$fluxhi"
+    }
+} else {
+    scan [tcloutr flux 1] "\%f \%f \%f" flux fluxlo fluxhi
+    puts "pcflux = \$flux"
+    puts "pcfluxlo = \$fluxlo"
+    puts "pcfluxhi = \$fluxhi"
+    scan [tcloutr flux 2] "\%f \%f \%f" flux fluxlo fluxhi
+    puts "wtflux = \$flux"
+    puts "wtfluxlo = \$fluxlo"
+    puts "wtfluxhi = \$fluxhi"
+}
+set xs_echo_script 1
+$color
+$labelf
+setplot command win all
+setplot command gap error
+setplot command res
+setplot command lwidth 4
+setplot command scr white
+setplot command time off
+setplot command label top \{$labelt\}
+setplot command label otop \{$labelo\}
+setplot command win 2
+setplot command lab 2 color 1
+setplot command hardcopy \{$tmpplt$params{plotftype}\}
+cpd /null
+plot ldata ratio
+quit
+EOF
+        close SCR;
+
+        my $cmd = "xspec - $script";
+        ( $stat, $out ) = runSystem( $cmd );
+        return $stat unless $stat == 0;
+
+        if ( !move( $tmpplt, $plotf ) ) {
+            error( 1, "failed to move $tmpplt to $plotf\n" );
+            $stat = -1;
+        }
+        return $stat unless $stat == 0;
+
+        # parse the output - everything is the same for both modes
+        foreach my $line ( @$out ) {
+            chomp $line;
+            if ( $line =~ /^(chi|dof)\s+=\s+(\S+)$/ ) {
+                $specIntervals{$intnum}{$1} = 1.0 * $2;
+            } elsif ( $line =~ /^(pc|wt)(flux|fluxlo|fluxhi|param\d|parlo\d|parhi\d)\s+=\s+(\S+)$/ ) {
+                $specIntervals{$intnum}{$1}{$2} = 1.0 * $3;
+            }
+        }
+    }
+    chdir $cwd;
+    return $stat;
+}
+
+sub writeInfoFile {
+
+    my $hdfile = getTmpFile( "txt" );
+    my $cdfile = getTmpFile( "txt" );
+    my $dtfile = getTmpFile( "txt" );
+
+    # print header file for ftcreate
+    open HDR, ">$hdfile" or die "failed to open file $hdfile\n";
+    print HDR <<EOF;
+COMMENT
+COMMENT Column Descriptions:
+COMMENT
+COMMENT  FITTYPE        - Light Curve or Spectral Fit
+COMMENT                   (LIGHTCURVE)   (SPECTRUM)
+COMMENT  ORIGIN         - Either AUTO or USER
+COMMENT  INTERVAL       - FIRST|SECOND|THIRD|TOTAL
+COMMENT  TSTART         - MET [s] start of interval
+COMMENT  TSTOP          - MET [s] stop of interval
+COMMENT  DATAMODE       - Data mode of fitted data
+COMMENT                   PC -> PHOTON mode
+COMMENT                   WT -> WINDOWED mode
+COMMENT                   PW -> Mix of both PC and WT modes
+COMMENT  MODEL          - String denoting Xspec model used
+COMMENT  CHISQ          - Chi^2 of model fit
+COMMENT  DOF            - Degrees of freedom of model fit
+COMMENT  MODPARAM#      - Value for model parameter #
+COMMENT  MODPARLO#      - Lower 1-sigma confidence level for param #
+COMMENT  MODPARHI#      - Upper 1-sigma confidence level for param #
+COMMENT  FLUX           - Flux ($params{minenergy} - $params{maxenergy} keV)
+COMMENT                   ONLY applies to FITTYPE=SPECTRUM
+COMMENT  FLUXLO         - Lower 1-sigma confidence interval for FLUX
+COMMENT  FLUXHI         - Upper 1-sigma confidence interval for FLUX
+COMMENT
+EOF
+    close HDR;
+
+    # determine max # of mod pars and longest model string
+    my $maxpars = 0;
+    my $maxmod  = 14;
+    if ( exists $models{user} ) {
+        $maxmod  = length( $models{user}{name} ) > $maxmod ?
+                   length( $models{user}{name} ) : $maxmod;
+        my $haspc = 0;
+        my $haswt = 0;
+        foreach my $key ( sort keys %{$models{user}} ) {
+            if ( $key !~ /param/ ) { next; }
+            if ( $key =~ /pcparam/ ) { $haspc = 1; }
+            if ( $key =~ /wtparam/ ) { $haswt = 1; }
+            $maxpars++;
+        }
+        if ( $haspc && $haswt ) {
+            $maxpars = int( $maxpars / 2 );
+        }
+    }
+    $maxpars = $maxpars < 6 ? 6 : $maxpars;
+
+    # write the coldef
+    open CDF, ">$cdfile" or die "failed to open file $cdfile\n";
+    print CDF <<EOF;
+FITTYPE        11A
+ORIGIN         4A
+INTERVAL       10A
+TSTART         1D   s
+TSTOP          1D   s
+DATAMODE       2A
+MODEL          ${maxmod}A
+CHISQ          1E
+DOF            1E
+EOF
+    for ( my $i = 1; $i <= $maxpars; $i++ ) {
+        print CDF <<EOF;
+MODPARAM$i     1E
+MODPARLO$i     1E
+MODPARHI$i     1E
+EOF
+    }
+    print CDF <<EOF;
+FLUX           1E
+FLUXLO         1E
+FLUXHI         1E
+EOF
+    close CDF;
+
+    # write the data file
+    open DAT, ">$dtfile" or die "failed to open file $dtfile\n";
+    
+    # light curves first
+    foreach my $lcmod ( sort keys %models ) {
+        if ( $lcmod !~ /^(best|user)/ ) { next; }
+        if ( $lcmod =~ /^user/ ) {
+            foreach my $mode ( sort keys %curves ) {
+                if ( uc( $mode ) ne 'PC' && uc( $mode ) ne 'WT' ) { next; }
+                printf DAT "LIGHTCURVE USER TOTAL %.14e %.14e %s '$models{$lcmod}{name}' %.8g %.8g ",
+                           $curves{$mode}{TSTART}, $curves{$mode}{TSTOP}, uc( $mode ),
+                           $models{$lcmod}{chi}, $models{$lcmod}{dof};
+                my $ppar = 0;
+                foreach my $par ( sort keys %{$models{$lcmod}} ) {
+                    if ( $par =~ /^${mode}param(\d+)$/ ) {
+                        printf DAT "%.14e %.14e %.14e ", $models{$lcmod}{"${mode}param$1"},
+                                                         $models{$lcmod}{"${mode}parlo$1"}, 
+                                                         $models{$lcmod}{"${mode}parhi$1"};
+                        $ppar++;
+                    }
+                }
+                while ( $ppar < $maxpars ) { print DAT "INDEF INDEF INDEF "; $ppar++; }
+
+                # no fluxes for light curves
+                print DAT "INDEF INDEF INDEF\n";
+            }
+        } elsif ( $lcmod =~ /^best$/ ) {
+            $lcmod = $models{best};
+
+            # what have I done...
+            # at least they alternate in their order
+            my @params = ( );
+            my $plind = 0;
+            my $tbind = 3;
+            foreach my $key ( sort keys %{$models{$lcmod}} ) {
+                if ( $key =~ /^pl(\d)$/ ) {
+                    $params[ $plind ] = $models{$lcmod}{"pl$1"};
+                    $plind++;
+                    $params[ $plind ] = $models{$lcmod}{"pllo$1"};
+                    $plind++;
+                    $params[ $plind ] = $models{$lcmod}{"plhi$1"};
+                    $plind += 4;
+                } elsif ( $key =~ /^tbreak(\d)$/ ) {
+                    $params[ $tbind ] = $models{$lcmod}{"tbreak$1"};
+                    $tbind++;
+                    $params[ $tbind ] = $models{$lcmod}{"tbreaklo$1"};
+                    $tbind++;
+                    $params[ $tbind ] = $models{$lcmod}{"tbreakhi$1"};
+                    $tbind += 4;
+                }
+            }
+            foreach my $mode ( sort keys %curves ) {
+                if ( uc( $mode ) ne 'PC' && uc( $mode ) ne 'WT' ) { next; }
+                printf DAT "LIGHTCURVE AUTO TOTAL %.14e %.14e %s '$models{$lcmod}{name}' %.8g %.8g ",
+                           $curves{$mode}{tstart}, $curves{$mode}{tstop}, uc( $mode ),
+                           $models{$lcmod}{chi}, $models{$lcmod}{dof};
+                my $ppar = 0;
+                foreach my $par ( @params ) {
+                    printf DAT "%.14e ", $par;
+                    $ppar++;
+                }
+                printf DAT "%.14e %.14e %.14e ", $models{$lcmod}{"${mode}norm"},
+                           $models{$lcmod}{"${mode}normlo"}, $models{$lcmod}{"${mode}normhi"};
+                $ppar += 3;
+                while ( $ppar < 3 * $maxpars ) { print DAT "INDEF "; $ppar++; }
+
+                # no fluxes for light curves
+                print DAT "INDEF INDEF INDEF\n";
+            }
+        }
+    }
+
+    # now spectral fits
+    foreach my $intnum ( sort keys %specIntervals ) {
+        next unless exists $specIntervals{$intnum};
+        foreach my $mode ( sort keys %{$specIntervals{$intnum}} ) {
+            next unless ( uc( $mode ) eq 'PC' || uc( $mode ) eq 'WT' );
+            next unless exists $specIntervals{$intnum}{$mode}{grppha};
+            printf DAT "SPECTRUM AUTO %s %.14e %.14e %s 'wabs(wabs(po))' %.8g %.8g ",
+                       $specIntervals{$intnum}{intname},
+                       $specIntervals{$intnum}{$mode}{TSTART}, 
+                       $specIntervals{$intnum}{$mode}{TSTOP}, uc( $mode ),
+                       $specIntervals{$intnum}{chi}, $specIntervals{$intnum}{dof};
+            my $ppar = 0;
+            foreach my $par ( sort keys %{$specIntervals{$intnum}{$mode}} ) {
+                if ( $par =~ /^param(\d+)$/ ) {
+                    printf DAT "%.14e %.14e %.14e ", $specIntervals{$intnum}{$mode}{"param$1"},
+                                                     $specIntervals{$intnum}{$mode}{"parlo$1"},
+                                                     $specIntervals{$intnum}{$mode}{"parhi$1"};
+                    $ppar++;
+                }
+            }
+            while ( $ppar < $maxpars ) { print DAT "INDEF INDEF INDEF "; $ppar++; }
+            printf DAT "%.14e %.14e %.14e\n", $specIntervals{$intnum}{$mode}{flux},
+                                              $specIntervals{$intnum}{$mode}{fluxlo},
+                                              $specIntervals{$intnum}{$mode}{fluxhi};
+        }
+    }
+    close DAT;
+
+    my $ftcreate = {
+        cdfile   => $cdfile,
+        datafile => $dtfile,
+        outfile  => $outfiles{fitdata},
+        headfile => $hdfile,
+        tabtyp   => 'BINARY',
+        nskip    => 0,
+        extname  => 'XRTFITINFO',
+        clobber  => 'yes',
+        chatter  => $params{chatter},
+        history  => 'no'
+    };
+    my $stat = runSystem( genCmd( 'ftcreate', $ftcreate ) );
+    $fixFits{$outfiles{fitdata}} = { mode => 'pw' };
+    push @clean, $cdfile, $dtfile, $hdfile;
+    return $stat;
+}
+
+#
+# updateHeaders -
+#
+#       updates various header keywords
+#
+sub updateHeaders {
+
+    my $stat = 0;
+
+    my $fix = shift;
+
+    ## get the software version
+    #my $swvers = `swiftversion`;
+    #chomp $swvers;
+
+    # keywords for primary headers and all tables
+    my @primkeys = (
+        { name => 'TELESCOP', type => TSTRING, 
+          comm => 'Telescope (mission) name' }, 
+        { name => 'INSTRUME', type => TSTRING, 
+          comm => 'Intrument name' }, 
+        { name => 'OBJECT',   type => TSTRING,
+          comm => 'Name of observed object' },
+        { name => 'ORIGIN',   type => TSTRING,
+          comm => 'Origin of fits file' }, 
+        { name => 'TARG_ID',   type => TLONG,
+          comm => 'Target ID' },
+        { name => 'PROCVER',   type => TSTRING,
+          comm => 'Processing script version' },
+        { name => 'RA_OBJ',    type => TDOUBLE,
+          comm => '[deg] R.A. Object' },
+        { name => 'DEC_OBJ',   type => TDOUBLE,
+          comm => '[deg] Dec Object' },
+        { name => 'MJDREFI',  type => TINT,
+          comm => 'MJD reference day' },
+        { name => 'MJDREFF',  type => TDOUBLE, 
+          comm => 'MJD reference (fraction of day)' },
+        { name => 'TIMEREF',  type => TSTRING, 
+          comm => 'Reference time' },
+        { name => 'TIMESYS',  type => TSTRING, 
+          comm => 'Time measured from' },
+        { name => 'TIMEUNIT', type => TSTRING, 
+          comm => 'Unit of time keywords' },
+        { name => 'DATAMODE',  type => TSTRING,
+          comm => 'Datamode' },
+        { name => 'DATE-OBS',  type => TSTRING,
+          comm => 'Start date of observations' },
+        { name => 'DATE-END',  type => TSTRING,
+          comm => 'End date of observations' },
+        #{ name => 'SWIFTVER',  type => TSTRING, val => $swvers,
+        #  comm => 'Swift software version' }
+    );
+
+    if ( $params{trigfrombat} ) {
+        push @primkeys, { name => 'TRIGTIME',  type => TDOUBLE, val  => $params{trigtime},
+                          comm => '[s] MET TRIGger Time for Automatic Target' };
+    } else {
+        push @primkeys, { name => 'TRIGTIME',  type => TDOUBLE, val  => $params{trigtime},
+                          comm => '[s] MET TRIGger Time from Other Observatory' };
+    }
+
+    # timing keys
+    my @timekeys = ( 
+        { name => 'TSTART',   type => TDOUBLE,
+          comm => 'Start time' }, 
+        { name => 'TSTOP',    type => TDOUBLE,
+          comm => 'Stop time' }, 
+        { name => 'TELAPSE',  type => TDOUBLE,
+          comm => 'Elapsed time' }
+    );
+
+    # get the "file creation date"
+    my ( $datestring, $timeref );
+    Astro::FITS::CFITSIO::fits_get_system_time( $datestring, $timeref, $stat );
+
+    # store the headers of each template and GTI so we don't
+    # read them over and over again
+    my %primary = ( );
+    my %ratehdr = ( );
+    my %gtis    = ( );
+    chat( 2, "updating header keywords in output files\n" );
+    foreach my $file ( keys %{$fix} ) {
+        my ( $fptr, $fptr2, $nhdus, $extname );
+        chat( 2, "working on $file\n" );
+
+        my $lctempl = exists $fix->{$file}{templ} ? $fix->{$file}{templ} : undef;
+        my %info = ( );
+        if ( !defined $lctempl ) {
+            $lctempl = exists $curves{pc} ? $curves{pc}{curve} : $curves{wt}{curve};
+            $info{DATAMODE} = "PC/WT";
+        }
+
+        # if we have not already, read the headers from the template
+        if ( defined $lctempl && !exists $primary{$lctempl} ) {
+            chat( 3, "reading keys from template light curve $lctempl\n" );
+            $fptr2 = Astro::FITS::CFITSIO::open_file( $lctempl, READONLY, $stat );
+            return $stat unless $stat == 0;
+            $fptr2->movabs_hdu( 1, ANY_HDU, $stat );
+            $primary{$lctempl} = $fptr2->read_header( $stat );
+            $fptr2->movnam_hdu( BINARY_TBL, "RATEBIN", 0, $stat );
+            $ratehdr{$lctempl} = $fptr2->read_header( $stat );
+            $fptr2->close_file( $stat );
+        }
+
+        # get the start/stop times
+        my %gti = ( );
+        if ( uc( $fix->{$file}{mode} ) =~ /(PC|WT)/ ) {
+            $gti{TSTART} = $specIntervals{$fix->{$file}{intnum}}{$fix->{$file}{mode}}{TSTART};
+            $gti{TSTOP} = $specIntervals{$fix->{$file}{intnum}}{$fix->{$file}{mode}}{TSTOP};
+            $gti{TELAPSE} = $gti{TSTOP} - $gti{TSTART};
+        }
+
+        # apply the keys
+        chat( 3, "applying keywords to $file\n" );
+        $fptr = Astro::FITS::CFITSIO::open_file( $file, READWRITE, $stat );
+        return $stat unless $stat == 0;
+        $fptr->get_num_hdus( $nhdus, $stat );
+        foreach my $i ( 1..$nhdus ) {
+            $fptr->movabs_hdu( $i, ANY_HDU, $stat );
+            $extname = "";
+            $fptr->read_key_str( 'EXTNAME', $extname, undef, $stat );
+            if ( $stat == KEY_NO_EXIST ) {
+                fits_clear_errmsg( );
+                $stat = 0;
+            }
+
+            # update the date
+            $fptr->update_key( TSTRING, 'DATE', $datestring, 'File creation date', $stat );
+            
+            # determine the keys to write based on extname
+            my @keys = ( );
+            if ( $extname =~ /XRTFIT/ ) {
+                @keys = @primkeys;
+            } else {
+                @keys = ( @primkeys, @timekeys );
+            }
+            foreach my $key ( @keys ) {
+
+                # if we know the val, then write it
+                if ( exists $key->{val} ) {
+                    debug( "writing $key->{name} = $key->{val}\n" );
+                    $fptr->update_key( $key->{type}, $key->{name}, 
+                                       $key->{val},  $key->{comm}, $stat );
+                # next check the GTI
+                } elsif ( exists $gti{$key->{name}} ) {
+                    debug( "writing $key->{name} = $gti{$key->{name}}\n" );
+                    $fptr->update_key( $key->{type}, $key->{name},
+                                       $gti{$key->{name}},
+                                       $key->{comm}, $stat );
+                } elsif ( exists $info{$key->{name}} ) {
+                    debug( "writing $key->{name} = $info{$key->{name}}\n" );
+                    $fptr->update_key( $key->{type}, $key->{name},
+                                       $info{$key->{name}},
+                                       $key->{comm}, $stat );
+                # otherwise, default to the template rate table extension
+                } elsif ( exists $ratehdr{$lctempl}->{$key->{name}} ) {
+                    $ratehdr{$lctempl}->{$key->{name}} =~ s/[\"\']//g;
+                    debug( "writing $key->{name} = $ratehdr{$lctempl}->{$key->{name}}\n" );
+                    $fptr->update_key( $key->{type}, $key->{name},
+                                       $ratehdr{$lctempl}->{$key->{name}},
+                                       $key->{comm}, $stat );
+                # and lastly the primary template header
+                } elsif ( exists $primary{$lctempl}->{$key->{name}} ) {
+                    $primary{$lctempl}->{$key->{name}} =~ s/[\"\']//g;
+                    debug( "writing $key->{name} = $primary{$lctempl}->{$key->{name}}\n" );
+                    $fptr->update_key( $key->{type}, $key->{name},
+                                       $primary{$lctempl}->{$key->{name}},
+                                       $key->{comm}, $stat );
+                }
+            }
+
+            # update the checksum
+            $fptr->write_chksum( $stat );
+
+            # stamp the history if in primary header
+            if ( $i == 1 ) {
+                HDpar_stamp( $fptr, 1, $stat );
+            }
+        }
+        $fptr->close_file( $stat );
+    }
+    return $stat;
+}
+
+#
+# tableToSpec -
+#
+#       dumps a table to a pha file, and generates unit response
+#       matrix, as well as xspec style script to ignore bad "channels"
+#
+#   Inputs:
+#
+#       fitsfile        - name of the fits table (extended syntax OK)
+#       chancol         - column to use as channel centers
+#       chanerrcol      - column of half-bin width for chancol (e.g. XAX_E)
+#       cntscol         - counts column
+#       cntserrcol      - counts error column
+#       outroot         - root name for output files
+#       gapintv         - size of gap between channels to _not_ ignore
+#
+sub tableToSpec {
+
+    my (
+         $fitstable,  $chancol, $chanerrcol, $cntscol,
+         $cntserrcol, $outroot, $gapintv
+    ) = @_;
+
+    # output files
+    my $outpha = $outroot . ".pha";
+    my $outrsp = $outroot . ".rsp";
+    my $outign = $outroot . ".ign";
+    my $outtxt = $outroot . ".txt";
+
+    # list the fits table
+    my $ftlist = {
+        infile    => $fitstable,
+        option    => 'T',
+        outfile   => '-',
+        clobber   => 'yes',
+        include   => '',
+        exclude   => '',
+        section   => '',
+        columns   => "$chancol,$chanerrcol,$cntscol,$cntserrcol",
+        rows      => '-',
+        separator => '',
+        vector    => '-',
+        rownum    => 'no',
+        colheader => 'no'
+    };
+    my $cmd = genCmd( 'ftlist', $ftlist );
+    chat( 4, "running $cmd\n" );
+    open LIST, "$cmd |" or die "failed to run $cmd\n";
+
+    # open xspec ignore script
+    open IGN, ">$outign" or die "failed to open file $outign\n";
+
+    # open input text file for flx2xsp
+    open TXT, ">$outtxt" or die "failed to open file $outtxt\n";
+
+    my $oldstop = undef;
+    my $channum = 1;
+    while ( <LIST> ) {
+
+        # kill space
+        s/^\s+//;
+        s/\s+$//;
+        next unless length;
+
+        # if any NULL, skip this row
+        if ( /NULL/ || /INDEF/ ) { next; }
+
+        # float-ize
+        my ( $chan, $chanerr, $cnts, $cntserr ) = map ( 1.0 * $_, split( /\s+/, $_ ) );
+
+        # get the start and stop of this bin
+        my $start = $chan - $chanerr;
+        my $stop  = $chan + $chanerr;
+
+        # check for gaps in the data > $gapintv
+        if ( defined $oldstop ) {
+            my $gap = $start - $oldstop;
+            if ( $gap > $gapintv ) {
+                printf TXT "%.13e %.13e %.13e %.13e\n", $oldstop, $start, 0.0, 0.0;
+                printf IGN "%d\n", $channum;
+                $channum++;
+            }
+        }
+        printf TXT "%.13e %.13e %.13e %.13e\n", $start, $stop, $cnts, $cntserr;
+        if ( $cnts == 0.0 ) {
+            printf IGN "%d\n", $channum;
+        }
+        $oldstop = $stop;
+        $channum++;
+    }
+    close TXT;
+    close IGN;
+
+    # now run flx2xsp to get pha and resp
+    my $flx2xsp = {
+        infile  => $outtxt,
+        phafil  => $outpha,
+        rspfil  => $outrsp,
+        nspec   => 1,
+        clobber => 'yes'
+    };
+
+    $cmd = genCmd( 'flx2xsp', $flx2xsp );
+    my $stat = runSystem( $cmd );
+    push @clean, $outtxt;
+    return $stat;
+}
+
+#
+# log10 -
+#
+#       returns log base 10 of input, unless <= 0
+#
+sub log10 {
+    my $n = shift;
+    if ( $n <= 0.0 ) { return undef; }
+    return log( $n ) / log( 10 );
+}
+
+#
+# intro
+#
+#       prints intro message with time stamp
+#
+sub intro {
+    my $time  = localtime( time );
+    my $intro = "---- Starting $taskName v$taskVers on $time ----";
+    my $dashs = '-' x length $intro;
+    if ( $params{chatter} > 0 ) {
+        print "$dashs\n$intro\n$dashs\n\n";
+    }
+}
+
+#
+# outtro
+#
+#       prints outtro message with exit status and time stamp
+#
+sub outtro {
+    my $stat   = shift;
+    my $time   = localtime( time );
+    my $outtro = "---- $taskName v$taskVers ";
+    $outtro   .= $stat == 0 ? "success at $time ----" : "failure at $time ----";
+    my $dashs  = '-' x length( $outtro );
+    if ( $params{chatter} > 0 ) {
+        print "$dashs\n$outtro\n$dashs\n\n";
+    }
+}
+
+#
+# cleanup -
+#
+#       removes temporary files
+#
+sub cleanup {
+    if ( $params{cleanup} ) {
+        foreach my $cleanf ( reverse @clean ) {
+            if ( -f $cleanf ) {
+                unlink $cleanf;
+            } elsif ( -d $cleanf ) {
+                rmdir $cleanf;
+            }
+        }
+    }
+}
+
+#
+# sigdie -
+#
+#       handles deathly signals, unless in an eval block
+#
+sub sigdie {
+    error( 1, @_ );
+    if ( $^S ) {
+        cleanup( );
+        outtro( -1 );
+        @_ = ( "task $taskName died an unnatural death\n" );
+        die @_;
+    }
+}
+
+#
+# getPlotDevice -
+#
+#       sets file extension based on plot device
+#       and tries to use said device
+#
+sub getPlotDevice {
+
+    my $stat = 0;
+    if ( $params{plotftype} !~ /^\// ) {
+        warnlo( 1, "trying to fix plot device by prepending '/'\n" );
+        $params{plotftype} = '/' . $params{plotftype};
+    }
+
+    if ( $params{plotftype} =~ /ps/ ) {
+        $params{plotfext} = "ps";
+    } elsif ( $params{plotftype} =~ /gif/ ) {
+        $params{plotfext} = "gif";
+    } elsif ( $params{plotftype} =~ /ppm/ ) {
+        $params{plotfext} = "ppm";
+    } elsif ( $params{plotftype} =~ /wd/ ) {
+        $params{plotfext} = "xwd";
+    } else {
+        error( 1, "unsupported plot device $params{plotftype}\n" );
+        return -1;
+    }
+
+    # try it!
+    my $cwd = getcwd( );
+    chdir $params{outdir} or die "failed to chdir to $params{outdir}\n";
+   
+    my $qdptest = basename( getTmpFile( "qdp" ) );
+    open QDP, ">$qdptest" or die "failed to open file $qdptest\n";
+    print QDP "1.0 1.0\n2.0 4.0\n";
+    close QDP;
+    
+    my $testplot = basename( getTmpFile( "$params{plotfext}" ) ); 
+
+    my $cmd = "qdp $qdptest 2>&1 > /dev/null";
+    
+    chat( 3, "testing qdp with command: $cmd\n" );
+    open QDP, "|$cmd" or die "failed to run command: $cmd\n";
+    print QDP "/null\n";
+    print QDP "cpd ${testplot}$params{plotftype}\n";
+    print QDP "plot\nquit\n";
+    close QDP;
+
+    if ( !-e $testplot ) {
+        error( 1, "failed to create test plot using plot ",
+               "device $params{plotftype}!\n" );
+        $stat = -1;
+    }
+    unlink $testplot, $qdptest;
+    chdir $cwd;
+    return $stat;
+}
+
+#
+# ftcopy -
+#
+#       runs ftcopy
+#
+sub ftcopy {
+    my ( $infile, $outfile, $copyall ) = @_;
+    $copyall = $copyall ? 'yes' : 'no';
+    my $ftcopy = {
+        infile  => $infile,
+        outfile => $outfile,
+        copyall => $copyall,
+        clobber => 'yes',
+        chatter => $params{chatter},
+        history => 'no'
+    };
+    my $cmd  = genCmd( 'ftcopy', $ftcopy );
+    my $stat = runSystem( $cmd );
+    return $stat;
+}
+
+#
+# ftCreate -
+#
+#       runs the ftcreate tool
+#
+sub ftCreate {
+
+    my ( $cdf, $dat, $outf, $extname, $hdr ) = @_;
+
+    my $ftcreate = {
+        cdfile      => $cdf,
+        datafile    => $dat,
+        outfile     => $outf,
+        tabtyp      => 'BINARY',
+        nskip       => 0,
+        nrows       => 0,
+        morehdr     => 0,
+        extname     => $extname,
+        anull       => 0,
+        inull       => 0,
+        clobber     => 'yes',
+        chatter     => $params{chatter},
+        history     => 'no'
+    };
+    $ftcreate->{headfile} = $hdr if $hdr;
+    my $cmd  = genCmd( 'ftcreate', $ftcreate );
+    my $stat = runSystem( $cmd );
+    return $stat;
+}
+

@@ -1,0 +1,802 @@
+dnl Process this file with autoconf to produce a configure script.
+AC_INIT
+
+AC_REVISION($Revision: 1.195 $)
+
+AC_PREREQ(2.59)
+
+AC_CANONICAL_TARGET([])
+
+#-------------------------------------------------------------------------------
+# Add GNU libc version to end of host string on Linux:
+glibc_version=
+if test `echo $host | grep -c linux` -ne 0; then
+   if test -f /bin/sh; then
+     changequote(,)
+     # ldd should provide the GLIBC version number string:
+     glibc_version=`ldd --version | grep ldd | sed 's:.*)[ ]*::'`
+     # If glibc_version is empty or contains anything non-numeric, try another route:
+     if test "x$glibc_version" = "x" -o `echo $glibc_version | grep -c '[^.0-9]'` != 0; then
+       # Find the C library:
+       libc_ldd=`ldd /bin/sh | grep -w libc`
+       if test "x$libc_ldd" != "x"; then
+         # Strip down to path plus library:
+         libc=`echo $libc_ldd | sed 's:.*=>[ ]::' | sed 's:[ ].*::'`
+         if test "x$libc" != "x"; then
+           if test -x "$libc"; then
+             # "Run" the library and sed out leading and trailing text:
+             version=`$libc | grep -i roland | sed 's:^[^0-9]*::' | sed 's:[^0-9]*$::' | sed 's:[A-Z].*$::' | sed 's:[a-z].*$::' | sed 's:[ ].*::'`
+             # If the first grep failed to get the version string, try another route:
+             if test "x$version" = "x"; then
+               version=`$libc | grep -i version | grep -i release | grep -i library | sed 's:^[^0-9]*::' | sed 's:[^0-9]*$::' | sed 's:[A-Z].*$::' | sed 's:[a-z].*$::' | sed 's:[ ].*::'`
+             fi
+           fi
+           # If version still contains anything non-numeric, forget it and move on:
+           if test `echo $version | grep -c '[^.0-9]'` != 0; then
+             version=""
+           fi
+           if test "x$version" != "x"; then
+             glibc_version="-libc$version"
+           fi
+         fi
+       fi
+     else
+       glibc_version="-libc$glibc_version"
+     fi
+     changequote([,])
+   fi
+fi
+if test "x$glibc_version" != "x"; then
+  host=$host$glibc_version
+  AC_MSG_RESULT(modified Linux system type is $host)
+fi
+
+UNAME_SYSTEM=`(uname -s) 2>/dev/null` || UNAME_SYSTEM=unknown
+
+#-------------------------------------------------------------------------------
+
+h_all_components="heacore tcltk external attitude heatools heagen demo suzaku swift Xspec integral nustar hitomi xmm glast ftools GSSC heasim"
+h_components=
+
+#-------------------------------------------------------------------------------
+# Option --with-components allows configuration to be specified on command line.
+AC_ARG_WITH(
+  components,
+  [AS_HELP_STRING([--with-components],
+    [Specify a subset of existing HEADAS components to configure (enclosed in
+     quotes).  Current choices are: "heacore tcltk external attitude heatools heagen demo suzaku swift Xspec integral nustar hitomi xmm glast ftools GSSC heasim". 
+     Default is all existing components.])],
+  h_components=$withval
+)
+
+# This option collapses all of the component-level installed
+# directories into a single location, i.e. so we only have
+# headas/<arch>/bin instead of a headas/<arch>/bin containing
+# symbolic links into e.g. headas/heacore/<arch>/bin, etc.
+AC_ARG_ENABLE(
+  collapse,
+  [AS_HELP_STRING([--enable-collapse],
+   [Collapse install directory structure])],
+  h_collapse=$enableval,
+  h_collapse=no,
+  h_collapse=yes
+)
+
+AC_ARG_ENABLE(
+  shared,
+  [AS_HELP_STRING([--disable-shared],
+   [Do not build shared libraries (not recommended)])],
+  h_shared=$enableval,
+  h_shared=yes,
+  h_shared=no
+)
+AC_ARG_ENABLE(
+  static,
+  [AS_HELP_STRING([--enable-static],
+   [Do not build shared libraries (not recommended)])],
+  [ if test $enableval = yes; then h_shared=no; fi ]
+)
+
+h_symbols=no
+AC_ARG_ENABLE(
+  symbols,
+  [AS_HELP_STRING([--enable-symbols],
+   [Turn all optimization off & do not strip debugging symbols from binaries])],
+  [ if test $enableval = yes; then h_symbols=yes; fi ]
+)
+
+h_strip=enabled
+AC_ARG_ENABLE(
+  strip,
+  [AS_HELP_STRING([--disable-strip],
+   [Do not strip debugging symbols from binaries])],
+  [ if test $enableval != yes; then h_strip=no; fi ],
+  [ h_strip=yes ]
+)
+
+# Check for symbols/strip conflict:
+if test $h_symbols = yes; then
+   if test $h_strip = enabled; then
+      AC_MSG_WARN('--enable-symbols' and '--enable-strip' conflict.)
+      AC_MSG_WARN(Disabling strip.)
+   fi
+   h_strip=no
+else
+   if test $h_strip = enabled; then
+      h_strip=yes
+   fi
+fi
+
+h_openmp=no
+AC_ARG_ENABLE(
+  openmp,
+  [AS_HELP_STRING([--enable-openmp],
+   [Generate multi-threaded code (Xspec only)])],
+  [ if test $enableval = yes; then h_openmp=yes; fi ]
+)
+
+# Readline: Force our readline to build if --enable-readline option is given:
+AC_ARG_ENABLE(readline,
+  [AS_HELP_STRING([--enable-readline],
+   [Force build of headas/heacore/readline])],
+  [if test "x$enableval" = xno; then
+     force_readline_build=no
+   else
+     force_readline_build=yes
+   fi],
+  [force_readline_build=no]
+)
+# Force readline to build (if available) on Darwin, where libreadline
+# is a symbolic link to "libedit", which we cannot currently use:
+if test "x$force_readline_build" = xno -a `echo $host | grep -c darwin` -ne 0; then
+  force_readline_build=yes
+  AC_MSG_RESULT(Will force readline build on Darwin if available)
+fi
+
+h_hera_build=no
+AC_ARG_ENABLE(
+  hera,
+  [AS_HELP_STRING([--enable-hera],
+   [Build for HERA project (GSFC only)])],
+  [ if test $enableval = yes; then h_hera_build=yes; fi ]
+)
+
+fv_build=no
+AC_ARG_ENABLE(
+  fv-standalone,
+  [AS_HELP_STRING([--enable-fv-standalone],
+   [Build stand-alone fv GUI (GSFC only)])],
+  [ if test $enableval = yes; then fv_build=yes; fi ]
+)
+if test $fv_build = yes; then
+  h_shared=no
+  if test `echo $host | grep -c darwin` -ne 0; then
+    CFLAGS="-arch i386 -arch x86_64"
+    export CFLAGS
+  fi
+fi
+
+# Option to enable PNG driver for PGPLOT:
+h_png_bld=no
+AC_ARG_ENABLE(
+  png,
+  [AS_HELP_STRING([--enable-png],
+   [ Enable PNG driver for PGPLOT in xspec, ximage, etc. ])],
+  [ if test $enableval = yes; then h_png_bld=yes; fi ]
+)
+
+# PNG library & header file location:
+h_png_pfx=
+AC_ARG_WITH(
+  png,
+  [AS_HELP_STRING([--with-png],
+   [Specify location of PNG library and headers e.g. '/usr'; requires --enable-png ])],
+  h_png_pfx=$withval
+)
+
+# configurable optimization
+h_copt=
+AC_ARG_WITH(
+  copt,
+  [AS_HELP_STRING([--with-copt],
+   [Set C compiler optimization (e.g. "-O" or "-fast")])],
+  h_copt=$withval
+)
+h_cxxopt=
+AC_ARG_WITH(
+  cxxopt,
+  [AS_HELP_STRING([--with-cxxopt],
+   [Set C++ compiler optimization (e.g. "-O" or "-fast")])],
+  h_cxxopt=$withval
+)
+h_fopt=
+AC_ARG_WITH(
+  fopt,
+  [AS_HELP_STRING([--with-fopt],
+   [Set Fortran compiler optimization (e.g. "-O" or "-fast")])],
+  h_fopt=$withval
+)
+
+h_ldopt=yes
+AC_ARG_ENABLE(
+  ldopt,
+  [AS_HELP_STRING([--disable-ldopt],
+   [ Disable linker optimization ])],
+  [ if test $enableval = no; then h_ldopt=no; fi ]
+)
+
+h_build_root=yes
+AC_ARG_WITH(
+  root,
+  [AS_HELP_STRING([--with-root],
+   [ Build the CERN ROOT package ])],
+  [ if test $withval = no; then h_build_root=no; fi ]
+)
+
+# Force a 32-bit build on Macs if the --enable-mac_32bit_build option
+# is given (overriding the possibility of a 64-bit build):
+h_mac_32bit_build=no
+AC_ARG_ENABLE(
+  mac_32bit_build,
+  [AS_HELP_STRING([--enable-mac_32bit_build],
+   [Force a 32-bit build on Macs (default is x86_64)])],
+  [ if test $enableval = yes; then h_mac_32bit_build=yes; fi ]
+)
+
+#-------------------------------------------------------------------------------
+# Remove leading and trailing whitespace from component list.
+h_components=`echo $h_components | sed 's%^[ 	]*%%; s%[ 	]$%%'`
+
+# Get details about this script and its location.
+h_this_script=`echo $0 | sed 's%.*/%%'`
+h_this_dir=`echo $0 | sed "s%$h_this_script\$%%"`
+if test "x$h_this_dir" = x; then h_this_dir=.; fi
+
+# Top of source tree.
+h_top=`cd $h_this_dir/..; pwd`
+
+if test `echo $h_top | grep -c " "` -ne 0; then
+  AC_MSG_RESULT(Path has one or more directory names which include spaces:)
+  AC_MSG_RESULT($h_top)
+  AC_MSG_ERROR(Directory paths with spaces are not allowed in HEASOFT!)
+fi
+
+HD_SRC=$h_top
+
+h_components_found=
+if test "x$h_components" = x; then
+  for dir in $h_all_components; do
+    if test -d $h_top/$dir; then
+      AC_MSG_RESULT(Found component $dir)
+      h_components_found="$h_components_found $dir"
+    else
+      AC_MSG_RESULT(Did not find component $dir - skipping $dir)
+    fi
+  done
+else
+  for dir in $h_components; do
+    if test -d $h_top/$dir; then
+      AC_MSG_RESULT(Found component $dir)
+      if test -f $h_top/$dir/BUILD_DIR/hd_config_info; then
+        AC_MSG_RESULT(Found $dir/BUILD_DIR/hd_config_info)
+        h_components_found="$h_components_found $dir"
+      else
+        AC_MSG_RESULT(Could not find $dir/BUILD_DIR/hd_config_info - skipping $dir)
+      fi
+    else
+      AC_MSG_ERROR(Could not find component $dir)
+    fi
+  done
+fi
+h_components=$h_components_found
+
+# Set the prefix to use in all recursive configures.
+if test $prefix = NONE; then
+  prefix=`cd $h_this_dir/..; pwd`
+fi
+
+# Set the exec-prefix to use in all recursive configures.
+if test $exec_prefix = NONE; then
+  exec_prefix="$prefix/$host"
+fi
+
+# Name of the utility which scans configuration files for dependencies.
+hd_scanenv="$h_this_dir/hd_scanenv"
+hd_conf_file="hd_config_info"
+
+# Determine which components should be configured on this go-around
+HD_SELECTED=
+HD_SELECTED_DIRS=
+if test "x$h_components" != xno; then
+  # Loop over components, and make a list of configuration files which
+  # includes dependencies of the original components as well as the
+  # original components.
+  for h_dep in $h_components; do
+    h_config_comp_list=
+    h_config_dir_list=
+    while test "x$h_dep" != x; do
+
+      changequote(,)
+      # Get next component from the back of the list.
+      h_comp=`echo $h_dep | sed 's%.*[ 	][ 	]*%%'`
+  
+      # Remove this component from the back of the list.
+      h_dep=`echo $h_dep | sed -ne "s%[ 	][ 	]*$h_comp\$%%p"`
+      changequote([,])
+      
+      # Find the configuration directory.
+      if test -f $h_top/$h_comp/BUILD_DIR/$hd_conf_file; then
+        h_dir=$h_top/$h_comp/BUILD_DIR
+      else
+        AC_MSG_WARN(Unable to find a configuration dir for $h_comp)
+        h_dir=
+      fi
+
+      # From the configuration directory, extract dependencies. These are the
+      # names of other components needed by the current component.
+      if test "x$h_dir" != x; then
+        h_tmp=`$hd_scanenv $h_dir/$hd_conf_file DEPENDENCIES`
+      else
+        h_tmp=
+      fi
+
+      if test "x$h_tmp" != x; then
+        AC_MSG_RESULT(Component $h_comp requires $h_tmp)
+        h_dep="$h_dep $h_tmp"
+      fi
+
+      # Put the current configuration directory into the output
+      # configuration directory list.
+      if test "x$h_dir" != x; then
+        h_config_comp_list="$h_comp $h_config_comp_list"
+      fi
+
+      # Put the current configuration directory into the output
+      # configuration directory list.
+      if test "x$h_dir" != x; then
+        h_config_dir_list="$h_dir $h_config_dir_list"
+      fi
+
+    done
+    HD_SELECTED="$HD_SELECTED $h_config_comp_list"
+    HD_SELECTED_DIRS="$HD_SELECTED_DIRS $h_config_dir_list"
+  done
+fi
+
+#  while test "x$h_tmp" != x; do
+#    changequote(,)
+#    # Get next component from the back of the list.
+#    h_comp=`echo $h_tmp | sed 's%.*[ 	][ 	]*%%'`
+#
+#    # Remove this component from the back of the list.
+#    h_tmp=`echo $h_tmp | sed -ne "s%[ 	][ 	]*$h_comp\$%%p"`
+#    changequote([,])
+#
+#    # Put this component on the grand list of components.
+#    HD_SELECTED="$HD_SELECTED$h_comp "
+#
+#    # Find the configuration directory.
+#    if test -f $h_top/$h_comp/BUILD_DIR/$hd_conf_file; then
+#      h_dir=$h_top/$h_comp/BUILD_DIR
+#    else
+#      AC_MSG_ERROR(Unable to find a configuration dir for $h_comp)
+#    fi
+#
+#    # From the configuration directory, extract dependencies. These are the
+#    # names of other components needed by the current component.
+#    h_dep=`$hd_scanenv $h_dir/$hd_conf_file DEPENDENCIES`
+#
+#    # Put these dependencies onto the back the list of components so
+#    # that they too can be handled in this loop.
+#    if test "x$h_dep" != x; then h_tmp="$h_tmp $h_dep"; fi
+#
+#    # Put the current configuration directory into the output
+#    # configuration directory list.
+#    h_config_dir_list="$h_dir $h_config_dir_list"
+#  done
+
+# Eliminate duplicates from list of selected components.
+h_tmp=
+for h_comp in $HD_SELECTED; do
+  if test `echo $h_tmp | tr ' ' '\012' | grep -c "^$h_comp$"` -eq 0; then
+    h_tmp="$h_tmp$h_comp "
+  fi
+done
+HD_SELECTED=$h_tmp
+
+# Eliminate duplicates from configuration directory list.
+h_tmp=
+for h_comp in $HD_SELECTED_DIRS; do
+  if test `echo $h_tmp | tr ' ' '\012' | grep -c "^$h_comp$"` -eq 0; then
+    h_tmp="$h_tmp$h_comp "
+  fi
+done
+HD_SELECTED_DIRS=$h_tmp
+
+#-------------------------------------------------------------------------------
+# Settings dependent on component selections:
+#-------------------------------------------------------------------------------
+# - Disable heacore perl modules unless swift or demo are present.
+# - Set flags for tcltk components appropriate for existing packages (to
+#   minimize/eliminate unnecessary configuration & compilation).
+
+# heacore:
+ahfits_required=no
+ahgen_required=no
+ahlog_required=no
+ccfits_required=no
+heacore_perlmods_required=no
+heaapp_required=no
+heasp_required=no
+hoops_required=no
+lynx_required=no
+mpfit_required=no
+st_stream_required=no
+wcslib_required=no
+# tcltk:
+pgplot_required=no
+pgplot_perlmod_required=no
+tkpgplot_required=no
+plt_required=no
+tcl_required=no
+tk_required=no
+tclreadline_required=no
+xpa_required=no
+extra_gui_libs_required=no
+iwidgets220_required=no
+
+for dir in $HD_SELECTED; do
+  if test -d $h_top/heacore/fhelp; then
+     lynx_required=yes
+  fi
+  if test `echo $dir | grep -c hitomi` -ne 0; then
+     ahfits_required=yes
+     ahgen_required=yes
+     ahlog_required=yes
+     heaapp_required=yes
+#    st_stream_required=yes
+  fi
+  if test `echo $dir | grep -c attitude` -ne 0; then
+     if test -d $h_top/attitude/lib/aber; then
+       ahlog_required=yes
+     fi
+     ah_attasks="aberattitude aberposition attconvert coordevt coordpnt det2att2"
+     for ah_attask in $ah_attasks; do
+       if test -d $h_top/attitude/tasks/$ah_attask; then
+         ahlog_required=yes
+         heaapp_required=yes
+       fi
+     done
+  fi
+  if test `echo $dir | grep -c demo` -ne 0; then
+     heacore_perlmods_required=yes
+  fi
+  if test `echo $dir | grep -c ftools` -ne 0; then
+     if test -d $h_top/ftools/asca; then
+       pgplot_required=yes
+       plt_required=yes
+     fi
+     if test -d $h_top/ftools/futils; then
+       pgplot_required=yes
+       plt_required=yes
+     fi
+     if test -d $h_top/ftools/gro; then
+       pgplot_required=yes
+     fi
+     if test -d $h_top/ftools/guis; then
+       extra_gui_libs_required=yes
+       tcl_required=yes
+       tk_required=yes
+       wcslib_required=yes
+       if test `echo $host | grep -c cygwin` -eq 0; then
+         xpa_required=yes
+       fi
+     fi
+     if test -d $h_top/ftools/heasarc; then
+       heacore_perlmods_required=yes
+       pgplot_required=yes
+       plt_required=yes
+       if test -d $h_top/ftools/heasarc/src/searchflickpix; then
+         ahlog_required=yes
+         heaapp_required=yes
+       fi
+     fi
+     if test -d $h_top/ftools/image; then
+       ast_required=yes
+       pgplot_required=yes
+       plt_required=yes
+       tcl_required=yes
+       tclreadline_required=yes
+       tk_required=yes
+       tkpgplot_required=yes
+     fi
+     if test -d $h_top/ftools/qdp; then
+       pgplot_required=yes
+       plt_required=yes
+     fi
+     if test -d $h_top/ftools/timing; then
+       pgplot_required=yes
+       plt_required=yes
+     fi
+     if test -d $h_top/ftools/xselect; then
+       pgplot_required=yes
+       plt_required=yes
+       tcl_required=yes
+       tk_required=yes
+     fi
+     if test -d $h_top/ftools/xte; then
+       heacore_perlmods_required=yes
+       extra_gui_libs_required=yes
+       iwidgets220_required=yes
+       tcl_required=yes
+       tk_required=yes
+     fi
+  fi
+  if test `echo $dir | grep -c heagen` -ne 0; then
+     heacore_perlmods_required=yes
+     wcslib_required=yes
+     ccfits_required=yes
+     heasp_required=yes
+     if test -d $h_top/heagen/raytrace; then
+       ahlog_required=yes
+       heaapp_required=yes
+     fi
+  fi
+  if test `echo $dir | grep -c heasim` -ne 0; then
+     ccfits_required=yes
+     heasp_required=yes
+     wcslib_required=yes
+  fi
+  if test `echo $dir | grep -c heatools` -ne 0; then
+     heacore_perlmods_required=yes
+     wcslib_required=yes
+  fi
+  if test `echo $dir | grep -c external` -ne 0; then
+     # Root builds are not currently supported on Macs:
+     if test "x$h_build_root" = xyes -a `echo $host | grep -c darwin` -ne 0; then
+       AC_MSG_ERROR(Root not supported on $host)
+     fi
+  fi
+  if test `echo $dir | grep -c glast` -ne 0; then
+     if test "x$h_mac_32bit_build" = xyes; then
+        AC_MSG_ERROR(glast component is not supported on 32-bit Mac architecture)
+     fi
+     if test "x$force_readline_build" = xno; then
+        AC_MSG_RESULT(glast component requires our copy of readline)
+     fi
+     force_readline_build=yes
+     hoops_required=yes
+     st_stream_required=yes
+     tcl_required=yes
+     tk_required=yes
+     xpa_required=yes
+  fi
+  if test `echo $dir | grep -c nustar` -ne 0; then
+     heacore_perlmods_required=yes
+  fi
+  if test `echo $dir | grep -c suzaku` -ne 0; then
+     heacore_perlmods_required=yes
+     mpfit_required=yes
+  fi
+  if test `echo $dir | grep -c swift` -ne 0; then
+     heacore_perlmods_required=yes
+     mpfit_required=yes
+     pgplot_required=yes
+     pgplot_perlmod_required=yes
+     wcslib_required=yes
+  fi
+  if test `echo $dir | grep -c Xspec` -ne 0; then
+     wcslib_required=yes
+     ccfits_required=yes
+     heasp_required=yes
+     pgplot_required=yes
+     plt_required=yes
+     tcl_required=yes
+     tclreadline_required=yes
+     if test `echo $host | grep -c osf` -ne 0; then
+        AC_MSG_ERROR(Xspec 12 is not supported on OSF!)
+     fi
+     if test "x$h_shared" = xno; then
+        AC_MSG_ERROR(Xspec 12 requires shared libraries!)
+     fi
+  fi
+done
+
+# Until we are actually building x86_64 binaries on Darwin, force the
+# i386 name *unless* the Perl libraries are not being utilized:
+if test `echo $host | grep -c x86_64-apple-darwin` -ne 0 -a "$h_mac_32bit_build" = yes; then
+  if test `echo $host | grep -c x86_64` -ne 0; then
+    host=`echo $host | sed 's:x86_64:i386:'`
+    build=`echo $build | sed 's:x86_64:i386:'`
+    target=`echo $target | sed 's:x86_64:i386:'`
+    exec_prefix=`echo $exec_prefix | sed 's:x86_64:i386:'`
+    AC_MSG_RESULT(HEASoft build type is $host)
+  fi
+fi
+
+#-------------------------------------------------------------------------------
+# Piece together appropriate heacore & tcltk package components based on
+# the needs of selected headas components (order is important here).
+# Handling of readline in the heacore component list is done by the
+# heacore configure script.
+#-------------------------------------------------------------------------------
+
+h_heacore_components=
+
+if test "$lynx_required" = yes; then
+  h_heacore_components="lynx"
+fi
+
+# heacore components which most builds will need. cfitsio needed
+# by all, but hmake may safely skip the others if not included:
+h_heacore_components="$h_heacore_components cfitsio ape heaio heautils"
+
+if test "$ahlog_required" = yes; then
+  h_heacore_components="$h_heacore_components ahlog"
+fi
+
+# heainit will eventually need to come after ahlog:
+h_heacore_components="$h_heacore_components heainit"
+
+if test "$ahgen_required" = yes; then
+  h_heacore_components="$h_heacore_components ahgen"
+fi
+if test "$ahfits_required" = yes; then
+  h_heacore_components="$h_heacore_components ahfits"
+fi
+if test "$heaapp_required" = yes; then
+  h_heacore_components="$h_heacore_components heaapp"
+fi
+if test "$mpfit_required" = yes; then
+  h_heacore_components="$h_heacore_components mpfit"
+fi
+if test "$ast_required" = yes; then
+  h_heacore_components="$h_heacore_components ast"
+fi
+if test "$wcslib_required" = yes; then
+  h_heacore_components="$h_heacore_components wcslib"
+fi
+if test "$ccfits_required" = yes; then
+  h_heacore_components="$h_heacore_components CCfits"
+fi
+if test "$heasp_required" = yes; then
+  h_heacore_components="$h_heacore_components heasp"
+fi
+if test "$hoops_required" = yes; then
+  h_heacore_components="$h_heacore_components hoops"
+fi
+if test "$st_stream_required" = yes; then
+  h_heacore_components="$h_heacore_components st_stream"
+fi
+if test "$heacore_perlmods_required" = yes; then
+  h_heacore_components="$h_heacore_components fitsperl pilperl hdutilsperl hdinitperl"
+fi
+
+h_tcltk_components=
+
+if test "$tcl_required" = yes; then
+  h_tcltk_components="tcl"
+fi
+if test "$tk_required" = yes; then
+  h_tcltk_components="$h_tcltk_components tk"
+fi
+if test "$tclreadline_required" = yes; then
+  h_tcltk_components="$h_tcltk_components tclreadline"
+fi
+if test "$xpa_required" = yes; then
+  h_tcltk_components="$h_tcltk_components xpa"
+fi
+if test "$pgplot_required" = yes; then
+  h_tcltk_components="$h_tcltk_components pgplot"
+fi
+if test "$plt_required" = yes; then
+  h_tcltk_components="$h_tcltk_components plt"
+fi
+if test "$extra_gui_libs_required" = yes; then
+  h_tcltk_components="$h_tcltk_components pow itcl itk"
+  if test "$iwidgets220_required" = yes; then
+    h_tcltk_components="$h_tcltk_components iwidgets220"
+  fi
+  h_tcltk_components="$h_tcltk_components iwidgets"
+  if test `echo $host | grep -c cygwin` -eq 0; then
+    h_tcltk_components="$h_tcltk_components tix"
+  fi
+fi
+if test "$pgplot_perlmod_required" = yes; then
+  h_tcltk_components="$h_tcltk_components pgplotperl"
+fi
+
+# Remove leading whitespace (if any) from heacore component list.
+h_heacore_components=`echo $h_heacore_components | sed 's%^ *%%'`
+
+# Remove leading whitespace (if any) from tcltk component list.
+h_tcltk_components=`echo $h_tcltk_components | sed 's%^ *%%'`
+
+if test "x$h_build_root" = xno; then
+  h_external_components="clhep cppunit f2c fftw python pmw pyfits lapack numpy scipy matplotlib minuit2 swig xerces"
+else
+  h_external_components="clhep cppunit f2c fftw python pmw pyfits lapack numpy scipy matplotlib root swig xerces"
+fi
+
+# Handle case in which no actual tcltk components were needed:
+if test "x$h_tcltk_components" = x; then
+  HD_SELECTED=`echo $HD_SELECTED | sed 's% tcltk%%'`
+  HD_SELECTED_DIRS=`echo $HD_SELECTED_DIRS | sed "s% $h_top/tcltk/BUILD_DIR%%"`
+fi
+
+#-------------------------------------------------------------------------------
+# Recursively configure all selected components.
+#-------------------------------------------------------------------------------
+for h_dir in $HD_SELECTED_DIRS; do
+  h_comp=`$hd_scanenv $h_dir/$hd_conf_file COMPONENT`
+  h_config_heacore=`$hd_scanenv $h_dir/$hd_conf_file HEACORE`
+  h_config_heatools=`$hd_scanenv $h_dir/$hd_conf_file HEATOOLS`
+  h_config_cmd=`$hd_scanenv $h_dir/$hd_conf_file CONFIGURE_CMD`
+  if test $? -ne 0 -o "x$h_config_cmd" = x; then
+    AC_MSG_ERROR(Unable to determine how to run configure for $h_comp)
+  fi
+
+  AC_MSG_RESULT(--------------------------------------------------------------------------------)
+  eval echo \"$h_config_cmd\"
+  (eval $h_config_cmd)
+  if test $? -ne 0; then
+     AC_MSG_ERROR(Configure failed in $h_dir!)
+  fi
+
+  AC_MSG_RESULT(--------------------------------------------------------------------------------)
+done
+
+#-------------------------------------------------------------------------------
+# Macros needed in generating Makefile & headas-setup:
+#-------------------------------------------------------------------------------
+BSUF=
+case ${UNAME_SYSTEM} in
+  CYGWIN*)
+    BSUF=.exe
+    EXT=win
+    ;;
+  Darwin*)
+    EXT=darwin
+    ;;
+  IRIX*)
+    AC_MSG_ERROR(IRIX is not currently supported)
+    EXT=irix
+    ;;
+  Linux*)
+    EXT=lnx
+    ;;
+  OSF*)
+    EXT=osf
+    ;;
+  SunOS*)
+    EXT=sol
+  ;;
+esac
+AC_SUBST(BSUF)
+AC_SUBST(EXT)
+
+AC_PATH_PROGS(PERL, perl perl5)
+if test "x$PERL" = x; then
+  AC_MSG_ERROR(Perl is required!)
+fi
+AC_SUBST(PERL)
+
+# Check whether heacore compiler test forced C into 32-bit mode:
+heacore_hmakerc="$h_top/heacore/BUILD_DIR/hmakerc"
+if test -f $heacore_hmakerc; then
+  HD_BUILD_ARCH_32_BIT=`$hd_scanenv $heacore_hmakerc HD_BUILD_ARCH_32_BIT`
+fi
+AC_SUBST(HD_BUILD_ARCH_32_BIT)
+
+AC_SUBST(UNAME_SYSTEM)
+
+AC_SUBST(HD_SELECTED)
+AC_SUBST(HD_SRC)
+
+AC_CONFIG_FILES([Makefile headas-setup fermi-setup])
+AC_OUTPUT
+
+if test -f headas-setup; then chmod +x headas-setup; fi
+if test -f fermi-setup; then chmod +x fermi-setup; fi
+
+echo "Finished"

@@ -1,0 +1,18 @@
+      SUBROUTINE RESCAL(CAX, IWNUM, VMIN, VMAX, CTMP, LTMP)
+      CHARACTER CAX*1, CTMP*(*)
+      INTEGER   IWNUM, LTMP
+      REAL      VMIN, VMAX
+C---
+      CTMP='R    '//CAX
+      LTMP=6
+      IF(IWNUM.LE.0) THEN
+         LTMP=LTMP+3
+      ELSE
+         CALL CRAMI(IWNUM,CTMP,LTMP)
+         LTMP=MAX(LTMP+1,6)
+      END IF
+      CALL CRAMF(VMIN,CTMP,LTMP)
+      LTMP=LTMP+1
+      CALL CRAMF(VMAX,CTMP,LTMP)
+      RETURN
+      END

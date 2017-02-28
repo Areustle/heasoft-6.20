@@ -1,0 +1,271 @@
+#!/usr/bin/perl
+#
+#	ut-barycorr
+#
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+# main
+{
+  my $tool = bless({
+		    tool => 'ut-barycorr',
+		    code => 0,
+		   });
+
+  eval {
+    $tool->parseOptions(
+			argv => [ @ARGV ],
+			options => [ qw(
+					input output chatter
+				       ) ],
+		       );
+
+    $tool->execute;
+  };
+
+  if ($@) {
+    $tool->error(BAD_TASK, "exception: $@");
+  }
+
+  my $result = $tool->{code} ? 'failed' : 'passed';
+  $tool->report("test $result");
+  exit($tool->{code});
+}
+
+
+sub execute{
+  my ($self) = @_;
+
+  $self->validate
+    if $self->isValid;
+
+  $self->runBarycorr
+    if $self->isValid;
+}
+
+
+sub validate{
+  my ($self) = @_;
+
+  # validate environment
+  foreach my $var (qw(PFILES HEADAS)) {
+    if (not defined($ENV{$var})) {
+      $self->fatal(BAD_INPUT,
+		   "environment variable $var not set");
+    }
+    elsif ($var eq 'PFILES') {
+    }
+    elsif (not -d $ENV{$var}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $var directory $ENV{$var}");
+    }
+  }
+
+  # validate input/output directories
+  foreach my $key (qw(input output)) {
+    my $arg = $self->args->{$key};
+    if (not -d $arg) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key directory: $arg");
+    }
+  }
+}
+
+
+sub runBarycorr{
+  my ($self) = @_;
+
+  my $input = $self->args->{input};
+  my $output = $self->args->{output};
+
+  my @args = (
+	      infile => "$input/x40153011600.lc",
+	      outfile => "$output/x40153011600_corr.lc",
+	      orbitfiles => "$input/FPorbit_Day2795",
+
+	      ra => '-',
+	      dec => '-',
+
+	      refframe => 'FK5',
+	      barytime => 'yes',
+	      tolerance => 1e-5,
+
+	      clobber => 'yes',
+	      history => 'yes',
+	      chatter => 0,
+
+	     );
+
+  # validate required files
+  my %args = @args;
+  $args{barytemplate} = "$input/barytemplate.lc";
+  foreach my $key (qw(infile orbitfiles barytemplate)) {
+    if (not -f $args{$key}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key file: $args{$key}");
+    }
+  }
+
+  my $command = $self->buildCommand('barycorr', @args);
+  my $result = $self->runCommand($command);
+
+  if ($self->isValid) {
+    $self->report($result->{output})
+      if $self->chatter(5);
+
+    my $command = $self->buildCommand('ftverify',
+				      infile => $args{outfile},
+				      outfile => 'STDOUT',
+				     );
+    $self->runCommand($command);
+  }
+  else {
+    $self->error(BAD_EXECUTE, "output: $result->{output}");
+  }
+
+  if ($self->isValid) {
+    my $command = $self->buildCommand('ftdiff',
+				      infile1 => $args{outfile},
+				      infile2 => $args{barytemplate},
+				      tolerance => 5e-07,
+				      exclude => 'CREATOR,DATE,DATASUM',
+				     );
+    my $result = $self->runCommand($command);
+    $self->report($result->{output})
+      if $self->chatter(5);
+    if ($result->{code}) {
+      $self->error(BAD_OUTPUT,
+		   "ftdiff complained");
+    }
+  }
+
+  my @args = (
+	      infile => "$input/sw00030799001xwtw2po_cl.evt",
+	      outfile => "$output/swtest_bt0.evt",
+	      orbitfiles => "$input/sw00030799001sao.fits",
+	      clockfile => "CALDB",
+
+	      ra => '-',
+	      dec => '-',
+
+	      refframe => 'FK5',
+	      barytime => 'no',
+	      tolerance => 0.2,
+
+	      clobber => 'yes',
+	      history => 'yes',
+	      chatter => 5,
+
+	     );
+
+  # validate required files
+  my %args = @args;
+  $args{barytemplate} = "$input/v17_bt0.evt";
+  foreach my $key (qw(infile orbitfiles barytemplate)) {
+    if (not -f $args{$key}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key file: $args{$key}");
+    }
+  }
+
+  my $command = $self->buildCommand('barycorr', @args);
+  my $result = $self->runCommand($command);
+
+  if ($self->isValid) {
+    $self->report($result->{output})
+      if $self->chatter(5);
+
+    my $command = $self->buildCommand('ftverify',
+				      infile => $args{outfile},
+				      outfile => 'STDOUT',
+				     );
+    $self->runCommand($command);
+  }
+  else {
+    $self->error(BAD_EXECUTE, "output: $result->{output}");
+  }
+
+  if ($self->isValid) {
+    my $command = $self->buildCommand('ftdiff',
+				      infile1 => $args{outfile},
+				      infile2 => $args{barytemplate},
+				      tolerance => 5e-07,
+				      exclude => 'CREATOR,DATE,DATASUM',
+				     );
+    my $result = $self->runCommand($command);
+    $self->report($result->{output})
+      if $self->chatter(5);
+    if ($result->{code}) {
+      $self->error(BAD_OUTPUT,
+		   "ftdiff complained");
+    }
+  }
+
+  my @args = (
+	      infile => "$input/sw00030799001xwtw2po_cl.evt",
+	      outfile => "$output/swtest_bt1.evt",
+	      orbitfiles => "$input/sw00030799001sao.fits",
+	      clockfile => "CALDB",
+
+	      ra => '-',
+	      dec => '-',
+
+	      refframe => 'FK5',
+	      barytime => 'yes',
+	      tolerance => 0.2,
+
+	      clobber => 'yes',
+	      history => 'yes',
+	      chatter => 5,
+
+	     );
+
+  # validate required files
+  my %args = @args;
+  $args{barytemplate} = "$input/v17_bt1.evt";
+  foreach my $key (qw(infile orbitfiles barytemplate)) {
+    if (not -f $args{$key}) {
+      $self->fatal(BAD_INPUT,
+		   "invalid $key file: $args{$key}");
+    }
+  }
+
+  my $command = $self->buildCommand('barycorr', @args);
+  my $result = $self->runCommand($command);
+
+  if ($self->isValid) {
+    $self->report($result->{output})
+      if $self->chatter(5);
+
+    my $command = $self->buildCommand('ftverify',
+				      infile => $args{outfile},
+				      outfile => 'STDOUT',
+				     );
+    $self->runCommand($command);
+  }
+  else {
+    $self->error(BAD_EXECUTE, "output: $result->{output}");
+  }
+
+  if ($self->isValid) {
+    my $command = $self->buildCommand('ftdiff',
+				      infile1 => $args{outfile},
+				      infile2 => $args{barytemplate},
+				      tolerance => 5e-07,
+				      exclude => 'CREATOR,DATE,DATASUM',
+				     );
+    my $result = $self->runCommand($command);
+    $self->report($result->{output})
+      if $self->chatter(5);
+    if ($result->{code}) {
+      $self->error(BAD_OUTPUT,
+		   "ftdiff complained");
+    }
+  }
+
+}

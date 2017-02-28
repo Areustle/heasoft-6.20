@@ -1,0 +1,107 @@
+#!/usr/bin/perl
+##!/usr1/local/bin/perl
+use Getopt::Std;
+use Astro::FITS::CFITSIO qw( :shortnames :constants );
+use HEACORE::HEAINIT;
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+
+
+getopt();
+if (defined $opt_h) { print<<EOHELP;
+wgaxspec 
+
+EOHELP
+exit 0;
+}
+
+$phafile=0;
+
+exit headas_main(\&wgaxspec);
+
+sub wgaxspec {
+
+ my $tname ="wgaxspec";
+ my $tvers ="1.0";
+
+
+ &wgaxspec_getpar();
+
+ $status = &wgaxspec_work();
+
+}
+
+
+sub wgaxspec_work {
+
+  $| =1;
+
+  system("fkeypar $phafile\[SPECTRUM\] RESPFILE");
+  $tmpfile = `pquery fkeypar value`;
+  $tmpfile =~ s/\'//g;
+  chop ($tmpfile);
+  $rmffile=$tmpfile; 
+
+  print "ftcopy ftp://heasarc.gsfc.nasa.gov/caldb/data/rosat/pspc/cpf/matrices/$rmffile \!$rmffile \n";
+  system("ftcopy ftp://heasarc.gsfc.nasa.gov/caldb/data/rosat/pspc/cpf/matrices/$rmffile \!$rmffile");
+
+  $xpa_user =$ENV{XPA_USER};
+  $helpdir = $ENV{LHEA_HELP};
+
+  if ( !(defined $xpa_user) || $xpa_user eq "") {
+      $pow = "pow";
+      $heraXPA = "heraXPA";
+  } else {
+      $pow ="pow_$xpa_user";
+      $heraXPA = "heraXPA_$xpa_user";
+  }
+  $result = `xpaget xpans 2>/dev/null`;
+
+  if ($result !~ /heraXPA/) {
+      $heraXPA = $pow;
+  }
+
+
+  @list =  split(/\//,$phafile);
+  $phafile =$list[$#list];
+
+  open FD,">comfile.xcm";
+  print FD  "data $phafile\n";
+  print FD  "show\n";
+  print FD  "cpd $device \n\n";
+  print FD  "ignore bad \n\n";
+  print FD  "setplot energy \n\n";
+  print FD  "plot data \n\n";
+  close FD;
+
+  $helpfile ="$helpdir/wgaxspec_1.html";
+
+  #system("echo \"$help\" |xpaset $pow helpPage 2>/dev/null");
+  #system("cat \"$help\" |xpaset $heraXPA helpPage 2>/dev/null");
+  system("echo $helpfile |xpaset $heraXPA helpPage 2>/dev/null");
+  
+
+  print "Run xspec - comfile.xcm\n";
+  system("xspec - comfile.xcm"); 
+
+
+  return 0;
+
+
+}
+
+
+sub wgaxspec_getpar {
+
+ if (PILGetString("phafile",$phafile)) {
+    print "Error to get parameter \"phafile\"\n";
+    exit(-1);
+ }
+
+ if (PILGetString("device",$device)){
+    print "Error to get parameter \"device\"\n";
+    exit(-1);
+ }
+
+}

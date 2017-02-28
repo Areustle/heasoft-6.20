@@ -1,0 +1,82 @@
+#! /usr/bin/perl 
+$version ="1.10";
+$date  ="2002-11-28";
+$author = "kaa";
+
+# This script makes the ASCA GIS rmf and arf. It is run by the xselect
+# routine xsl_rspsav.
+
+# Check that we were given an input filename
+
+if(@ARGV < 1 || @ARGV > 2)
+{
+    print "\n usage : xsl_asca_gis_makeresp infile extended?\n";
+    exit(0);
+}
+
+$infile  = $ARGV[0];
+$extended = "no";
+if(@ARGV == 2 && $ARGV[1] eq "yes") {
+   $extended = "yes";
+}
+
+$dot = index($infile,".");
+$rootname = substr($infile, 0, $dot);
+
+$arffile = $rootname . ".arf";
+
+# copy the rmf from the caldb. Need to know whether this spectrum is
+# 1024 or 256 channels.
+
+$command = "fkeypar fitsfile=$infile\[SPECTRUM\] keyword=DETCHANS";
+system($command);
+$detchans = `pget fkeypar value`;
+if ( $detchans == 1024 ) {
+   $rmffile = "gis2v4_0.rmf";
+} elsif ( $detchans == 256 ) {
+   $rmffile = "gis2v4_0_256.rmf";
+} else {
+   print "DETCHANS for the spectum is neither 256 or 1024\n";
+   exit(1);
+}
+
+# if the rmf file doesn't already exist in this directory then copy it
+# from the caldb.
+
+if ( !-e $rmffile ) {
+
+   $caldb = $ENV{'CALDB'};
+   if($caldb !~/\S/) 
+   {
+      print "The CALDB environment variable is not set.\n";
+      exit(2);
+   }
+
+   $calfile = $caldb . "/data/asca/gis/cpf/95mar06/" . $rmffile;
+   $command = "cp $calfile $rmffile";
+   print "\n",$command,"\n\n";
+   system($command);
+
+}
+
+# run ascaarf to make the arf
+
+if ($extended eq "yes") {
+   $command = "ascaarf phafile=$infile rmffile=$rmffile outfile=$arffile point=no";
+} else {
+   $command = "ascaarf phafile=$infile rmffile=$rmffile outfile=$arffile point=yes simple=yes";
+}
+print "\n",$command,"\n\n";
+system($command);
+
+
+# set the RESPFILE and ANCRFILE keywords in the spectrum to point to the
+# files that have been created
+
+$command = "fparkey value=$rmffile fitsfile=$infile\[SPECTRUM\] keyword=RESPFILE";
+system($command);
+$command = "fparkey value=$arffile fitsfile=$infile\[SPECTRUM\] keyword=ANCRFILE";
+system($command);
+
+
+

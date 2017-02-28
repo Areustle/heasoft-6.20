@@ -1,0 +1,159 @@
+<! NUCALCPHA (March2012)  >                           
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>nucalcpha help file</title>
+</head>
+
+<body>
+<BODY BGCOLOR="#FFFFFF" TEXT="#000000" LINK="#9690CC">
+<h2>NAME</h2>
+nucalcpha --  Correct energy, calculate PHAS and assign event grades for NuSTAR event files.
+<h2>USAGE</h2>
+<tt>nucalcpha infile outfile [parameter = < value >]</tt>
+<h2>DESCRIPTION</h2>
+
+
+'nucalcpha' processes the NuSTAR event files to correct energies, reconstruct events, calculate 
+PHAS values and assign to each event a grade.
+<p>
+For each event, the telemetry contains nine charge values, stored in the columns POSTPHAS and PREPHAS, corresponding to an array 
+of 3x3 pixels, the central pixel and eight surrounding pixels. This task reads the nine elements of the POSTPHAS and PREPHAS 
+columns and applies various corrections necessary to calibrate the energy of the events and writes the result in the PHAS 
+column of the output file. The algorithm used to calculate the PHAS column is described below (steps 1-5).
+<p>
+The task also assign a grade value to each event (GRADE column of the output file). The grades are assigned following a 
+charge pattern definition stored in the CALDB grade file (parameter 'gradefile'). The output event file contains 
+calibrated 'PHAS', 'GRADE' and 'SWTRIG' columns. Optionally, the columns 'RAWPHAS', 'OFFPHAS' and 'TRPHAS' are 
+also stored in the output file by setting the paramter 'cleancols=no'.
+<p>
+The algorithm used is summarized below.
+<p>
+<dl>
+<dt>For each event (3x3 pixels array) the task applies the following processing 
+steps:
+<p>
+1) Computation of RAWPHAS (9 dimensional vector):
+<dd>       RAWPHAS[9] = POSTPHAS[9] - PREPHAS[9]
+<p>
+<dt>
+2) Offset correction, i.e. computation of 'OFFPHAS' (9 dimensional vector):
+<p>
+<dd>       OFFPHAS[9] = RAWPHAS[9] - OFFSET[9]
+<p>
+       where the 9 values of OFFSET[9] are read from the input CAP_OFFSET 
+       file and are dependent on:<br>        
+         - the coordinates (RAWX, RAWY) of the pixels (3X3 array)  <br>
+         - the capacitor number (S_CAP column) of the event <br>
+         - the detector (DET_ID column)
+<p>
+<dt>
+3) Time of rise correction, i.e. computation of 'TRPHAS' (9 dimensional vector):
+<p>
+<dd>       TRPHAS[9] = OFFPHAS[9] * (1+(NUMRISE/DENRISE)*TIMERISE[9])
+<p>
+       where NUMRISE, DENRISE are read from the input event file. The 9 values 
+       of TIMERISE[9] are read by default from the input PHAPAR file and are dependent on:<br>        
+         - the coordinates (RAWX, RAWY) of the pixels (3X3 array)  <br>
+         - the detector (DET_ID column) <br>
+<p>
+If the parameter 'phaparfile' is set to 'NONE', the 9 values are provided in input to the task 
+       through the specific parameter 'timerise' (default=0.0016).
+<p>
+<dt>
+4) Common mode correction, i.e. computation of 'PHAS' (9 dimensional vector):
+<p>
+<dd>   4a) exclusion of the M pixels located out of the detector or falling on bad/hot pixels  
+<p>
+       4b) selection of the N pixels ("E+") with TRPHAS >= 'EVTTHR[9]' (not including the M pixels defined in point 4a)
+<p>
+       4c) selection of the 9-N-M pixels ("E-") with TRPHAS &lt 'EVTTHR[9]'
+<br>
+<p>
+   The 9 values of EVTTHR[9] are read by default from the input PHAPAR file and are dependent on:<br>        
+         - the coordinates (RAWX, RAWY) of the pixels (3X3 array)  <br>
+         - the detector (DET_ID column) <br>
+<p>
+If the parameter 'phaparfile' is set to 'NONE', the 9 values are provided in input to the task 
+       through the specific parameter 'evtthr' (default=55).
+<p>
+       4d) calculation of the mean of the pixels with TRPHAS &lt 'EVTTHR[9]':<br>
+           &lt E- >=(&sum E-)/(9-N-M)
+<p>
+       4e) computation of PHAS (9 dim. vector) for the N pixels "E+":<br>
+           PHAS[9] = TRPHAS[9] - &lt E->
+<p>
+       4f) computation of PHAS (9 dim. vector) for the 9-N-M pixels "E-":<br>
+           PHAS[9] = TRPHAS[9]
+<p>
+       4g) setting to zero PHAS values for the M pixels out of detector::<br>
+           PHAS[9] = 0
+<p>
+<dt>
+5) computation of 'SWTRIG' column (9 dimensional vector):
+<p>     
+<dd> SWTRIG[9] = 1  for pixels with TRPHAS >= 'EVTTHR[9]'
+<dd> SWTRIG[9] = 0  for pixels with TRPHAS &lt 'EVTTHR[9]'
+<p>
+<dt>
+6) grade classification, i.e. computation of 'GRADE':
+<p>
+<dd>       reconstruction of the event split topology following the 
+       classification defined in the input GRADE file.
+<p>
+<h2>PARAMETERS</h2>
+<dl>
+<dt>infile [file name]
+<dd>Name of the input FITS event file.
+<p>  
+<dt>outfile [file name]
+<dd>Name of output FITS event file.
+<p>
+<dt>(offsetfile=CALDB) [filename]
+<dd>Name of the input FITS CAP_OFFSET file. If set to CALDB (default), use the file in
+          the Calibration Database.
+<p>
+<dt>(gradefile=CALDB) [file name]
+<dd>Name of the input FITS GRADE file. If set to CALDB (default), use the file in
+          the Calibration Database.
+<p>
+<dt>(phaparfile=CALDB) [file name]
+<dd>Name of the input FITS PHAPAR file. If set to CALDB (default), use the file in
+          the Calibration Database. If set to NONE, the 'evtthr' and 'timerise' input parameters are used.
+<p>
+<dt>(evtthr = 55) [integer]
+<dd> Event software threshold (used only if phaparfile=NONE).
+<p> 
+<dt>(timerise = 0.0016) [real]
+<dd>Time of rise correction coefficient (used only if phaparfile=NONE).
+<p> 
+<dt>(cleancols=no) [boolean]
+<dd>If set to yes, delete the temporary columns 'RAWPHAS', 'OFFPHAS', 'TRPHAS', and 'PHAS' in the output FITS event file.
+<p>
+<dt>(clobber=no) [boolean]
+<dd>If set to yes, overwrite the output file.
+<p>
+<dt>(history=yes) [boolean]
+<dd>If set to yes, write parameter values and other information in HISTORY blocks.
+<p>
+<dt>(chatter = 2) [integer]
+<dd>Chatter Level (min=0, max=5).
+</dl>    
+<h2>EXAMPLES</h2>
+<ol>
+<li> Calculate PHAS and GRADE values for the event file 'nu40060001001A_uf.evt'. The values of the event 
+software threshold , the time of rise correction coefficients, the capacitor offset values and the GRADE classification 
+are read from the specific CALDB files. The results are written in the output event file 'nu40060001001A_out.evt'.
+<p>
+<pre> > nucalcpha infile=nu40060001001A_uf.evt outfile=nu40060001001A_out.evt
+</pre>
+</ol>
+<h2>BUGS</h2>
+<h2>SEE ALSO</h2>
+<h2>LAST MODIFIED</h2>
+March 2012
+</body>
+</html>

@@ -1,0 +1,602 @@
+#!/usr/local/bin/perl5
+#
+# script to run pcarf,pcparpha,fixregion,calcbgdcor 
+#
+# Banashree Mitra Seifert    July, 1996
+# HEASARC NASA/GSFC
+#
+#PCBGDCOR
+#version 1.0.0 Banashree Mitra Seifert July 1996
+#creates a background spectra for a source region given 
+#a source region and a background region.
+#version 1.0.0 first version
+#version 1.1.0 Banashree Mitra Seifert Sept 1996
+#   . option for caldb/filename
+#   . catch ^C
+#   . other finer details
+
+use Getopt::Std;
+require "utils.pl";
+#use Config;
+#print "$Config{'sig_name'}";
+
+$version_number ="1.0.0";
+$task="PCBGDCOR";
+
+# ---------- start up -----------------------------------
+
+print " \n";
+print "              *** ".$task." Ver ".$version_number." ***\n\n";
+
+# ----------------------------------------------------------
+#
+# Output the help if -h is specified
+#
+getopts('a:b:c:d:e:f:g:hi:j:k:v:');
+if (defined $opt_h) {
+  print <<EOHELP1;
+
+NAME
+    pcbgdcor ver 1.0.0 -- a script to allow the user to create background 
+    spectra with given source region file and background region file
+    with either a single command-line entry, or an interactive session.
+
+USAGE
+    pcbgdcor -[abcdefghijkv]
+
+dESCRIPTION
+
+    PCBGDCOR is a Perl script which allows the user to create a background 
+    spectra. Given a background region and a source region, this task 
+    translate the background spectra so as to fit with the source region.
+    Since background and source region are from different parts of the
+    image file, vignetting and efficiency factor has to be taken into
+    account.  To run these corrections (call calcbgdcor) the task requires 
+    ARFs and particle spectra for both source and background region.   
+    All necessary information can be supplied by the user as switches on 
+    the command line, and the script will take defaults in the absence of 
+    user input.  Alternatively, the script can be run interactively, in which 
+    case the user will be prompted for required parameters not supplied
+    as switches.
+
+PARAMETERS  
+
+     -h         - only help on pcbgdcor will be shown and exit
+     -a {file}  - Input source PHA file
+     -b {file}  - Input background PHA file
+     -c {file}  - Input event rate file (*.evr)
+     -d {file}  - Input ATT file (*.cas)
+     -e {file}  - Input EVENTS file (*.fits)
+     -f {file}  - Input ARF file for source
+     -g {file}  - Input ARF for background
+     -i {file}  - Input source region file
+     -j {file}  - Input bckgrnd region file
+     -k {file}  - image file
+     -v #       - where # is the chatter no for verbose
+                  if not defined on the commandline then
+                  by default verbose=9(quiet)
+ 
+
+EXAMPLES
+
+     pcbgdcor -h
+            will show only the help for this task.
+
+     pcbgdcor
+            will prompt the user for input parameters (files).
+
+     pcbgdcor -a filename1 -b filename2 -c filename3 ......
+            will use command line filenames
+ 
+
+KNOWN BUGS
+
+     nothing known at the time of release
+ 
+
+EOHELP1
+exit;
+}
+
+#$SIG{'INT'}='handler';
+$SIG{'INT'}=\&handler;
+$SIG{'HUP'}='IGNORE';
+
+#*************** CHECK VERBOSE ***********************************
+if(defined $opt_v ){
+   $verbose=$opt_v;
+}
+else{
+   $verbose=9;
+}
+
+
+#************************** PCPARPHA ************************************
+# to run pcparpha to create particle spectrum files
+# If parameters are entered on command line, use it. If not, then prompt
+# the user for the parameter values or use default where applicable. 
+
+$prog_name='PCPARPHA';
+print "... Inputs for $prog_name to create particle spectra\n\n";
+
+if(defined $opt_a ){
+   if(-e $opt_a){
+       $oahfil_sou=$opt_a;
+   }
+   else{
+     die "file \"$opt_a\" does not exist.  Exiting ... \n";
+       }
+}
+else {
+print "Name of file for source spectrum: ";
+chop($oahfil_sou=<STDIN>);
+    die "Source spectrum filename must be entered. Exiting ... \n" if($oahfil_sou =~ /^$/);
+
+# to see if input is preceeded by any blank character by mistake
+    $oahfil_sou=~ s/(\s)//g ; 
+
+    die "file \"$oahfil_sou\" does not exist.  Exiting ... \n" if(! -e $oahfil_sou);
+}
+
+if(defined $opt_b ){
+   if(-e $opt_b){
+       $oahfil_bck=$opt_b;
+   }
+   else{
+     die "file \"$opt_b\" does not exist.  Exiting ... \n";
+       }
+}
+else {
+print "Name of file for background spectrum: ";
+chop($oahfil_bck=<STDIN>);
+    die "Background spectrum filename must be entered. Exiting ... \n" if($oahfil_bck =~ /^$/);
+    $oahfil_bck=~ s/(\s)//g ; 
+    die "file \"$oahfil_bck\" does not exist.  Exiting ... \n" if(! -e $oahfil_bck);
+   
+}
+ 
+if(defined $opt_c ){
+   if(-e $opt_c){
+       $evrfil=$opt_c;
+   }
+   else{
+     die "file \"$opt_c\" does not exist.  Exiting ... \n";
+       }
+}
+else{
+print "Name of input event rate file: ";
+chop($evrfil=<STDIN>);
+    die "Event rate filename must be entered. Exiting ... \n" if($evrfil =~ /^$/);
+    $evrfil=~ s/(\s)//g ; 
+    die "file \"$evrfil\" does not exist.  Exiting ... \n" if(! -e $evrfil);
+}
+
+
+if(defined $opt_e ){
+   if(-e $opt_e){
+       $gtifil=$opt_e;
+   }
+   else{
+     die "file $opt_e does not exist.  Exiting \n";
+       }
+}
+else{
+print "Name of EVENTS file: ";
+chop($gtifil=<STDIN>);
+    die "GTI filename must be entered. Exiting ... \n" if($gtifil =~ /^$/);
+    $gtifil=~ s/(\s)//g ; 
+    die "file \"$gtifil\" does not exist.  Exiting ... \n" if(! -e $gtifil);
+}
+ 
+
+#now ready to go for PCPARPHA
+#the outputs are $part_sou and $part_bck
+#first go for particle bckgrnd for source spectra
+
+if($verbose >= 10) {
+   $string =
+"-----------------------------------------------------
+  Running PCPARPHA
+  Input event rate   file name: $evrfil
+  Input events       file name: $gtifil 
+  Input source       file name: $oahfil_sou
+  Input bckgrnd      file name: $oahfil_bck 
+-----------------------------------------------------\n";
+
+   print "$string\n";
+}
+
+ 
+$command_string='pcparpha outfil=!part_src evrfil='.$evrfil.' gtifil='.$gtifil.' oahfil='.$oahfil_sou.' npixsou=% chatter='.$verbose; 
+
+print "running PCPARPHA ............\n";
+
+@tmp_array=&runcom($command_string,"error","runtime error");
+
+if($verbose >= 10) {
+    print "......Done PCPARPHA for source\n";
+}
+
+#now go for particle bckgrnd for background spectra
+
+$command_string='pcparpha outfil=!part_bck evrfil='.$evrfil.' gtifil='.$gtifil.' oahfil='.$oahfil_bck.' npixsou=% chatter='.$verbose;
+
+@tmp_array=&runcom($command_string,"error","runtime error");
+
+if($verbose >= 10) {
+    print "......Done PCPARPHA for background\n";
+}
+
+#now ready to go for PCARF
+#the outputs are $arf_sou and $arf_bck
+#******************************* PCARF **********************************
+# Run PCARF to create two ARF files -- for source and bckgrnd
+# If parameters are entered on command line, use it. If not, then prompt
+# the user for the parameter value or use default where applicable.
+
+$prog_name='PCARF';  
+print "\n... Inputs for $prog_name to create ARFs\n\n";
+ 
+$rmf_fil= 'caldb';
+$crf_fil= 'caldb';
+$ge_fil= 'caldb';
+$wt_fil='caldb';
+$flt_fil='caldb';
+
+if(defined $opt_f){
+   print "Input ARF file for source provided : $opt_f \n";
+   if(-e $opt_f){
+      $arf_sou=$opt_f;
+      $qarf_s='y';
+   }
+   else{
+     die "file \"$opt_f\" does not exist. Exiting ... \n"; 
+       }
+}
+else{
+     print "Does source ARF files already exist?[Y/n]";
+     chop ($qarf_s=<STDIN>);
+       if(($qarf_s =~ /^$/) or ($qarf_s =~ /^y/i)){
+         print "Give ARF filename for source:";
+         chop($arf_sou=<STDIN>);
+         die ".... ARF filename must be entered. Exiting ...\n" if($arf_sou =~ /^$/);
+         $arf_sou=~ s/(\s)//g ; 
+         die "file \"$arf_sou\" does not exist. Exiting ... \n" if(! -e $arf_sou);
+     }
+     else{
+#         run PCARF for source 
+
+          $string1= "Want to use CALDB for RMF,CRF,GE, WT and Filter files to be used?[yes]";
+          print "$string1";
+
+          chop ($qcaldb=<STDIN>);
+          if ($qcaldb =~ /^n/i){
+              print "RMF file name:";
+              chop ($rmf_fil=<STDIN>);
+              die ".... RMF filename must be entered. Exiting ...\n" if($rmf_fil=~ /^$/);
+              $rmf_fil=~ s/(\s)//g ; 
+              die "file \"$rmf_fil\" does not exist. Exiting ... \n" if (!-e $rmf_fil);
+
+              print "CRF file name:";
+              chop ($crf_fil=<STDIN>);
+              die ".... CRF filename must be entered. Exiting ...\n" if($crf_fil=~ /^$/);
+              $crf_fil=~ s/(\s)//g ; 
+              die "file \"$crf_fil\" does not exist. Exiting ... \n" if (!-e $crf_fil);
+
+           }
+
+          $command_string = 'pcarf phafil='.$oahfil_sou.' rmffil='.$rmf_fil.' outfil=!arf_src crffil='.$crf_fil.' chatter='.$verbose;
+ 
+          print "......creating source ARF\n";
+
+          @tmp_array=&runcom($command_string,"error","runtime error");
+
+          $arf_sou=arf_src;
+
+          if($verbose >= 10) {
+              print "......Done PCARF for source\n";
+          }
+
+     }
+}
+
+#run PCARF for background 
+
+if(defined $opt_g){
+   print "Input ARF file for background provided : $opt_g \n";
+   if(-e $opt_g){
+      $arf_bckg=$opt_g;
+      $qarf_b='y';
+   }
+   else{
+     die "file \"$opt_g\" does not exist.  Exiting ... \n";
+       }
+}
+else{
+     print "Does background ARF files already exist?[Y/n]";
+     chop ($qarf_b=<STDIN>);
+     if(($qarf_b =~ /^$/) or ($qarf_b =~ /^y/i)){
+         print "Give ARF filename for background:";
+         chop($arf_bckg=<STDIN>);
+         die ".... ARF file name must be entered. Exiting ... \n" if($arf_bckg=~ /^$/);
+         $arf_bckg=~ s/(\s)//g ; 
+         die "ARF file doesn't exist. Exiting ... \n" if(!-e $arf_bckg);
+     }
+     else{
+#         run PCARF for background 
+
+         $command_string = 'pcarf phafil='.$oahfil_bck.' rmffil='.$rmf_fil.' crffil='.$crf_fil.' gefil='.$ge_fil.' wtfil='.$wt_fil.' fltfil='.$flt_fil.' outfil=!arf_bck';
+
+          print "......creating background ARF\n";
+          @tmp_array=&runcom($command_string,"error","runtime error");
+
+          $arf_bckg=arf_bck;
+
+          if($verbose >= 10) {
+              print "......Done PCARF for background\n";
+          }
+
+     }
+}
+
+#****************************************************************
+# TO RUN PCEXPMAP
+  
+$prog_name='PCEXPMAP';
+
+if(defined $opt_d){
+   print "Input exposure map file provided : $opt_d \n";
+   if(-e $opt_d){
+      $attfil=$opt_d;
+   }else{
+      die "file \"$opt_d\" does not exist.  Exiting ... \n";
+   }
+
+}else{
+   print "Do you have exposure map already created?[Y/n]";
+   chop ($qmap=<STDIN>);
+     if(($qmap =~ /^$/) or ($qmap =~ /^y/i)){
+         print "Give exposure filename :";
+         chop($expmap=<STDIN>);
+         die ".... Exposure map file name must be entered. Exiting ... \n" if($expmap=~ /^$/);
+         $expmap=~ s/(\s)//g ; 
+         die "file \"$expmap\" doesn't exist. Exiting ... \n" if(!-e $expmap);
+     }else{
+
+         print "\n... Inputs for $prog_name to create exposure map\n\n";
+         print "Name of Attitude file:";
+         chop($attfil=<STDIN>); 
+             die ".... Attitude file name must be entered. Exiting ... \n" if($attfil=~ /^$/);
+             $attfil=~ s/(\s)//g ; 
+             die "file \"$attfil\" does not exist. Exiting ... \n" if(! -e $attfil);
+
+         $command_string = 'pcexpmap evrfil='.$evrfil.' attfil='.$attfil.' gtifil='.$gtifil.' qdetmap=yes outfil=!expmap_out chatter='.$verbose; 
+
+print "running PCEXPMAP ............\n";
+
+     @tmp_array=&runcom($command_string,"error","runtime error");
+     $expmap=expmap_out;
+         if($verbose >= 10) {
+             print "......Done PCEXPMAP\n";
+         }
+     } 
+}
+
+
+#****************************************************************
+# TO RUN FIXREGION 
+# If parameters are entered on command line, use it. If not, then 
+# prompt the user for the parameter value or use default where 
+# applicable.
+# the outputs are $fix_sou and $fix_bck
+
+$prog_name='FIXREGION';
+print "\n... Inputs for $prog_name to convert the region files\n\n";
+
+if(defined $opt_i){
+   print "Input SOURCE REGION file provided : $opt_i \n";
+   if(-e $opt_i){
+      $reg_sou=$opt_i;
+   }
+   else{
+     die "file \"$opt_i\" does not exist.  Exiting ... \n";
+       }
+}else {
+   print "Give SOURCE REGION filename: ";
+   chop($reg_sou=<STDIN>);
+       die "SOURCE region filename must be entered. Exiting ... \n" if($reg_sou=~ /^$/);
+       $reg_sou=~ s/(\s)//g ; 
+       die "file \"$reg_sou\" does not exist. Exiting ... \n" if(!-e $reg_sou);
+}
+ 
+if(defined $opt_j){
+   print "Input BACKGROUND REGION file provided : $opt_j \n";
+   if(-e $opt_j){
+      $reg_bck=$opt_j;
+   }
+   else{
+     die "file \"$opt_j\" does not exist.  Exiting ... \n";
+       }
+}
+else {
+   print "Give BACKGROUND REGION filename: ";
+   chop($reg_bck=<STDIN>);
+       die "BACKGROUND region filename must be entered. Exiting ... \n" if($reg_bck=~ /^$/);
+       $reg_bck=~ s/(\s)//g ; 
+       die "file \"$reg_bck\" does not exist. Exiting ... \n" if(!-e $reg_bck);
+}
+
+if(defined $opt_k){
+   print "Input image file provided : $opt_k \n";
+   if(-e $opt_k){
+      $imgfil=$opt_k;
+   }
+   else{
+     die "file \"$opt_k\" does not exist.  Exiting ... \n";
+       }
+}
+else{
+     print "Give IMAGE filename : ";
+     chop($imgfil=<STDIN>);
+       die "Image filename must be entered. Exiting ... \n" if($imgfil=~ /^$/);
+       $imgfil=~ s/(\s)//g ; 
+       die "file \"$imgfil\" does not exist. Exiting ... \n" if(!-e $imgfil);
+
+     $command_string1='fixregion regfile='.$reg_sou.' option=1 imgfile='.$imgfil.' convfile='.$expmap.'[0] out_regfile=fix_src chatter='.$verbose;
+
+     $command_string2='fixregion regfile='.$reg_bck.' option=1 imgfile='.$imgfil.' convfile='.$expmap.'[0] out_regfile=fix_bck chatter='.$verbose;
+   }
+
+
+#delete if previous files exist
+
+# run fixregion
+
+print "running FIXREGION ............\n";
+@tmp_array=&runcom($command_string1,"error","runtime error");
+
+if($verbose >= 10) {
+    print "......Done FIXREGION for source\n";
+}
+
+@tmp_array=&runcom($command_string2,"error","runtime error");
+
+if($verbose >= 10) {
+    print "......Done FIXREGION for background\n";
+}
+
+#****************************************************************
+# TO RUN CALCBGDCOR 
+# If parameters are entered on command line, use it. If not, then 
+# prompt the user for the parameter value or use default where 
+# applicable.
+
+$prog_name='CALCBGDCOR';
+print "\n... Inputs for $prog_name for background correction\n\n";
+
+print "Give final output filename: ";
+   chop($bck_out=<STDIN>);
+      die "output filename must be entered. Exiting ... \n" if($bck_out=~ /^$/);
+
+#if ARF files are already existing, then RMF file was not prompted for
+#so here we have to take care fore that again to see if RMF file to be 
+#taken from CALDB or not
+
+    print "RMF file name[caldb]:";
+    chop($rmf_fil=<STDIN>);
+       if(($rmf_fil=~ /^$/) or ($rmf_fil=~ /^c/i)){
+          $rmf_fil='caldb';
+       }else{
+        $rmf_fil=~ s/(\s)//g ; 
+        die "file \"$rmf_fil\" does not exist.  Exiting ... \n";
+       }
+
+$command_string='calcbgdcor srcfil='.$oahfil_sou.' bckfil='.$oahfil_bck.' arf_srcfil='.$arf_sou.' arf_bckfil='.$arf_bckg.' particle_srcfil=part_src particle_bckfil=part_bck rmffil='.$rmf_fil.' expmapfil='.$expmap.' regfil_sou=fix_src regfil_bck=fix_bck outfil='.$bck_out.' chatter='.$verbose;
+
+#delete any pre-existing output file
+if(-e $bck_out){
+   unlink $bck_out;
+}
+
+print "running CALCBGDCOR ............\n";
+@tmp_array=&runcom($command_string,"error","runtime error");
+
+if($verbose >= 10) {
+    print "......Done CALCBGDCOR \n";
+}
+
+print "*** Successfully done PCBGDCOR\n";
+
+#cleanup intermediate files created
+
+$string =
+    " Following files are created by this task:
+-----------------------------------------------------
+    particle spectrum for source  = part_src
+    particle spectrum for bckgrnd = part_bck\n";
+
+print "$string";
+
+if($qarf_s =~  /n/i){
+
+   $string = "    ARF for source                = $arf_sou\n";
+   print "$string";
+}
+
+if($qarf_b =~  /n/i){
+   $string ="    ARF for background            = $arf_bckg\n";
+   print "$string";
+}
+
+if($qmap =~ /n/i){
+   $string ="    Exposure map for the detector = $expmap\n";
+   print "$string";
+}
+
+$string="    Converted source region       = fix_src
+    Converted background region   = fix_bck
+------------------------------------------------------\n";
+print "$string\n";
+
+print "Do you want to delete all intermediate files created?[yes]:";
+chop ($qdelete=<STDIN>);
+
+if ($qdelete=~ /n/i){
+
+}else{
+    unlink part_src,part_bck;
+    if($qarf_s  =~ /n/i){
+       unlink $arf_sou;
+    }
+    if($qarf_b =~ /n/i){
+       unlink $arf_bckg
+    }
+    
+    unlink fix_src,fix_bck;
+
+    if($qmap =~ /n/i){
+       unlink $expmap;
+    }
+
+    print "Files cleaned. ...Exiting\n";
+}
+
+
+#------------------------------------------------------------------------------
+# subroutine for erroring out while running runcom
+#------------------------------------------------------------------------------
+sub error {
+# This routine is called when an error occurs in RUNCOM.
+    local ($err_str) = $_[0];  
+    print "@tmp_array";
+  die ("\n$prog_name: $err_str\nExiting $task Ver $version_number\n");
+}
+
+#--------------------------------------------------------------------
+# subroutine for terminating when ^C is pressed
+#--------------------------------------------------------------------
+
+sub handler{
+     local($sig)=@_;
+     while(glob("/tmp/er*"))
+     {
+           unlink  $_;
+#           print "Temporary File= $_ deleted \n";
+     }
+     while(glob("/tmp/E*"))
+     {
+           unlink  $_;
+#           print "Temporary File= $_ deleted \n";
+     }
+
+     while(glob("/tmp/R*"))
+     {
+           unlink  $_;
+#           print "Temporary File= $_ deleted \n";
+     }
+
+
+     print "\n\n..... Terminating $task V$version_number ......\n\n ";
+     exit(1);
+}
+ 

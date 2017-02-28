@@ -1,0 +1,12 @@
+      FUNCTION ARCSIN (X)
+      REAL*8 X,ARCSIN,PI
+      PARAMETER (PI=3.14159265358979323846D0)
+*
+      IF (X.LE.-1.D0) THEN
+         ARCSIN = -PI*0.5D0
+      ELSEIF (X.GE.1.D0) THEN
+         ARCSIN = PI*0.5D0
+      ELSE
+         ARCSIN = ASIN(X)
+      ENDIF
+      END

@@ -1,0 +1,7 @@
+HD_COMPONENT_NAME	= heagen
+
+HD_COMPONENT_VERS	=
+
+HD_INSTALL_REFDATA	= swco.dat
+
+include ${HD_STD_MAKEFILE}

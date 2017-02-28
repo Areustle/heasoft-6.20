@@ -1,0 +1,623 @@
+\chapter{WARMABS}
+\label{sec:warmabs}
+
+An alternative method for fitting XSTAR results to observed spectra
+within xspec is to use the xspec `analytic' model warmabs.
+This actually includes several separate models: warmabs, photemis, 
+hotabs, hotemis, windabs and multabs.  These are described below.
+
+This model allows the use of xspec models for warm absorbers and photoionized emitters,
+and for coronal equilibrium absorbers and emitters
+without requiring construction of mtables or etables.  The advantages 
+of this procedure include:
+
+1) Circumventing the intrinsic approximations associated with 
+use of tables for absorption with variable abundances treated 
+as multiplicative parameters.  (see the `Important Notes on Mtables' section of the 
+xstar2xspec chapter of the xstar manual).   Warmabs/photemis/windabs/multabs  
+calculate spectra using stored level populations which are then scaled using 
+element abundances specified during the xspec session before the spectra are 
+calculated.  Therefore the approximations associated with the use of 
+tables are avoided.  (However, see the section below on the current 
+limitations of these models).
+
+2) Circumventing the intrinsic clumsiness of the use of tables.
+
+3) Ability to use arbitrary spectral resolution, not limited 
+by the internal xstar spectral resolution
+
+3.5) Allows the use of turbulent broadening as a fitting parameter in 
+xspec.
+
+4) This model employs the most recent updates to xstar and the database, 
+version 2.2. 
+
+
+\section{Obtaining warmabs}
+
+As of this writing, the warmabs package is not included as 
+part of the standard xstar distribution, either within heasoft 
+or as part of standalone xstar.  Instead, it must be downloaded 
+and installed separately from the ftp site:
+ftp://legacy.gsfc.nasa.gov/software/plasma\_codes/xstar/warmabs22.tar.gz
+
+The contents of the tarfile include:
+
+atdbwarmabs.fits  -- xstar atomic database binary fits file.
+This must reside in directory pointed to by the WARMABS\_DATA 
+environment variable.  This file has the same format  as the atdb.fits file 
+used by xstar, but is kept distinct.  {\bf This is important} because the 
+structure of the populations files (described below) depend on the 
+version of the atomic data used in the run which created them.  Thus 
+warmabs must use the appropriate version of this data file, the one 
+included in its distribution.  The version of atdb.fits used by the headas or 
+xstar installation may not be identical.
+
+coheatwarmabs.dat -- compton heating/cooling data file.
+This must reside in directory pointed to by WARMABS\_DATA 
+environment variable.  This file is identical to the file 
+coheat.dat which is part of xstar.
+
+fphotems.f -- source code for warmabs, photemis, windabs, 
+multabs, hotemis, and hotabs
+
+lmodel\_warmabs.dat -- local model definition file needed by xspec.  
+When using xspec11, must be renamed to lmodel.dat or catted 
+onto existing lmodel.dat
+
+pops.fits.nxx  binary fits files containing pre-calculated level populations 
+for use with the warmabs or  photemis model.   Currently the user chooses 
+which of these to use using the WARMABS\_POP environment variable, eg., by 
+doing 'setenv WARMABS\_POP pops.fits.n4' (note that the full path is not used
+here, rather the path relative to the WARMABS\_DATA path).
+
+popshot.fi -- binary fits file containing pre-calculated level populations for the hotabs and
+hotemis models. This file also must reside in directory pointed to by 
+WARMABS\_DATA environment variable. This file is not intended for modification by the user
+
+instructions.txt --  text version of the xspec11 manual page describing the  
+setup of analytic models
+
+xautosav.xcm -- sample xspec script file showing use of model.
+
+README     -- this file
+
+\section{Installation}
+
+The procedure for setting up and using this model is as described in the 
+xspec manual:
+
+
+0) You need to have the heasoft package installed on your 
+machine, but it must be built from source.  Local models 
+cannot be installed from a binary installation.
+
+1) untar this directory somewhere in your user area
+
+2) setup your headas environment (eg. 'setenv HEADAS /path/to/architecture',
+and 'source \$HEADAS/headas-init.csh')
+
+
+3) point the WARMABS\_DATA enviroment variable to the directory 
+where the warmabs data files atdbwarmabs.fits, coheatwarmabs.dat and 
+pops.fits are kept (eg, 'setenv WARMABS\_DATA \$PWD').  
+
+4) In addition the WARMABS\_POP environment variable must be set to point to the 
+name of the populations file (relative to the WARMABS\_DATA location) to be used
+by the  warmabs, windabs, multabs  and photemis models.  For example, 
+the populations for a density 10$^4$ gas illuminated by a $\Gamma$=2 power law 
+are in pops.fits.n04, so to use these do 'setenv WARMABS\_POP pops.fits.n04'.
+
+5) Start up xspec, and in response to the prompt type 
+'initpackage xstarmod lmodel\_warmabs.dat <path-to-current-directory>',
+where <path-to-current-directory> is the full path of the current directory 
+and can be the dot ('.').
+Then, after the build is complete type 
+'lmod xstarmod <path-to-current-directory>'
+In subsequent  sessions you don't neet to do the initpackage step again, just the lmod.
+
+6) Instructions for xspec11:
+
+a) Set the environment variable LMODDIR to the local directory,
+where you have untarred the package, eg. 
+'setenv LMODDIR \$PWD'
+
+b) make sure this directory is  pointed to by your shared object library 
+environment variable, as described in the xspec11 manual, eg.
+'setenv LD\_LIBRARY\_PATH "${LMODDIR}:${LD\_LIBRARY\_PATH}"'
+
+c) rename the lmodel\_warmabs.dat file to lmodel.dat, or cat it onto an 
+existing lmodel.dat
+
+d) cd into  \$LHEASOFT/../spectral/xspec/src/local\_mod
+
+e) type hmake 
+
+f) cd to the directory where you want to work and start xspec 11.
+
+
+\section{warmabs}
+
+Inside of xspec, the model can be invoked by typing 
+'mo warmabs*pow' or variations on that.
+The input parameters include: absorber column, parameterized as 
+log(N/10$^{22}$ cm$^{-2}$), log(ionization parameter) element abundances 
+relative to solar, turbulent broadening in km/s, and redshift.
+
+\section{photemis}
+
+The photoionized emitter can be invoked by typing 'mo photemis'.  This model is 
+the `thermal' (i.e. recombination and collisional excitation) emission which 
+comes from the same plasma used in warmabs.  Note that this does NOT include the 
+resonant scattered emission associated with the warmabs line emission; the windabs
+model can be used, with a trick, to model this emission if desired (see below).
+
+The model supplies to xspec the emissivity of the gas, in units of 
+erg cm$^{-3}$ s$^{-1}$, times a factor 10$^{10}$.  So the physical meaning of the 
+normalization, $\kappa$, is
+
+\begin{equation}
+\kappa=\frac{{\rm EM}}{4\pi D^2} \times 10^{-10}
+\end{equation}
+
+\noindent where EM is the emission measure of the gas 
+in the source (at the ionization parameter used in the fit) and D is the distance to 
+the source.  This same relation applies to the results from the hotabs model.
+
+\section{windabs}
+
+Windabs uses the 'sei' method of 
+Lamers et al. 1987 Ap. J. 314 726 to take the line center optical depth 
+calculated by the usual warmabs routines and spread them in wavelength 
+space in order to model the scattering 
+in an outflowing wind.  Bound-free absorption is treated 
+the same as in warmabs.  For lines, the optical depths from warmabs
+are input to the sei routines as the value of the 
+paramter ttot (optical depth normalization).  
+The input velocity vturb is used as the terminal velocity of the wind.
+ Other sei parameters are assumed to be fixed:  gamma=1 (run of optical 
+depth with velocity), apha=1 (velocity law), and eps=0 
+(thermalization parameter).
+Windabs has the same input parameters as warmabs, 
+except that it also has a covering fraction parameter, $C$ 
+(not part of the standard sei formulation),
+which should be in the range 0-2.  
+The physical meaning of $C$ is that, when 
+0$\leq C \leq$1, the emission component is reduced by a factor of $C$.
+A feature added on 09/04/2007: when covering fraction $C\geq$1, 
+the absorption component is reduced by a factor $2-C$.  So at $C=2$, the model 
+produces pure scattered emission.  Values of $C\geq$2 have no physical meaning.
+
+\section{multabs}
+
+Multabs tries to account for line broadening by absorption by multiple discrete components 
+rather than by turbulence or bulk flow.  This model is essentially identical 
+to warmabs in that it uses the warm absorber spectrum generated by warmabs, but 
+initially assuming that the lines are broadened only by thermal gas motions. 
+It then replicates these lines a fixed number of times and spreads the components 
+over a given velocity width.  The input parameters include the same parameters 
+as  warmabs:  ionization parameter, column, and abundances.  These control the properties
+of the individual absorbing components, in the same way as for warmabs.
+In addition, the user specifies the velocity spread of the components, still called 
+vturb, and the covering fraction, cfrac.  This covering fraction 
+can be interpreted as a covering fraction in velocity space.  
+The number of discrete components is given by cfrac*vturb/vtherm,
+where vturb is input by the user and vtherm is the thermal line width which 
+is determined by the equilibrium temperature (calculated by xstar).  The 
+optical depth of each component is divided by the number of components, so that the 
+total optical depth summed over the components is independent of their number.
+The number of components cannot be less than 1. If it is 1 then the component will 
+be placed at the redshifted energy of the line.  If it is greater than 1, then the 
+components will be spaced uniformly  in velocity from -vturb to +vturb relative 
+to the rest energy of the line.  There is no restriction on the value of cfrac, 
+so it is possible to set cfrac to some large number and thereby fill a uniform 
+trough in velocity with the line.
+
+\section{hotabs}
+
+Hotabs and hotemis are the coronal analogs of warmabs and photemis.  In this 
+case the free parameter determining the ionization is the log of the temperature
+in units of 10$^4$ K, i.e. logt4=0 corresponds to 10$^4$ K, logt4=3 corresponds to 10$^7$K.
+
+
+The normalization is the same as for warmabs. 
+The model supplies to xspec the emissivity of the gas, in units of 
+erg cm$^{-3}$ s$^{-1}$, times a factor 10$^{10}$.  So the physical meaning of the 
+normalization, $\kappa$, is
+
+\begin{equation}
+\kappa=\frac{{\rm EM}}{4\pi D^2} \times 10^{-10}
+\end{equation}
+
+\noindent where EM is the emission measure of the gas 
+in the source (at the temperature used in the fit) and D is the distance to 
+the source.  
+
+
+\section{Creating Your Own pops.fits Files}
+
+The procedure for doing this is as follows:
+
+a) {\bf You must use consistent versions of warmabs and xstar version 2.2.}
+Xstar is available either as standalone or as 
+part of the heasoft distribution.  That this is done correctly can be confirmed by comparing the 
+opening banner of the warmabs run to the opening banner of an xstar run.  The warmabs banner shows 
+both the warmabs version and the associated xstar version.  This is because 
+warmabs uses many xstar routines and the xstar atomic data file, and the pops.fits file
+structure depends on the atomic data file.   We attempt to maintain 
+consistency between the warmabs version in the tarfile at 
+ftp://legacy.gsfc.nasa.gov/software/plasma\_codes/xstar/warmabs22.tar.gz
+with the current release xstar version associated with the headas installation.  
+We also attempt to maintain 
+consistency between the warmabs develop version in the tarfile at 
+ftp://legacy.gsfc.nasa.gov/software/plasma\_codes/xstar/warmabs22dev.tar.gz
+with the current develop xstar version available at
+ftp://legacy.gsfc.nasa.gov/software/plasma\_codes/xstar/xstar22src.tar.gz.
+It is generally recommended to use the latter pair of codes when generating your own pops.fits files.
+Versions of xstar earlier than 2.2 cannot be used to generate population files 
+for use by warmabs and photemis.
+
+b) Using xstar version 2.2, run a variation of the constant density sphere
+described in the manual chapter 2, with low density and low luminosity so that the sphere 
+is optically thin. warmabs and photemis treat the ionization parameter as the free parameter
+describing level populations, so it is desirable that the model run in xstar
+be optically thin, and that it span the range of ionization parameter of interest.
+An example of the xstar command run from the command line is:
+
+xstar cfrac=0. temperature=10000. pressure=0.03 density=10000. spectrum='pow'  trad=-1. rlrad38=1.e-10  column=1.e+17   rlogxi=5.  lcpres=0 habund=1. heabund=1.  cabund=1. nabund=1. oabund=1. neabund=1. mgabund=1. siabund=1.  sabund=1.  arabund=1. caabund=1. feabund=1. niabund=0. modelname="otfs" niter=99  npass=1 critf=1.e-7 nsteps=10 xeemin=0.04 emult=0.1 taumax=50. lprint=1 lwrite=1
+
+and an example of the xstar.par file which could be used instead is:
+
+\begin{verbatim}
+cfrac,r,a,1,0.,1.,"covering fraction"
+temperature,r,a,10000,0.,1.e4,"temperature (/10**4K)"
+lcpres,i,a,0,0,1,"constant pressure switch (1=yes, 0=no)"
+pressure,r,a,0.03,0.,1.,"pressure (dyne/cm**2)"
+density,r,a,1.e+4,0.,1.e18,"density (cm**-3)"
+spectrum,s,a,"pow",,,"spectrum type?"
+spectrum_file,s,a,"spct.dat",,,"spectrum file?"
+spectun,i,a,0,0,1,"spectrum units? (0=energy, 1=photons)"
+trad,r,a,-1,,,"radiation temperature or alpha?"
+rlrad38,r,a,1.00E-015,0.,1.e10,"luminosity (/10**38 erg/s)"
+column,r,a,1.00E+016,0.,1.e25,"column density (cm**-2)"
+rlogxi,r,a,5,-10.,+10.,"log(ionization parameter) (erg cm/s)"
+habund,r,a,1,0.,100.,"hydrogen abundance"
+heabund,r,a,1,0.,100.,"helium abundance"
+liabund,r,h,0,0.,100.,"lithium abundance"
+beabund,r,h,0,0.,100.,"beryllium abundance"
+babund,r,h,0,0.,100.,"boron abundance"
+cabund,r,a,1,0.,100.,"carbon abundance"
+nabund,r,a,1,0.,100.,"nitrogen abundance"
+oabund,r,a,1,0.,100.,"oxygen abundance"
+fabund,r,a,1,0.,100.,"fluorine abundance"
+neabund,r,a,1,0.,100.,"neon abundance"
+naabund,r,a,1,0.,100.,"sodium abundance"
+mgabund,r,a,1,0.,100.,"magnesium abundance"
+alabund,r,a,1,0.,100.,"aluminum abundance"
+siabund,r,a,1,0.,100.,"silicon abundance"
+pabund,r,a,1,0.,100.,"phosphorus abundance"
+sabund,r,a,1,0.,100.,"sulfur abundance"
+clabund,r,a,1,0.,100.,"chlorine abundance"
+arabund,r,a,1,0.,100.,"argon abundance"
+kabund,r,a,1,0.,100.,"potassium abundance"
+caabund,r,a,1,0.,100.,"calcium abundance"
+scabund,r,a,1,0.,100.,"scandium abundance"
+tiabund,r,a,1,0.,100.,"titanium abundance"
+vabund,r,a,1,0.,100.,"vanadium abundance"
+crabund,r,a,1,0.,100.,"chromium abundance"
+mnabund,r,a,1,0.,100.,"manganese abundance"
+feabund,r,a,1,0.,100.,"iron abundance"
+coabund,r,a,1,0.,100.,"cobalt abundance"
+niabund,r,a,1,0.,100.,"nickel abundance"
+cuabund,r,a,1,0.,100.,"copper abundance"
+znabund,r,a,1,0.,100.,"zinc abundance"
+modelname,s,a,"otfs",,,"model name"
+nsteps,i,h,3,1,1000,"number of steps"
+niter,i,h,0,,,"number of iterations"
+lwrite,i,h,0,0,1,"write switch (1=yes, 0=no)"
+lprint,i,h,0,0,2,"print switch (1=yes, 0=no)"
+lstep,i,h,0,,,"step size choice switch"
+emult,r,h,0.5,1.e-6,1.e+6,"Courant multiplier"
+taumax,r,h,5.,1.,10000.,"tau max for courant step"
+xeemin,r,h,0.1,1.e-6,0.5,"minimum electron fraction"
+critf,r,h,1.e-7,1.e-24,0.1,"critical ion abundance"
+vturbi,r,h,1.,0.,30000.,"turbulent velocity (km/s)"
+radexp,r,h,0.,-3.,3.,"density distribution power law index"
+ncn2,i,h,999,999,99999,"number of continuum bins"
+loopcontrol,i,h,0,0,30000,"loop control (0=standalone)"
+npass,i,h,1,1,10000,"number of passes"
+mode,s,h,"ql",,,"mode"
+\end{verbatim}
+
+It is important to have the write switch set to 1 in order to 
+generate the file containing the level populations at each step.
+
+In doing this, you may want to change the shape of the ionizing spectrum.
+In these examples it is a power law with $\gamma$=2, which is the 
+same as what is used in the distributed warmabs/photemis package.
+The maximum ionization parameter is controlled by the 
+value of the variable rlogxi, in this case it is 5, corresponding
+to $\xi$=1.e5.  The minimum ionization parameter
+is set by the column density of the model; this input file 
+will terminate when log($\xi$) falls below -2.  The number of 
+intermediate steps is controlled by the variable nsteps; in this case
+nsteps=6 corresponds to a uniform spacing of 0.13 in log($\xi$).
+If the final model has more than 200 spatial zones, warmabs and photemis 
+will discard any populations for spatial zones beyond 200.
+
+c) After the run is complete, the populations are in the file xo0x\_detail.fits
+where x is the number of the final pass (usually 1).
+This must be moved to the directory containing the xstar data files, i.e. the 
+directory pointed to by the WARMABS\_DATA environment variable, and then 
+pointed to by the WARMABS\_POP environment variable.  Then warmabs 
+and photemis will read populations from this file.
+The file lmodel.dat, as it is distributed, contains limits on the 
+ionization parameter which may not be appropriate to your file pops.fits, so 
+you may want to change this.
+
+\section{Common block `ewout'}
+
+
+A feature added September 2007 is output of the strongest lines, 
+sorted by element and ion into a common block called 'ewout'
+This feature is only available for the warmabs, photemis, hotemis, hotabs  
+models (not windabs, or multabs). The contents of the common block are:
+
+lmodtyp: identifies which model most recently put its output into the 
+         common block.  lmodtyp=1,2,3,4, where 1=hotabs,
+         2=hotemis, 3=warmabs, 4=photemis 
+
+newout:  number of lines in the list.  This is zeroed after each call to warmabs, 
+         photemis, hotabs, etc.
+
+lnewo:   array conatining line indexes.  These should correspod to the line indexes 
+         in the ascii line lists on the xstar web page.
+
+kdewo:   character array containing the name of the ion
+
+kdewol:  character array containing the name of the lower level
+
+kdewou:  character array containing the name of the upper level
+
+aijewo:  array containing A values for the lines
+
+flinewo: array containing f values for the lines
+
+ggloewo: array containing statistical weights for the lower levels
+
+ggupewo: array containing statistical weights for the upper levels
+
+elewo:   array containing the line wavelengths
+
+tau0ewo: array containing the line center depths
+
+tau02ewo:array containing the line depths at the energy bin nearest to line center
+
+ewout:   array containing line equivalent widths in eV, negative values correspond to emission
+
+elout:   array containing line luminosities in xstar units (erg/s/10\^38)
+
+
+The details of how to get at the contents of the common block are up to the user.
+Currently xspec does not have a mechanism to do this, but it is straightforward to write 
+a small fortran code to call the models with suitable parameter values and print the 
+common block from there.  The calling sequence for 
+an analytic model is described in the xspec manual.
+It is important to point out that the common block is 
+overwritten at each call to one of the models, so it should be emptied by the calling 
+program after each call to one of the models.
+
+
+An example is as follows:
+
+\begin{verbatim}
+      program fphottst
+c
+      implicit none
+c
+      real ear(0:20000),photar(20000),photer(10000),param(30)      
+      integer ne,mm,ifl
+      real emin,emax,dele
+c
+      ne=10000
+      emin=0.4
+      emax=7.2
+      dele=(emax/emin)**(1./float(ne-1))
+      ear(0)=emin
+      do mm=1,ne
+        ear(mm)=ear(mm-1)*dele
+        enddo
+      write (6,*)ear(1),ear(ne),ear(ne/2)
+      param(1)=2.
+      param(2)=-4.
+      param(13)=100.
+      param(12)=0.
+      param(3)=1.
+      param(4)=1.
+      param(5)=1.
+      param(6)=1.
+      param(7)=1.
+      param(8)=1.
+      param(9)=1.
+      param(10)=1.
+      param(11)=1.
+      param(3)=0.
+      call fhotabs(EAR,NE,PARAM,IFL,PHOTAR,PHOTER)
+c
+      call commonprint
+c
+      write (6,*)'after fwarmabs'
+      do mm=1,ne
+        write (6,*)ear(mm),photar(mm)/ear(mm)
+        enddo
+c
+      stop
+      end
+      subroutine commonprint
+c
+      implicit none  !jg
+c
+      parameter (nnnl=200000)
+c
+      common /ewout/newout,lnewo(nnnl),kdewo(8,nnnl),
+     $  kdewol(20,nnnl),kdewou(20,nnnl),aijewo(nnnl),flinewo(nnnl),
+     $  ggloewo(nnnl),ggupewo(nnnl),
+     $  elewo(nnnl),tau0ewo(nnnl),tau02ewo(nnnl),ewout(nnnl),
+     $  elout(nnnl),lmodtyp
+c
+      real aijewo,flinewo,ggloewo,ggupewo,elewo,tau0ewo,tau02ewo,
+     $  ewout,elout
+      integer lnewo,newout,lmodtyp
+      character*1 kdewo,kdewol,kdewou
+      integer kk,mm   !jg
+c
+       if (lmodtyp.eq.1) write (6,*)'after hotabs',newout
+       if (lmodtyp.eq.2) write (6,*)'after hotemis',newout
+       if (lmodtyp.eq.3) write (6,*)'after warmabs',newout
+       if (lmodtyp.eq.4) write (6,*)'after photemis',newout
+       write (16,*)'index, ion, wave(A), tau0, tau0grid, ew (eV),',
+     $ 'lum, lev\_low, lev\_up, a\_ij, f\_ij, g\_lo, g\_up'
+        do kk=1,newout
+         write (16,9955)kk,lnewo(kk),(kdewo(mm,kk),mm=1,8),
+     $     elewo(kk),tau0ewo(kk),tau02ewo(kk),ewout(kk),
+     $     elout(kk),
+     $     (kdewol(mm,kk),mm=1,20),(kdewou(mm,kk),mm=1,20),
+     $     aijewo(kk),flinewo(kk),ggloewo(kk),ggupewo(kk)
+         enddo
+9955   format (1x,2i8,1x,8a1,5(1pe11.3),1x,2(20a1,1x),4(1pe11.3))
+c
+      return
+      end
+\end{verbatim}
+
+
+New in version 2.02:  inclusion of continua, both in emission and absorption.  
+Equivalent widths are not calculated, and quantities analogous to the 
+transition probability and oscillator strength are not output.  Also, the 
+upper level, which may not be the ground level of the adjacent ion, is 
+not identified.  
+
+New in version 2.03: Fix to error in normalization of voigt profile.
+
+New in version 2.04: Rational and uniform level labels for all levels.
+These should now be unambiguous.  A description is contained in the xstar 
+manual.  Also, the interface with the commonprint common block has been 
+updated.  There is now a (string) variable whiche denotes whether a 
+transition is a line or rrc/edge.  Upper levels for rrc/edges are denoted
+'continuum' for the ground state of the next ion, or by the appropriate 
+level string when the upper level is not the ground state.
+
+New in version 2.06:  Consistency with xstar version 221bn.  Includes 
+up to date r-matrix atomic data for Ni and Al.  Also includes model
+'scatemis', which allows calculation of emission models for resonant-excitation
+dominated plasmas (optically thin).
+
+New in version 2.07:  Contents of the common block are output to fits files.
+A new file is created with each call to warmabs or photemis, with names like
+'warmabsxxxx.fits', where xxxx is a sequential number, mod 9999. In order 
+to implement this feature, the fphotems.f file must be edited:  calls to 
+the routine 'fitsprint' must be uncommented.
+
+New in version 2.07b:  Fixed minor errors in lmodel.dat.  Shifted O I and O II 
+L alpha to match observations.
+
+New in version 2.09:  Made consistent with xstar v221bn15.  New N VI collisional 
+excitation data.
+
+New in version 2.10:  Made consistent with xstar v221bn17.  Changes to naming of output fits file suggested by John Houck:  if the WARMABS\_OUTFILE environment variable is set, then this name is used for the output fits file.  Also checks to make sure that the pops.fits file was created with the same atomic database as the current one, and exits if not.
+
+New in version 2.11:  O I absorption cross sections from Gorczyca et al. (2013). Fine structure for H-like ions for Z$\>$20.
+Multiple errors fixed 10/08/2013.
+
+New in version 2.12:  Ne I absorption cross sections from Gorczyca et al. (2013). Fine structure for all H-like ions.
+
+New in version 2.13:  Mg I-III absorption cross sections from Gorczyca et al. (2013). 
+New input parameters for warmabs, photemis, hotabs, hotemis:  
+write\_outfile is a switch controlling output of line depths/luminosities to an ascii fits file:  
+0=no fits files produced, 
+1=fits file containing lines/edges is produced, 
+2=fits file containing ion column densities is produced, 
+3=both types of fits files 
+are produced.
+outfile\_idx is an integer index.  If the environment WARMABS\_OUTPUT is not set, 
+then the output is written to a fits file names 'warmabsxxxx.fits', where
+xxxx is the value of this variable.  If WARMABS\_OUTPUT is set, then its 
+value is used as the name of the output file.
+Use of xstar v221bn18 routines:  update to fundamental constants, adding 
+thermal and turbulent velocities in quadrature consistently.
+
+New in version 2.14:  extrapolation of all valence shell cross sections beyond 
+tabulated values.  This is a temporary fix to the problem of apparent 
+'negative edges' which appear at large column density in absorption spectra.
+Needed are extensions to the tabulated cross sections to higher energies.
+
+New in version 2.15:  Undid extrapolation of all valence shell cross 
+sections beyond tabulated values because this led to spurious 
+cross sections in some cases (He0 ground --> He+ 2p).  Instead manually
+inserted extrapolated He0 ground --> He+ ground cross section 
+into atomic data.  Implemented cosmic abundances gotten from xspec 
+internal tables.  These can be changed using the 'abund' command, 
+as described in the xspec manual.
+
+New in version 2.17:  when the 'write\_outfile' parameter value is 
+nonzero an additional file is produces, called warmabs\_columns.  This 
+file contains the column densities of all ions from the most 
+recent model call.
+
+New in version 2.18:  Fixed bug which affected output to the fits output 
+files for photemis.
+
+New in version 2.19:  Fixed additional bug which affected output to the 
+fits output files for photemis.  This resulted in unphysical small wavelengths
+tabulated in the file for various lines, and also caused the wavelengths 
+to change between successive calls.  Also changed the use of the 
+write\_outfile variable such that the values are as follows:  0=no fits files
+produced, 1=fits file containing lines/edges is produced, 2=fits file 
+containing ion column densities is produced, 3=both types of fits files 
+are produced.  Also increased the critical luminosity needed for photemis
+to add line emision to the spectrum, in order to speed execution.
+
+New in version 2.20:  Fixed error in Si XIV energy levels which was introduced
+when putting fine structure.
+
+New in version 2.21:  Added fine structure of He-like ions of C-Ni.
+
+New in version 2.22:  Added list of level indeces and ion index to the fits 
+table output.  These indeces are unlikely to change over time as new atomic 
+data is added, so this should provide a robust way to keep track of 
+lines and rrcs.
+
+New in version 2.23:  Removed duplications of atomic data: rrcs in 
+Ni IX -- XV and of lines in Na X and F VIII.
+
+New in version 2.24:  Changes to xstar code corresponding to xstar v2.2.1bn24.
+
+New in version 2.25:  Fix to error which led to incorrect emission in the Fe UTA.
+
+New in version 2.26:  Compatibility with xstar version 2.3.  Extend photoionization 
+extrapolation from 20 keV to 200 keV.
+
+New in version 2.27:  Compatibility with xstar version 2.31. 
+
+\section{Limitations}
+
+This package is still being tested.  Some embarrassing bugs have already been found, 
+but more may still lurk.  Please contact me with any reports or questions.
+
+2) It is not blindingly fast.  On a 1GHz machine, the first time
+'mo warmabs ..' is typed, the initial setup requires $\sim$30 seconds.
+After that, each time an abundance or ionization parameter is changed, 
+it requires 5-10 seconds to recalculate the model.  Presumably 
+on a faster machine this will be reduced.
+
+3) It calculates the spectrum 'on the fly', appropriate to the energy grid
+and parameters the user specifies.  But it does not calculate the 
+ionization balance self-consistently.  It uses a saved file of 
+level populations calculated for a grid of optically thin models calculated
+with a $\Gamma=2$ power law ionizing spectrum.  So this will not be self-consistent 
+if your source has a very different ionizing spectrum.  Also it implicitly 
+assumes that the absorber has uniform ionization even if you specify 
+a large column, which is not self-consistent.
+
+4) Photemis does not take into account scattering, only true emission.
+

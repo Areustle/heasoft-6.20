@@ -1,0 +1,262 @@
+#! /bin/sh
+#    Filename: fermi-setup(.in)
+# Description: Writes an initialization script for FERMI software
+#              which is custom fit to the user and the particular
+#              software installation. Note that this script is
+#              designed to be invoked by fermi-init.csh/fermi-init.sh,
+#              and should not normally be invoked directly by user.
+# Author/Date: James Peachey, HEASARC/GSFC/NASA, May 4, 1999
+# Modified for use with FERMI, Bryan Irby, September 29, 2008
+#
+# local variables used by this script internally only
+#-------------------------------------------------------------------------------
+this_script=`echo $0 | sed 's:.*/::'`
+fermi_info="$this_script:"
+fermi_error="$fermi_info ERROR --"
+fermi_error2="$fermi_info         "
+
+# check for valid arguments and environment variables
+#-------------------------------------------------------------------------------
+# one and only argument needs to tell flavor of script, used
+# to create the output from this script
+flavor=$1
+if [ "x$flavor" != xcsh -a "x$flavor" != xsh ]; then
+  echo "$fermi_info usage $this_script csh|sh" >&2
+  exit 3
+fi
+
+# make sure FERMI_DIR is an absolute path, with no trailing /s
+# avoid using pwd unless necessary, because pwd does not
+# preserve the names of sym-links, which can confuse the issue
+if [ `echo $FERMI_DIR | grep -c '^/'` -eq 0 ]; then
+  FERMI_DIR=`cd $FERMI_DIR; pwd`
+else
+  FERMI_DIR=`echo $FERMI_DIR | sed 's://*:/:g' | sed 's:/$::'`
+fi
+export FERMI_INST_DIR=${FERMI_DIR}
+
+#-------------------------------------------------------------------------------
+
+# find a place for us -- somewhere, a place for us
+#-------------------------------------------------------------------------------
+# find general "home" directory; this is paranoid, but in case some
+# non-interactive shell doesn't set HOME, try some other places
+if [ "x$HOME" != x ]; then
+  :
+elif [ "x$TMPDIR" != x ]; then
+  HOME="$TMPDIR"
+elif [ -w /tmp ]; then
+  HOME="/tmp"
+else
+  HOME="."
+fi
+if [ ! -w "$HOME/." ]; then
+  echo "$fermi_error unable to cd $HOME" >&2
+  echo "$fermi_error2 HOME must point to a writable directory" >&2
+  exit 3
+fi
+
+# configure defaults
+#-------------------------------------------------------------------------------
+HD_SRC="@HD_SRC@"
+LHEAPERL="@PERL@"
+UNAME_SYSTEM="@UNAME_SYSTEM@"
+EXT="@EXT@"
+#-------------------------------------------------------------------------------
+
+# handle directory containing libraries
+#-------------------------------------------------------------------------------
+FERMI_LIB=''
+if [ -d $FERMI_INST_DIR/lib/. ]; then
+  FERMI_LIB=$FERMI_INST_DIR/lib
+fi
+#-------------------------------------------------------------------------------
+
+# handle directory containing binaries
+#-------------------------------------------------------------------------------
+if [ -x $FERMI_INST_DIR/bin/. ]; then
+  FERMI_BIN=$FERMI_INST_DIR/bin
+
+  # prune existing references to FERMI_BIN from path, then put
+  # FERMI_BIN at the front. extra colons are so that match
+  # will occur anywhere in path
+  PATH=`echo ":$PATH:" | sed "s%:$FERMI_BIN:%:%g" | sed "s%::*$%%"`
+  PATH="$FERMI_BIN$PATH"
+
+  # anything which uses readline (i.e. most binaries) must have these set
+  FTOOLSINPUT=stdin
+  FTOOLSOUTPUT=stdout
+fi
+#-------------------------------------------------------------------------------
+
+# handle directory containing scripts
+#-------------------------------------------------------------------------------
+# check whether FERMI_INST_DIR perl library exists
+if [ -d "$FERMI_INST_DIR/lib/perl" ]; then
+  FERMI_PERLLIBS=$FERMI_INST_DIR/lib/perl
+  # make perl happy about its library paths
+  if [ "x$PERL5LIB" != x ]; then
+    PERL5LIB=`echo ":$PERL5LIB:" | \
+      sed "s%:$FERMI_PERLLIBS:%:%g" | sed "s%::*$%%"`
+    PERL5LIB="$FERMI_PERLLIBS$PERL5LIB";
+  fi
+  if [ "x$PERLLIB" != x ]; then
+    PERLLIB=`echo ":$PERLLIB:" | \
+      sed "s%:$FERMI_PERLLIBS:%:%g" | sed "s%::*$%%"`
+    PERLLIB="$FERMI_PERLLIBS$PERLLIB";
+  else
+    PERLLIB="$FERMI_PERLLIBS"
+  fi
+fi
+#-------------------------------------------------------------------------------
+# handle PIL/XPI stuff (parameter files)
+#-------------------------------------------------------------------------------
+if [ -d $FERMI_INST_DIR/syspfiles/. ]; then
+  PFCLOBBER=1
+
+  # make sure local parameter file directory exists
+  if [ ! -w $HOME/pfiles/. ]; then
+    mkdir $HOME/pfiles
+    if [ $? -ne 0 ]; then
+      echo "$fermi_error cannot create local pfiles directory $HOME/pfiles" >&2
+      exit 3
+    fi
+  fi
+
+  # use PFILES (if set) to set initial values for locpfiles and syspfiles
+  if [ "x$PFILES" != x ]; then
+    syspfiles=`echo $PFILES | sed "s%.*;%%"`
+    locpfiles=`echo $PFILES | sed "s%;*$syspfiles$%%"`
+  fi
+
+  # move HOME/pfiles to front of locpfiles and weed out redundancies
+  if [ "x$locpfiles" = x ]; then
+    locpfiles="$HOME/pfiles"
+  else
+    locpfiles=`echo ":$locpfiles:" | \
+      sed "s%:$HOME/pfiles:%:%g" | sed "s%::*$%%"`
+    locpfiles="$HOME/pfiles$locpfiles"
+  fi
+
+  # move FERMI_INST_DIR/syspfiles to front of syspfiles and weed out redundancies
+  if [ "x$syspfiles" = x ]; then
+    syspfiles="$FERMI_INST_DIR/syspfiles"
+  else
+    syspfiles=`echo ":$syspfiles:" | \
+      sed "s%:$FERMI_INST_DIR/syspfiles:%:%g" | sed "s%::*$%%"`
+    syspfiles="$FERMI_INST_DIR/syspfiles$syspfiles"
+  fi
+
+  PFILES="$locpfiles;$syspfiles"
+fi
+#-------------------------------------------------------------------------------
+# make sure "saved" variables are exported in current form so they
+# take effect when the initialization script is written
+#-------------------------------------------------------------------------------
+export DYLD_LIBRARY_PATH LD_LIBRARY_PATH PATH PERLLIB PERL5LIB
+#-------------------------------------------------------------------------------
+
+# LD_LIBRARY_PATH
+#-------------------------------------------------------------------------------
+if [ "x$FERMI_LIB" = x ]; then
+  :
+elif [ "x$LD_LIBRARY_PATH" = x ]; then
+  LD_LIBRARY_PATH="$FERMI_LIB"
+else
+  LD_LIBRARY_PATH=`echo ":$LD_LIBRARY_PATH:" | \
+    sed "s%:$FERMI_LIB:%:%g" | sed "s%::*$%%"`
+  LD_LIBRARY_PATH="$FERMI_LIB$LD_LIBRARY_PATH"
+fi
+
+#-------------------------------------------------------------------------------
+# Darwin & Cygwin PATHs:
+#-------------------------------------------------------------------------------
+case $UNAME_SYSTEM in
+  Darwin*)
+    if [ "x$FERMI_LIB" = x ]; then
+      :
+    elif [ "x$DYLD_LIBRARY_PATH" = x ]; then
+      DYLD_LIBRARY_PATH="$FERMI_LIB"
+    else
+      DYLD_LIBRARY_PATH=`echo ":$DYLD_LIBRARY_PATH:" | \
+        sed "s%:$FERMI_LIB:%:%g" | sed "s%::*$%%"`
+      DYLD_LIBRARY_PATH="$FERMI_LIB$DYLD_LIBRARY_PATH"
+    fi
+    ;;
+  CYGWIN*)
+    if [ "x$FERMI_LIB" = x ]; then
+      :
+    elif [ "x$PATH" = x ]; then
+      PATH="$FERMI_LIB"
+    else
+      PATH=`echo ":$PATH:" | sed "s%:$FERMI_LIB:%:%g" | sed "s%::*$%%"`
+      PATH="$FERMI_LIB$PATH"
+    fi
+    ;;
+esac
+
+#-------------------------------------------------------------------------------
+# list of variables needed in initialization script
+#-------------------------------------------------------------------------------
+varlist="FERMI_INST_DIR"
+varlist="$varlist DYLD_LIBRARY_PATH LD_LIBRARY_PATH PATH"
+varlist="$varlist PERLLIB PERL5LIB"
+varlist="$varlist PFCLOBBER PFILES"
+varlist="$varlist FTOOLSINPUT FTOOLSOUTPUT"
+varlist="$varlist LHEAPERL EXT"
+
+#-------------------------------------------------------------------------------
+# variables needed by FERMI:
+#-------------------------------------------------------------------------------
+CALDBALIAS=$FERMI_INST_DIR/refdata/fermi/caldb/CALDB/software/tools/alias_config.fits
+CALDBCONFIG=$FERMI_INST_DIR/refdata/fermi/caldb/CALDB/software/tools/caldb.config
+CALDBROOT=$FERMI_INST_DIR/refdata/fermi/caldb
+CALDB=$FERMI_INST_DIR/refdata/fermi/caldb/CALDB
+
+ST_FACILITIESROOT=$FERMI_INST_DIR/refdata/fermi/st_facilities
+EXTFILESSYS=$FERMI_INST_DIR/refdata/fermi
+
+PYTHONPATH=$FERMI_INST_DIR/lib/python:$FERMI_INST_DIR/lib:$PYTHONPATH
+
+BINDIR=$FERMI_INST_DIR/bin
+
+TIMING_DIR=$FERMI_INST_DIR/refdata
+
+if [ -x $FERMI_INST_DIR/bin/root ]; then
+  ROOTSYS=$FERMI_INST_DIR
+  varlist="$varlist ROOTSYS"
+fi
+
+SWIG_LIB=$FERMI_INST_DIR/share/swig/1.3.31
+
+varlist="$varlist CALDBALIAS CALDBCONFIG CALDBROOT CALDB ST_FACILITIESROOT EXTFILESSYS PYTHONPATH BINDIR TIMING_DIR SWIG_LIB"
+
+#-------------------------------------------------------------------------------
+# save values in output initialization shell scripts
+#-------------------------------------------------------------------------------
+# name of temporary config script
+HOST_NAME=`hostname`
+fermi_config="$HOME/fermi-config-$HOST_NAME"
+
+# Bourne Shell version, write only for sh flavor initialization
+if [ $flavor = sh ]; then
+  rm -f $fermi_config$$.sh
+  touch $fermi_config$$.sh
+  for var in $varlist; do
+    eval "if [ \"x\$$var\" != x ]; then
+            echo \"\$var=\\\"\$$var\\\"; export \$var\" >> $fermi_config$$.sh;
+          fi"
+  done
+  echo "$fermi_config$$.sh"
+# C Shell version, write only for csh flavor initialization
+elif [ $flavor = csh ]; then
+  rm -f $fermi_config$$.csh
+  touch $fermi_config$$.csh
+  for var in $varlist; do
+    eval "if [ \"x\$$var\" != x ]; then
+            echo setenv \$var \\\"\$$var\\\" >> $fermi_config$$.csh;
+          fi"
+  done
+  echo "$fermi_config$$.csh"
+fi
+#-------------------------------------------------------------------------------

@@ -1,0 +1,346 @@
+#! /usr1/local/bin/perl5
+use Getopt::Std;
+require "interface.pl";
+require "utils.pl";
+
+# AUTOMERGE 
+# This program will prompt the user for information to be used as
+# criteria in merging event files. Using the table in the catalog FITS
+# file, this program will build a list of event files which satisfy
+# these criteria and send the list to EXOMERGE where the
+# merging will take place. This program is intended strictly for EXOSAT.
+# The inputs can also be given on the command line.
+#
+# This is the command line syntax
+#
+# automerge -i catalog -o outfile -g grating -d detector -f filter
+#
+# where: 
+#      catalog - catalog (.cat) FITS file
+#      outfile - output FITS file which will contain the merged event files
+#      instrume - instrument in use (CMA1 or CMA2)
+#      filter - filter in use (3lx, 4lx, Al/P, Bor, PPL)
+#      grating - the position of the transmission grating [out or in]
+#
+
+$runfile="automergerun";
+$evtlist="evtlist";
+$clobber="no";
+$tchat=5;
+
+getopts('i:o:d:g:f:yhv');
+#** Note for using Getopts **
+# all arguments in Getopts that are followed by a colon require an argument
+# Example:
+# h as written above therefore doesn't require an argument
+#
+# Example 2:
+# &Getopts('cde:hmqvw:x:');
+# e and w and x require arguments
+# c,d,e,h,m,q,and v do not
+#****************************
+
+if ( defined $opt_h){
+    print <<EOHELP1;
+    
+AUTOMERGE
+	
+USAGE
+    automerge -i catfile -o outfile -g grating -d detector -f filter
+	    
+DESCRIPTION
+
+ This script creates a list of EXOSAT LE event files for a given observation,
+ and than runs the task 'exomerge' to output a merged event file. 
+ The list of event files to be merged will contain files selected from basic 
+ user input parameters and pre-set flags obtained from the catalog file 
+ associated to each observation.
+ The user input parameters are detector name, filter name and if the grating 
+ is in use. The file list is processed by 'exomerge' which creates the merged
+ event file (see also the help on exomerge). This script is intended to work
+ for EXOSAT LE raw data files as stored in the HEASARC archive. Data from each
+ observation are recorded in several event and housekeeping files. A new file
+ was created either after a few hours of observing time (ranging between 2-4)
+ or because of changes in one or more observational parameters. To each 
+ observation is also associated a catalog file and an orbit file. The user 
+ should download from the archive all the files associated to each 
+ observation. These are: 1) The catalog FITS file (.cat extension) lists the 
+ available event files and provides information on the observation set-up. 
+ This file is the input file for the script and it is used to discard any 
+ time interval or file with the paramater SUBMODE set to inactive. 
+ 2) The FITS event files (.fits extension) are used by 'exomerge' to 
+ create the merged event file.  3) The housekeeping and orbit files also 
+ used in 'exomerge'.
+
+FLAGS:
+     -h - Prints this help file
+     -y - overwrite an existing FITS file 
+     -v - verbose mode
+
+    the following flags require arguments
+     -i - input catalog file 
+     -o - output FITS file name 
+     -d - detector [input value: CMA or PSD]
+     -f - filter. Input only one filter [input value: 3Lx, 4Lx, Al/P, Bor, PPL]
+     -g - transmission grating position [input value: in or out]
+
+EXAMPLES
+
+    Using the catalog file ex850218_1954_1718cma1.cat create a merged event
+    file, out.evt, using data taken with the CMA1 detector and filter 3Lx
+    but excluding grating data. 
+
+  > automerge -i ex850218_1954_1718cma1.cat -o out.evt -g out -d cma -f 3Lx
+
+EOHELP1
+&exit_wish;
+}
+open (EVT,">$evtlist");
+open (TEMP,">$runfile");
+
+# Read Command Line Arguments or Prompt User
+
+# Catalog FITS file name
+if(defined $opt_i){
+    $cat=$opt_i;
+}else{
+    $cat= &getScalar("Enter input catalog FITS file name");
+}
+
+#Check if this file exists
+if( !(-e $cat) ) {
+    $nocat=1;
+    while($nocat) {
+	print ("Catalog not found.\n");
+	$cat= &getScalar("Enter input catalog FITS file name, -999 to quit");
+	if( (-e $cat)) {
+	    $nocat=0;
+	}elsif($cat == -999) {
+	    &exit_wish;
+	}
+    }
+}
+
+# Output FITS file name
+if(defined $opt_o){
+    $out_file=$opt_o;
+}else{
+    $out_file= &getScalar("Enter output FITS file name");
+}
+
+# Clobber any existing output file?
+if(defined $opt_y){
+    $clobber="yes";
+}else{
+#check if output file already exists
+    if( -e $out_file){
+	$clobber=&MessageYesOrNo('n',"Output file already exists! Do you want to overwrite it?\n");
+	if($clobber){
+	    $clobber="yes";
+	}else{
+	    $clobber="no";
+#            `rm $runfile`;
+	    die "automerge: $out_file unchanged.\n";
+	}
+    }
+}
+
+
+#Detector in use [CMA or PSD]
+if(defined $opt_d){
+    $detector=$opt_d;
+}else{
+    $detector=&getScalar("Detector in use (CMA or PSD)");  
+}
+$detector =~ tr/A-Z/a-z/;
+$notdet=1;
+if($detector =~ /^(cma|psd)$/) {
+#    print("The detector you selected is ok!\n");
+}else{
+    while($notdet){
+         print("Detector incorrect. Please select another detector \n");
+         $detector=&getScalar("CMA or PSD, -999 to quit");  
+         $detector =~ tr/A-Z/a-z/;
+         if($detector =~ /^(cma|psd)$/) {
+            $notdet=0;
+         }elsif($detector == -999){
+           &exit_wish;
+         }
+    }
+}
+
+
+#Filter in use [3Lx, 4Lx, Al/P, Bor, PPL]
+if(defined $opt_f){
+    $filter=$opt_f;
+}else{
+    $filter=&getScalar("Filter in use (3Lx, 4Lx, Al/P, Bor, PPL)");  
+}
+$filter =~ tr/A-Z/a-z/;
+$notfilt=1;
+if($filter =~ /^(3lx|4lx|al\/p|bor|ppl)$/) {
+#    print("The filter you selected is ok!\n");
+}else{
+    while($notfilt){
+         print("Filter incorrect. Please select another filter \n");
+         $filter=&getScalar("3Lx, 4Lx, Al/P, Bor, PPL, -999 to quit");  
+         $filter =~ tr/A-Z/a-z/;
+         if($filter =~ /^(3lx|4lx|al\/p|bor|ppl)$/) {
+            $notfilt=0;
+         }elsif($filter == -999){
+           &exit_wish;
+         }
+    }
+}
+#Grating position [in or out]
+if(defined $opt_g){
+    $grating=$opt_g;
+}else{
+    $grating=&getScalar("Grating position (in, out)");  
+}
+$grating =~ tr/A-Z/a-z/;
+$notgrat=1;
+if($grating =~ /^(in|out)$/) {
+#    print("The filter you selected is ok!\n");
+}else{
+    while($notgrat){
+         print("Grating position incorrect. Please select another \n");
+         $grating=&getScalar("in, out, -999 to quit");  
+         $grating =~ tr/A-Z/a-z/;
+         if($grating =~ /^(in|out)$/) {
+            $notgrat=0;
+         }elsif($grating == -999){
+           &exit_wish;
+         }
+    }
+}
+# Verbose or Quiet?
+if(defined $opt_v){
+    $verbose=1;
+    $tchat=30;
+}else{
+    $verbose=0;
+}
+
+# At this point all of the information has been input.
+# The script must then run fdump and check which files
+# 1) exist (i.e. aren't NONE and aren't inactive and (-e $filename) is true)
+# 2) satisfy the user criteria
+
+#Read the filename of the catalog file. If there is more than one catalog file
+# die with an error message
+#@cat=<*.cat*>;
+#if ($#cat > 0) {
+#    die "Error: Found more than one catalog file in this directory (.cat*) \n";
+#} elsif ( (length ($cat[0]) ) == 0 ) {
+#    die "Error: No catalog file found in this directory \n";
+#}
+#$cat=$cat[0];
+if($verbose){
+    printf ("You selected Grating= %s Detector= %s and Filter= %s \n", $grating,$detector,$filter);
+    print ("Reading $cat Clobber = $clobber\n");
+    print ("The files that satisfy your criteria are: \n");
+}
+open ( COL, ">columns.atemp");
+print COL "FILENAME\nGRATING\nSUBMODE\nFILTER\nDETECTOR\n";
+close (COL);
+system("fdump $cat exauto.tmp \@columns.atemp \- prhead=no fldsep=, showcol=no clobber=yes");
+open (DUMP,"exauto.tmp");
+while ( $line=<DUMP> ) {
+    chop $line;
+    @row=split(/,/,$line);
+    $filename=$row[1];
+    $fgrate=$row[2];
+    $submode=$row[3];
+    $ffilt=$row[4];
+    $ffilt =~ tr/A-Z/a-z/;
+    $fdet=$row[5];
+# Check if the row is empty
+    if( $#row > 1 ) {
+# Check if not NONE
+	if (!($filename =~ /^NON/)) {
+# Check if not inactive
+	    if( !($submode =~ /^inact/) ) {
+                @filearray=split(/\s+/,$filename);
+                $evtfile=$filearray[0].".fits";
+#all event files that are not NON or inactive
+                if($ffilt =~ /^$filter/ ) {
+		    if ($fgrate =~ /^$grating/ ) {
+			if ($fdet =~ /^$detector/ ) {
+# Check for existence of .fits .fits.gz or .fits.Z
+			    if( -e $evtfile) {
+				if($verbose){
+				    print ("$evtfile \n");
+				}
+				print EVT ("$evtfile\n");
+			    }elsif( -e $evtfile.".gz") {
+				if($verbose){
+				    print ("$evtfile \n");
+				}
+				print EVT ("$evtfile\n");
+			    }elsif( -e $evtfile.".Z") {
+				if($verbose){
+				    print ("$evtfile \n");
+				}
+				print EVT ("$evtfile\n");
+			    }
+			}
+		    }
+		}
+            }
+        }
+    }
+}
+close(EVT);
+
+print TEMP ("exomerge evtfile=\@evtlist outfile=$out_file tchat=$tchat clobber=$clobber\n");
+close TEMP;
+chmod 0777, $runfile;
+
+# Check if the event list has non-zero size (i.e. a match exists to criteria)
+if ( -z $evtlist) {
+    die "Error: No files match your criteria \n";
+}
+if($verbose){
+    print ("\n+++++++ detailed output from exomerge follows +++++++\n");
+}
+
+# Run exomerge and check for errors
+#@result=&runcom("$runfile > outerr");
+`$runfile 2> outerr > output`;
+
+if($verbose){
+    open(OPUT,"output");
+    while($line=<OPUT>){
+	print("$line");
+    }
+    close OPUT;
+#    `rm output`;
+}
+
+if ( -s "outerr") {
+    print("\n++++++ the error messages from exomerge are ++++++\n");
+    open(ERR,"outerr");
+    while($line=<ERR>){
+	print("$line");
+    }
+    close ERR;
+#    `rm outerr`;
+}
+#if($result[0] =~ /Error/i){
+#    open(ERR,"outerr");
+#    while($line=<ERR>){
+#	print("$line");
+#    }
+#    close ERR;
+#    `rm outerr`;
+#    print("@result \n");
+#}
+# Done. Now clean up
+`rm outerr`;
+`rm output`;
+`rm evtlist`;
+`rm columns.atemp`;
+`rm exauto.tmp`;
+`rm $runfile`;
+

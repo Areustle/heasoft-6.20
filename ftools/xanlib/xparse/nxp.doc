@@ -1,0 +1,499 @@
+
+    	DOCUMENTATION ON THE XPARSE ROUTINES
+        ____________________________________
+
+1. INTRODUCTION
+_______________
+
+	The set of routines listed below provide a simple parsing facility.
+This documentation should give the neccessary information required to use the
+XPARSE routines in program writing. Please refer to XPARSE.DOC for details of 
+how an xparse based program appears to the user.
+
+2. WRITING PROGRAMS THAT USE XPARSE
+___________________________________
+
+	The basic cycle of using XPARSE is to read in a string of data from
+the terminal (or possibly an indirect file), break it into one or more
+arguments, processing the individual arguments as you go.  By processing
+it could just be saving the argument in another character string (e.g. as
+a file), returning a real number, or matching the string against a keyword
+list.  There are a set of basic subroutine calls to perform these
+tasks.  There are also several compound subroutines that may input the
+string as well as process it.  More complete control is maintained if the
+basic routines are used, although the compound routines provide a fair degree
+of flexability.
+	Below is a list of the routines available.( A detailed explanation of
+how to call the routines is given in section 3.)
+	
+	INITIALIZATION
+
+	Initialization Routine:  All programs that use any XPARSE subroutine
+(with some exceptions) should include an inital statement CALL XPARSE(' ')
+before the first call to another XPARSE subroutine OR alternativly they must
+have a routine with the FORTRAN statement 
+	EXTERNAL XPRSBD
+This tells the linker to include the Block Data information to properly define
+special characters, e.g. delimeters.
+
+	BASIC XPARSE VARIABLES AND CONCEPTS:
+	Other capabilities that the XPARSE routines provide are:  the ability
+to redirect the source of commands;  provide routines that
+directly interface with the user (for asking questions, choosing from
+options, etc); open and maintain a log file;  handle
+the allocation of fortran logical unit numbers for I/O.  Future expansions
+will allow for the establishment of a simple parameter system.
+
+	INPUT STRINGS ROUTINES:
+
+		XINIRD - Get the initial command string arguments used on the
+				invocation line.
+		XNXTRD - Skip over the remainder of the current string
+				(including any continuations) and input a
+				new string.
+Variables used in these routines.
+	STRING	- a string of characters read from the terminal, command line,
+or indirect file.  This is declared by the user and should be long enough for
+any input lines (for example CHARACTER*255).  The individual arguments are
+taken from STRING, although occasionally new arguments are inserted, such
+as recovering from some erroneous input.
+	IPARSE	- The current positon in the parse string, STRING.  IPARSE
+points to the character BEFORE the next argument to be processed from the
+string.  IPARSE=0 means its at the head of STRING (no arguments yet processed).
+IPARSE = LEN(STRING) means its at the end of STRING and no further arguments
+will be taken from it.
+	The basic XPARSE sequence is to
+		(1) - Get a parse string, usually with XNXTRD or XINIRD.
+		(2) - Extract one or more arguments from the string, using
+specialized routines (e.g. XGTSTR, XGTMCH, XGTRL4, XGTINT, XGTLR4, XGTLIN)
+or the general argument reader XGTARG.
+		(3) - Read another string.
+Note that if the string ends in a continuation character, (e.g. "-") then
+the extraction routines will automatically read another line from the current
+command input source into STRING and reset IPARSE.
+	As an example of use, assume that you have a command that takes one or
+more arguments off the command line and processes them in some way.  Then the
+program takes identical command lines until an end of file is input. For
+example something like the READFILE program which takes a series of filenames,
+one per input line.  What the user would type is something like: 
+ $ READFILE file1
+ file2
+ file3
+ file4
+ <CNTRL-Z>
+This would be implemented as something like
+	CALL XINIRD('Filename:',string,iparse)
+c		You can check if the initial command had anything in it by
+c		looking for IPARSE=0.  In the above example string will
+c		contain the value "file1".
+	if (IPARSE.ne.0) then call exit
+	NOTDONE = .true.
+	do while (NOTDONE)
+c	Now parse the arguments from the initial command line... perhaps with
+c	the XGTSTR command:
+	    call XGTSTR(STRING,IPARSE, ...)
+c	Process the file name returned from XGTSTR
+c	...
+c	Now read in the next command line
+	    call XNXTRD('Filename:',string,iparse,ierr)
+c	These subsequent reads will put "file2", "file3", and "file4" in
+c	STRING, one each call to XNXTRD.
+c	Now an EOF (or other I/O error) is indicated by a non-zero value of
+c	IERR.
+	    NOTDONE = (IERR.eq.0)
+c	Continue the loop
+	    end do
+
+The following routines are usually not directly called by the user:
+		XCREAD - Input a string from the terminal or the current
+				`command' file.
+		XFLUSH - Flush any continuation lines attached to the current
+				string from the `command' file.
+
+	DEFINE COMMAND INPUT SOURCE:
+		XNEWCM - Make a new file the current command file.
+		XRMVCM
+
+	DIRECT USER INTERFACES:
+		XQUEST -
+		XCHOSE - Prompts for a response that requires one option to be 
+				returned.
+
+
+	PROCESSING OF INPUT STRINGS:
+
+	Once the string has been returned via one of the above routines, it can
+be processed by using one of the following:
+
+		XGTSTR - Divide a string into a requested number of arguements
+		XGTARG - Get the next arguement in a string.
+		XGTNUM - Divide a string into a requested number of arguements
+				as general numbers.
+		XGTINT - Get a list of Integer*4 arguements.
+		XGTRL4 - Get a list of Real*4 arguements.
+		XQUEST - Get a logical true or false depending on the answer to 
+ 				a prompted question.
+		XGTMCH - Match an arguement with a list of allowed matches.
+		
+
+	OTHER FACILITIES:
+
+		XGTLUN - Get a logical unit number.
+		XFRLUN - Free a logical unit number.
+		XTEND  - Add a default extension to a given file name.
+
+
+3. EXPLANATION OF HOW TO CALL ROUTINES
+______________________________________
+
+  3.1 INPUT STRING ROUTINES:
+
+	XINIRD - XPARSE subroutine to get the program command line arguments
+	******
+
+The calling syntax for this routine is:
+
+	CALL XINIRD(PROMPT,STRING,IPARSE)
+  Where
+	PROMPT	C*	I: If non-empty, used to prompt a user if
+			no arguments given in the command line.
+	STRING	C*	R: Parse string
+	IPARSE	I4	R: Parse position.  If zero, then a parseable non-empty
+			string was input.  Otherwise, iparse=len(string),
+			indicating a string with no more arguments.
+
+
+
+	XNXTRD - XPARSE subroutine to flush out the current parse string and
+        ******                 read in a new one.
+
+The calling syntax for this routine is:
+
+	CALL XNXTRD(PROMPT, STRING, IPARSE, IERR, *, *)
+  Where
+	PROMPT	C*	I: Prompt string
+	STRING	C*	I/R: Parse string
+	IPARSE	I4	I/R: Parse position (on return zero, indicating
+			a fresh position)
+	IERR	I4	R: Error flag. 0 - success
+				<0	- EOF
+				>0	- I/O error of some sort on read
+	Alternate returns:
+		*1 - EOF
+		*2 - I/O error
+
+
+
+	XCREAD - XPARSE subroutine to read in a command line
+	******
+
+The calling syntax for this routine is:
+
+	CALL XCREAD(PROMT,RETSTR,IERR,*,*)
+  Where
+	PROMT	C*	I: The prompt string, if blank then there is no prompt
+			(or if the current input is from an indirect file there
+			is no promt made
+	RETSTR  C*	R: The returned string after input (blank only if there
+			is an eof or an error, or if an empty string input)
+	IERR	I4	R: 0 - all is OK otherwise the IO error flag (if < 0
+			then an EOF was raised)
+	alternate returns:
+		1	return on eof
+		2	return on other i/o error
+
+
+
+	XFLUSH - XPARSE subroutine to `flush' out the parse string (skipping 
+	******		over any continuation cards developed)
+
+The calling syntax for this routine is:
+
+	CALL XFLUSH (STRING, IPARSE, IERR, *)
+  Where
+	STRING	C*	I/R: Parse string
+	IPARSE	I4	I/R: Parse posistion (on return equal to the
+			length of the string)
+	IERR	I4	R: Error flag.  0 - success
+			-1 = EOF during the reading of a continuation.
+	Alternate returns:
+		*1	EOF (ierr = -1)
+
+
+
+	XNEWCM - XPARSE subroutine to make a new file the current command line.
+	******
+
+The calling syntax for this routine is:
+
+	CALL XNEWCM(FILE,QEOFIN,KERR,*)
+  Where
+	FILE 	C*	I: To be used with the new command file
+	QEOFIN	L4	I: If true, then an EOF is to be generated
+			when XCREAD comes to the end of the file
+			else it will silently select the previous
+			file for the command
+	KERR	I4	R: Error flag for opening the new unit
+
+	Alternate returns:
+		*1	- error on open
+
+
+
+  3.2 PROCESSING OF STRING ROUTINES:
+
+	XGTSTR - XPARSE subroutine to peel off a requested number of arguements
+	******  	 as strings
+
+The calling syntax for this routine is:
+
+	CALL XGTSTR( STRING, IPARSE, NREQ, DESC, NDESC, RETSTR, NRET,
+                           IFLAG,IDELIM, * , *, *)
+  Where
+	STRING	C*	I/R: Parse string
+	IPARSE	C*	I/R: Parse position
+	NREQ	I4	I: No. of strings requested
+	DESC	C*(NDESC)	I: Description of the string requested
+	NDESC	I4	I: No. of descriptions passed (if = 0 then '?' will
+          			not trigger a description)
+	RETSTR	C*(NREQ)	R: The strings actually picked up (no change
+				on skips)
+	NRET	I4	R: No. of strings actually processed (where skips
+				and infinite skips are included as processed)
+				if nret not = NREQ then there was a fall off
+				the end of the string, or a special delimeter
+				met (see input value of IDELIM)
+	IFLAG	I4	R: Value of condition flag at last call to XGTARG
+	IDELIM	I4	I/R: If <= -1  there is no checking for special
+			delimeters, else on return IDELIM contains the value
+			of the delimeter that triggered the return (if 0
+			then a comma, if 1 then special del 1, etc.)
+	Alternate returns:
+ 		*1	same as first alternate return of XGTARG (fell off
+				line)
+		*2	same as second alternate return of XGTARG (infinite
+				skip)
+		*3	special delimeter (see IDELIM)
+
+
+	XGTARG - XPARSE subroutine to get the next arguement in a string
+	******
+
+The calling syntax for this routine is:
+
+	CALL XGTARG(STRING,IPARSE,IBEG,IEND,QSKIP,IFLAG,IDELIM,*,*,*)
+  Where
+        STRING	C*	I: The string to be parsed
+	IPARSE	I4	I/R: The parse position, at the call the value
+			should be at the position just before where parsing
+			is to begin.  Therefore, for a string just begun it
+			should be 0.  On return it will be set at the position
+			appropriate to obtain the next argument.  When
+			IPARSE is > length STRING, then there was no
+			arguement found before the end of the string reached
+			(See the IFLAG = 1 condition below) while if
+			IPARSE = length STRING the NEXT call to XGTARG
+			will run off the end.  (Not all run-off-the-ends
+			can be predicted this way when continuation chars
+			are used).
+			N.B. as
+			each argument is parsed, its form may be modified
+			particularly arguments in character strings, so it
+			is difficult to backup over previously parsed strings.
+			Thus, except for new strings (where IPARSE must
+			be initially set to zero) the value should not
+			be adjusted by the calling program.
+	IBEG	I4	R: The first character of the returned argument
+	IEND 	I4	R: The last character of the returned argument
+	QSKIP	l4	R: If true, the argument field has been 'skipped over'
+			(i.e., it contains an empty field).
+	IFLAG	I4	R: The condition flag:
+				-1 -	An EOF was generated while processing
+					a continuation.  IPARSE is set >
+					length STRING.
+				0 -	nothing unusual
+				1 -	the parse fell off the end (also indi-
+					cated by IPARSE > length STRING).
+				2 -	the field reached the terminal skip
+					character.  This and subsequent calls
+					will raise the qskip=.true. condition.
+	IDELIM	I4	R: The delimeter flag:
+				0 -	The argument was normally delimeted
+					by a comma, end of line, or the
+					infinite skip char.
+				1 -	The argument was delimeted by the
+					first special delimeter
+				2 -	The argument was delimeted by the
+					second special delimeter
+	Alternate returns:
+		Alternate returns are based on the value of ABS(IFLAG)
+
+
+	XGTNUM - XPARSE subroutine to peel off a requested number of arguements
+	******          as general numbers.
+
+The calling syntax for this routine is:
+
+	CALL XGTNUM( STRING, IPARSE, NREQ, DESC, NDESC,
+		VALMIN, VALMAX, NRANGE, NUMTYPE, RETVAL, NRET,
+     		IFLAG,IDELIM, * , *, *)
+  Where
+	STRING	C*	I/R: Parse string
+	IPARSE	C*	I/R: Parse position
+	NREQ	I4	I: No. of strings requested
+	DESC	C*(NDESC)	I: Description of the string requested
+	NDESC	I4	I: No. of descriptions passed
+	VALMIN	***	I: The minimum allowed value for the ith string
+	VALMAX	***	I: The maximum allowed value for the ith string
+	NRANGE	I4	I: The number of min-max ranges (if <=0 then no
+			   range checking is performed)
+	NUMTYPE	I4	I: Index indicating the type of value requested:
+			   = 3 for integer*4.
+			   = 4 for real*4
+	RETVAL	***	R: The values actually picked up (no change
+				on skips)
+	NRET	I4	R: No. of strings actually processed (where skips
+				and infinite skips are included as processed)
+				if nret not = NREQ then there was a fall off
+				the end of the string, or a special delimeter
+				met (see input value of IDELIM)
+	IFLAG	I4	R: Value of condition flag at last call to XGTARG
+	IDELIM	I4	I/R: If <= -1  there is no checking for special
+			delimeters, else on return IDELIM contains the value
+			of the delimeter that triggered the return (if 0
+			then a comma, if 1 then special del 1, etc.)
+	Alternate returns:
+ 		*1	same as first alternate return of XGTARG (fell off
+				line)
+		*2	same as second alternate return of XGTARG (infinite
+				skip)
+		*3	special delimeter (see IDELIM)
+
+	** N.B. values in the above list indicated as type *** are actually
+	** arrays of the kind indicated by NUMTYPE, although in this routine
+        ** they are declared as byte arrays.
+
+
+	XGTINT - XPARSE subroutine to return a list of I*4 (using XGTNUM)
+        ******
+
+	XGTRL4  - XPARSE subroutine to return a list of R*4 (using XGTNUM)
+        ******
+
+The calling syntax for these routines are:
+
+
+	CALL XGTINT(STRING, IPARSE, NREQ, DESCR, NDESC, RETVAL, NRET,
+                          IFLAG, IDELIM, *, *, *)
+
+	CALL XGTRL4(STRING, IPARSE, NREQ, DESCR, NDESC, RETVAL, NRET,
+                    IFLAG, IDELIM, *, *, *)
+  Where
+	STRING	C*	I/R: Parse string
+	IPARSE	C*	I/R: Parse position
+	NREQ	I4	I: No. of strings requested
+	DESCR	C*(NDESC)	I: Description of the string requested
+	NDESC	I4	I: No. of descriptions passed (if = 0 then '?' will
+          			not trigger a description)
+	RETVAL	I4/R4	R: The values actually picked up (no change
+				on skips)
+	NRET	I4	R: No. of strings actually processed (where skips
+				and infinite skips are included as processed)
+				if nret not = NREQ then there was a fall off
+				the end of the string, or a special delimeter
+				met (see input value of IDELIM)
+	IFLAG	I4	R: Value of condition flag at last call to XGTARG
+	IDELIM	I4	I/R: If <= -1  there is no checking for special
+			delimeters, else on return IDELIM contains the value
+			of the delimeter that triggered the return (if 0
+			then a comma, if 1 then special del 1, etc.)
+	Alternate returns:
+ 		*1	same as first alternate return of XGTARG (fell off
+				line)
+		*2	same as second alternate return of XGTARG (infinite
+				skip)
+		*3	special delimeter (see IDELIM)
+
+
+	XQUEST - XPARSE subroutine to return a logical true or false 
+	******		depending on the answer to a prompted question
+
+The calling syntax for this routine is:
+
+	CALL XQUEST(STRING,DEF,QANS,QEOF,*)
+  Where
+	STRING	C*	I: The prompting question
+	DEF	C1	I: The default character answer (if blank, then
+				the default depends on the input value of qans
+				i.e. the default will be to leave qans
+				unchanged
+	QANS	L4	I/R: On return, true if yes, false if no (input
+				value used only if DEF is a blank character)
+	QEOF	l4	R: True if EOF condition raised.
+
+	Alternate returns:
+		1   -	if EOF condition is raised
+
+
+	XGTMCH - XPARSE subroutine to match the next argument on the parse 
+ 	******	        string with a list of allowed matches.  If the 
+                        argument does not match	the argument is discarded, 
+                        and the user is prompted for a replacement.
+
+The calling syntax for this routine is:
+
+	CALL XGTMCH(STRING, IPARSE, MATCHS, NMATCH, TYPE, IMATCH, IFLAG,
+			IDELIM, *, *)
+  Where
+	STRING	C*	I/R: Parse string
+	IPARSE	I4	I/R: Parse position
+	MATCHS	C*(NMATCH)	i: Array of allowed matches
+	NMATCH	I4	I: No. of allowed matches
+	TYPE	C*	I: Description of the entries in the array
+	IMATCH	I4	I/R: The index in the array of the next argument
+			if the argument is skipped over, then imatch is
+			unchanged.
+			(If <= 0 no successful match, see iflag)
+	IFLAG	I4	R: Unusual circumstance flag
+			 1 - fell off the end of the argument string
+			-1 - eof while prompting for replacement string
+	IDELIM	I4	R: The delimeter flag for what follows the argument
+
+	alternate returns:
+		*1 - fell off the string
+		*2 - eof while prompting for replacement string
+
+
+3.3 OTHER FACILITIES:
+
+	XGTLUN - XPARSE subroutine to get a logical unit number
+        ******
+
+The calling syntax for this routine is:
+
+	CALL XGTLUN(IUNIT,IERR)
+  Where
+	IUNIT	I4	R: The logical unit returned
+	IERR	I4	R: An error flag
+
+
+	XFRLUN - XPARSE subroutine to free a logical unit no
+        ******
+
+The calling syntax for this routine is:
+
+	CALL XGTLUN(IUNIT,IERR)
+  Where
+	IUNIT	I4	R: The logical unit returned
+	IERR	I4	R: An error flag
+ 
+	XTEND - XPARSE subroutine to add a default extension to a filename.
+        ******
+
+The calling syntax for this routine is:
+
+	CALL XTEND(FILE,EXT)
+  Where
+        FILE   C*       I/R: Name of file
+	EXT    C*       I/R: Extension to be added to filename (if not already
+			     given.

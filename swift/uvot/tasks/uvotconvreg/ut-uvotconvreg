@@ -1,0 +1,122 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotconvreg/ut-uvotconvreg,v $
+# $Revision: 1.1 $
+# $Date: 2010/07/06 21:36:20 $
+#
+#
+# $Log: ut-uvotconvreg,v $
+# Revision 1.1  2010/07/06 21:36:20  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::ConvertRegion;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+
+# main
+{
+	my $tool = __PACKAGE__->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runUvotconvreg
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runUvotconvreg
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @args = (
+		infile    => "$input/source.reg",
+		wcsfile   => "$input/sky.img",
+		outfile   => "$output/region.fits",
+
+		outtype   => 'FITS',
+
+		clobber   => 'yes',
+		chatter	  => 5,
+	);
+
+	# validate required files
+	my %args = @args;
+	foreach my $key (qw(infile wcsfile)) {
+		if (not -f $args{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $args{$key}");
+		}
+	}
+
+	$self->{template} = "$input/template.fits";
+	$self->{output} = $args{outfile};
+
+	{
+		my $command = $self->buildCommand('uvotconvreg', @args);
+		$self->shell($command);
+	}
+
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('ftdiff',
+			infile1 => $self->{template},
+			infile2 => $self->{output},
+			reltol => 1e-6,
+			exclude => 'CREATOR,DATE,DATASUM',
+			);
+	$self->shell($command)
+}
+

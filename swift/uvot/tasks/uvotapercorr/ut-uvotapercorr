@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+
+use strict;
+
+package Test::Sequence;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+# main
+
+my $tool = Test::Sequence->new;
+$tool->unitTest;
+exit($tool->{code});
+
+sub execute {
+
+  my ($self) = @_;
+
+  $self->pilOptions(options => [qw(chatter=int)],get => 1,);
+
+  $self->runUvotapercorr
+    if $self->isValid;
+
+}
+
+sub runUvotapercorr {
+
+  my ($self) = @_;
+  my $args = $self->args;
+  my $input = $args->{input};
+
+  $self->shell('pset uvotapercorr aperate=0');
+  $self->shell('pset uvotapercorr apersig=0');
+
+# run the tool
+
+  my @args = (cntrate => 0.1,
+	      ratesig  => 0.025,
+	      aperad   => 3.0,
+	      fwhmsig  => 6.0,
+	      filter   => 'WHITE',
+	      psffile  => 'CALDB',
+	      chatter  => 5,);
+
+  my $command = $self->buildCommand('uvotapercorr', @args);
+  $self->runCommand($command, report => 3);
+
+# check aperture corrected count rate is written to aperate
+
+  my $aperate = $self->shell('pget uvotapercorr aperate');
+  my $count = -1;
+  foreach my $line (@{ $aperate->{lines} || [ ] }) {
+    if ($line =~ /(\S+)/) {
+      $count = $1;
+    }
+  }
+  if ($count <= 0) {
+    $self->error(BAD_OUTPUT, "aperture corrected count rate not written to aperate");
+  } else {
+    print "aperture corrected count rate written to aperate\n";
+  }
+
+# check aperture corrected count rate error is written to aperate
+
+  my $apersig = $self->shell('pget uvotapercorr apersig');
+  $count = -1;
+  foreach my $line (@{ $apersig->{lines} || [ ] }) {
+    if ($line =~ /(\S+)/) {
+      $count = $1;
+    }
+  }
+  if ($count <= 0) {
+    $self->error(BAD_OUTPUT, "aperture corrected count rate uncertainty not written to apersig");
+  } else {
+    print "aperture corrected count rate uncertainty written to apersig\n";
+  }
+
+}

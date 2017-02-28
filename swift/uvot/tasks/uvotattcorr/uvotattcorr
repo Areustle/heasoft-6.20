@@ -1,0 +1,324 @@
+#! perl
+
+# $Source: /headas/headas/swift/uvot/tasks/uvotattcorr/uvotattcorr,v $
+# $Revision: 1.2 $
+# $Date: 2014/04/07 22:07:33 $
+#
+# $Log: uvotattcorr,v $
+# Revision 1.2  2014/04/07 22:07:33  rwiegand
+# Apply delta quaternions for entire duration of exposure instead of at a single epoch.
+#
+# Revision 1.1  2006/07/27 14:54:23  rwiegand
+# Tool for applying UVOT aspect corrections to attitude file.
+#
+
+package UVOT::Attcorr;
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+use UVOT::Snapshot;
+
+use Astro::FITS::CFITSIO qw(:constants);
+
+use constant MIN_DELTA_t => 0.5;
+
+
+{
+	my $task = __PACKAGE__->new(version => '1.1');
+	$task->run;
+	exit($task->{code});
+}
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadCorrections
+		if $self->isValid;
+
+	$self->determineSnapshots
+		if $self->isValid;
+
+	$self->chooseCorrections
+		if $self->isValid;
+
+	$self->writeDeltaAttitude
+		if $self->isValid;
+
+	$self->applyDeltaAttitude
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				attfile=file corrfile=file outfile=file deltafile=file
+				cleanup=boolean clobber=boolean history=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	foreach my $arg (qw(outfile deltafile)) {
+		my $path = $args->{$arg};
+		if (-e $path) {
+			if (not $args->{clobberFlag}) {
+				$self->error(BAD_INPUT, "$path exists and clobber not set");
+			}
+			else {
+				unlink($path)
+					or $self->warning("unable to remove $path [$!]");
+			}
+		}
+	}
+}
+
+
+
+sub loadCorrections
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @exposure;
+
+	my $status = SimpleFITS->readonly($args->{corrfile})
+			->move('ASPCORR')
+			->loadtable(\@exposure)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load corrections from $args->{corrfile} [$status]");
+	}
+	else {
+		my @sorted = sort { $a->{TSTART} <=> $b->{TSTART} } @exposure;
+		my $count = @sorted;
+		$self->verbose("loaded $count records from $args->{corrfile}");
+		$self->{exposures} = \@sorted;
+	}
+}
+
+
+
+sub determineSnapshots
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $helper = UVOT::Snapshot->new(task => $self);
+	$helper->analyzeAttitude($args->{attfile});
+	return if not $helper->isValid;
+
+	my $s = 0;
+	my $snapshot = $helper->{snapshots}[$s];
+
+	# assign exposures to snapshots
+	foreach my $e (@{ $self->{exposures} }) {
+
+		while (defined($snapshot) and $e->{TSTART} > $snapshot->stop) {
+			$snapshot = $helper->{snapshots}[++$s];
+		}
+
+		if (not defined($snapshot) or $e->{TSTOP} < $snapshot->start) {
+			$self->report("exposure $e->{EXTNAME} outside known snapshots");
+			$snapshot = UVOT::Snapshot::Entry->new(
+					START => $e->{TSTART},
+					STOP => $e->{TSTOP},
+					);
+		}
+
+		$e->{snapshot} = $snapshot;
+	}
+
+}
+
+
+sub addCorrection
+{
+	my ($self, $prefer_t, $q, $tag) = @_;
+
+	$self->verbose(sprintf("addCorrection: %s: prefer_t=%.1f last_t=%.1f",
+			$tag, $prefer_t, ($self->{LAST_t} || 0)));
+
+	my $corr_t = $prefer_t;
+
+	if ($self->{LAST_t}) {
+		my $min_t = $self->{LAST_t} + MIN_DELTA_t;
+
+		if ($prefer_t < $min_t) {
+			$corr_t = $min_t;
+			my $text = sprintf('%.1f < %.1f', $prefer_t, $min_t);
+			$self->warning("addCorrection: adjusting requested time $text to min time");
+		}
+	}
+
+	push(@{ $self->{CORRECTIONS} }, { TIME => $corr_t, QPARAM => $q });
+
+	$self->{LAST_t} = $corr_t;
+}
+
+
+sub chooseCorrections
+{
+	my ($self) = @_;
+
+	my @corrections;
+
+	# determine the first and last correction for each snapshot
+	my $count = 0;
+	foreach my $e (@{ $self->{exposures} }) {
+
+		next if $e->{ASPCORR} != 1;
+		++$count;
+
+		my $snapshot = $e->{snapshot};
+		if (not $snapshot->{firstCorrection}) {
+			$snapshot->{firstCorrection} = $e;
+		}
+		$snapshot->{lastCorrection} = $e;
+	}
+
+	$self->{CORRECTIONS} = \@corrections;
+
+	# determine the times for the delta quaternions.
+	foreach my $e (@{ $self->{exposures} }) {
+
+		next if $e->{ASPCORR} != 1;
+
+		my $snapshot = $e->{snapshot};
+		if ($e == $snapshot->{firstCorrection}) {
+			$self->addCorrection($snapshot->start - 2, [ 0, 0, 0, 1 ], 'SSTART - 2');
+			$self->addCorrection($snapshot->start - 1, $e->{QDELTA}, 'SSTART - 1');
+		}
+
+		$self->addCorrection($e->{TSTART} - 1, $e->{QDELTA}, 'TSTART - 1');
+		$self->addCorrection($e->{TSTOP} + 1, $e->{QDELTA}, 'TSTOP + 1');
+
+		if ($e == $snapshot->{lastCorrection}) {
+			$self->addCorrection($snapshot->stop + 1, $e->{QDELTA}, 'SSTOP + 1');
+			$self->addCorrection($snapshot->stop + 2, [ 0, 0, 0, 1 ], 'SSTOP + 2');
+		}
+	}
+
+	if (not @corrections) {
+		$self->error(BAD_INPUT, 'no corrections to apply');
+	}
+	else {
+		$self->{quaternions} = \@corrections;
+		$self->verbose("found $count corrections");
+	}
+}
+
+
+
+sub writeDeltaAttitude
+{
+	my ($self) = @_;
+
+	my $path = $self->temporary('delta');
+	$self->{deltafile} = $path;
+
+	my $simple = SimpleFITS->create($path);
+	my $status = $simple->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to create $path [$status]");
+		return;
+	}
+
+	my $count = scalar(@{ $self->{quaternions} });
+	$status = $simple->createtab('ATTITUDE')
+			->status;
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to create attitude table [$status]");
+	}
+
+	my $fits = $simple->handle;
+
+	my @columns = (
+		{ name => 'TIME',
+			form => 'D',
+			comment => 'Spacecraft clock time',
+			unit => 's',
+			data => [ ],
+		},
+		{ name => 'QPARAM',
+			form => '4D',
+			comment => 'Quaternion of pointing',
+			data => [ ],
+		},
+	);
+
+	my %columns = map { $_->{name} => $_ } @columns;
+	foreach my $corr (@{ $self->{quaternions} }) {
+		push(@{ $columns{TIME}{data} }, $corr->{TIME});
+		push(@{ $columns{QPARAM}{data} }, @{ $corr->{QPARAM} });
+	}
+
+	foreach my $c (@columns) {
+		$self->writeColumn($fits, $c, $c->{data});
+	}
+
+	$status = $simple->close->status;
+}
+
+
+
+sub applyDeltaAttitude
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $command = $self->buildCommand('uvotattcorr1',
+			infile => $args->{attfile},
+			deltafile => $self->{deltafile},
+			outfile => $args->{outfile},
+			alignfile => $args->{alignfile} || 'NONE',
+			history => 'yes',
+			);
+
+	$self->shell($command);
+}
+
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+
+		$self->putParameterHistory($self->args->{outfile});
+
+		if ($args->{deltafile} !~ /^NONE$/i) {
+			$self->putParameterHistory($self->{deltafile});
+
+			rename($self->{deltafile}, $args->{deltafile})
+				or $self->error(BAD_OUTPUT, "unable to rename deltafile [$!]");
+		}
+	}
+}
+

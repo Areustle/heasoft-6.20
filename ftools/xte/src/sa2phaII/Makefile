@@ -1,0 +1,20 @@
+HD_COMPONENT_NAME	= ftools
+
+HD_COMPONENT_VERS	= 
+
+HD_CTASK		= sa2phaII
+
+HD_CTASK_SRC_c		= hsa2phaII.c sa2phaII.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_CLIBS		= ${HD_LFLAGS} -lxte${FT_VERS} \
+			  ${HD_STD_LIBS} ${SYSLIBS} ${F77LIBS4C}
+
+HD_INSTALL_TASKS	= ${HD_CTASK}
+
+HD_INSTALL_PFILES	= sa2phaII.par
+
+HD_INSTALL_HELP		= sa2phaII.hlp sa2phaII.txt
+
+include ${HD_STD_MAKEFILE}

@@ -1,0 +1,143 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotpict/ut-uvotpict,v $
+# $Revision: 1.7 $
+# $Date: 2006/03/17 22:55:00 $
+#
+#	ut-uvotpict
+#		uvotpict test case
+#
+#
+# $Log: ut-uvotpict,v $
+# Revision 1.7  2006/03/17 22:55:00  rwiegand
+# Replaced showcat with showmatch/showunmatch.
+#
+# Revision 1.6  2005/11/02 15:19:32  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.5  2004/10/17 11:31:31  rwiegand
+# Pass new picture size parameter.
+#
+# Revision 1.4  2004/08/06 18:51:39  rwiegand
+# Renamed uvotpict parameter skyimage => skyfile.
+#
+# Revision 1.2  2004/06/24 18:28:55  rwiegand
+# Pass new parameter reflist.
+#
+# Revision 1.1  2004/06/03 20:29:17  rwiegand
+# Unit test for uvotpict tool.
+#
+
+use strict;
+
+package Test::Picture;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::Picture->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runUvotpict
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=string output=string chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runUvotpict
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my @task = (
+		infile     => "$input/starid.fits",
+		extname    => 'SOURCES',
+		outfile    => "$output/pict.ps",
+		outformat  => 'postscript',
+
+		ra         => 23.35,
+		dec        => -41.823,
+		reflist    => 'XRT:23.35-41.823~0.001,BAT:23.3-41.84~0.1',
+		arcmin     => 24,
+		skyfile    => 'skyview',
+		showmatch  => 'no',
+		showunmatch  => 'yes',
+		exitds9    => 'yes',
+
+		cleanup    => 'yes',
+		clobber    => 'yes',
+		chatter    => 3,
+	);
+
+	my %task = @task;
+
+	$self->{outfile} = $task{outfile};
+	$self->{template} = "$input/template.ps";
+
+	# build command line
+	my $command = $self->buildCommand('uvotpict', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{outfile}) {
+		$self->error(BAD_OUTPUT, "missing output file");
+	}
+
+	# my $command = "diff $self->{outfile} $self->{template}";
+	# $self->shell($command);
+
+	$self->warning("cannot validate Postscript automatically");
+	$self->report("manually compare $self->{template} and $self->{outfile}");
+}
+

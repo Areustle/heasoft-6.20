@@ -1,0 +1,17 @@
+HD_COMPONENT_NAME	= ftools
+
+HD_COMPONENT_VERS	= 
+
+HD_LIBRARY_ROOT		= xpi_wrappers${FT_VERS}
+
+HD_LIB_STYLE		= ${HD_LIB_STYLE_F77}
+
+HD_LIBRARY_SRC_c	= xpi_wrappers.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}
+
+HD_INSTALL_HEADERS	= xpi_wrappers.h
+
+include ${HD_STD_MAKEFILE}

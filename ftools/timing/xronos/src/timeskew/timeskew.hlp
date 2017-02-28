@@ -1,0 +1,533 @@
+.help timeskew Jan96 xanadu.xronos
+.ih
+NAME
+timeskew  -- Calculates time skewness function of a time series using a slow 
+algorithm 
+.ih
+USAGE
+timeskew file(s)+options window dtnb nbint nintfm rebin outfile plot plotdev
+.ih    
+DESCRIPTION
+This task calculates a time skewness function for one time series, plots and 
+outputs the results (in a FITS file). The time skewness is computed using a 
+slow algorithm. The input file format is FITS using the BINTABLE extension. 
+Both binned data format and event format are input (FILELIST and INPUT 
+FILE OPTIONS). Time, Phase, Intensity and Exposure windows (See WINDOW) allow 
+for data screening. Input data can be rebinned and divided into 
+Intervals and Frames (See GENERAL XRONOS TERMINOLOGY). The results of the time
+skewness from several intervals can be averaged in a frame, and the averaged 
+results can be rebinned. The standard plot output is the time skewness function 
+versus time delay (See PLOT). The time skewness error bars are obtained either 
+by propagating the theoretical error bars of the time skewness from individual 
+intervals (in turn obtained by propagating the newbin errors bars through 
+the time skewness formula) or by evaluating directly the standard deviation of 
+the average of the time skewness in each time delay bin from different intervals. 
+This depends on whether the specified number of intervals per frame is, 
+respectively, smaller or larger than the value of "errorbars" parameter 
+(default =5). Different normalizations can be used for the time skewness
+function by changing the parameter "normalization" (See normalization).
+.ih
+normalization
+The "normalization" paramater has the following meanings (and values) :
+.nf
+ * =0  time skewness is normalised by dividing by the number of good newbins 
+       in each interval.
+ * =1  (d/f) time skewness is normalised by dividing by the number of good 
+       newbins and the third moment of newbins in each interval. No correction 
+       for the third moment due to Poisson statistics in newbins is calculated.
+.fi
+ If other values than those listed above are used, they will be treated as =0.
+
+.ih
+GENERAL XRONOS TERMINOLOGY
+Within XRONOS tasks, BINS and NEWBINS control the binning used in the analysis,
+INTERVALS the subdivision of the time series and FRAME the grouping of the output 
+results:
+
+BINS : these are the time bins of the time series being analysed. More than 
+one input file can have different bin durations, e.g. two consecutive time series, 
+one with 0.5 s bins and the other with 2 s bins. The original bin time is the value 
+stored in the input file in the keyword TIMEDEL. If the data are stored in each row 
+as an array with 1CTYPn = 'TIME', the original bin is set to the value stored in 
+the keyword 1CDLTn (where n is the column number).
+
+NEWBINS : these correspond to the time resolution at which the analysis is carried out.
+Note that: (i) newbins cannot be shorter than the longest bin duration of the time series 
+being analysed; (ii) in many XRONOS applications (e.g. powspec, autocor,
+crosscorr) the newbin duration is forced to be an integer multiple of the longest bin
+duration. 
+
+INTERVAL : an interval is defined by the number of newbins over which the analysis is
+carried out. Note that in applications using FFT algorithms (e.g. powspec, autocor 
+and crosscor set in fast mode) the number of newbins in an interval is a power of 2. 
+
+FRAME : a frame consists of the average of the results of the analysis of one or more
+contiguous intervals. Note that in 'lcurve', 'efsearch' and 'lcstats' a frame consists always of one 
+interval. 
+.ih
+WINDOWS 
+If any window is required during the analysis, a window file containing the relevant 
+windows must be created with the application XRONWIN, before running a XRONOS task.
+There are 4 different types of windows :
+.nf
+ * Time Windows  : consist of up to 1000 time intervals                  
+ * Phase Windows : consist of an Epoch, a Period and up to 10 phase intervals
+ * Intensity Windows : consist of up to 10 intensity in bin, newbin and interval
+ * Exposure Windows : consist of up to 1 exposure in bin, newbin and interval 
+.fi
+Intensity and Exposure Windows can be specified independently for: (i) Bins ,
+(ii) New Bins , (iii) Intervals. When dealing with more than one time series, 
+Intensity and Exposure Windows must be specified separately for each series. 
+Time and Phase windows are applied to Bins. Intensity and Exposure windows are 
+applied first to Bins, then Newbins and finally to Intervals as specified.
+For time and phase windows, only those bins whose center time is within 
+the start and stop of a time window or phase window (for a specified epoch and period) 
+are accepted. Intensity windows must be ordered with increasing intensity
+and if set for newbins can be used in conjunction with "Special Newbin Windows"
+(see below).
+Exposure Windows consist of a minimum and a maximum exposure level. Units are such that 1
+means 100% exposure. The Newbin Exposure is obtained by propagating the bin exposures to
+each newbin. For example, if in a 30 s newbin the total exposure (due to the sum of the
+individual exposure of the bins contributing to the given newbin) is 18 s then its exposure
+is 60%. The Interval Exposure is the ratio of accepted to expected newbins: for example, if
+a 128 newbin long interval contains only 32 accepted newbins, then its exposure is 25%. Many
+XRONOS application use some default exposure windows, which are designed to avoid analysing
+data sets which are too inhomogeneous with respect to their statistical properties. The
+minimum default Exposure windows in an Interval is set to 0.0 in the lcurve, efold and efsearch
+and to 0.5 (i.e. 50% exposure ) in all the other tasks. Note that exposures can be higher
+than 100% (e.g. if the newbin time is not a multiple of the bin time, then "beats" are
+generated which might bring the exposure of a newbin to values >100%; or if two or more
+input files for the same time series overlap in part, some of the newbins will be more than
+100% exposed).
+IMPORTANT NOTE WHEN TIME WINDOWS ARE SET IN THE WINDOW FILE: 
+The time used within XRONOS tasks is Truncated Julian Days 
+(TJD= JD-2440000.5) if either (1) the keyword MJDREF is present in the header 
+or (2) if the TIMESYS value is one of the following strings MJD or JD or TJD.
+If (2), the time values are expected to be stored as JD, MJD or TJD in the header 
+keywords and in the TIME column in which case the MJDREF keyword is not used (it should not be present). 
+When Time windows are set using XRONWIN, they must be compatible with 
+the values in header of the timing keywords and/or the values in the TIME column.
+
+An additional window type called "Special Newbin Window" can be set directly from the parameter
+file. Special Newbin Windows are used to exclude the parts of a light curve which immediately
+follow or precede a burst or a background event which has been rejected by intensity windows in
+newbins. The Special Window operates on newbins in conjunction with intensity windows (in newbins)
+and are specified by changing to positive values the parameters 'spwinbefore' and 'spwindowafter'.
+Their use is the following: if e.g. spwinbefore is set =10, all newbins, whose center time is
+within 10 second before the center time of a newbin rejected by intensity windows, will also be
+rejected; if e.g. spwindowafter is set =20, all newbins, whose center time is within 20 second
+after the center time of a newbin rejected by intensity windows, will also be rejected.
+ 
+.ih 
+FILELIST and INPUT FILE OPTIONS
+To input multiple files for each time series, a file containing the list of files is 
+needed (Filelist). The Filelist is input in the program as '@Filelist'.
+The format of this file list is ascii and contains one filename+options 
+per line. Files from different times series are separated by '///' mark. 
+Below is an example of the Filelist containing 2 files for 3 different times series. 
+.nf
+ file1_ser1
+ file2_ser1
+ ///
+ file1_ser2
+ file2_ser2
+ ///
+ file1_ser3
+ file2_ser3
+.fi
+The Input File Options (up to 10) can be specified for each file in the same input string.
+They consist of 2 characters followed by a numerical constant (up to 8 character long).
+There are two groups of options. The first allows data selection within a FITS 
+extension. The available options within this group are :
+.nf
+ frN= start reading input file from row number N (first row)
+ lrN= stop reading input file from row number N (last row) 
+ vxN= use column number N as x-axis (i.e. time axis, default name is TIME)
+ vyN= use column number N as y-axis (default names are COUNT or RATE)
+ vsN= use column number N as error for y-axis (default name is ERROR)
+ veN= use column number N as exposure (default name FRACEXP).
+      If the input file is an event list, exposure is by default
+      calculated using the GTI extension. In this case, N=0 
+      turns off the usage of the GTI extension for the exposure 
+      calculation, and N > 0 specifies the GTI extension to use.
+ feN= select data (either binned or events) from channel number N (First Energy). 
+      For an event list channel selection is made using the column named 'PHA'
+ leN= select data (either binned or events) to channel number N (Last Energy). 
+      For event list the default column channel name searched is 'PHA'.
+      The option 'vcN' allows the choice of a channel column name different from 'PHA' (es. 'PI').
+ vcN= use column number N for channel selection (valid only for event lists). 
+ rtN= use extension N of the FITS file to read the data. The first extension 
+      is N=1 (the primary array is irrelevant). To specify the extension the 
+      following also can be used: filename[N] or filename+N.  
+ of = The MJDREF keyword is not used. The time is calculated using the
+      TIME column and the TIMEZERO keyword.
+.fi
+
+The second group of options performs algebraic operations on individual input files.
+They are applied in the same order in which are specified. For event files they are applied
+after the data are binned. The available options within this group are:
+
+.nf
+ stX = Shift all Time in input file by X days 
+ ssX = Shift all times in input file by X Seconds 
+ muX= multiply data and errors by X (MUltiply)
+ mdX= multiply data by X (Multiply Data) 
+ meX= multiply errors by X (Multiply Errors
+ maX= as muX but exposure is divided by X 
+ diX= divide data and errors by X (DIvide)
+ ddX= divide data by X (Divide Data) 
+ deX= divide errors by X (Divide Errors) 
+ daX= as diX but exposure is multiplied by X
+ aaX= add data and errors with X (Add All) 
+ adX= add data with X (Add Data) 
+ aeX= add errors with X (Add Errors) 
+ saX= subtract data and errors with X (Subtract All)
+ sdX= subtract data with X (Subtract Data) 
+ seX= subtract errors with X (Subtract Errors) 
+ qaX= add to data the square of data muliplied by X and add to errors 
+      the product of data and error multiplied by X 
+ qdX= as above but for data only
+ qeX= as above but for error only 
+.fi 
+Below is an example of the Filelist containing 2 files for 3 different times series
+where the different options are applied to the input files for different time series.
+
+.nf
+ file1_ser1 aa4           add to data and error 4 
+ file2_ser1 aa4            "      "        "    "
+ ///
+ file1_ser2 rt2 aa2       read 2nd extension; add to data and error 2 
+ file2_ser2 rt2 aa2        "    "     "           "      "        "    "   
+ ///
+ file1_ser3 rt2 vy4 vs5   read 2nd extension; use column 4 and 5 for Y-axis and Error
+ file2_ser3 rt2 vy4 vs5    "    "    "         "    "    "     "  "   "          " 
+.fi
+
+.ih
+PLOT
+The array of results from each XRONOS task can be plotted. The PLT routine (See also the
+QDP/PLT manual) provides the interactive plotting and fitting functions. The plotting 
+function is available for the following tasks : autocor, crosscor, efold, efsearch, lcurve, 
+powspec and timeskew. The 'timeskew' plot is the time skewness function function versus 
+time delay (positive) given in seconds.
+A number of commands can be entered from the 'PLT>' prompt to allow plot customisation
+(e.g. Add/remove labels; Plot data with various combinations of lines, markers, and 
+error bars; Change text fonts; Change X-axis and/or Y-axis; Change number of plotted 
+panels; Define and Fit models to data). Useful QDP Commands are:
+.nf
+PLT> r x xlow xhigh             * Rescale X axis 
+PLT> r y ylow yhigh             * Rescale Y axis 
+PLT> r xlow xhigh ylow yhigh    * Rescale both
+PLT> log x                      * X axis is plot in logarithmic scale 
+PLT> log y                      * Y axis is plot in logarithmic scale
+PLT> log off                    * Turn off the logarithmic axes (both X and Y)
+PLT> dev /xxx                   * Change the current plot device 
+PLT> mo ?                       * List available model
+PLT> mo cons linr               * Define model= constant plus linear 
+plt> fit                        * Fit the defined model
+PLT> hardcopy filename          * Hardcopy of the current plot (postscript)
+PLT> exit                       * EXit: to exit from the PLT subroutine type:
+.fi
+The QDP/PLT software is provided and maintained by Allyn Tennant (Marshall Space Flight 
+Center). The PLT software uses the PGPLOT Graphics Subroutine Library for plotting,
+written by T.J. Pearson (California Institute of Technology).
+
+.ih
+OUTPUT
+The analysis results are output in a FITS file. Two different FITS layouts are 
+available (see parameter outfiletype). The first stores one interval (or frame) of interval 
+results per FITS table row, and the output file will have a single extension. The second 
+stores one interval (or frame) per FITS extension, and the output file will have as many 
+extensions as the number of intervals (or frames). 
+
+The output file contains, besides the array of results, a number of statistical variables
+(and errors if appropriate) associated with each interval (or frame) for each time series. 
+These are: 1- average count/s in frame (in a frame this is the average of the 
+averages in intervals); 2- fractional exposure in frame (from average of fractional exposures 
+in intervals, the latter is the ratio of good newbins to the total number of expected 
+newbins/interval); 3-variance in frame (average of variances in intervals); 4- expected variance 
+in frame (average of the expected variances in intervals, the latter is calculated from the error 
+bars of the newbins); 5- 3rd moment in frame (average of 3rd moments in intervals); 6- minimum 
+count/s in frame; 7- maximun count/s in frame; 8- excess variance in frame (average of excess 
+variances in intervals, the latter is calculated as variance-expected variance); 9- chi-square
+in frame (average of chi-squares in intervals); 10-rms fractional variation in frame (average 
+of rms fractional variation in intervals, the latter is calculated as the square root of 
+the excess variance divided by the average.
+
+When "outfiletype"=2, the output file contains in each extension the following columns:
+time delay, half width of time delay bin, time skewness and error. 
+Not many applications can currently deal with the output files produced when "outfiletype"=1
+The format will be described in future releases.
+.ih    
+PARAMETERS
+.ls cfile1 (filename(s) first series+options) [string]
+Input filename(s) for the first time series + options. The valid input files are in 
+FITS format using the BINTABLE extension. Xronos tasks read for each time series many 
+consecutive input files (up to 50). Additional flexibility is provided by Input File Options
+which are used to perform algebraic operations on individual input files
+(either on the 'times' or on the 'count' or 'count/s' values). The Input file Options
+are also used to select columns and rows within a FITS file.
+If the first character of the input string is '@', the rest of the string is taken to 
+be a filename containing the list of input files (Filelist). The Filelist can contain 
+filenames for more than one series. See description of "FILELIST and INPUT FILE OPTIONS".
+.le    
+.ls window (name of window file) [string]
+Filename of the xronos window file. The window file is an ASCII file and by default 
+a standard window file is used, where only exposure windows are set. 
+To modify the standard file or create a new file used the script XRONWIN.
+.le
+.ls dtnb (integration time) [double]
+The duration in seconds of the NEWBIN time. For binned input files the NEWBIN duration 
+can not be shorter than the longest bin duration in the input file. In a number of 
+XRONOS tasks the NEWBIN time must be an integer multiple of the minimum newbin time.
+The task internally calculates (and prints on the screen) a default value such that 
+a single interval is produced with a fixed number of newbins (typically between 128 and 4096
+depending on the task and on the time interval length see also "nbdf" parameter).
+Typing 'INDEF' forces the task to use as NEWBIN time the value calculated by the
+ program. NOTE: By pressing return the task will use as NEWBIN time
+the value found in the parameter file used in a previous run.
+.le
+.ls nbint (number of points per interval) [integer]
+The number of newbins per interval used in the analysis. The "nbint" together with the NEWBIN 
+duration determines the length in time of an interval and therefore the total number of 
+intervals within the start and stop time over which the analysis will be carried out. 
+Typing 'INDEF' forces the task to use the default value (see parameter "nbdf").
+NOTE: By pressing return "nbint" is set to the value found in the parameter file used in a 
+previous run.
+.le
+.ls nintfm (number of intervals per frame) [integer]
+The results of the analysis from individual intervals can be averaged to produce a frame.
+The "nintfm" is used to specify the number of intervals averaged in a frame. Typing 'INDEF' 
+forces the task to use the default value (all intervals will be use in one frame). 
+NOTE: By pressing return "nintfm" is set to the value found in the parameter file used 
+in a previous run.
+.le
+.ls rebin (rebin analysis results) [double]
+The results of the analysis of individual frames can be rebinned either with a constant 
+rebinning factor or as a geometrical series (to produce nearly equispaced bins in a logX 
+representation). The default value (0) is not to rebin the results. Values greater than 1 
+indicate a constant rebinning factor. Geometrical series rebinning is obtained by entering 
+a value less than -1, whose modulus represents the step of the geometrical series 
+(Values between -1.4 and -1.2 are adequate in most cases).
+.le
+.ls itre (Flag for trend removal) [integer]
+A polynomial trend, up to 4th-order, can be removed from input time series. 
+Setting the parameter "itre" equal to 1 or 2 or 3 or 4 remove a 1st, 2nd, 3rd, 4th-order
+polynomial trend, respectively. The trend is determined separately for each interval of 
+each series by using a least-square technique. The value 0 does not cause the removal of any
+trend from the input series and is the default value.
+NOTE The trend removal is not available for the efold and efsearch tasks.
+.le
+.ls itremo (Mode for trend removal) [integer]
+Specify how the trend removal is applied to the data (available only id "itre" is 
+higher than 0). The trend can be  subtracted from the time series (itremo =1) , or the 
+time series can be divided by the trend (itremo = 2), or the time series can be replaced 
+with the trend (itremo = 3). By default the trend is subtracted (value set to 1).
+.le
+.ls outfile (output filename) [string]
+Name of the output file. If only the root is given, the program adds 
+an extension of 3 characters, '.fXX', where f stands for FITS and XX is a suffix 
+which identifies the program that creates the output. The XX values are : 
+'ac' (autocor), 'cc' (crosscor), 'ef (efold), 'es' (efsearch), 'lc' (lcurve), 'ps' 
+(powspec), 'ts' (timeskew). Typing '-'  forces the program to generate a default value 
+for the output filename (see outfileroot parameter). By typing blank characters
+at the prompt no output file will be created.
+.le 
+.ls outfileroot (default value) [string]
+This parameter used in conjunction with "outfile" generates a default output 
+filename. If the value of "outfileroot" is 'default' and "outfile" is '-', 
+the output filename will have the same root name of the first input file
+of the fits series with a '.fXX' extension (see outfile for XX values).
+.le
+.ls outfiletype (Type of FITS layout) [integer]
+Define the FITS structure for the output file. Two types are available.
+The first type (outfiletype=1) has 1 interval of results per FITS table row.
+The output file will have only one extension. Each row of the results column 
+contains an array of values with a size equal to the number of points per interval 
+(or frame) and a number of rows equal to the valid number of intervals analysed.
+The second type (outfiletype=2) has 1 interval of results per FITS extension.
+The output file will have as many extension as the number of intervals (or frames) 
+analysed. The column containing the results has a single element value in each row
+and the number of rows is equal to the number of points in the interval.
+The default value of "outfiletype" is 2 (one interval per FITS extension).
+.le
+.ls plot (if plot) [boolean]
+Flag specifying whether or not the results of the analysis are plotted via PLT
+(default = yes). NOTE: After plotting the results the XRONOS task is left in the 
+interactive plotting/fitting mode (PLT> prompt) use command `exit` to return and 
+finish the XRONOS task. If the "plot" parameter is set = no, the other queries 
+regarding the plotting are disabled ("plotdev", "plotfile", "plotdum").
+.le
+.ls plotdev (device) [string]
+Change the plot device. The most common plot devices are /xw (X window), /tek (tektronix),
+/vt (vt125), /ps (PostScript). Setting "plotdev" as '?', forces the program before plotting 
+to list the available plot devices to the terminal and to prompt for this parameter again.
+.le
+.ls plotfile (.pco file) [string]
+Name of the Plt COmmands file. For each task an appropriate default Plt COmmand file
+is automatically loaded by the program setting the parameter "plotfile" as '-'.
+The user can insert additional commands using his own '.pco' file at this level
+(or within the PLT> prompt). The user commands are appended to the default command file
+and therefore executed last. The default '.pco' files are stored in the directory defined
+by the parameter 'dpath'.
+.le
+.ls tchat (terminal chattiness) [integer]
+Set terminal chattiness: (0-4) only little information is output in running XRONOS task
+; chattiness 5 is the default value; (6-7) more details on input files, windows, intervals 
+statistics, etc.; (<8) mostly for debugging purposes.
+.le
+.ls lchat (log file chattiness) [integer] 
+Set log file and chattiness in the log file: = 0 the log file is not written; for all other 
+values, information is written in the log file. The chattiness levels are the same as for 
+the terminal.
+.le
+.ls logname (log filename) [string]
+Name for the log file. The default name is xronos.log.
+.le 
+.ls clobber  [boolean]
+Flag specifying whether or not a pre-existing file with the same name as that requested 
+for an output file in the current task will be overwritten. Default value = yes.
+.le
+.ls (dpath = XRDEFAULTS) [string]
+This string parameter gives the path to the Xronos 'defaults' directory,
+which contains the default '.pco' file (used for plotting) and the
+defaults window file 'default_win.wi'. Ordinarily, the user may leave this
+parameter set to the string 'XRDEFAULTS', which causes Xronos to use the
+environment variable XRDEFAULTS to locate these files. XRDEFAULTS is set
+by the mkftools script to point to the appropriate directory for the current
+distribution of Xronos (for FTOOLS v3.6 this is /ftools/xronos/defaults/).
+If the user wishes to modify these files, he or she may make and edit
+copies, and change the XRDEFAULTS variable appropriately using setenv,
+but the original files should not be changed.
+.ls gapfill (running mean gap filling) [integer]
+Replace gaps in input series with running mean.  If =0 (the default) data gaps
+are not filled.  If =n newbin data gaps in input series are filled in with
+running mean values calculated over n newbins. Note that a gap newbin is filled
+in only if the corresponding running mean is calculated over n/4 points at
+least (this means that in order to bridge a gap of m newbins n must be >1.35m).
+This global parameter is ignored in epoch folding applications (efold and efsearch).
+.le
+.ls forcestart (flag for start time) [boolean]
+If = yes the first interval will be forced to start at the time of the first time 
+window otherwise (=no default) the center time of the first qualified newbin is used 
+as the start time.
+.le
+.ls errorbars (Error bar Evaluation) [integer]
+This parameter defines the way in which the error bars of the analysis results are 
+calculated. If the number of the intervals per frame ("nintfm") is higher than 
+"errorbars" value (default=5), the error bars are evaluated by using the standard 
+deviation of the average (based on the measured scatter). Otherwise the error bars 
+are evaluated by propagating the theoretical error bars through an averaging process.
+Note that for several XRONOS applications (e.g. `autocor`, `crosscor`) only the former 
+way of evaluating error bars is available.
+For example, if "errorbars" is 5 in the application `powspec`:
+(a) if a frame contains the average of 5 or fewer power spectra, then the error bars in the 
+average power spectrum will be calculated by propagating through the average the theoretical
+error bars associated with each power spectrum (in turn obtained from the relevant 
+chi-square distribution); (b) if a frame contains the average of 6 or more power spectra, 
+then the error bars in the average power spectrum will be calculated by evaluating the
+standard deviation of the average power for each frequency.
+By adjusting the value of "errorbars" it is possible, e.g. to evaluate error 
+bars as in (a), also in the case in which a large number of intervals per frame 
+has been specified. Values < 5 are not recommended (at least 5-6 measures are 
+necessary to reliably evaluate the standard deviation of the average from the scatter
+around it). NOTE: not applicable for 'lcurve', 'lcstats' and 'efsearch'.
+.le
+.ls exposure (flag for analysis of exposure profile) [boolean]
+If =yes the exposure profile(s) (i.e. newbin values are set =1, gaps and rejected newbins 
+are set =0) is/are analysed (instead of the input series). Default value is = no.
+.le
+.ls normalization (type of normalization) [integer]
+Flag to specify the type of normalization to apply to the results.
+This parameter is only relevant for the following tasks: powspec, autocor, efold, crosscor,
+timeskew). The standard normalization corresponds to a value of 1 (the default) in all 
+XRONOS applications. Other normalization value flags are described for each application
+(See normalization). NOTE: not applicable for 'lcurve' and 'efsearch'.
+.le
+.ls simultaneous (flag for simultaneity) [boolean]
+If =yes a strict simultaneity is forced between the input series in applications which 
+use more then one series (i.e. if the n-th newbin of a series is a gap or is rejected, then 
+the n-th newbin of all other series will be also rejected). This flag is ignored in the 
+efold applications. Default value is = no.
+.le
+.ls spwinbefore (special window start) [double]
+Special newbin window : number of seconds before. If a value > 0 is used , e.g. 10.0, then
+all the newbins within 10.0 seconds before a newbin rejected by an intensity
+window will also be rejected. The default (=0) is not to apply this type of
+special newbin window.
+.le
+.ls spwinafter (special window stop) [double]
+Special newbin window : number of seconds after. If a value >0 is used , e.g. 10.0, then
+all the newbins within 10.0 seconds after a newbin rejected by an intensity
+window will also be rejected. The default (=0) is not to apply this type of
+special newbin window.
+.le
+.ls rescale (rescaling for results) [double]
+Rescaling factor applied to result variables and errors. The rescaling is applied just 
+before writing the output file (this to avoid affecting the statistical variables for 
+the frame). Default value for "rescale" is set to 1.
+.le
+.ls offset (additive constant for results) [double]
+Additive constant summed to result variables. Result error bars are left
+unchanged.  The additive constant is added just before writing the output file
+(this is to avoid affecting the statistical variables for the frame). Note
+that if a rescaling factor is also specified (different from 1), then the
+results are first multiplied by the rescaling factor. Default value for "rescale" 
+is set to 0.
+.le
+.ls fast (Flag for fast algorithm) [boolean]
+This parameter sets the type of algorithm used for the Fourier transform. 
+IMPORTANT NOTE: This parameter can be set by the user only in the `powspec`, 
+`autocor` and `crosscor` tasks (it is a query parameter in these tasks).
+In all the other tasks "fast" is a non-query parameter, and should not be changed 
+from the default setting.
+.ls nser (Number of time series) [integer]
+Number of input time series simultaneously processed. 
+IMPORTANT NOTE: This parameter, the values of which range between 1 and 4, can be 
+set by the user only in the "lcurve" and "efold" tasks (it is a query parameter
+in these two cases). In the other tasks "nser" is a non query parameter, 
+and should not be changed from the default setting.
+.le
+.ls ipow2 (Flag if power of 2) [integer]
+Internal Flag used to decide if the current task must used with a power of 2 of 
+number of points (ipow2=1) per interval or not (ipow2=0). IMPORTANT NOTE: This parameter 
+should not be changed by the user.
+.le
+.ls iavgreb (Flag if average interval) [integer]
+Internal Flag used to decide if the current task allows the averaging of intervals
+in frame and/or the rebinning of the analysis results. If "iavgreb" is set to -1 the results
+in an interval can not be either averaged or rebinned, if set to -2, the results in an interval
+can be averaged but not rebinned. IMPORTANT NOTE: This parameter should not be changed 
+by the user.
+.le
+.ls nbdf (Default No. Bins) [integer]
+Set an internal default value for the number of newbins per Interval.
+This value is used to calculate the default newbin integration time 
+to have one interval with nbdf points. Different "ndbf" values have 
+been set for different XRONOS task. IMPORTANT NOTE: With caution this 
+parameter can be changed by the user.
+
+.ih
+EXAMPLES
+1. From a time series of 10000 sec with a binning of 6.25e-2 seconds, calculate
+   the time skewness of 8192 points (equivalent to an interval in time of 512 seconds)
+   and average every 5 intervals in one frame (4 frames in total). Apply no rebinning to
+   the results, make a plot and output the results in a file.
+.nf
+   > timeskew cfile1="mydata.lc" window="-" dtnb=6.25e-2 nbint=8192 nintfm=5 rebin=0
+     plot=yes plotdev="/xw" outfile="-"
+.fi
+2. Same as above but all the intervals are averaged in one frame
+.nf
+   > timeskew cfile1="mydata.lc" window="-" dtnb=6.25e-2 nbint=8192 nintfm=INDEF rebin=0
+     plot=yes plotdev="/xw" outfile="-"
+.fi    
+.ih    
+SEE ALSO
+autocor, crosscor, efold, efsearch, lcurve, lcstats, listdata, powspec,
+xronwin, fits2qdp, ascii2lc.
+.ih
+BUGS
+Report problems to angelini@lheavx.gsfc.nasa.gov and
+xanprob@athena.gsfc.nasa.gov.  Provide a detailed description of the 
+problem (with a log file if possible).

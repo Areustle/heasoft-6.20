@@ -1,0 +1,825 @@
+#!/usr/bin/perl
+#
+# File: pcaprepobs
+#
+# Description:  Prepare one PCA observation directory for analysis
+#
+# Author: C. B. Markwardt
+#
+
+use Getopt::Std;
+
+getopts(':h');
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    pcaprepobsid - Prepare one XTE observation for PCA analysis
+
+USAGE
+    pcapreobs indir outdir
+
+DESCRIPTION
+
+   pcaprepobsid is a high-level task that prepares a single RXTE
+   observation ID (obsid) for scientific analysis with the PCA
+   instrument (Standard2 data mode).  
+
+   It is only necessary to run pcaprepobsid once per observation.
+   Upon output, a filter file is created, Standard2 backgrounds have
+   been estimated, and dead-time quantities have been computed for
+   both Standard2 and background files.  These outputs are suitable
+   for extracting spectra and light curves.
+
+   pcaprepobsid runs the basic tasks that prepare Standard2 data for
+   further analysis, using the recommended settings for most users.
+   The tasks that pcaprepobsid runs are:
+
+      * xtefilt - create XTE filter file
+      * pcaprepfile2 - prepare each Standard2 file for analysis
+         - pcadeadcalc2 - calculate dead time quantities
+         - pcabackest - estimate PCA background
+
+   As an alternative to running this task, users can run xtefilt and
+   pcaprepfile2 individually.
+
+   pcaprepobsid uses default parameters for the above tasks which the
+   PCA team recommends for scientific analysis.  It is possible to
+   change any parameter from the default (see below), but not advised.
+
+INPUTS
+
+  The input to this task is a single RXTE observation ID, stored in a
+  single directory, in the format delivered by the RXTE archive.  Note
+  that this task operates on a single observation ID.  
+
+  pcaprepobsid does not modify the input files in any way.
+
+OUTPUTS
+
+  The output of this task is a new directory, which contains several
+  files.  These output files can be used as inputs to extractors like
+  pcaextspect2 or saextrct.
+
+  The outputs are listed below.
+
+    outdir/FP_nnnnnnnnnn-nnnnnnnn.xfl   - XTE filter file
+    outdir/xtefilt.log  - log file from calling xtefilt
+
+  The filter file can be used for time filtering (see maketime task).
+  It is also used internally to compute PCA background estimates.
+
+    outdir/FS4a_nnnnnnnnn-nnnnnnnnn_bkg - estimated PCA background
+    outdir/FS4a_nnnnnnnnn-nnnnnnnnn_dt  - Standard 2 file with deadtime quantities
+    outdir/FS4a_nnnnnnnnn-nnnnnnnnn_dtbkg  - background with deadtime quantities
+    outdir/FS4a_nnnnnnnnn-nnnnnnnnn.log - log file from pcaprepfile2
+
+  pcaprepobsid calls the task pcaprepfile2, and produces an estimated
+  PCA background file (*_bkg).  It also computes estimated deadtime
+  quantities for each file: *_dt contains deadtime quantities for
+  observed Standard2 counting rates, and *_dtbkg contains deadtime
+  quantities for the estimated background.  
+
+  You should use the *_dt and *_dtbkg for further PCA analysis.
+  Generally, the PCA team does not recommend that you use the original
+  Standard2 or background file without deadtime quantities for
+  scientific analysis.  The *.log file contains the results of calling
+  pcaprepfile2 on each Standard2 file.  If there is an error, you may
+  refer to this file for further information.
+
+    outdir/FP_xtefilt.lis
+    outdir/FP_dtstd2.lis
+    outdir/FP_dtbkg2.lis
+
+  pcaprepobsid also produces "list" files which can be used as inputs
+  for other tasks.  The list files are ASCII files containing one
+  filename per line.  Some tasks, especially extractors, accept
+  @filename.lis as input.  You can use these *.lis files to bundle
+  together many files quickly for these tasks.
+
+  FP_xtefilt.lis contains the name of the filter file produced by this
+  run.  FP_dtstd2.lis contains the names of Standard2 files with
+  deadtime quantities (*_dt files).  FP_dtbkg2.lis contains the names
+  of background files with deadtime quantities (*_dtbkg files).
+
+    outdir/pcaprepobsid_done.txt
+
+  This is a "signal" file that indicates that pcaprepobsid
+  successfully completed its run.  Do not use outputs of pcaprepobsid
+  unless the "done" file is present.
+
+  pcaprepobsid may create other files but they are not documented, and
+  shouldn't be relied upon.  Also, because of the nature of the task,
+  creating multiple and varied outputs, it is essentially required to
+  set clobber=YES.
+
+NEXT STEPS
+
+  If you have multiple observations which you wish to combine, then
+  use the task 'pcamergeobsids', which will merge multiple pcapreobsid
+  output directories into a single directory.
+
+  For scientific analysis, users should create a good time interval
+  file using the task 'maketime' (or supplying some external GTI
+  file).
+
+  Finally, users should run an extractor task like 'pcaextspect2' or
+  'saextrct' to extract a spectrum from one or more Standard2 files
+  with deadtime quantities.
+
+ABSOLUTE or RELATIVE PATHS
+
+  This task has a parameter 'abspath' which determines whether
+  absolute or relative path names are written to *.lis files.
+  Relative paths are the default.
+
+  Absolute paths (abspath='YES') are suitable for cases where the user
+  will be combining many different observations, or running tasks from
+  different working directories.  However, some tasks have a limit to
+  the size of file names (typically ~100 characters), which may
+  prevent this method from working.
+
+  Relative paths (abspath='NO') are suitable for cases where the user
+  is running the analysis from the same working directory.  As long as
+  follow-up tasks are run from the same working directory, relative
+  paths should work.
+
+SUPPLYING a DIFFERENT TARGET POSITION
+
+  By default, xtefilt uses the RA_OBJ and DEC_OBJ keywords stored in
+  the FITS index files of the observation.  These keywords are based
+  on RXTE SOF planning inputs.
+
+  However, sometimes these inputs are incorrect, or may not represent
+  the best scientific target location, and the user will wish to enter
+  a different position.  Users can specify a new position with the
+  'ra' and 'dec' keyword parameters (which are the J2000 target
+  position in degrees).
+
+  There are several reasons one might want to do this.  If there is an
+  offset pointing, the RA_OBJ and DEC_OBJ may represent the offset
+  pointing direction instead of the true target position.  Or, a
+  better target position may be discovered only after the RXTE data
+  were processed.  Or, different data sets may have been processed by
+  RXTE with different positions, and the user desires to reprocess all
+  of the data sets with a single, consistent position.
+
+
+PARAMETERS
+
+    indir [filename]
+        Name of input directory containing a single RXTE observation
+        ID.  The input directory must be structured as it is stored in
+        the archive, i.e., an FMI file, subdirectories named pca/,
+        acs/, and so on.
+
+    outdir [filename]
+        Name of output directory which will contain output products.
+        If the directory does not exist, then it will be created.  See
+        above for description of output products.
+
+    (abspath = 'NO') [boolean]
+        If YES, then absolute path names will be written to *.lis
+        files.  If NO, then relative path names will be written,
+        relative to the current working directory when pcaprepobsid is
+        run.
+
+    (modelfile = 'CALDB') [string]
+        Comma-separated list of RXTE PCA background model files, or an
+        \@files.lis listing of files.  See the help file for pcabackest
+        for more information.  A setting of 'CALDB' instructs the task
+        to query the Calibration Database (CALDB) for the correct model.
+
+    (ra = INDEF) [real]
+        Right ascension of target in J2000 degrees.  If ra=INDEF
+        (which is the default), then the RA_OBJ keyword from the
+        observation index FITS files is used.
+
+    (dec = INDEF) [real]
+        Declination of target in J2000 degrees.  If dec=INDEF
+        (which is the default), then the DEC_OBJ keyword from the
+        observation index FITS files is used.
+
+    (bkginterval = 16.0) [real]
+        The interval between successive background estimates.  See the
+        help file for pcabackest ('interval' parameter) for more
+        information.
+
+    (bkglayers = 'YES') [boolean]
+        If set, then compute background estimates for each PCU layer.
+        See the help file for pcabackest ('layers' parameter) for
+        more information.
+
+    (bkgfullspec = 'NO') [bookean]
+        If set, then compute a full 256-channel background estimate
+        instead of Standard2's 129 bins.  See the help file for
+        pcabackest ('fullspec' parameter) for more information.
+
+    (saahfile = 'CALDB') [string]
+        Name of SAA History file used for background estimates.  See
+        the help file for pcabackest for more information.
+
+    (breakfile = 'CALDB') [string]
+        Set to a file name which contains PCU breakdown GTI
+        information.  If set to 'CALDB', then the task will query
+        CALDB for the appropriate file.  If set to 'NONE', then no PCU
+        breakdown processing will be done (not recommended).
+
+    (zero_bad = YES) [boolean]
+        If set, then the task will set the Xenon counts to zero any
+        PCU which is considered to be in a "bad" science state at the
+        given time, as described above.  If not set, then Xenon counts
+        are not changed.
+
+    (transition_bad = YES) [boolean]
+        If set, then PCU high voltage transitions are considered "bad"
+        science times (+/- 16 sec).  If not set, then only PCU high
+        voltage "off" is considered bad.
+
+    (propane_bad = YES) [boolean]
+        If set, then PCUs are considered "bad" if their propane layers
+        are gone.  If not set, then the propane layer status is not
+        considered.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 1) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = yes) [boolean]
+        Overwrite output files?  By default this is YES, and the task does
+        not function properly if you set it to NO.
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+
+    # In this example the user wishes to prepare obsid 93067-01-01-01
+    # for further analysis.  This subdirectory already is present in
+    # the uers's current working directory.
+
+    pcaprepobsid indir=./93067-01-01-01 outdir=./93067-01-01-01-result 
+
+    # When complete, the new subdirectory ./93067-01-01-01-result
+    # should be created with the output products listed above.
+
+CAVEATS
+
+    The user is strongly recommended to use an updated RXTE
+    Calibration database (CALDB), and to set breakfile=CALDB,
+    modelfile=CALDB, saahfile=CALDB.
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    pcaprepfile2, xtefilt, pcadeadcalc2, pcabackest
+
+EOHELP
+exit;
+    }
+
+use HEACORE::HEAINIT;
+
+
+
+# ==================================================================
+# Call the main task subroutine with an exception handler
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+@scratchfiles_badonly = ();
+eval {
+    $status = headas_main(\&pcaprepobsid);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub pcaprepobsid {
+
+    $taskname = "pcaprepobsid";
+    $taskvers = "1.0";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &pcaprepobsid_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+
+	# Delete some product files only if we exited with an error
+	if ($@) { 
+	  foreach $scratchfile (@scratchfiles_badonly) {
+	    unlink "$scratchfile";
+	  }
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Working subroutine
+sub pcaprepobsid_work {
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants :longnames);
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    use Cwd 'abs_path';
+
+    my ($infile, $outfile, $chatter);
+    my ($fits1, $fits2, $handle1, $handle2);
+    my ($mode, $tddes5);
+
+    ($status = PILGetFname('indir', $indir)) == 0 || die "error getting indir parameter";
+    ($status = PILGetFname('outdir', $outdir)) == 0 || die "error getting indir parameter";
+    ($status = PILGetString('modelfile', $modelfile)) == 0 || die "error getting modelfile parameter";
+    ($status = PILGetString('breakfile', $breakfile)) == 0 || die "error getting breakfile parameter";
+    ($status = PILGetString('saahfile', $saahfile)) == 0 || die "error getting saahfile parameter";
+    ($status = PILGetString('ra', $srcra)) == 0 || die "error getting ra parameter";
+    ($status = PILGetString('dec', $srcdec)) == 0 || die "error getting dec parameter";
+    ($status = PILGetReal('timestep', $timestep)) == 0 || die "error getting timestep parameter";
+    ($status = PILGetReal('bkginterval', $bkginterval)) == 0 || die "error getting bkginterval parameter";
+    ($status = PILGetString('bkglayers', $layers)) == 0 || die "error getting bkglayers parameter";
+    ($status = PILGetString('bkgfullspec', $fullspec)) == 0 || die "error getting bkgfullspec parameter";
+    ($status = PILGetString('zero_bad', $zero_bad)) == 0 || die "error getting zero_bad parameter";
+    ($status = PILGetString('transition_bad', $transition_bad)) == 0 || die "error getting transition_bad parameter";
+    ($status = PILGetString('propane_bad', $propane_bad)) == 0 || die "error getting propane_bad parameter";
+    ($status = PILGetBool('abspath', $abspath)) == 0 || die "error getting abspath parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting cleanup parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    print "Running $taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------\n" if ($chatter >= 2);
+
+    undef $breakfile if ($breakfile =~ m/^none$/i);
+    $clobstr = $clobber ? "YES" : "NO";
+    $cleanstr = $cleanup ? "YES" : "NO";
+
+    die "ERROR: $indir is not readable directory" if (! -d "$indir" );
+    die "ERROR: $indir does not have pca/ subdirectory" if (! -d "$indir/pca" );
+    if (! -d "$outdir" ) {
+      mkdir("$outdir") or die "ERROR: could not create $outdir";
+    }
+    die "ERROR: $outdir is not writable" if (! -w "$outdir" );
+
+    if ("$srcra" =~ m/^INDEF$/i || "$srcdec" =~ m/^INDEF$/i) {
+      undef($srcra); undef($srcdec);
+    } else {
+      $srcra = $srcra + 0.0; $srcdec = $srcdec + 0.0;
+      die "ERROR: Invalid 'ra' and 'dec' keywords" if ($srcra == 0 && $srcdec == 0);
+    }
+
+    my ($apidfile,$obs_info,$cmd,$logfile);
+
+    # =======================
+    # List of standard output files
+    $okfile   = "$outdir/pcaprepobsid_done.txt";
+    unlink($okfile);
+    $apidfile = "$outdir/appid.lis";
+    $hklis    = "$outdir/FP_pcahk.lis";
+    $filtlis  = "$outdir/FP_xtefilt.lis";
+    $std2lis  = "$outdir/FP_std2.lis";
+    $bkg2lis  = "$outdir/FP_bkg2.lis";
+    $dtstd2lis  = "$outdir/FP_dtstd2.lis";
+    $dtbkg2lis  = "$outdir/FP_dtbkg2.lis";
+
+    # =======================
+    # Remove most of them.  This task does not take too kindly to
+    # having previous versions lying around so warn against this.
+    &headas_clobberfile($apidfile);
+    &headas_clobberfile($hklis);
+    &headas_clobberfile($filtlis);
+    &headas_clobberfile($std2lis);
+    &headas_clobberfile($bkg2lis);
+    &headas_clobberfile($dtstd2lis);
+    &headas_clobberfile($dtbkg2lis);
+    die "ERROR: $filtlis already exists and clobber not set" if ( -f $filtlis);
+    die "ERROR: $hklis already exists and clobber not set" if ( -f $hklis);
+    die "ERROR: $std2lis already exists and clobber not set" if ( -f $std2lis);
+    die "ERROR: $bkg2lis already exists and clobber not set" if ( -f $bkg2lis);
+    die "ERROR: $dtstd2lis already exists and clobber not set" if ( -f $dtstd2lis);
+    die "ERROR: $dtbkg2lis already exists and clobber not set" if ( -f $dtbkg2lis);
+
+    # =======================
+    # Make APID file for xtefilt to use
+    die "ERROR: $apidfile already exists" if (-f $apidfile);
+    make_apid_file("$apidfile");
+
+    # Parse the FMI file for useful information (time and obsid)
+    $obs_info = xte_obs_info("$indir");
+    print "$obs_info->{obsid} $obs_info->{datestart} $obs_info->{datestop}\n" 
+      if ($chatter >= 2);
+
+    # Determine output filter file name
+    $filtroot = "$outdir/FP_".$obs_info->{hexindex};
+    $filtfile = "$filtroot".".xfl";
+    $logfile  = "$outdir/xtefilt.log";
+    &headas_clobberfile($filtfile);
+    unlink($filtroot);  # This could be a junk file lying around from previous run
+    die "ERROR: filter file $filtfile already exists" if ( -f "$filtfile" );
+
+    # =======================
+    # Prepare to run XTEFILT
+    $cmd = "xtefilt -a '$apidfile' ".
+      "-f '$filtroot' ".
+      "-o '".$obs_info->{obsid}."' ".
+      "-p '$indir' ".
+      "-t '$timestep' ";
+    $cmd .= "-b '$breakfile' " if (defined($breakfile));
+
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    init_log($logfile,"XTEFILT",$cmd);
+    system("$cmd >> $logfile 2>&1");
+    die "ERROR: xtefilt failed; see $logfile" if ($?);
+
+    # Verify that filter file run worked
+    unlink($filtroot);  # Remove junk files left around by failed process
+    if ( ! -f "$filtfile" ) {
+      die "ERROR: xtefilt failed; see $logfile";
+    }
+    
+    $filt = SimpleFITS->open("$filtfile",ext=>"XTE_MKF",access=>"readonly");
+    die "ERROR: filter file $filtfile is invalid; see $logfile " if ( ! $filt );
+    $filt->close();
+
+    # Log which filter file was created
+    print "  FILT: $filtfile\n" if ($chatter >= 2);
+    if (defined($srcra) && defined($srcdec)) {
+      &recompute_offset_elv("$filtfile",$srcra,$srcdec,$chatter,$cleanup);
+      print "        (recomputed for RA=$srcra DEC=$srcdec)\n" if ($chatter >= 2);
+    }
+    add_list_item($filtlis,$filtfile,$abspath,1);
+
+    # =======================
+    # Find the housekeeping files
+    @hkfiles = <$indir/pca/FH5[abcde]_*>;
+    if ($#hkfiles != 4) {
+      die "ERROR: all five housekeeping files are not present in $indir/pca";
+    }
+    # First item clobbers, the rest append
+    add_list_item($hklis,shift(@hkfiles),$abspath,1);
+    foreach my $hkfile (@hkfiles) {
+      add_list_item($hklis,$hkfile,$abspath,0);
+    }
+    
+    # =======================
+    # Now start to process standard2 files with pcaprepfile2
+    @std2files = <$indir/pca/FS4a*>;
+    foreach my $std2file (@std2files) {
+      next if (! -r "$std2file" );
+      next if ($std2file !~ m|^(.*)/(FS4a_[0-9a-f]+-[0-9a-f]+)(.gz)?$|);
+      my ($std2root,$bkgfile,$dtfile,$dtbkgfile);
+      $std2root = "$outdir/$2";
+      $bkgfile = $std2root."_bkg";
+      $dtfile = $std2root."_dt";
+      $dtbkgfile = $std2root."_dtbkg";
+      $logfile = $std2root.".log";
+      &headas_clobberfile($bkgfile);
+      &headas_clobberfile($dtfile);
+      &headas_clobberfile($bkgfile);
+      &headas_clobberfile($dtbkgfile);
+      &headas_clobberfile($logfile);
+
+      $cmd = "pcaprepfile2 ".
+	"infile='$std2file' ".
+	"filterfile='$filtfile' ".
+	"hkfiles='\@".$hklis."' ".
+	"bkgfile='$bkgfile' ".
+	"dtfile='$dtfile' ".
+	"dtbkgfile='$dtbkgfile' ".
+	"modelfile='$modelfile' ".
+	"bkginterval='$bkginterval' ".
+	"bkglayers='$layers' ".
+	"bkgfullspec='$fullspec' ".
+	"saahfile='$saahfile' ".
+	"breakfile='$breakfile' ".
+	"zero_bad='$zero_bad' ".
+	"transition_bad='$transition_bad' ".
+	"propane_bad='$propane_bad' ".
+	"chatter=5 cleanup='$cleanstr' clobber='$clobstr'";
+
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      init_log($logfile,"PCAPREPFILE2",$cmd);
+      system("$cmd >> $logfile 2>&1");
+      die "ERROR: pcaprepfile2 failed; see $logfile" if ($?);
+      if (! -f "$bkgfile" || ! -f "$dtfile" || ! -f "$dtbkgfile" ) {
+	die "ERROR: pcaprepfile2 failed; see $logfile";
+      }
+
+      print "  STD2: $std2file\n" if ($chatter >= 2);
+      
+      # Add this standard2 file to the list
+      add_list_item($std2lis,$std2file,$abspath,0);
+      add_list_item($bkg2lis,$bkgfile,$abspath,0);
+      add_list_item($dtstd2lis,$dtfile,$abspath,0);
+      add_list_item($dtbkg2lis,$dtbkgfile,$abspath,0);
+    }
+
+    # Final clean up
+    if ($status == 0) {
+      add_list_item($okfile,localtime(),0,1);
+    }
+    return $status;
+}
+
+# 
+# xte_obs_info - retrieve information about this observation
+# indir - directory containing observation FMI file
+#
+# Returns hash:
+#    => obsid - observation ID
+#    => tstart - start time (MET)
+#    => tstop - stop time (MET)
+#    => datestart - start time (UTC YYYY-MM-DDThh:mm:ss)
+#    => datestop - stop time (UTC YYYY-MM-DDThh:mm:ss)
+#    => hexindex - start-stop time in hex
+#
+sub xte_obs_info {
+  my ($indir) = (@_);
+  my ($fmifile,$fmifilename);
+
+  $fmifilename = "$indir/FMI";
+  die "ERROR: could not read $indir" if (! -d "$indir" || ! -r "$indir" );
+  die "ERROR: FMI file not readable in $indir" 
+    if (! -f "$fmifilename" || ! -r "$fmifilename" );
+  
+
+  $fmifile = SimpleFITS->open("$fmifilename",ext=>"XTE_MI",access=>"readonly");
+  die "ERROR: could not open $fmifilename for reading" if (! $fmifile );
+
+  if ($fmifile->nrows() > 1) {
+    die "ERROR: pcaprepobsid should only be run on a single OBSID, not full proposal";
+  }
+
+  my ($row,$obsid,$tstart,$tstop,$datestart,$datestop,
+      $timestart,$timestop,$timestr_hex);
+  $row = 1;
+  $obsid     = ($fmifile->readcol("ObsId",{rows=>$row})) [0];
+  $tstart    = ($fmifile->readcol("StartMET",{rows=>$row})) [0];
+  $tstop     = ($fmifile->readcol("StopMET", {rows=>$row})) [0];
+  $datestart = ($fmifile->readcol("StartDate", {rows=>$row})) [0];
+  $datestop  = ($fmifile->readcol("StopDate",  {rows=>$row})) [0];
+  $timestart = ($fmifile->readcol("StartTime", {rows=>$row})) [0];
+  $timestop  = ($fmifile->readcol("StopTime",  {rows=>$row})) [0];
+
+  $fmifile->close();
+
+  $datestart = old_date_to_new_date($datestart) . "T" . "$timestart";
+  $datestop  = old_date_to_new_date($datestop)  . "T" . "$timestop";
+
+  $timestr_hex = sprintf("%08x-%08x", int($tstart), int($tstop));
+
+  my $obs_info = {'obsid' => $obsid, 
+		  'tstart' => $tstart, 'tstop' => $tstop,
+		  'datestart' => $datestart, 'datestop' => $datestop,
+		  'hexindex' => $timestr_hex};
+}
+
+
+# 
+# recompute_offset_elv - recompute OFFSET and ELV columns for new RA/DEC
+#
+# filtfile - name of old filter file (will be replaced in-place)
+# ra - RA of target
+# dec - Dec of target
+# chatter - chatter level
+# cleanup - boolean whether to clean up or not
+#
+sub recompute_offset_elv {
+  my ($filtfile,$ra,$dec,$chatter,$cleanup) = (@_);
+  my ($exprfile,$tmpfile,$oldfile);
+
+  $exprfile = "$filtfile".".expr";
+  $tmpfile  = "$filtfile".".tmp";
+  $oldfile  = "$filtfile".".old";
+
+  print "  (renaming $filtfile to $oldfile before recomputing)\n" 
+    if ($chatter >= 5);
+  rename($filtfile,$oldfile) or die "ERROR: could not rename $filtfile";
+  push @scratchfiles, $oldfile;
+
+  print "  (creating $exprfile)\n"    if ($chatter >= 5);
+  open(OUT,">$exprfile") or die "ERROR: could not open $exprfile";
+  print OUT <<"END_EXPR1";
+// First * indicates include all input columns
+*;
+#RA_OBJ( [deg] J2000 Right Ascension of target) = $ra;
+#DEC_OBJ( [deg] J2000 Declination of target) = $dec;
+#R_EARTH( [km] Earth radius)=6378.16;
+// Earth-center to satellite radius
+R = SQRT(ACSSCPOSX**2+ACSSCPOSY**2+ACSSCPOSZ**2);
+// Half-angle subtended by earth
+HALFANG = ASIN(R_EARTH/R)/#deg;
+// COS(MU) where MU is the EARTH-SPACECRAFT-TARGET angle (dot product)
+COSMU = (ACSSCPOSX*COS(#RA_OBJ*#deg)*COS(#DEC_OBJ*#deg) + ACSSCPOSY*SIN(#RA_OBJ*#deg)*COS(#DEC_OBJ*#deg)+ACSSCPOSZ*SIN(#DEC_OBJ*#deg))/R;
+// Backup copies of original values
+OLD_ELV = ELV;
+OLD_OFFSET = OFFSET;
+// Target elevation above earth limb [deg]
+ELV = 180-ACOS(COSMU)/#deg-HALFANG;
+// Target offset from pointing direction [deg]
+OFFSET = ANGSEP(#RA_OBJ,#DEC_OBJ,POINT_RA,POINT_DEC);
+END_EXPR1
+
+  if ($cleanup) {
+    print OUT <<"END_EXPR2";
+-R;
+-HALFANG;
+-COSMU;
+-OLD_ELV;
+-OLD_OFFSET;
+END_EXPR2
+  }
+  close(OUT);
+
+  push @scratchfiles, $exprfile;
+
+  $cmd = "ftcopy infile='$oldfile"."[col @".$exprfile."]' ".
+	 "outfile='$filtfile' clobber=YES copyall=YES chatter=1";
+  print "COMMAND: $cmd\n" if ($chatter >= 5);
+  @result = `$cmd 2>&1`;
+  if ($? || ! -f "$filtfile") {
+    print "Error log\n=========================\n";
+    print @result;
+    print "=========================\n";
+    die "ERROR: could not create $tmpfile";
+  }
+
+}
+
+#
+# init_log - initialize a lot file representing command output
+#
+# logfile - name of log file (will be clobbered)
+# title - title of task to be run
+# cmd - full command line to be run
+#
+sub init_log {
+  my ($logfile,$title,$cmd) = (@_);
+  unlink($logfile);
+  open(LOG,">$logfile") or die "ERROR: could not open $logfile";
+  print LOG "$title ".localtime()."\n";
+  print LOG "$cmd\n";
+  print LOG "=======================";
+  close(LOG);
+}
+
+
+# ==================================================================
+# Append item to list
+#   $listfile - output file name
+#   $item - string to be appended to file (newline is added)
+#   $abspath - if true, then convert relative to absolute path
+#   $clobber - if true 
+sub add_list_item {
+  my ($listfile,$item,$abspath,$clobber) = (@_);
+  unlink($listfile) if ($clobber);
+  
+  open(OUT,">>$listfile") or die "ERROR: could not append to $listfile";
+  print OUT ($abspath ? abs_path($item) : $item)."\n";
+  close(OUT);
+}
+
+
+#
+# old_date_to_new_date - convert old FITS date formats to new
+#
+# old_date_str - old date format string DD/MM/YY
+#
+# RETURNS: new date format YYYY-MM-DD
+sub old_date_to_new_date {
+  my ($old_date_str) = (@_);
+
+  if ($old_date_str =~ m|(\d\d)/(\d\d)/(\d\d)|) {
+    my ($day,$mo,$yr);
+    $day = $1; $mo = $2; $yr = $3;
+    return sprintf("%04d-%02d-%02d", 
+		   ($yr < 30) ? (2000 + $yr) : (1900 + $yr),
+		   $mo, $day);
+  }
+  return "$old_date_str";
+
+}
+
+# Create APID list for xtefilt
+sub make_apid_file {
+  my ($outfile) = (@_);
+
+  open(OUT,">$outfile") or die "ERROR: could not open $outfile";
+  print OUT <<'END_APID_LIST';
+       14 ACSESTQ1
+       14 ACSESTQ2
+       14 ACSESTQ3
+       14 ACSESTQ4
+       15 ACSMODESTAT
+       16 ACSSCPOSX
+       16 ACSSCPOSY
+       16 ACSSCPOSZ
+       16 ACSSCVELX
+       16 ACSSCVELY
+       16 ACSSCVELZ
+       17 ACSEARTHLAT
+       17 ACSEARTHLON
+       20 ACSLUNARX
+       20 ACSLUNARY
+       20 ACSLUNARZ
+       21 ACSALTITUDE
+       24 ACSEARTHX
+       24 ACSSUNX
+       24 ACSSUNY
+       24 ACSSUNZ
+       74 VpX1LCntPcu0
+       74 VpX1RCntPcu0
+       74 Q6VxVpXeCntPcu0
+       74 VpX1LCntPcu1
+       74 VpX1RCntPcu1
+       74 Q6VxVpXeCntPcu1
+       74 VpX1LCntPcu2
+       74 VpX1RCntPcu2
+       74 Q6VxVpXeCntPcu2
+       74 VpX1LCntPcu3
+       74 VpX1RCntPcu3
+       74 Q6VxVpXeCntPcu3
+       74 VpX1LCntPcu4
+       74 VpX1RCntPcu4
+       74 Q6VxVpXeCntPcu4
+       74 X2LX2RCntPcu0
+       74 X3LX3RCntPcu0
+       74 X1LX2LCntPcu0
+       74 X1RX2RCntPcu0
+       74 X2LX3LCntPcu0
+       74 X2RX3RCntPcu0
+       83 ctLldPm pm_0
+       89 ctLldPm pm_1
+       90 cmdhvXE cmdhvXE_PCU0
+       91 cmdhvXE cmdhvXE_PCU1
+       92 cmdhvXE cmdhvXE_PCU2
+       93 cmdhvXE cmdhvXE_PCU3
+       94 cmdhvXE cmdhvXE_PCU4
+       90 hvXEon hvXEon_PCU0
+       91 hvXEon hvXEon_PCU1
+       92 hvXEon hvXEon_PCU2
+       93 hvXEon hvXEon_PCU3
+       94 hvXEon hvXEon_PCU4
+       90 hvXErly hvXErly_PCU0
+       91 hvXErly hvXErly_PCU1
+       92 hvXErly hvXErly_PCU2
+       93 hvXErly hvXErly_PCU3
+       94 hvXErly hvXErly_PCU4
+       90 evXEgood evXEgood_PCU0
+       91 evXEgood evXEgood_PCU1
+       92 evXEgood evXEgood_PCU2
+       93 evXEgood evXEgood_PCU3
+       94 evXEgood evXEgood_PCU4
+       251 hvD0 hvD0_0
+       251 hvD1 hvD1_0
+       251 hvD2 hvD2_0
+       251 hvD3 hvD3_0
+       252 hvD0 hvD0_1
+       252 hvD1 hvD1_1
+       252 hvD2 hvD2_1
+       252 hvD3 hvD3_1
+       295 TIME_SINCE_BRK0
+       295 TIME_SINCE_BRK1
+       295 TIME_SINCE_BRK2
+       295 TIME_SINCE_BRK3
+       295 TIME_SINCE_BRK4
+       295 TIME_SINCE_BRK
+END_APID_LIST
+  close(OUT);
+}

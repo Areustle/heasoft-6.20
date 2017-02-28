@@ -1,0 +1,267 @@
+#! /usr1/local/bin/perl5
+# $Id: hxtrsp,v 3.3 2013/01/24 21:41:30 irby Exp $
+require "utils.pl";
+require "interface.pl";
+use Getopt::Std;
+
+$version = '$Revision: 3.3 $';
+if ($version =~ /Revision: (.*) /) {$version = $1;}
+
+# See if there are any flags:
+getopts('i:a:h');
+
+print "\n\tHXTRSP ", $version, "\n";
+
+if (defined $opt_h) {
+    $opt_h = 0;
+    print <<EOHELP1;    
+ 
+NAME
+\thxtrsp - produce a HEXTE response matrix for a HEXTE spectrum (PHA file)
+
+USAGE
+\thxtrsp [-i "pha_file"] [-a "attitude_file"] [-h]
+
+If the "pha_file" or "attitude_file" are not present, the user is prompted for
+them.
+
+DESCRIPTION
+\tThis is a Perl script. 
+
+For a HEXTE spectrum it uses the calibration data stored in the OGIP
+Calibration Database ("CALDB") to form an appropriate response matrix, based
+on the "detector ID" of the spectrum, the observation date, and an optional
+XTE Filter file or attitude file for calculating the collimator response.
+(If not provided, the Ftool HXTARF is called in any case to calculate the
+collimator response at the nominal RXTE boresight).
+
+The resulting response matrix is named after the root name of the PHA file
+with the suffix ".rsp". 
+
+If the detector ID and date/time are not present in the PHA file as FITS
+keywords, the user is prompted for their values (which are subsequently
+written into the PHA file, along with a RESPFILE keyword identifying
+the new response matrix which HXTRSP created). 
+
+PARAMETERS
+\t -i pha_file:
+A spectral file produced by SEEXTRCT/SAEXTRCT, optionally corrected for
+dead-time by HXTDEAD.
+
+\t -a attitude_file:
+An RXTE attitude file (FH0e_*), or an RXTE filter file containing spacecraft
+attitude data for the observation. Either file must contain data covering
+the start and stop times of the PHA file. If the user specifies 'NONE', then
+HXTARF assumes that the observation was made at the RXTE nominal boresight
+position; type "fhelp hxtarf" for more details.
+
+Ftools called by this script:
+-----------------------------
+quzcif, fkeypar, pget, rddescr, rbnrmf, hxtarf, marfrmf, fparkey
+
+CALDB datasets required: 
+------------------------
+"MATRIX", "COLLRESP", "EFF_AREA" datasets are all required to be defined for
+the HEXTE, the last two are for use with HXTARF.
+
+EXAMPLES
+\t1. hxtrsp -i FS50_xxx.pha -a xtefilt.xfl
+This produces a HEXTE matrix called FS50_xxx.rsp suitable for the PHA file.
+An RXTE filter file is used for the spacecraft pointing data, which is
+compared to the RA_OBJ and DEC_OBJ keywords in the input PHA file.
+
+\t2. hxtrsp -a NONE
+The user has specified that no spacecraft pointing data be used. HXTRSP
+will prompt for the name of the input PHA file.
+
+\t3. hxtrsp -h | more
+Prints this help information.
+
+SEE ALSO
+\thxtarf, rddescr, caldb
+
+EOHELP1
+exit;
+}  # defined($opt_h)
+
+# Check to see that the CALDB environment variable is defined.
+
+die "CALDB is not properly set up or installed; hxtrsp cannot run.\n" if (!$ENV{CALDB});
+
+# Obtain the input PHA file name from the command line (-i option), or from
+# user input. The default is the last value of "phafil"  used by HXTARF.
+if (defined $opt_i) {  # command-line value was given
+  $pha = $opt_i;      
+} else {               # user must be prompted for a value
+  # Obtain the last used value and prompt with it as the default.
+  @result = &runcom('pget hxtarf phafil');
+  chop($pha = $result[0]);
+  print "Input HEXTE PHA file [", $pha,"] ";
+  chop($input = <STDIN>);
+  $pha = $input if ($input =~ /\w/);   # non-blank response overrides default
+}
+
+# Obtain the input attitude file name from the command line (-a option), or
+# from user input. The default is the last value of "xtefilt" used by HXTARF.
+
+if (defined $opt_a) {  # command-line value was given
+  $xtefilt = $opt_a;   
+}else {                # user must be prompted for a value
+  # Obtain the last used value and prompt with it as the default.
+  @result = &runcom('pget hxtarf xtefilt');
+  chop($xtefilt = $result[0]);
+  print "Input the RXTE filter file or attitude (FH0e..) file, or 'NONE' [",
+  $xtefilt, "] ";
+  chop($input = <STDIN>);
+  $xtefilt = $input if ($input =~ /\w/);  #non-blank response overrides default
+}  
+
+# Obtain relevant keyword values from the PHA file's first extension header,
+# or prompt the user if not present therein.
+print "\n# Obtaining detector ID and date/time information from ", $pha, " ...\n";
+
+$detnam = &getkeyvalprompt($pha, "DETNAM", "Input detector ID (e.g. PWA, PWA0, PWB013)");
+$obsdate = &getkeyvalprompt($pha, "DATE-OBS", "Observation date (DD/MM/YY)");
+$dateid = join("", reverse(split("/", $obsdate)));  # reformat to yymmdd
+
+# Check for UT time  sensitivity here.
+if ($dateid == 960306) {  # the day that detector PWB2 failed
+  $obstime = &getkeyvalprompt($pha, "TIME-OBS", "Observation time UT (hh:mm:ss)");
+} else {                  # UT time not important; just use 12:00:00 
+  $obstime = "12:00:00";
+}
+
+$raobj = &getkeyvalprompt($pha, 'RA_OBJ', "J2000 source Right Ascension (ddd.dddd)");
+$raobj = sprintf("%12.8f", $raobj);  # Convert to floating point format
+
+$decobj = &getkeyvalprompt($pha, 'DEC_OBJ', "J2000 source Declination (+/-dd.ddd)");
+$decobj = sprintf("%+12.8f", $decobj); # Convert to floating point format
+
+print "The CALDB will be searched for datasets matching RXTE/HEXTE 
+  detector ID=", $detnam, " and observation date/time ", $obsdate, " ",
+  $obstime, ".\n";
+
+print "\n# Searching the CALDB for the appropriate RMF (MATRIX dataset):\n";
+
+$command = 'quzcif XTE HEXTE detector="'.$detnam.'" filter="-" codename=MATRIX date="'.$obsdate.'" time="'.$obstime.'" expr="-"';
+print "% ", $command, " ...\n";
+@result = &runcom($command);
+chomp(@result);
+die "QUZCIF failed ($result[0])" if ($result[0] =~ /No datasets/);
+
+($rmf, $rmfext) = split(" ", $result[0]);  # split the file name and extension
+$rmf = join("", $rmf, "[", $rmfext, "]");  # rejoin them as "<file>[<extno>]"
+
+$pharoot = $pha;
+$pharoot =~ s/\.pha$//;  # strip of the ".pha" if it exists
+
+# Create an RMF name from the date and the detector ID in the form
+# "hexte_yymmdd_<det>.rmf"
+
+$tmprmf = join("", "hexte_", $dateid, "_", lc($detnam), ".rmf"); 
+$command = 'fextract clobber=yes "'.$rmf.'" "'.$tmprmf.'" '; @result =
+&runcom($command);
+
+chomp(@result);
+die "QUZCIF failed ($result[0])" if ($result[0] =~ /No datasets/);
+
+$command = 'quzcif XTE HEXTE detector="'.$detnam.'" filter="-" codename=EBOUNDS date="'.$obsdate.'" time="'.$obstime.'" expr="-"';
+print "% ", $command, " ...\n";
+@result = &runcom($command);
+($ebounds, $ebext) = split(" ", $result[0]);  # split the file name and extension
+$ebounds = join("", $ebounds, "[", $ebext, "]");  # rejoin them as "<file>[<extno>]"
+$command = 'fappend "'.$ebounds.'"  "'.$tmprmf.'" ';
+@result = &runcom($command);
+
+print "The RMF ", $tmprmf, " has been extracted from the CALDB.\n";
+
+# Create an output RMF name from the input PHA file name
+$outrmf = join("", $pharoot,  ".rmf"); 	       
+
+print "\n# Reading the  PHA channel descriptor from ", $pha, " for rebinning the RMF:\n";
+$chanfile = join("", $pha, ".chan");
+$command = 'rddescr "'.$pha.'" "'.$chanfile.'"';
+print "% ", $command, " ...\n";
+@result = &runcom($command);
+
+if ($result[0] =~ ERROR) {
+  print  @result;
+  print "\nAssuming that no rebinning is required....\n";
+  $outrmf = $tmprmf
+} else {
+  $command = 'rbnrmf clobber=yes infile="'.$tmprmf.'" ebdfile="%" binfile="'.$chanfile.'" cmpmode="linear" outfile="'.$outrmf.'" fchan=0';
+  print "% ", $command, " ...\n";
+  @result = &runcom($command);
+  chomp(@result);
+  die "RBNRMF failed ($result[0])" if ($result[0] =~ ERROR);
+}  
+
+# Form an ARF name specific to the observation
+
+$outarf = join("", $pharoot,  ".arf"); 
+
+print "\n# Producing an ARF from the CALDB effective area and collimator response:\n";
+$command = 'hxtarf chatter=5 clobber=yes phafil= "'.$pha.'" inarf=CALDB collcube=CALDB detnam="'.$detnam.'" xtefilt="'.$xtefilt.'" outarf="'.$outarf.'"';
+print "% ", $command, " ...\n";
+@result = &runcom($command);
+print @result;
+die "HXTARF failed - aborting script HXTRSP" if ($result[0] =~ ERROR);
+
+# Form an RSP name specific to the observation.
+
+$outrsp = join("", $pharoot,  ".rsp"); 
+
+print "\n# Forming the FULL response matrix ", $outrsp, ":\n";
+$command = 'marfrmf clobber=yes rmfil="'.$outrmf.'" arfil="'.$outarf.'" outfil="'.$outrsp.'"';
+print "% ", $command, " ...\n";      
+@result = &runcom($command);
+chomp(@result);
+die "MARFRMF failed ($result[0])" if ($result[0] =~ ERROR);
+
+# Fill the RESPFILE keyword and ANCRFILE keywords of the PHA file
+
+$command ='fparkey add=yes "'.$outrsp.'" "'.$pha.'" RESPFILE';
+&runcom($command);
+$command = 'fparkey add=yes "NONE" "'.$pha.'" ANCRFILE';
+&runcom($command);
+
+print "\nHXTRSP v", $version, " completed. Keywords have been updated in the PHA file ", $pha, ".\n";
+print "# Deleting temporary files and exiting.\n";
+unlink($chanfile);
+unlink($tmprmf);
+## Keep this around, it contains useful info unlink($outarf);
+exit;
+
+# end of HXTRSP
+# ---------------------------------------------------------------------------
+sub getkeyvalprompt
+{
+# Return a keyword value from the the first extension of a FITS file;
+# or prompt from the user if not present. This subroutine uses
+# a call to FKEYPAR then PGET, and so assumes that the parfile does
+# not change in between.
+  local ($file, $keyword, $prompt) = @_;
+  local $value = " ";
+  @result = &runcom('fkeypar "'.$file.'"  "'.$keyword.'" ');
+  die join("", "Unable to read ", $file, ". Aborting program.\n")  
+      if (join(" ", @result) =~ /ERROR/);
+  @result = &runcom('pget fkeypar exist value');
+  if ($result[0] =~ /yes/) {
+     chomp($value = $result[1]);
+     $value =~ s/'//g;          # remove single quotes from strings
+     $value =~ s/^[ \t]+//g;    # remove leading space & tabs
+     $value =~ s/[ \t]+$//g;    # remove trailing space & tabs
+##     print $file, " has ", $keyword, "= ", $value, ".\n";
+  }
+  else {                        # file is OK but unable to read the keyword
+    print $prompt, ": ";
+   chomp ($value = <STDIN>);   
+   $value =~ s/'//g;       # remove single quotes from strings
+   $value =~ s/^[ \t]+//g; # remove leading space & tabs
+   $value =~ s/[ \t]+$//g; # remove trailing space & tabs
+	     
+   # Sneakily add this keyword/value to the file
+   &runcom('fparkey add=yes"'.$value.'"  "'.$file.'" "'.$keyword.'" comment="added by hxtrsp from user input" ');
+  }   
+  return($value);
+}  

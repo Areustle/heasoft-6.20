@@ -1,0 +1,161 @@
+#!/software/lheasoft/develop/OSF1_4.0_alpha/bin/wish
+package provide xsl_menu 1.0
+
+# Set up the cascade menus
+proc CasMenu {mn Casmenu } {
+    upvar $Casmenu casmenu
+
+    if { [llength $casmenu]  > 0} {
+        foreach m $casmenu {
+            set a [string tolower $m]
+            $mn add cascade -label $m -menu $mn.$a
+            menu $mn.$a -tearoff no
+        }
+    }
+}
+
+# Set up the command menus
+proc ComMenu {mn Commenu command} {
+    upvar $Commenu commenu 
+    if { [llength $commenu]  > 0} { 
+        set i 0
+        foreach m $commenu {
+          set a [string tolower $m]
+          # remove the seperator %
+          regsub -all -- "%" [lindex $command $i] " " cmd_str  
+          $mn add command -label $m \
+            -command [ list RunButton $cmd_str]
+          incr i
+        }
+    }
+}
+
+
+
+# Run the Entry command 
+proc RunEntry {cmd_str} { 
+  upvar $cmd_str xsl_cmd 
+  RegisCommand $xsl_cmd
+  RunCommand $xsl_cmd
+}
+
+proc RunButton {cmd_str} { 
+  RegisCommand $cmd_str
+  RunCommand $cmd_str
+}
+
+proc RunCommand {xsl_cmd} { 
+  global logtxt log_mess xsl_prompt
+  
+  if { [string length $xsl_cmd ] == 0} {
+     return
+  }
+  LockXslWin xsl_cmd
+
+  append log_mess "$xsl_prompt$xsl_cmd\n"
+  xsltermout
+
+  if [ catch $xsl_cmd result ] { 
+     tk_dialog .err "Error" \
+         "$xsl_cmd:  $result " error 0 OK
+  }
+  append log_mess $result\n
+  xsltermout
+
+  UnLockEntry
+  UpdateXslMenu 
+} 
+
+proc query_parm {type} { 
+global xsl_parval xsl_cmdprmpt xsl_defval
+global xsl_parval_cancel
+global log_mess
+
+set xsl_parval $xsl_defval 
+set xsl_parval_cancel "not"
+
+#flush the log_mess 
+xsltermout
+
+#window setup 
+toplevel .xslquery 
+set width [winfo screenwidth .]
+set height [winfo screenheight .]
+set x [expr int($width/90.0)] 
+set y [expr int($height/7.0)] 
+wm geometry .xslquery +$x+$y
+wm transient .xslquery
+
+regsub ^> $xsl_cmdprmpt "" xsl_cmdprmpt
+regsub >$ $xsl_cmdprmpt "" xsl_cmdprmpt
+append xsl_cmdprmpt ":   "
+set top [frame .xslquery.query]
+set con [frame .xslquery.but]  
+label $top.lable -text $xsl_cmdprmpt 
+set type [string tolower $type]
+set type [string trim $type]
+if { $type != "b" } {
+    entry $top.entry -relief sunken \
+       -font  "-*-courier-bold-r-normal--14-*-*-*-*-*" \
+       -background white \
+       -foreground black \
+       -textvariable xsl_parval
+       bind $top.entry <Return> {destroy .xslquery } 
+       button $top.reset -text Reset -command {set xsl_parval " "}
+} else { 
+    set bol [frame $top.entry]
+    radiobutton $bol.yes -text "yes" -variable xsl_parval  -value "yes"    
+    radiobutton $bol.no -text "no" -variable xsl_parval  -value "no"
+}    
+button $con.ok -text Ok \
+-command {destroy .xslquery }
+button $con.cancel -text Cancel \
+-command cancel_par_request 
+pack $top -side top -fill both -pady 10
+pack $con -side top -fill y -pady 10
+pack $top.lable -side left -padx 5
+pack $top.entry -side left -padx 5
+if {$type == "b"} {  
+    pack $bol.yes -side left -padx 5
+    pack $bol.no  -side left -padx 5
+    set xsl_defval [string trim $xsl_defval]
+    set xsl_defval [string tolower $xsl_defval] 
+    if { $xsl_defval == "yes"} { 
+        $bol.yes invoke
+    } else { 
+        $bol.no invoke
+    }
+} else {
+    pack $top.reset -side left  -padx 5
+}
+pack $con.ok -side left  -padx 20
+pack $con.cancel -side left -padx 20
+tkwait window .xslquery
+set xsl_parval [string trim $xsl_parval]
+append log_mess ">$xsl_cmdprmpt> $xsl_parval \n"
+xsltermout
+}
+
+proc cancel_par_request {} {
+global xsl_parval_cancel
+set xsl_parval_cancel "cancel"
+destroy .xslquery  
+}
+
+proc  xsltermout {} {
+global logtxt log_mess
+if { [string length $log_mess] == 0 } {
+    return
+}
+if [info exists logtxt] { 
+    if { [string length $log_mess] >0 } {
+        $logtxt configure -state normal
+        $logtxt insert end $log_mess 
+        $logtxt configure -state disabled
+        set log_mess "" 
+        $logtxt yview moveto 1.0
+    }
+}
+}
+
+

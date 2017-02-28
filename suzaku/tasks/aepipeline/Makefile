@@ -1,0 +1,15 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	= 
+
+HD_INSTALL_PERL_SCRIPTS	= aepipeline
+
+HD_INSTALL_HELP		= aepipeline.html
+
+HD_INSTALL_PFILES	= aepipeline.par
+
+HD_INSTALL_REFDATA      = aexisconf.list
+
+HD_TEST_PERL_SCRIPTS    = ut_${HD_INSTALL_PERL_SCRIPTS}
+
+include ${HD_STD_MAKEFILE}

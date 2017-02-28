@@ -1,0 +1,389 @@
+
+
+c
+      program lcmath
+
+c apply BacKGround subtraction to binned data.
+
+c This program accepts two FITS files as input:
+c  File1, or an 'input file' and
+c  File2, or a 'background file'.
+c However, the program is more general in that it can either add
+c or subtract the light curves in the 2 files, and the two files
+c need not actually contain "source" and "background" data.  In either case the
+c integration time in File1 should be less than or equal to that in
+c File2.  Also, the way the data are stored in the column containing
+c the count rate should be the same in both files.  For example, if
+c File1 has a RATE column with 128 energy channels stored as a
+c vector, so should File2.
+
+c Lcmath acts on one binary extension and one rate column only.
+
+c Lcmath creates a new output file which is a copy of File1 with the
+c original light curve replaced by the net light curve.
+
+c Lcmath expects the input and background file to contain binned data,
+c not an event list.
+
+c The user may scale and/or add an offset to either or both input light curves.
+
+c The net light curve can contain the sum of any number of contiguous energy
+c channels listed in the data.  The input light curves may be 1-D
+c vectors of separate energy channels, but should contain only
+c one time per row.
+
+c By default, lcmath will apply to the net light curve any vignetting or
+c deadtime correction information contained in the input file.
+c The user may cancel this correction.
+
+c Relevant subroutines: (see for more detailed information)
+
+c    lcmathinit   Reads input parameters using XPI
+c    lcmathmake   Houses the main body of the program, gathers file header
+c              information
+c    lcmathopen   Opens and performs checks on the input files
+c    lcmathcopy   Copies File1 to the output file, making any necessary
+c              changes to the format of the relevent extension.
+c              Any other extensions or images are copied verbatim.
+c    lcmathread   Reads count rate data from File1,
+c              adds or subtracts File2, applies scaling and corrections
+c    lcmathrdbkg  Reads count rate data from File2
+c    lcmathwrite  Writes the net count rate and error to the output file
+
+-----------------------
+
+      subroutine lcmathcopy(lui,as,inext,ivecti,luo,ou_fil,ivecto,ierr)
+
+c COPY the contents of the input file to the output file, except for
+c the rate table data, which will be written after BacKGround subtraction.
+
+c This routine makes an exact copy of the input file, except for
+c the 1 (one) extension for which the count rate will be modified.
+c That extension retains its original place in the file, but its
+c structure is altered.  The following points apply:
+
+c   Only columns recognizable to xronos are retained.  These include
+c      Time                -- ivect(1)
+c      Rate                -- ivect(2)
+c      Error               -- ivect(3)
+c      Deadtime            -- ivect(4)
+c      Integration time    -- ivect(5)
+c      Fractional exposure -- ivect(6)
+
+c   Each of these columns are written in 1E (real) format -- except for Time,
+c   deadtime, or integration-time columns,
+c   which are 1D (double precision) -- regardless of
+c   how they are represented in the input file.  This eases any need
+c   to reproduce internal scaling from the original file.
+c   It would require major modifications for lcmath to
+c   process files with TIME packets.
+
+c   The error column is created anew if it is not present in the original
+c   file, and its values are calculated internally in subroutine lcmathread.
+
+c Keywords that get changed are:
+
+c     HDUCLAS2 = 'NET' if as = .false., i.e., if subtraction takes place.
+c     BACKAPP  =  T    "   " "   "   "   "   "   "   "   "   "   "   "
+c     VIGNAPP  =  T  if vignetting corrections are applied
+c     DEADAPP  =  T  if dead time   "    "   "   "   "   "
+
+c See below for comments regarding subtleties that still need to be worked out
+c in copying the header keywords.
+
+c >>> This routine needs to have the docor parameter passed to it as a switch
+c     for corrections keywords!<<<
+
+c  I  lui    (i)  Lu of input FITS file
+c  I  as     (l)  = true if adding rather than subreacting
+c  I  ivecti (i)  List of relevant column numbers in the input file
+c  I  inext  (i)  Number of the rate table extension to be modified
+c  I  luo    (i)  Lu of output FITS file
+c  I  ou_fil (c)  Name of output file
+c  O  ivecto (i)  List of relevant column numbers in the output file
+
+----------------------------
+
+      subroutine lcmathinit(in_fil,bg_fil,ou_fil,tchat,lchat,mi,ai,mb,ab
+     &                  ,as,docor,iopt,ierr)
+
+c INITialize files and parameters for program LCMATH.
+
+c  O  in_fil    (c)  Name of input file (single file only)
+c  O  bg_fil    (c)  Name of background file (single file only)
+c  O  ou_fil    (c)  name of output file (single file only)
+c  O  tchat     (i)  Terminal chattiness
+c  O  lchat     (i)  Log chattiness
+c  O  mi        (i)  Multiplicative factor for input
+c  O  ai        (i)  Additive offset for input
+c  O  mb        (i)  Multiplicative factor for background
+c  O  ab        (i)  Additive offset for background
+c  O  as        (l)  if .true. means Add, rather than Subtract 'bg' file
+c  O  docor     (l)  if .true. means apply deadtime/vignet correction
+c  O  iopt      (i)  xronos options array (used only for energy bounds here)
+c  O  ierr      (i)  error status
+
+------------------------
+
+      subroutine lcmathmake(in_fil,bg_fil,ou_fil,mi,ai,mb,ab,as,docor,iopt
+     &                  ,ierr)
+
+c do a BacKGround subtraction on binned rate data.
+
+c This routine houses the full processing algorithm for program lcmath.
+
+c It calls routines to open the input files, prepare the output file,
+c read from input, do additions or subtractions and write the results
+c to the output file.  It also performs several checks on the compatability
+c of the two input files, viz:
+
+c    The input and output filenames must be different -- input does not
+c    get overwritten.
+
+c    If subtracting, the "background file" must completely contain
+c    the input file in time.
+
+c    The number of energy channels in input and background must be the same.
+
+c    If subtracting, the integration time in the input file should be
+c    less than or equal to the integration time in the bg file, (although
+c    nothing in the lower routines would prevent the program from executing
+c    correctly if this were not the case.)
+
+c  I  in_fil    (c)  Name of input file
+c  I  bg_fil    (c)  Name of background file
+c  I  ou_fil    (c)  name of output file
+c  I  mi        (i)  Multiplicative factor for input
+c  I  ai        (i)  Additive offset for input
+c  I  mb        (i)  Multiplicative factor for background
+c  I  ab        (i)  Additive offset for background
+c  I  as        (l)  if .true. means add rather than subtract
+c  I  docor     (l)  if .true. means apply deadtime/vignet corrections
+c  I  iopt      (i)  xronos options array (used only for energy bounds here)
+c  O  ierr      (i)  error status
+
+---------------------------
+
+      subroutine lcmathopen(in_fil,lui,iext,nrows,ivect,iopt,dtp,dtint
+     &            ,dtsta,dtsto,dtzero,dtoffset,ctunit,crunit,naxis
+     &            ,naxes,eaxis,taxis,emax,ierr)
+
+c OPEN and check input files for program LCMATH.
+
+c This routine gets called in lcmathmake -- once for the input file and once
+c for the background file.  Checks that can be made independently for
+c each file are made here.  These include:
+
+c   Checking to be sure the file contains binned rate or count data and that
+c   all header and column timing information is complete.
+
+c   Checking that the extension has at least one row of data.
+
+c   Finding out which columns should be copied to output, dropping those
+c   other than TIME, RATE or COUNT, and ERROR if the rate is given as
+c   an energy-channel vector.
+
+c   Checking that user-specified maximum and minimum energy channels
+c   are consistent with the file.
+
+c For more information see the following subroutines in ../lib.
+c xropnfil, xrftgcol, xrftgycf, xrphaopt, and xrftgtky
+
+c  I  in_fil   (c)  Name of input file
+c  O  lui      (i)  Lu of input file.
+c  O  iext     (i)  Extension number for rate table (1); (2) irrel. here
+c  O  nrows    (i)  Number of rows in each file
+c  O  ivect    (i)  FITS column numbers for TIME, Y and SY in infile
+c  O  iopt     (i)  xronos options array (used only for energy bounds here)
+c  O  dtp      (d)  Delta-time in packets (seconds)
+c  O  dtint    (d)  File integration times (seconds)
+c  O  dtsta    (d)  Start time (days - TJD if possible)
+c  O  dtsto    (d)  Stop time (days - TJD if possible)
+c  O  dtzero   (d)  Zero-point offset for TIME columns (days)
+c  O  dtoffset (d)  Internal time offsets (days)
+c  O  ctunit   (d)  Units on TIME columns
+c  O  emax     (i)  Number of energy channels
+c  O  ierr     (i)  error status
+
+------------------------
+
+
+      subroutine lcmathrdbkg(lub,ivect,iopt,dtime_in,dtint,dtp
+     &                   ,dtzero,dtoffset,ctunit,crunit,nrows
+     &                   ,naxis,naxes,eaxis,taxis,y,sy,allnul,ierr)
+
+c ReaD BacKGround rates for program LCMATH.
+
+c This routine supplies count rate information from the background file
+c the time at the current bin in the input file.  It gets called by
+c lcmathread.  This routine is used in much the same way as the routine
+c xrgetexp to assemble the exposure in xronos.  the main difference is
+c that whereas xronos assembles an interval of newbins in memory, lcmath
+c takes bins straight from the input file, calling this routine once for
+c original bin.
+
+c All information regarding the structure of the background file is passed
+c from the calling routine.
+
+c The algorthm runs as follows:
+
+c    First, it finds where the current time in the bg file is with respect to
+c    the current bin in the input file.
+
+c    IF the bg bin < the beginning of the input bin, the routine reads from
+c    the bg file until the inequality is reversed, returning to the above test
+c    on each read.
+
+c    If the bg bin > the end of the input bin, the input bin is taken to
+c    be in a gap in the background data.  The net rate will then be set to the
+c    gap value (undefined in the FITS file).
+
+c    If any part of the bg bin overlaps with the input bin, the
+c    current background rate is included in the returned value.
+ 
+c    If more than one background bin overlaps with the input bin, they are
+c    averaged according to the amount of coverage in the returned value.
+
+c The returned count rate is given in counts/sec regardless of how they
+c are given in the input and bg files.
+
+c This routine allows for a TIME axis in the RATE packet, although the
+c current version of lcmath does not.
+
+c Note also that this routine does not care about the bin size in the input
+c file relative to that in the bg file.
+
+c  I  lub      (i)  Lu of input file.
+c  I  ivect    (i)  Vector of column numbers in background file
+c  I  iopt     (i)  Array of option flags
+c  I  dtime_in (d)  Current TIME value in the input file (days)
+c  I  dtint    (d)  File integration time (seconds)
+c  I  dtp      (d)  Delta-time in packets (seconds)
+c  I  dtzero   (d)  Zero-point offset for TIME column (days)
+c  I  dtoffset (d)  Internal time offset (days)
+c  I  ctunit   (i)  Units on TIME column
+c  I  crunit   (i)  units on RATE column
+c  I  nrows    (i)  Number of rows in the file
+c  I  naxis    (i)  Number of dimension in RATE column
+c  I  naxes    (i)  Length of each axis in RATE column
+c  I  eaxis    (i)  Energy axis in RATE column
+c  I  taxis    (i)  Time axis in RATE column
+c  O  y        (r)  Rate from input FITS file (counts/sec)
+c  O  sy       (r)  Error in rate from input FITS file (counts/sec)
+c  O  allnul   (l)  = .true. if the whole input bin fell in a background gap
+c  O  ierr     (i)  error status
+
+---------------------------
+
+      subroutine lcmathread(lui,lub,ichat,mi,ai,mb,ab,as,iopt,ivect,ivectb
+     &                  ,nrows,dtp,dtint,dtzero,dtoffset,ctunit,crunit
+     &                  ,naxis,naxes,eaxis,taxis ,docor,frow,trow
+     &                  ,ynet,synet,anynul,finished,ierr)
+
+c READ the current rate (or count) from an input fits file for program LCMATH.
+
+c This routine reads one bin from the input file, applies any user-specified
+c scaling and offset to the count rate, subtracts (or adds) the rate from
+c the bg file, and by default applies any deadtime or vignetting correction
+c specified in the input file.
+
+c On the first call, (thus assuming only a single file to be processed),
+c this routine checks to see if deadtime and vignetting have been applied,
+c and what the correction values are, if present in the input file.
+
+c    If corrections have been applied, it issues a warning to that effect.
+
+c    If corrections have not been applied but their values are given, it
+c    issues a warning that the net light curve will be corrected.
+
+c    If the user requests that corrections not be applied, the net lightcurve
+c    will be uncorrected.  If the input lightcurve was corrected
+c    it will issue a warning that the net lightcurve is uncorrected.
+
+c The general algorithm is as follows:
+
+c    The routine retrieves the count rate (in counts/sec) for
+c    the current row in the input file (using subroutine xrfrdyco, as
+c    in xronos).  The error on the count rate is read if present or else
+c    calculated as a poisson error.
+
+c    The routine then calls subroutine lcmathrdbkg to get the mean count rate
+c    during the current integration time.
+
+c    Next, it converts the rate to counts and un-applies any corrections
+c    for deadtime or vignetting.
+
+c    It then applies user-specified scaling and offsets to both input and
+c    and background.
+
+c    Next, it either adds or subtracts the "background" counts.
+
+c    If not otherwise specified, it then reapplies the corrections.
+
+c    Finally it converts back to counts/sec.
+
+c This routine allows for a TIME axis in the RATE packet, although the
+c current version of lcmath does not.
+
+c Note also that this routine does not care about the bin size in the input
+c file relative to that in the bg file.
+
+c  I  lui      (i)  Lu of input file.
+c  I  lub      (i)  Lu of background file.
+c  I  ichat    (i)  chattiness
+c  I  mi       (r)  scaling factor for input
+c  I  ai       (r)  offset for input
+c  I  mb       (r)  scaling factor for background
+c  I  ab       (r)  offset for background
+c  I  as       (l)  if .true. means add rather than subtract
+c  I  iopt     (i)  Array of option flags
+c  I  ivect    (i)  FITS column numbers for TIME, Y and SY in infile
+c  I  ivectb   (i)  FITS column numbers for TIME, Y and SY in background file
+c  I  nrows    (i)  Number of rows in each file
+c  I  dtp      (d)  Delta-time in packets (seconds)
+c  I  dtint    (d)  File integration times (seconds)
+c  I  dtzero   (d)  Zero-point offset for TIME columns (days)
+c  I  dtoffset (d)  Internal time offsets (days)
+c  I  ctunit   (i)  Units on TIME columns
+c  I  crunit   (i)  units on RATE column
+c  I  naxis    (i)  Number of dimension in RATE column
+c  I  naxes    (i)  Length of each axis in RATE column
+c  I  eaxis    (i)  Energy axis in RATE column
+c  I  taxis    (i)  Time axis in RATE column
+c  I  docor    (l)  = TRUE if deadtime/vignet corrections will be applied
+c  O  frow     (i)  Current row in the table
+c  O  trow     (i)  Current row in the packet (=1 if no time dimension)
+c  O  ynet     (r)  Net count rate (counts/sec)
+c  O  synet    (r)  Net Error (counts/sec)
+c  O  anynul   (l)  = .true. if null values were found in the file on the
+c                   current time interval
+c  O  finished (l)  = .true. when the last point has been read
+c  O  ierr     (i)  error status
+
+---------------------------
+
+      subroutine lcmathwrite(lui,luo,frow,trow,ynul,ivecti,ivecto
+     &                   ,ynet,synet,ftstat)
+
+c WRITE BacKGround-subtracted times, rates, and anything else to output.
+
+c This routine writes one row of data to the output file.
+c The net rate and error as calculated in the lcmath program are
+c written in 1E (single value floating point real) format.
+c Any other columns that are saved from the intput file are copied directly
+c to their respective columns in the output file, in 1E format, except
+c the time, deadtime and integration time columns, which are listed in
+c 1D format.
+
+c  I  lui      (i)  Lu of input FITS file
+c  I  luo      (i)  Lu of output FITS file.
+c  I  frow     (i)  Current row in the table
+c  I  trow     (i)  Current time index in the packet
+c  I  ynul     (l)  = .true. if input Y-value is a gap
+c  I  ivecti   (i)  column numbers in input file
+c  I  ivecto   (i)  column numbers in output file
+c  I  ynet     (r)  Net rate (counts/sec)
+c  I  synet    (r)  Net rate error (counts/sec)
+c  I  ftstat   (i)  fitsio error code
+
+

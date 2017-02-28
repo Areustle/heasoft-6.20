@@ -1,0 +1,202 @@
+#!/usr1/local/bin/perl
+#
+# Script to run sebitmask and fselect one after the other and create
+# an output file
+#
+# Brian K. Elza 3/7/95
+# XTE GSFC/NASA
+#
+# A C-shell script performing similar operations will also exist.
+# version 1.0.0 3/7/95
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('h');			
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+NAME
+    seselect -- a script that queries the user for  all  required  input
+    and runs in sucession SEBITMASK and FSELECT to generate a FITS file.
+    
+    
+USAGE
+    seselct infile.fits expression column_name out_bitfile outfile.fits
+    
+    
+DESCRIPTION
+    This  FTOOL  script queries the user for an input science event fits
+    file, and the appropriate filtering expression that is to be applied
+    to  the  data.  SEBITMASK  and  FSELECT  are then run to generate an
+    output file which contains that information.
+    
+    
+PARAMETERS
+    
+    infile [filename (only one can be operated on)]
+        The name of the input XTE science event FITS file that is to  be
+        operated upon.
+    
+    filter [expression or \@filename containing the expression]
+        This  filter expression must be expressed in standard C notation
+        and contain the instruments that are being filtered upon,  e.g.,
+        (E[CAL]  ==  1  &  (D[0:4]==0  |  D[0:4]==1) & E[VXH,VXL] == 3 &
+        C[0:255] <= 100). DO NOT USE FORTRAN comparisons!
+    
+    column_name [column_name - Event in all standard SE files)
+        This is the column name EXACTLY as given in the file that is  to
+        have  the  above  FILTER  expression applied to it. Under normal
+        circumstances this should be given as "Event".
+    
+    bitfile [filename]
+        The name of the  output  file  that  will  contain  the  bitmask
+        expression   that   was   generated  from  your  input  "filter" 
+        expression. This will change from SE file to SE file  since  the
+        data is stored as and nX bit pattern that varies.
+    
+    outfile [filename]
+        The  name  of  the  SE  FITS  file  that  is  to be created that
+        contains all of  the  information  that  matched  you  filtering
+        criteria.
+    
+    
+EXAMPLES
+    1. seselect infile.fits \@expfile Event bitfile outfile.fits
+    
+    
+NOTES:
+    
+    
+BUGS
+    
+    SESELECT*
+    
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov. Provide a
+        detailed  description  of  the  problem and an e-mail address at
+        which you can be reached if  further  information  is  required.
+        Before  reporting  a  bug  please  check  your .PAR file. At the
+        moment all comparisons are CASE SENSITIVE.
+    
+    
+SEE ALSO
+    SEBITMASK and FSELECT for more information
+
+EOHELP1
+exit;
+    }
+
+# now onto the program ...
+
+require "utils.pl";
+
+print " Running SESELECT version 4.0   \n";
+print "===========================================\n";
+
+
+@infile2=&runcom('pget sebitmask infile');
+chop($infile2[0]);
+print "Enter SE FITS file for filtering:[$infile2[0]]";
+($infile = <STDIN>);
+if($infile =~ /^./){
+    chop($infile);}
+else{
+    $infile = $infile2[0];
+}
+
+@infile2=&runcom('pget sebitmask filter');
+chop($infile2[0]);
+print "Enter filtering expression or \@file containing that expression:[$infile2[0]]";
+($filter = <STDIN>);
+if($filter =~ /^./){
+    chop($filter);}
+else{
+    $filter = $infile2[0];
+}
+
+@infile2=&runcom('pget sebitmask column');
+chop($infile2[0]);
+print "Enter the column name to be operated upon:[$infile2[0]]";
+($column = <STDIN>);
+if($column =~ /^./){
+    chop($column);}
+else{
+    $column = $infile2[0];
+}
+
+@infile2=&runcom('pget sebitmask bitfile');
+chop($infile2[0]);
+print "Enter the output bitfile name to contain processed boolean expression:[$infile2[0]]";
+($bitfile = <STDIN>);
+if($bitfile =~ /^./){
+    chop($bitfile);}
+else{
+    $bitfile = $infile2[0];
+}
+
+@infile2=&runcom('pget fselect outfile');
+chop($infile2[0]);
+print "Enter the output filename to contain the processed data:[$infile2[0]]";
+($outfile = <STDIN>);
+if($outfile =~ /^./){
+    chop($outfile);}
+else{
+    $outfile = $infile2[0];
+}
+if(!($outfile =~ /^./)){
+    $outfile = "out_fselect_${$}";
+    print "\nNo output file specified. We will create $outfile\n";
+}
+
+
+# Unfortunately due to XPI limitations we CANNOT pass in the filter expression
+# as a string. We will have to write it to a file, close the file, and then
+# input that file. Then we will delete the temporary file.
+open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+print OUTPUT_FILE "$filter\n"; # Copy files from INFILE to OUTPUT
+close(OUTPUT_FILE);	# Close the output file.
+
+$tmp_file='@'."outfile_${$}";
+
+@result=&runcom('sebitmask infile="'.$infile.'" filter="'.$tmp_file.'"  mtoken=M[1]{1} column="'.$column.'" bitfile="'.$bitfile.'" dryrun=yes clobber=yes mode=h');
+#print "@result";
+#print "\n\n";
+$length_of_array = @result;
+$i_count=0;
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($result[$i_count] =~ /^TEVTB value read in was:/) {
+	print"TEVTB is \n $result[$i_count +1]\n";
+	@tevtb_array = split(/\^/,$result[$i_count+1]);
+	chop($tevtb_array[0]);
+	print"First part is \n$tevtb_array[0]\n";
+    }
+}
+
+
+print "\n";
+print "Running sebitmask:\n";
+@result2=&runcom('sebitmask infile="'.$infile.'" filter="'.$tmp_file.' " mtoken=M[1]{1} column="'.$column.'" bitfile="'.$bitfile.'" dryrun=no clobber=yes mode=h');
+print "Completed running sebitmask:\n\n";
+@result3=&runcom('pset sebitmask infile="'.$infile.'" filter="'.$tmp_file.' " mtoken=M[1]{1} column="'.$column.'" bitfile="'.$bitfile.'" ');
+print "Updating parfile for sebitmask:\n\n";
+
+print "Filtering expression entered to SESELECT stored in outfile_${$}\n";
+
+print "Do you want to save this file? [Yes,No]";
+chop($answer10 = <STDIN>);
+if($answer10 =~ /^[Yy]/){
+}
+else{
+    print "Deleting outfile_${$}\n\n";
+    unlink("outfile_${$}") || print "Having trouble deleting outfile_${$}\n"; # Remove the output file if not told to save it.
+}
+
+
+print "Using output of sebitmask as input and running Fselect:\n";
+@resultf=&runcom('fselect infile="'.$infile.'" outfile="'.$outfile.'" expr="@'.$bitfile.'" mode=h');
+@resultf=&runcom('pset fselect infile="'.$infile.'" outfile="'.$outfile.'" expr="@'.$bitfile.'" ');
+print "Completed running fselect and created $outfile\n"

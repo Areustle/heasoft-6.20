@@ -1,0 +1,31 @@
+HD_COMPONENT_NAME	= swift
+
+HD_COMPONENT_VERS	=
+
+HD_CXXTASK		= sTime2
+
+HD_CXXTASK_SRC_c	= sCC.c
+
+HD_CXXTASK_SRC_C	= sTime2.C SwiftTime.C
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_CLIBS		= ${HD_STD_CLIBS}
+
+HD_CXXFLAGS		= ${HD_STD_CXXFLAGS}
+
+HD_CXXLIBS              = ${HD_STD_CXXLIBS}
+
+HD_INSTALL_TASKS	= ${HD_CXXTASK}
+
+HD_INSTALL_PERL_SCRIPTS = swifttime
+
+HD_INSTALL_PFILES	= swifttime.par
+
+HD_INSTALL_HELP		= swifttime.html
+
+HD_TEST_PERL_SCRIPTS	= ut-swifttime
+
+HD_TEST_PFILES		= ut-swifttime.par
+
+include ${HD_STD_MAKEFILE}

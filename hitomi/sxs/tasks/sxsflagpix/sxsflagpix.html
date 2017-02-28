@@ -1,0 +1,473 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+sxsflagpix -- Flag SXS events for antico and MXS event coincidence,
+temporal proximity, and crosstalk
+
+<h2>USAGE</h2>
+
+<tt>sxsflagpix infile inantfile outfile antpsp inmxsGTI</tt> 
+
+<h2>DESCRIPTION</h2>
+
+<p>
+  'sxsflagpix' identifies SXS events for coincidence with antico
+  detector events and mxs events, temporal proximity between two
+  events in any pixel, and electrical and recoil crosstalk. The
+  identifications are written in the STATUS column. 'sxsflagpix'
+  excludes lost and baseline pixel events, and events with risetime
+  exceeding 127 if 'ckrisetime=yes', when determining event-to-event
+  coincidence for temporal proximity, electrical and recoil crosstalk.
+  It also excludes events below a PI threshold, set in the parameter 
+  'pxpithr', for any coincidence defined in the parameter 'usepxpithr'.
+
+  Any combination of flagging may be enabled by setting the 'calcant'
+  (antico), 'calcprox' (proximity), 'calcctrec' (recoil crosstalk),
+  'calcctel' (electrical crosstalk), 'calctel2' (electrical crosstalk
+  2), and 'calcmxs' (MXS) switch parameters.  If the parameter
+  'dtflag=yes', the time intervals between crosstalking events, or
+  between pixel events and their coincident antico events, are written
+  out to additional columns (DTCEL for electrical crosstalk, DTCEL2
+  for electrical crosstalk 2, DTCTREC for recoil crosstalk, and DTANT
+  for antico coincidence) if the corresponding flagging is enabled. An
+  antico event file is required for antico flagging (see parameter
+  'inantfile'). A GTI containing the times when the MXS is on is used
+  to determine the MXS flagging (see parameter 'inmxsgti'). There is
+  an option to input an additional GTI file, unrelated to the MXS, to
+  flag events within that GTI (see 'gtifile' parameter). This file may
+  contain multiple GTI extensions, one applicable to all pixels and
+  the remaining applicable to each individual pixel.
+</p>
+
+<p>
+  The STATUS column has 16 bits, 14 of which are currently in use and
+  two of which are spare. The first bit flags events that are out or invalid 
+  (0) or in and valid (1) of the GTI file applicable to all pixels.
+   The second bit flags the events that are out or invalid (0) or in 
+  and valid (1) of the GTI file
+  applicable to individual pixels. The third bit flags events that are
+  coincident with antico events (1). The fourth bit flags events that
+  are within a temporal proximity (defined by parameter 'proxdt') of
+  another event in any pixel (1). The fifth and sixth bits flag events
+  for recoil crosstalk. The seventh and eight, and thirteenth and
+  fourteenth, bits flag electrical crosstalk. The ninth through twelfth
+  bits flag coincidence with MXS events. 
+ 
+</p>
+
+Two formats are supported for the GTI file.  The first format contains
+up to 37 extensions: 1 general GTI and 36 pixel-dependent GTI.  The DETNAM
+keyword for the general GTI must be PIXEL and the DETNAM keyword values for
+the pixel-dependent GTIs are PIXnn where nn is the pixel number, e.g. PIX04
+for pixel 4.  In this format, all extensions must contain columns START and
+STOP which define the GTI.  The second format may have up to two
+extensions: 1 general GTI with START and STOP columns and 1 pixel-dependent
+extension with columns START, STOP, and PIXEL.  In the second format the
+DETNAM keyword is set to PIXEL for both extensions.  if the input GTI has 
+a single GTI extension with no DETNAM keyword defined, it is treated as a
+general GTI.  If the events need to be filtered using multiple general or
+pixel-dependent GTI files, they must first be merged into a single GTI file
+using the 'sxspixgti'.
+
+ <p>
+   Antico flagging: 'sxsflagpix' flags a pixel event as coincident
+   with and an antico event if the following condition is satisfied:
+   antdtpre < t(pixel)-t(antico)+antshift < antdtfol. The value of the
+   parameters 'antdtpre' and 'antdtfol' are time intervals that define
+   the window of coincidence, and the antico time is adjusted by the
+   parameter 'antshift' to account for the differences in time
+   assignment of a pixel event compared to an antico event. The antico
+   event file contains redundant entries for events channeled through
+   both sides of the PSP (A and B). 'sxsflagpix' uses only events from
+   one side. This is specified as either A or B by the 'antpsp'
+   parameter.  Only antico events with duration and PHA greater then
+   the threshold values determined by the 'antdurthr' and 'antphathr'
+   parameters are considered in antico flagging.
+</p>
+
+<p>
+  Recoil crosstalk flagging: 'sxsflagpix' flags a pixel event if it is
+  a recoil crosstalk event with a cal-pixel (pixel 12) MnK X-ray
+  event. An event is considered as a recoil crosstalk event if its
+  time is within the time interval 'ctrecdt' of a calpixel event and
+  satisfies the following condition: ENERGY(EVENT) <= ENERGY(MnKa_low)
+  or ENERGY(MnKa_high) < ENERGY(EVENT) < ENERGY(MnKb_high), where
+  ENERGY(MnKa_low), ENERGY(MnKa_high), and ENERGY(MnKb_high) are set
+  by the parameters 'kalow', 'kahigh', and 'kbeta'.
+</p>
+
+<p>
+  Electrical crosstalk flagging: 'sxsflagpix' flags electrical
+  crosstalk across groups of pixels that are in wiring proximity,
+  using two different time intervals (one short, 'cteldt' parameter,
+  and one long, 'cteldt2' parameter). For each time scale, the
+  flagging uses two bits. STATUS bits 7-8 are assigned to the short
+  timescale, and bits 13-14 to the long timescale as follows: 00 - no
+  crosstalk, 10 - multiple pixels active within that timescale, 11 -
+  multiple pixels active within that timescale and this is the event
+  with the largest PHA in the multiple-pixel crosstalk group.  Two
+  electrically crosstalking pixels must be in the same quadrant of the
+  SXS detector, and must have pixel indices within the quadrant
+  separated by no more than the number given by the 'ctelnear' (short
+  timescale) or 'ctelnear2' (long timescale) parameters. These
+  quadrant assignments and indices are stored in the CALDB pixel map
+  (see 'pixdeffile' parameter). If one or both of the electrical
+  crosstalk flagging options is enabled, the crosstalk multiplicity is
+  recorded in the two-digit CTMULT (short timescale) and/or CTMULT2
+  (long timescale) columns as follows. The first digit gives the
+  number of events in the crosstalk group, and the second digit the
+  PHA rank of the event in the group where 1 is assigned to the event
+  with the highest PHA.
+</p>
+
+</p>
+MXS flagging: 'sxsflagpix' flags pixel events that are coincident
+with MXS events defined using the MXS GTI (see 'inmxsgti'
+parameter). Bits 9-10 are reserved for events coincidence with MXS
+direct mode, 11-12 are reserved for events coincidence with MXS
+indirect mode. Specifically, events with time within the MXS GTI set
+bits 10 and 12. Events within the interval set by the parameter 'mxsdt'
+(the MXS afterglow) set bits 9 and 11.
+</p>
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<p>
+<dt>infile [filename]</dt>
+<dd>Input SXS event file name. The file must have time assigned and
+include a STATUS column.</dd>
+</p>
+
+<p>
+<dt>inantfile [filename]</dt>
+<dd>Input antico event file name. The file must have time assigned and
+PHA calculated. Required if antico-flagging is switched on
+(calcant=yes). Otherwise can be set to NONE.</dd>
+</p>
+
+<p>
+<dt>outfile [filename]</dt>
+<dd>Name of the output event file with STATUS assigned or reassigned.</dd>
+</p>
+
+<p>
+<dt>antpsp [string]</dt>
+<dd>If antpsp = "A" antico events processed through PSP-A only are
+checked for antico coincidence; if antpsp = "B" antico events
+processed through PSP-B only are checked for antico coincidence.</dd>
+</p>
+
+<p>
+<dt>(antshift = CALDB) [string]</dt>
+<dd>Time offset in seconds between event time and central time for
+defining the window used for antico flagging.  If set
+to CALDB, the parameter is read from the calibration database.</dd>
+</p>
+
+<p>
+<dt>(gtifile = NONE) [filename]</dt>
+<dd>Input GTI filename. Events with times outside of all of the
+intervals are flagged, for all valid SXS GTI extensions. The GTI may be
+applied to all pixels in the SXS array if the extension header
+includes the PIXEL DETNAM keyword.  Pixel-specific GTI files are
+identified by the PIXNN DETNAM header keyword, where NN=00,
+01... 35).</dd>
+</p>
+
+<p>
+<dt>(calcant = yes) [boolean]</dt>
+<dd>If calcant = yes, events coincident with antico events are
+flagged and an antico input file is required; if calcant = no this is
+skipped  ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(antdtpre = CALDB) [string]</dt>
+<dd>Time interval in seconds preceding the time of an antico event
+(shifted by antshift) used to define the lower limit of the window
+used for antico flagging.  If set to CALDB, the parameter is read from
+the calibration database.</dd>
+</p>
+
+<p>
+<dt>(antdtfol = CALDB) [string]</dt>
+<dd>Time interval in seconds following the time of an antico event
+(shifted by antshift) used to define the upper limit of the window
+used for antico flagging.  If set to CALDB, the parameter is read from
+the calibration database.</dd>
+</p>
+
+<p>
+<dt>(antswitch = 1) [integer]</dt>
+<dd>If antswitch = 0, values in the antico DURATION column from
+inantfile are used in place of antdtfol; if 1 the antdtfol parameter
+is used. Expected to always be 1.</dd>
+</p>
+
+<p>
+<dt>(antphathr = 71) [integer]</dt>
+<dd>PHA threshold for antico flagging. Only antico events with PHA
+above this value are considered.</dd>
+</p>
+
+<p>
+<dt>(antdurthr = 2) [integer]</dt>
+<dd>Duration threshold for antico flagging. Only antico events with
+duration above this value are considered.</dd>
+</p>
+
+<p>
+<dt>(calcctrec = yes) [boolean]</dt>
+<dd>If calcctrec = yes, events are checked for recoil crosstalk
+flagging; if calcctrec = no this is skipped  ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(ctrecdt = CALDB) [string]</dt>
+<dd>Time interval in seconds that defines event crosstalk due to
+cal-pixel recoil electrons. Events occurring within ctrecdt of a
+cal-pixel event are flagged if calcctrec = yes. If set to CALDB, the
+parameter is read from the calibration database.</dd>
+</p>
+
+
+<p>
+<dt>(calcprox = yes) [boolean]</dt>
+<dd>If calcprox = yes, events are checked for basic temporal proximity
+with any other event  ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(proxdt = CALDB) [string]</dt>
+<dd>Time interval between events in seconds required for proximity
+crosstalk to be flagged. If set to CALDB, the parameter is read from
+the calibration database. </dd>
+</p>
+
+<p>
+<dt>(calcctel = yes) [boolean]</dt>
+<dd>If calcctel = yes, events are checked for electrical crosstalk
+flagging using the cteldt time interval; if calcctel = no this is
+skipped ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(pixdeffile = CALDB) [filename]</dt>
+<dd>Input file containing the SXS electrical pixel map. If set
+to CALDB, the file is read from the calibration database.</dd>
+</p>
+
+<p>
+<dt>(cteldt = CALDB) [string]</dt>
+<dd>Time interval between events in seconds required for electrical
+crosstalk to be flagged.  If set to CALDB, the parameter is read from
+the calibration database.</dd>
+</p>
+
+<p>
+<dt>(ctelnear = 1) [integer]</dt>
+<dd>Number of nearby pixels to be checked for electrical crosstalk,
+where proximity is defined by pixdeffile and restricted to quadrants
+of the SXS detector.</dd>
+</p>
+
+<p>
+<dt>(calcctel2 = no) [bool]</dt>
+<dd>If calcctel2 = yes, events are checked for electrical crosstalk
+flagging using the cteldt2 time interval; if calcctel2 = no this is
+skipped. (yes/[no])</dd>
+</p>
+
+<p>
+<dt>(cteldt2 = CALDB) [string]</dt>
+<dd>Time interval between events in seconds required for electrical
+crosstalk 2 to be flagged.  If set to CALDB, the parameter is read
+from the calibration database.</dd>
+</p>
+
+<p>
+<dt>(ctelnear2 = 1) [integer]</dt>
+<dd>Number of nearby pixels to be checked for electrical crosstalk 2,
+where proximity is defined by pixdeffile and restricted to quadrants
+of the SXS detector.</dd>
+</p>
+
+<p>
+<dt>(pxpithr = 600) [integer]</dt>
+<dd>Events with PI values below this threshold are excluded from 
+flagging checks given by the usepxpithr parameter.</dd>
+</p>
+
+<p>
+<dt>(usepxpithr = ALL) [string]</dt>
+<dd>A comma-delimited list specifying which flagging types should use
+the pxpithr parameter for excluding events. Allowed values in the list 
+are ALL, NONE, PROX (proximity), CTEL (electrical cross talk),  
+CTEL2 (2nd electrical cross talk), and  CTREC (recoil cross talk).
+Events that do not belong to the types specified in the list are excluded 
+from flagging regardless of their PI value.  
+</dd>
+</p>
+
+<p>
+<dt>(calcmxs = yes) [boolean]</dt>
+<dd>If calcmxs = yes, events are checked for coincidence with MXS
+events; if calcmxs = no this is skipped ([yes]/no).</dd>
+</p>
+
+<p>
+<dt>inmxsgti = mxs.gti [filename]</dt>
+<dd>Input MXS GTI filename providing the MXS start and stop times;
+required if calcmxs = yes. Events are flagged for coincidence with MXS
+operation when their times fall within any of the intervals in this
+file.</dd>
+</p>
+
+<p>
+<dt>(mxsdt = CALDB) [string]</dt>
+<dd>Time interval by which the MXS pulse stop times given in the MXS
+GTI are extended to account for MXS afterglow. If set to CALDB, the
+parameter is read from the calibration database.
+</dd>
+</p>
+
+<p>
+<dt>(kalow = 5860) [real]</dt>
+<dd>Input Mn K-alpha minimum PHA value. A cal-pixel recoil event with
+PHA less than this value has an additional flag set specifying that
+the cal-pixel recoil crosstalk energy condition is met.
+</dd>
+</p>
+
+<p>
+<dt>(kahigh = 5930) [real]</dt>
+<dd>Input Mn K-alpha maximum PHA value. A cal-pixel recoil event with
+PHA greater than this value (but less than kbeta) has an additional
+flag set specifying that the cal-pixel recoil crosstalk energy
+condition is met.</dd>
+</p>
+
+<p>
+<dt>(kbeta = 6450) [real]</dt>
+<dd>Input Mn K-beta PHA value. A cal-pixel recoil event with PHA less
+than this value (but greater than kahigh) has an additional flag set
+specifying that the cal-pixel recoil crosstalk energy condition is
+met.</dd>
+</p>
+
+<p>
+<dt>(dtflag = no) [boolean]</dt>
+<dd>Add delta-time columns for cross-talk and antico (yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(ckrisetime = yes) [boolean]</dt>
+<dd>Do not flag, and do use for flagging, events with RISE_TIME > 127
+([yes]/no).</dd>
+</p>
+
+<p>
+<dt>(resetflags = NONE) [string]</dt>
+<dd>A comma-delimited list specifying which flagging types should have
+their STATUS bits reset at the start of the task.  Allowed values in the
+list are ALL, NONE, PROX (proximity), CTEL (electrical cross talk), 
+CTEL2 (2nd electrical cross talk), CTREC (recoil cross talk),
+ANT (antico), GTI (GTI file), and MXS (MXS GTI).</dd>
+</p>
+
+<p>
+<dt>(buffer = -1) [integer] </dt>
+<dd> Rows to buffer (-1=auto, 0=none, >0=numrows). </dd>
+</p>
+
+<p>
+<dt>(clobber = no) [boolean]</dt>
+<dd>Overwrites the existing output file if set to yes (yes/[no]). </dd>
+</p>
+
+<p>
+<dt>(chatter = 1) [integer] </dt>
+<dd>Chatter level for output. Set to 0 to suppress output, 
+or to 1, 2, or 3 for increasing the chatter of the output. </dd>
+</p>
+
+<p>
+<dt>(logfile = !DEFAULT) [string]</dt>
+<dd>Log filename. If set to DEFAULT uses the name of the task and, if
+preceded by '!', overwrite the file if it exists. If set to NONE no
+log file is created. </dd>
+</p>
+
+<p>
+<dt>(debug = no) [boolean]</dt>
+<dd>Diagnostic output is printed out on the screen if set to yes
+(yes/[no]).</dd>
+</p>
+
+<p>
+<dt>(history = yes) [boolean]</dt>
+<dd>Records tool parameters in HISTORY  ([yes]/no).</dd>
+
+<p>
+<dt>(mode = ql) [string ql|hl|q]</dt>
+<dd>Mode to query the parameter file. 
+Acceptable values include: "ql (query and learn/remember), "hl" (hidden and learn/remember), "q" (query but don't remember), "h" (hidden).(Optional) </dd>
+</p>
+
+</dl>
+
+<h2>EXAMPLES</h2>
+
+<p>
+1.  Flag for coincidence with MXS operation assuming no afterglow,
+coincidence with antico events, and for recoil and electrical
+crosstalk, using the time parameters in CALDB. The output file is
+identical to the input file, but with the STATUS column set according
+to the flagging results.
+
+<p>
+<pre>
+      sxsflagpix infile=sxs_in.fits inantfile=antico.fits outfile=sxs_out.fits inmxsgti=mxs.gti mxsdt=0
+</pre>
+<p>
+
+2.  Flag for coincidence with MXS operation assuming no afterglow,
+coincidence with antico events, and for recoil and electrical
+crosstalk, using the time parameters in CALDB. Also flag events
+falling within times defined by the intervals in the file hkflag.gti.
+<p>
+<pre>
+     sxsflagpix infile=sxs_in.fits inantfile=antico.fits outfile=sxs_out.fits gtifile=hkflag.gti inmxsgti=mxs.gti mxsdt=0
+</pre>
+<p>
+ 
+3. Flag, only, for coincidence with MXS operation with afterglow given by CALDB.
+<p>
+<pre> 
+     sxsflagpix infile=sxs_in.fits inantfile=antico.fits outfile=sxs_out.fits calcprox=no calcant=no calcctrec=no calcctel=no mxfgti=mxs.gti 
+<pre> 
+<p>
+
+<h2>SEE ALSO</h2>
+
+ahtime, sxsanticopi
+
+<h2>LAST MODIFIED</h2>
+27 July 2016
+
+</body>
+</html>

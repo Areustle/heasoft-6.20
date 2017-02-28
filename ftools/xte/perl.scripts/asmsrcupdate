@@ -1,0 +1,185 @@
+#! /usr1/local/bin/perl5
+# J. Lochner: Aug 19, 1995
+# Perl script for running ASMAPPEND on collection of master files
+# and appending files
+#
+# Revision History - 
+#   Nov. 15, 1995 - allow for new master file.  A source in /incoming
+#           which does not have a corresponding /master file is converted
+#           into a master file
+#   June 21, 1996 - Let user input directory name for master and 
+#           incoming files.  User may also specify the type of files
+#           to append.
+#   July 18, 1997 - Script now correctly handles first file in incoming
+#           list not having an existing master.  Also correct bug to
+#           properly rename new master files with _d1 designation.
+#           N.B.  It appears that script does not properly handle a new
+#           source at the *end* of the incoming list (and likely never has.)
+#   Sep.  8, 1997 - Made output less verbose, and omitted one of the pause
+#           points.
+#   Mar. 28 2008 (MJT) 
+#           Strengthened source name extraction against internal underscores
+#           Corrected section that creates new master to handle current ASM
+#             name convention.
+#                 
+ 
+require "utils.pl";
+use Getopt::Std;
+
+
+#
+# check for flags and act appropriately
+#
+getopts('h');
+if (defined $opt_h) {
+  print <<EOHELP1;
+This script runs the ASMAPPEND tool on a collection of XTE ASM 
+master files and their respective incoming files.  The user inputs
+the names of the directories containing the master files and the incoming
+files.  The user may also specify the types of files to append (e.g.
+.lc or .col).  The master files are updated in place in the master 
+subdirectory.
+
+  Note that the script outputs a number of informational 
+messages used in the process of development.
+
+KNOWN BUGS:  
+  A) The name of the subdirectories must not contain an 
+underscore ("_"), as this will confuse the source name search 
+routine.
+  B) The script does not correctly update the master list if the 
+last entry in the incoming list is not in the master.  We recommend
+that the user put such entries into the master subdirectory by hand.
+
+EOHELP1
+exit;
+}
+print "ASMSRCUPDATE V2.4 \n";
+
+print "Input name of directory containing master files\n";
+chop($master_dir=<STDIN>);
+
+print "Input name of directory containing incoming files\n";
+chop($incoming=<STDIN>);
+
+print "Input type of files to append (e.g. .lc or .col)\n";
+chop($file_type=<STDIN>);
+
+system("ls $incoming/*$file_type > incoming.txt");
+system("ls $master_dir/*$file_type > master.txt");
+
+open(INCOMING, "incoming.txt");
+open(MASTER, "master.txt");
+
+# 
+# Read the master and incoming files
+#
+@mstrfile = <MASTER>;
+@infile = <INCOMING>;
+$jm = "".@mstrfile - 1;
+$in = "".@infile - 1;
+print $jm+1," master files\n";
+print $in+1," incoming files\n";
+print "(hit any key to continue)";
+chop($_=<STDIN>);
+
+print "pause at each step (y/n) ";
+chop($pause=<STDIN>);
+print "\n";
+
+#
+# Find the first match
+#
+$m = 0;
+$i = 0;
+$jappend = 0;
+until ($m >= $jm || &srcnam($mstrfile[$m]) eq &srcnam($infile[$i])) {
+#  print "\n".$mstrfile[$m]."\n";
+#  $mstrsrc = &srcnam($mstrfile[$m]);
+#  print " master source  = ".$mstrsrc."\n";  
+#  print "Master # ".$m." = ".&srcnam($mstrfile[$m]).", Incoming # ".$i." = ".&srcnam($infile[$i])."\n";
+  $m++;
+}
+
+#
+# check for condition that there is no master for first
+# file in the append list
+#
+if ($m >= $jm) {
+    print " No Master File for ".$infile[$i]."\n";
+    print '  Making it a master file ...'."\n";
+    chop($master = $infile[$i]);
+    $s1 = rindex($master,"_");
+    $master = substr($master,0,$s1)."_d1.$file_type";
+    $master =~ s/$incoming/$master_dir/;
+    chop($infile[$i]);
+    print "  Copying $infile[$i] to $master\n";
+    system("cp $infile[$i] $master");
+    $i = 1;
+    $m = -1;
+} else {
+    chop($master = $mstrfile[$m]);
+}
+# 
+# Now process the first match and do rest of them.
+#
+while ($i <= $in && $m <= $jm) {
+  $jappend = 0;
+  open(APPENDLIST, "> append.txt");	
+  print "master file # ".$m." = ".$master."\n";
+  while (&srcnam($master) eq &srcnam($infile[$i])) {
+    $jappend++;
+    print " APPENDLIST: Incoming # ".$i." ".$infile[$i]."\n";
+    print APPENDLIST $infile[$i];
+    $i++;
+  } 
+  print "appending ",$jappend," incoming files for ",$master,"\n";
+  close(APPENDLIST);
+#  if($pause eq "y") {
+#    print "(hit any key to continue)";
+#    chop($_=<STDIN>);
+#  }
+  if ($jappend > 0) {
+    @result = &runcom('asmappend '.$master.' @append.txt');
+#   print @result,"\n";
+  }
+  print "\n Seaching for next master file: \n";
+  if($pause eq "y"){
+    print "(hit any key to continue)";
+    chop($_=<STDIN>);
+  }
+
+  $km = $m;
+  $m++;
+  until ($m > $jm || &srcnam($mstrfile[$m]) eq &srcnam($infile[$i])) {
+    $m++;
+  }
+  print 'end of searching for next master. m = '.$m."\n\n";
+  if ($m <= $jm) {
+    chop($master = $mstrfile[$m]);
+  } elsif ($km < $jm) {
+    $m = $km;
+    print " No Master File for ".$infile[$i]."\n";
+    print '  Making it a master file ...'."\n";
+    chop($master = $infile[$i]);
+    $s1 = rindex($master,"_");
+    $master = substr($master,0,$s1)."_d1.$file_type";
+    $master =~ s/$incoming/$master_dir/;
+    chop($infile[$i]);
+    print "  Copying $infile[$i] to $master\n";
+    system("cp $infile[$i] $master");
+    
+    $i++;
+  }
+}
+
+
+print "done \n";
+
+sub srcnam {
+  local($x,$y,$filenam,$src);
+  $filenam = $_[0];
+  $x = index($filenam,"_");
+  $y = rindex($filenam,"_");
+  $src = substr($filenam,$x+1,$y-$x-1);
+}

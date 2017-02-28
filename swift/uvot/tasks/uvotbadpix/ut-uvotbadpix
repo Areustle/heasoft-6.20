@@ -1,0 +1,152 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotbadpix/ut-uvotbadpix,v $
+# $Revision: 1.10 $
+# $Date: 2005/11/02 15:19:30 $
+#
+# $Log: ut-uvotbadpix,v $
+# Revision 1.10  2005/11/02 15:19:30  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.9  2004/12/08 18:52:29  rwiegand
+# Ignore CREATOR and ORIGIN keywords when comparing results.
+#
+# Revision 1.8  2004/12/02 21:34:39  rwiegand
+# Special handling when user specifies that only the primary HDU is to be
+# processed.  If the UVOT windowing keywords are not available, derive the
+# raw window from WCS.  Made messages concerning missing keywords more helpful.
+#
+# Revision 1.7  2004/10/17 11:32:42  rwiegand
+# Added CALDB test mode.
+#
+# Revision 1.6  2004/05/05 15:07:41  rwiegand
+# Use Task::HEAdas base class.
+#
+
+use strict;
+
+package Test::Badpix;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+{
+	my $test = Test::Badpix->new;
+
+	$test->unitTest;
+
+	exit($test->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [
+				qw(input=string output=string caldb=boolean chatter=int)
+			],
+			get => 1,
+			);
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runBadpix
+		if $self->isValid;
+
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->report("validating set up")
+		if $self->chatter;
+
+	$self->validateEnvironment;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $args->{$key}\n");
+		}
+	}
+}
+
+
+
+sub runBadpix
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	my $caldb = $args->{caldbFlag};
+
+	my @task = (
+		badpixlist    => $caldb ? 'CALDB' : "$input/swubadpix.fits",
+		infile        => "$input/pair.img.gz",
+		outfile       => "$output/quality.fits",
+		clobber       => 'yes',
+		history       => 'yes',
+		chatter       => 5,
+	);
+
+	my %task = (
+		@task,
+		template => "$input/template.fits",
+	);
+
+	# validate input files
+	foreach my $key (qw(infile badpixlist template)) {
+		my $input = $task{$key};
+		if (not defined($input)) {
+			$self->fatal(BAD_INPUT,
+				"missing input key: $key\n");
+		}
+		elsif ($input =~ /^CALDB$/) {
+			# pass
+        }
+		elsif (not -f $input) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $input\n");
+        }
+	}
+
+	# run uvotbadpix
+	{
+		my $command = $self->buildCommand('uvotbadpix', @task);
+		$self->shell($command);
+	}
+
+	# check output for FITS consistency
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftverify',
+				infile => $task{outfile},
+				outfile => 'STDOUT',
+				);
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $task{template},
+				infile2 => $task{outfile},
+				tolerance => 0.0001,
+				hdumaxdiff => 20,
+				exclude => 'HISTORY,DATE,FILENAME,EXTNAME,CREATOR,ORIGIN',
+				);
+
+		$self->shell($command);
+	}
+}
+
+

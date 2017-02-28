@@ -1,0 +1,3219 @@
+#!/usr/bin/perl -w
+
+#	!/usr1/local/bin/perl5 -w
+
+#####################################################################################
+
+#####################################################################################
+
+# still to do:
+
+# goal is to run ximage (or uvotsource) on every extension
+# in a file (such as the summed images) and compute
+# count rate and err and mag and err for each filter=extension
+
+# plan:
+# either produce or be given source and background regions
+# get zero point information
+# ftlist $id hk include='EXTENSION,FILTER,EXPOSURE,DATE-OBS,ASPCORR' 
+#	outfile=STDOUT
+# for each extension
+#    run ximage to get counts in source and background regions
+#    read output and calculate results
+
+# This script is called by getuvot_exp.pl automatically
+
+# mod 2006-07-12 to get trigger time and make qdp plot
+# mod 2006-07-14 to get src and bkg regions automatically
+# mod 2006-07-16 to get data files from QL or HEASARC
+# mod 2006-07-17 to write to web
+# mod 2006-07-18 to write 3-sigma UL
+# mod 2006-07-20 to change meaning of 3-sigma UL
+# mod 2006-07-21 to quit if no files found
+# mod 2006-10-16 to print region files
+# mod 2006-10-18 to fix problem in background region when uvotdetect finds > 99 source
+# mod 2006-10-26 to add information to LOG file
+#		 to save separate region files for each filter
+# mod 2006-10-27 to make plots with log axes
+# mod 2006-10-30 to make 3 plots
+# mod 2006-10-31 to sort files by_filter
+# mod 2006-11-02 to accept src_reg if ra and dec are defined
+# mod 2006-11-06 to also print src position in hms format
+#		 to have separate default region radii for uvot,xrt,opt positions
+# mod 2006-11-08 to access Butler's XRT positions
+#		 to prefer UVOT positions over optical positions
+# mod 2006-11-16 to print GRB name in list of rates
+# mod 2006-12-04 to prefer optical positions over UVOT positions
+#		    (if they are not better, I simply won't make the file)
+# mod 2006-12-06 to do weighted sums (in addition)
+# mod 2006-12-08 to add parameters tmin, tmax, and gamma
+# mod 2006-12-15 to adjust columns in printed table
+# mod 2006-12-19 to add tmin and tmax to help
+# mod 2007-01-09 to add ability to rebin light curves and plot upper limits
+# mod 2007-01-10 to add parameters for rebin
+# mod 2007-01-12 to add version number of plots
+# mod 2007-01-16 to add exposure arguments to rebin
+# mod 2007-01-17 to print magnitude and errors for rebinned data
+# mod 2007-01-18 to add TSTART and TELAPSE to ftlist and mod printing formats
+# mod 2007-01-19 to add approx. to coincidence loss
+# mod 2007-01-22 to use accurate coinc. loss calculation
+#		 to update zero-points 
+# mod 2007-01-29 to add ignore_aspcorr parameter
+# mod 2007-01-31 to use new 5" aperture for coincidence loss
+# mod 2007-02-01 to accept multiple segments
+# mod 2007-02-02 to plot magnitudes if -mag
+#		 to use two-sided errors in plot
+# mod 2007-02-06 to be able to redo plots using old report file
+# mod 2007-02-07 to update burst wiki site
+# mod 2007-02-08 to apply correction to coinc. loss correction properly (divide)
+#		 to apply standard aperture correction of 5% 
+#			for apertures smaller than 5"
+
+# to test for no detection use:
+# uvot_fluxes_wrk.pl -fn_glob="*00232585992*.img" 
+#    -usex -all -wrk_dir="/local/data/khamseen8/marshall/swift/uvot_lc"
+# to test for detection use:
+# uvot_fluxes_wrk.pl -fn_glob="*00232683992*.img" 
+#    -usex -all -wrk_dir="/local/data/khamseen8/marshall/swift/uvot_lc"
+# this assumes that files are still in wrk_dir and does not test writing to web (-web)
+
+# uvot_fluxes_wrk.pl -rebin -plot_mag -usex -all -targid=00258408 -seg=992 
+#	-web -update_wiki
+# output is in wrk_dir/uvot_fluxes_<time>.rpt, .log, .qdp
+
+use strict;
+
+use lib "/home/heasfs/marshall/perl/lib";
+use Astro::FITS::CFITSIO qw(:constants :longnames);
+use SimpleFITS;
+use Getopt::Long;
+use POSIX; # for floor, ceil
+use deg2sex; # in lib
+use find_trig_time; # in lib
+use rebin; # in lib
+use uvot_tdrss_subs; # in lib
+use xrt_butler_pos; # in lib
+use AFT_subs_wrk; # in lib
+use Net::FTP;
+use ftp_replace;
+
+use vars qw($ndiskfull $vol);
+
+my ($all_images,$aper,$aper_corr,$aper_corr35,$archive,$bi,$bierr);
+my ($bkg_cnts,$bkg_pix,$bkg_ratio,$bkg_reg,$bkg_sig);
+my ($cmdline,$cnts,$corr_bkg,$corr_src,$date,$dc_dms,$dec,$dir_archive,$dt,$dt2);
+my ($err,$ext_max,$exp,$fbase,$fem_add,$fhlog,$fhplt,$fhrpt,$fhuv,$fhvis);
+my ($filename,$filt,$filt_lc,$filt_next);
+my ($fn,$fn_fc_wiki,$fn_genie,$fn_glob,$fn_next,$fn_wiki,$fn_ximage,$fract);
+my ($frametime,$ftp_site,$ftp_subdir,$ftp_subdir_alt,$gamma,$gamma_t0,$grb_name);
+my ($help,$hole_size,$home,$host,$i,$ifile,$ignore_aspcorr,$image_only,$inner);
+my ($j,$key,$line,$log10,$logfile);
+my ($mag,$mag_ul,$magerr,$magsum,$magsum_ul,$make_bkg_reg,$meonly,$msg,$n);
+my ($net,$net_sig,$new_exp,$new_filt,$next,$no,$nobutler,$nocoinc,$nolog,$noplot,$ny);
+my ($outer,$password,$pix,$plot_mag,$plotted);
+my ($pred,$predi,$prefix,$prev_exp,$prev_filt,$prev_fn,$prev_zp,$proc_vrs);
+my ($ra,$ra_hms,$radius,$radius_opt,$radius_uvot,$radius_xrt,$rate,$rate_comp);
+my ($rate_err,$ratio,$rebin,$reg,$rerun_report,$ret,$ret1,$ret_parse,$rptfile);
+my ($seg,$seg_text,$seq,$si,$skip_renamed,$snr_diff,$snr_diff_orph,$snr_min);
+my ($src_cnts,$src_pix,$src_rate,$src_reg,$src_reg_5as);
+my ($sum_b,$sum_bkg,$sum_bkg_sigsq,$sum_cnts,$sum_dt,$sum_rt);
+my ($t_ratio_max,$t_ratio_min,$t0,$t1,$t2,$targid,$test,$texp_min,$ti,$title,$tlong);
+my ($tm,$tmax,$tmin,$tmp,$tmp1,$tmp2,$tmp3,$tmp4,$to_adx,$tsum,$trig,$trig_dir);
+my ($ul,$update_wiki,$use_fixed_bkg_region,$user,$usex,$uvot,$verbose);
+my ($vrs,$vrs_butler);
+my ($web,$web_dir,$web_host,$web_user,$whole,$wi,$wrk_dir,$wt_err,$wt_rate);
+my ($x_err_pnt,$x_pnt,$xmin,$xmax,$xrt);
+my ($y_pnt,$y_err_pnt,$ymax,$ymin,$ymin0,$ystep,$zp);
+
+my (@ans,@aspcorr,@bkg_cnts_buf,@bkg_pix_buf,@bkg5_cnts_buf,@bkg5_pix_buf);
+my (@date,@dec_buf,@dt_buf,@dt_exp);
+my (@exp,@ext,@fhs,@file_types,@files,@filter,@form,@giffile,@globs);
+my (@net_buf,@net_sig_buf,@new_exp,@obs,@obs_vers,@pltfile,@psfile,@ra_buf);
+my (@segs,@sorted_files,@src_cnts_buf,@src_pix_buf);
+my (@src5_cnts_buf,@src5_pix_buf,@seqpnum,@star_id,@subdirs);
+my (@t1_buf,@t2_buf,@telapse,@texp,@token_lines,@tstart,@uv_list,@vis_list);
+my (@w_bkg,@w_exp,@w_pred,@w_src);
+my (@web_rpt,@words,@x,@x_err,@y,@y_err,@ylabels,@ymax,@ymin);
+my (%data_vols,%filt_map,%filt_map2,%obs_rename,%seg_found,%zp_buf);
+
+$vrs = "uvot_fluxes.pl vrs. 2007-02-08 fem";
+
+$log10=1.0/log(10.);
+# capture start time for program in UT
+$date=`date -u "+%y%m%dd%Hh%Mm%Ss"`;
+chomp($date);
+$date = $date . "UT";
+$cmdline=$0;
+foreach $i (@ARGV){$cmdline .= " $i";}
+
+$fhlog = *LOG; # use typeglob for passing file handle to subs
+
+# Three different plots are generated -- all filters, visible filters, and UV filters
+# Each generates a .gif file
+$fhplt = *PLT;
+$fhlog = *LOG;
+$fhrpt = *RPT;
+# $fhvis = *PLTVIS;
+# $fhuv  = *PLTUV;
+# @fhs = (\$fhplt,\$fhvis,\$fhuv);
+$fbase="uvot_fluxes_${date}";
+@pltfile=("${fbase}.qdp","${fbase}_vis.qdp","${fbase}_uv.qdp");
+@giffile=("${fbase}.gif","${fbase}_vis.gif","${fbase}_uv.gif");
+@psfile=("${fbase}.ps","${fbase}_vis.ps","${fbase}_uv.ps");
+
+# set defaults and read parameters
+	$help=0;
+	$logfile="uvot_fluxes_${date}.log";
+	$rptfile="uvot_fluxes_${date}.rpt";
+	$dir_archive="/Home/heasfs/marshall/swift/uvot_gcn";
+	$wrk_dir=".";
+	$src_reg=undef;
+	$bkg_reg=undef;
+	$trig=undef;
+	$texp_min=4.0; # sets minimum acceptable exposure length (sec)
+	$radius=4.0; # default radius of source region in arc sec.
+	$radius_uvot=3.5; # default radius of source region in arc sec. for uvot pos.
+	$radius_opt=3.5;  # default radius of source region in arc sec. for opt pos.
+	$radius_xrt=4.0;  # default radius of source region in arc sec. for xrt pos.
+	$outer=25.0;
+	$inner=10.0;
+	$hole_size=6.0; # size of holes in bkg region file in arc sec
+	$update_wiki=0; # by default, do not update burst wiki site
+	$use_fixed_bkg_region=0;
+	$fn_ximage="uvot_fluxes_ximage.txt";
+	$frametime=0.01103;
+	$gamma=0.0; # decay model for GRBs
+	$gamma_t0=100.; # epoch time for decay
+	$image_only=0;
+	$all_images=0;
+	$nobutler=0;
+	$ignore_aspcorr=0;
+	$plot_mag=0;
+	$proc_vrs=undef;
+	$seq=undef;
+	$targid=undef;
+	$seg_text="";
+	$tmax=1.e12;
+	$tmin=-1.e12;
+	$rebin=0;
+	$aper_corr35=1.06;
+	$aper_corr=1.0;
+	$snr_diff=2.0;
+	$snr_diff_orph=2.0;
+	$snr_min=2.0;
+	$src_reg_5as="uvot_flux_src5.reg";
+	$t_ratio_min=1.2;
+	$t_ratio_max=2.0;
+	$ul=1.0; # upper limit for plotting
+	$web=0; # if set, write results to web
+	$ftp_site="";
+	$ftp_subdir="2006_07";
+	$fn_glob=undef;
+$make_bkg_reg=0; # flag that we need to compute background region for each file
+	$ny=0;
+	$usex=0; # flag to specify use existing files (do not get from archive)
+	$ystep=2;
+	@ylabels=();
+#	%zp_buf=("v",17.83,"b",19.12,"white",19.78,"u",18.38,
+#	  "uvw1",17.69,"uvw2",17.77,"uvm2",17.29);
+# update zps on 2007-01-22 using calibration paper (for 5" apertures)
+	%zp_buf=("v",17.87,"b",19.09,"white",20.14,"u",18.33,
+	  "uvw1",17.45,"uvw2",17.34,"uvm2",16.83);
+	%filt_map=qw(vv V bb B wh WHITE uu U w1 UVW1 w2 UVW2 m2 UVM2);
+	%filt_map2=qw(V V B B WHITE WHITE U U UVW1 W1 UVW2 W2 UVM2 M2);
+	
+	if(defined($ENV{'MAIL_FEM_WORK'})){
+	  $fem_add=$ENV{'MAIL_FEM_WORK'};
+	} else {
+	  $fem_add="marshall\@milkyway.gsfc.nasa.gov";
+	}
+		
+	$ret=GetOptions( "help" => \$help,
+		"all" => \$all_images,
+		"bkg_region=s" => \$bkg_reg,	
+		"dec=s" => \$dec,
+		"fn=s" => \$fn,	
+		"fn_glob=s" => \$fn_glob,
+		"frametime=s" => \$frametime,
+		"ftpsite=s" => \$ftp_site,
+		"ftp_subdir=s" => \$ftp_subdir,
+		"gamma=s" => \$gamma,
+		"hole_size=s" => \$hole_size,
+		"ignore_aspcorr" => \$ignore_aspcorr,		
+		"image_only" => \$image_only,
+		"inner=s" => \$inner,
+		"nobutler" => \$nobutler,
+		"nocoinc" => \$nocoinc,
+		"noplot" => \$noplot,
+		"outer=s" => \$outer,
+		"plot_mag" => \$plot_mag,
+		"ra=s" => \$ra,
+		"radius=s" => \$radius,
+		"radius_opt=s" => \$radius_opt,
+		"radius_uvot=s" => \$radius_uvot,
+		"radius_xrt=s" => \$radius_xrt,
+		"rebin" => \$rebin,
+		"rerun_report=s" => \$rerun_report,
+		"seg=s" => \$seg_text,
+		"snr_diff=s" => \$snr_diff,
+		"snr_diff_orph=s" => \$snr_diff_orph,
+		"snr_min=s" => \$snr_min,
+		"src_region=s" => \$src_reg,
+		"seq=s" => \$seq,
+		"t_ratio_max=s" => \$t_ratio_max,
+		"t_ratio_min=s" => \$t_ratio_min,
+		"targid=s" => \$targid,
+		"texp_min=s" => \$texp_min,
+		"tmax=s" => \$tmax,
+		"tmin=s" => \$tmin,
+		"use_fixed_bkg_region" => \$use_fixed_bkg_region,
+		"update_wiki" => \$update_wiki,
+		"usex" => \$usex,
+		"web" => \$web,
+		"wrk_dir=s" => \$wrk_dir,
+		);
+# check for valid parameters
+	unless($ret){
+	  &help;
+	  die "Unexpected command line option(s)";
+	}
+	if($help){
+	  &help;
+	  exit 0;
+	}
+	
+	if(defined($fn)){$usex=1;}
+	
+	$err="";
+
+# cd to working directory
+	if(defined($wrk_dir)){
+	  chdir ($wrk_dir) || die "could not cd to $wrk_dir";
+	}
+	$msg=`pwd`;
+#	print "Current directory is $msg";
+	$line=$msg;
+	
+	$meonly=1;
+	if($meonly){$to_adx=$fem_add;}
+
+# open the log and rpt files
+	unless($nolog){
+ open(LOG,">$logfile") || die "error, unable to open $logfile for writing $!\n";
+	}
+open(RPT,">$rptfile") || die "error, unable to open $rptfile for writing, $!\n";
+	print RPT "# $vrs at $date\n#$cmdline\n\n";
+	print LOG "$vrs at $date\n$cmdline\nCurrent directory: $msg";
+	print "$vrs at $date\n$cmdline\n\n";
+	
+       if(defined($rerun_report)){
+         if(open(OLDRPT,$rerun_report)){
+	   print RPT "Reading old report $rerun_report\n";
+	   print     "Reading old report $rerun_report\n";
+	 } else {
+	   print LOG "Failed to open old report $rerun_report\n";
+	   die     "Failed to open old report $rerun_report";
+	 }
+       } else {
+	if(defined($texp_min)){
+	  print LOG "Minimum acceptable exposure time is $texp_min sec\n";
+	  print     "Minimum acceptable exposure time is $texp_min sec\n";
+	}
+	if($ignore_aspcorr){
+	  print RPT "*** Warning -- processing all extensions by ignoring ASPCORR.\n";
+	  print     "*** Warning -- processing all extensions by ignoring ASPCORR.\n";
+	}
+
+# find target ID and segments
+	$msg="";
+	if(defined($targid)){
+	  if($targid =~ /^\d{8}$/){
+	    $ret=&make_segments($seg_text,\@segs);
+	    if($ret){$msg="*** Quitting -- invalid segment of $seg_text";}
+	  } else {
+	    $msg="*** Quitting -- invalid target ID of $targid";
+	  }
+	} else {
+# if targid not defined, try using sequence number
+	 if(defined($seq)){
+	  if($seq =~ /^\d{11}$/){
+	    $targid=substr($seq,0,8);
+	    @segs=(substr($seq,8,3));
+	    $seg_text=$segs[0]; # used in plot title
+	  } else {
+	    $msg="*** Quitting -- invalid sequence number of $seq";
+	  }
+	 } # close if(defined($seq
+	} # close if(defined($targid
+	if($msg){
+	  print RPT "$msg\n";
+	  print LOG "$msg\n";
+	  die "$msg";
+	}
+	unless(defined($targid) && $targid =~ /^\d{8}$/){
+	  print LOG "Quit -- target ID needs to have exactly 8 digits\n";
+	  die "seq needs to have exactly 11 digits";
+	}
+	unless($#segs >= 0){
+	  print LOG "Quit -- no segments specified\n";
+	  die "no segments specified";
+	}
+	
+# ============== get the image files from SDC or HEASARC ================
+
+       unless($usex){
+# check that disk is not full
+	chomp($line);
+	if($line =~ /(^\/local\/data\/khamseen\d*)/ || 
+		$line =~ /(^\/local\/home\/khamseen\d*)/){
+	  $vol=$1;
+	  print "Volume is $vol\n";
+	} else {
+	  print LOG "Quit -- invalid working directory of $line\n";
+	  die "Invalid working directory of $line";
+	}
+	$ret=&check_disk_space;
+	if(defined($ret)){
+	  if($ret > 94){
+	    print LOG "Quit -- $vol is $ret\% filled\n";
+	    die "$vol is $ret\% filled";
+	  }
+	} else {
+	  print LOG "Quit -- check_disk_space returned undef for volume $vol\n";
+	  die "check_disk_space returned undef for volume $vol";
+	}
+	print "$vol is ${ret}\% filled\n";
+
+# set up ftp access
+	$archive=0;
+	$prefix="sw";
+	$test=0;
+	$user="anonymous";
+	$password="marshall\@milkyway.gsfc.nasa.gov";
+	if($ftp_site =~ /heasarc/i){
+	  $archive=1;
+	  $no=1;
+	} elsif ($ftp_site =~ /test/i) {
+	  $test=1;
+	  $no=1;
+	  $prefix="st";
+	} elsif ($ftp_site =~ /repro/i) {
+          $test=2;
+          $no=1;
+          $prefix="st";
+	}
+	$host = "swiftly.gsfc.nasa.gov";
+	if($archive){
+	  $host="legacy.gsfc.nasa.gov";
+	}
+	$usex=0;
+	$uvot=1;
+	$n=0;
+	foreach $seg (@segs){
+# I am not sure how many of these arrays really need to be emptied every time
+	  @obs_vers=();
+	  %obs_rename=();
+	  @subdirs=();
+	  @globs=();
+	  %data_vols=();
+	  $obs[0]=$targid . $seg;
+	  $ret = &get_img_files (\@obs,\@obs_vers,\%obs_rename,\@subdirs, 
+	    \@globs,\%data_vols,$host,$user,$password,$fhlog,$usex,$skip_renamed,
+	    $xrt,$uvot,$ftp_site,$ftp_subdir,$ftp_subdir_alt);
+	  print LOG "Return from get_img_files: $ret\n";
+# while(($key,$val) = each(%obs_rename)){print "obs_rename: $key - $val\n";}
+# if successful, get_att_files should return the number of files retrieved
+	  if($ret =~ /^\d+$/ && $ret){
+	    $n+=$ret; # sum the number of files
+	  } else {
+	    print LOG "get_img_files failed with message $ret\n";
+	  }
+	} # close foreach
+	unless($n){
+	  print LOG "Failed to get any files for any segment of $targid\n";
+	  die "Failed to get any files for any segment of $targid";
+	}
+       } # close unless($usex
+       
+# ============== generate file list ====================
+
+	@files=();
+	if($usex){
+# use existing files -- if($all_images) use anything matching $fn_glob
+#	otherwise do single file -- $fn
+	 if($all_images){
+	  if(defined($fn_glob)){
+print "Look for files matching $fn_glob\n";
+	    while ($filename = <${fn_glob}>){
+	      push(@files,$filename);
+	      print "Found file $filename\n";
+	    }
+	  } else {
+	    foreach $seg (@segs){
+	      $fn_glob="*${targid}${seg}*.img*";
+	      while ($filename = <${fn_glob}>){
+	        push(@files,$filename);
+	        print "Found file $filename\n";
+	      }
+	    } # close foreach $seg
+	  } # close if(defined($fn	  
+	 } else {
+# use single file
+	  if(defined($fn)){
+	    $files[0]=$fn;
+	    unless(-r $fn){
+	        print LOG "Quit -- cannot find/read file $fn\n";
+		die "cannot find/read file $fn";
+	    }
+	  } else {
+	    print LOG "Quit -- no image files requested.\n";
+	    die "No image files requested.";
+	  }
+	 } # close if($all_images
+	} else {
+# only do those images just downloaded
+	 foreach $seg (@segs){
+	  while ($filename = <*${targid}${seg}*.img>){
+	    if(-e $filename && -M $filename < 0.){
+	      push(@files,$filename);
+	      print "Found file $filename\n";
+	    }
+	  }
+	 } # close foreach
+	} # close if($usex
+
+# check that we actually have at least one file
+	unless($#files > -1){
+	  print LOG "Quit -- did not find any files\n";
+	  die "Did not find any files";
+	}	
+# if necessary, get the trigger number
+	if(defined($targid)){
+	  $trig=substr($targid,2,6);
+	  print "trig $trig from target ID $targid\n";
+	} else {
+#	  $fn=$files[0];
+	  @ans=`ftlist $files[0] hk include='TARG_ID' outfile=STDOUT`;
+	  for ($i=0;$i<=$#ans;$i++){
+	    $line=$ans[$i];
+	    @words=split(/\s+/,$line);
+	    if($#words < 0){next;}
+	    if($words[0] eq "TARG_ID"){
+	      $trig=$words[2];
+	      last;
+	    }
+	  } # close for	  
+	} # close unless
+	unless(defined($trig)){
+	  print LOG "Quit -- could not find trigger number";
+	  die "Could not find trigger number";
+	}
+# die "quit for now";
+
+# read uvot tokens
+	@file_types=("bat","opt","uvot","xrt");
+	print "Search for positions in $dir_archive\n";
+	print LOG "Search for positions in $dir_archive\n";
+	@token_lines=();
+	$ret=&read_uvot_tokens(\@file_types,\@token_lines,$trig,
+		0,$dir_archive,0);
+	if($ret){
+# this should only fail if $dir_archive is not a directory
+	      print LOG "Quitting -- problem in read_uvot_tokens of $ret\n";
+	      die "problem in read_uvot_tokens of $ret";
+	}
+	$tm=token_message->new(\@token_lines);
+
+# get name of GRB
+	$grb_name="";
+	$tmp1=&uvot_get1val($tm,"bat_name");
+	if(defined($tmp1)){
+	    $grb_name = "GRB$tmp1";
+	} else {
+	    $tmp1=&uvot_get1val($tm,"bat_date");
+	    if(defined($tmp1)){
+	      $grb_name = "GRB$tmp1";
+	    }
+	}
+	if($grb_name){
+print RPT "# ========= $grb_name ===================\n\n";
+	}
+	
+# write region files if needed
+	if(defined($ra) || defined($dec)){
+	  unless(defined($ra) && defined($dec)){
+	    print LOG "Both ra and dec need to be defined for error region\n";
+	    die "Both ra and dec need to be defined for error region";
+	  } else {
+# -- source region
+	   unless(defined($src_reg)){
+	    $src_reg="uvot_flux_src.reg";
+	    $ret=&write_uvot_region_file(
+	      $ra,$dec,$radius,0.0,$src_reg,"uvot_fluxes.pl user input");
+	    if($ret){
+	      print "Writing source region file failed with return of $ret\n";
+	      print LOG "Writing source region file failed with return of $ret\n";
+	      die "Writing source region file failed with return of $ret";
+	    }
+	   }
+	  } # close unless(defined($ra)
+	} else {
+	  unless(defined($src_reg)){
+# try to determine source position automatically
+# first try optical position
+	    $ra=&uvot_get1val($tm,"opt_ra");
+	    $dec=&uvot_get1val($tm,"opt_dec");
+	    $err=&uvot_get1val($tm,"opt_err");
+	    if(defined($ra) && defined($dec)){
+	      unless(defined($err)){$err=1.0;}
+$tmp=sprintf("Used src position from Optical GCN Notice of %9.5f %9.5f %5.2f\n",
+  $ra,$dec,$radius_opt);
+	      print LOG $tmp;
+	      print RPT $tmp;
+	      print     $tmp;
+	      $src_reg="uvot_flux_src.reg";
+	      $ret=&write_uvot_region_file(
+	        $ra,$dec,$radius_opt,0.0,$src_reg,"uvot_fluxes.pl optical");
+	      if($ret){
+print LOG "Writing optical source region file failed with return of $ret\n";
+	        die "Writing optical source region file failed with return of $ret";
+	      }
+	    } else {
+# next try to find uvot position
+	      $ra=&uvot_get1val($tm,"uvot_ra");
+	      $dec=&uvot_get1val($tm,"uvot_dec");
+	      $err=&uvot_get1val($tm,"uvot_err");
+	      if(defined($ra) && defined($dec)){
+	        unless(defined($err)){$err=1.0;}
+	        $tmp=sprintf(
+  "Used src position from UVOT GCN Notice of %9.5f %9.5f %5.2f\n",$ra,$dec,$radius_uvot);
+	        print LOG $tmp;
+	        print RPT $tmp;
+	        print     $tmp;
+	        $src_reg="uvot_flux_src.reg";
+	        $ret=&write_uvot_region_file(
+		  $ra,$dec,$radius_uvot,0.0,$src_reg,"uvot_fluxes.pl UVOT");
+	        if($ret){
+print LOG "Writing source region file failed with return of $ret\n";
+	          die "Writing source region file failed with return of $ret";
+	        }
+	     } else {
+# try to find xrt position from Butler's list
+	       if($nobutler){
+	         $msg="";
+		 $ra=undef;
+		 $dec=undef;
+	       } else {
+	         ($msg,$ra,$dec,$err,$vrs_butler)=&xrt_butler_pos($trig);
+	       }
+	       if(defined($ra) && defined($dec)){
+	          unless(defined($err)){$err=4.0;} # $err is not used
+# may want to expand source region for xrt error region
+	          $tmp=sprintf(
+  "Used src position from XRT/Butler of %9.5f %9.5f %5.2f\n",$ra,$dec,$radius_xrt);
+	          print LOG $tmp;
+	          print RPT $tmp;
+	          print     $tmp;
+	          $src_reg="uvot_flux_src.reg";
+$ret=&write_uvot_region_file($ra,$dec,$radius_xrt,0.0,$src_reg,"uvot_fluxes.pl xrt");
+	          if($ret){
+print LOG "Writing source region file failed with return of $ret\n";
+	            die "Writing source region file failed with return of $ret";
+	          }
+	       } else {
+	         if($msg){
+print LOG "Error accessing XRT positions from Butler: $msg\n";
+print     "Error accessing XRT positions from Butler: $msg\n";
+		 }
+# next try to find xrt position from GCN notices, etc.
+	         $ra=&uvot_get1val($tm,"xrt_ra");
+	         $dec=&uvot_get1val($tm,"xrt_dec");
+	         $err=&uvot_get1val($tm,"xrt_err");
+	         if(defined($ra) && defined($dec)){
+	          unless(defined($err)){$err=4.0;} # $err is not used
+# may want to expand source region for xrt error region
+	          $tmp=sprintf(
+"Used src position from XRT GCN Notice of %9.5f %9.5f %5.2f\n",$ra,$dec,$radius_xrt);
+	          print LOG $tmp;
+	          print RPT $tmp;
+	          print     $tmp;
+	          $src_reg="uvot_flux_src.reg";
+$ret=&write_uvot_region_file($ra,$dec,$radius_xrt,0.0,$src_reg,"uvot_fluxes.pl xrt");
+	          if($ret){
+print LOG "Writing source region file failed with return of $ret\n";
+	            die "Writing source region file failed with return of $ret";
+	          }
+	         } else {
+	          print LOG "Quitting -- cannot find source position\n";
+	          die "Cannot find source position";
+	         } # close if(defined($ra) for xrt
+	       } # close if(defined($ra) for xrt_butler
+	     } # close if(defined($ra for opt
+	   } # close if(defined($ra for uvot
+	  } # close unless(defined($src_reg))
+	} # close if(defined($ra
+	if(defined($ra) && defined($dec)){
+	  ($ra_hms,$dc_dms)=&deg2sex($ra,$dec);
+	  print "   which is ($ra_hms, $dc_dms)\n";
+	  print RPT "   which is ($ra_hms, $dc_dms)\n";
+	}
+# die "exit 2";
+	unless(open(IN,$src_reg)) {
+	    print LOG "Quit -- cannot open $src_reg\n";
+	    die "cannot open $src_reg";
+	} else {
+	    print "\nUsing source region:\n";
+	    print RPT "\nUsing source region:\n";
+	    while(<IN>){
+	      print RPT $_;
+	      print $_;
+# parse for aperture
+	      if(/\;circle\(.+\,.+\,(\d+\.?\d*)\"\)/){
+	        $aper=$1;
+	        if($aper < 4.9){
+print "Found aperture size of $aper\n";
+		  $aper_corr=$aper_corr35; # apply nominal aperture correction
+		}
+	      }
+	    }
+	    close(IN);
+	    print RPT "\n";
+	    print "\n";
+	} # close unless(open(IN
+# -- bkg region
+	if(defined($bkg_reg)){
+	  unless(-r $bkg_reg){
+	    print LOG "cannot find/read source region file $bkg_reg\n";
+	    die "cannot find/read source region file $bkg_reg";
+	  }
+	} else {
+	  unless(defined($ra) && defined($dec)){
+	    print LOG "Either RA and DEC are not defined.\n";
+	    die "Either RA and DEC are not defined.\n";
+	  } else {
+	    if($use_fixed_bkg_region){
+# -- use standard background region without worrying about other sources	  
+	      $bkg_reg="uvot_flux_bkg.reg";
+$ret=&write_uvot_region_file($ra,$dec,$outer,$inner,$bkg_reg,"uvot_fluxes.pl");
+	      if($ret){
+print LOG "Writing background region file failed with return of $ret\n";
+die "Writing background region file failed with return of $ret";
+	      } else {
+print LOG "Using standard background annulus from $inner to $outer arcsec.\n";
+	      }
+	    } else {
+	      print "Produce background region after looking for sources.\n";
+	      print LOG "Produce background region after looking for sources.\n";
+	      $make_bkg_reg=1;
+	    }
+	  } # close unless(defined($ra)
+	} # close if(defined($bkg_reg
+
+# make 5 arc sec source region file
+	$ret=&make_5as_reg($src_reg,$src_reg_5as,$fhlog);
+	if($ret){
+	  $tmp="Do not calculate coincidence loss because sub make_5as_reg failed\n";
+	  $tmp.=" with message $ret\n";
+	  print $tmp;
+	  print LOG $tmp;
+	  $nocoinc=1;
+	} else {
+print "Made source region file with 5.0 arc sec aper with name $src_reg_5as\n";
+print LOG "Made source region file with 5.0 arc sec aper with name $src_reg_5as\n";
+	}
+	if($nocoinc){
+$tmp="\n*** Warning -- the magnitudes have not been corrected for coincidence loss\n";
+	} else {
+$tmp="\nThe exposure times have been corrected to account for coincidence loss ";
+$tmp.="using a 5\" aperture.\n";
+	}
+	if($aper_corr == 1.0){
+$tmp.="*** Warning -- no correction for aperture loss has been made.\n";
+	} else {
+$tmp.="*** Warning -- rates have been multiplied by a nominal aperture correction of $aper_corr\n";
+	}
+$tmp.="UL_3 gives the 3-sigma upper limit for detection based solely ";
+$tmp.="on the counts in background region.\n";
+$tmp.="weighted rates (wtd_rate) combine results from different exposures ";
+$tmp.="using optimal weights appropriate\n";
+$tmp.="for a weak source producing the same magnitude in each filter.\n";
+$tmp.="The weight for an exposure is the expected number of source counts ";
+$tmp.="divided by the background rate.\n";
+if($gamma == 0.0){
+ $tmp.="The rate is normalized so that a 20th mag. source produces 1 cps.\n";
+} else {
+ $tmp.="The source is assumed to decay as t**(-$gamma), and the rate is normalized\n";
+ $tmp.="so that a 20th mag source at $gamma_t0 sec. produces 1 cps.\n";  
+}
+$tmp.="Weighted rates are only computed for observations from MET $tmin to $tmax.\n";
+	print RPT $tmp;
+	print     $tmp;
+
+# -----------------------------------------------------------------------
+
+# ======================================================
+# ==================== Process the Data ================
+# ======================================================
+
+# The plan is:
+# * write header for the plot file
+# * process each file in turn and for each file
+#   + write comment to plot file, split plot groups
+#   + loop thru exposures and for each exposure
+#     . print flux, weight sum
+#     . write time and flux to plot file
+#   + after last exposure
+#     . rebin the light curve using rebin.pm
+#     . determine x-axis and y-axis scales
+#     . plot either upper limit or actual value using plot_ul
+# * after last file, close the plot file
+# * produce visible and uv plot files based on the plot file
+
+# ======== loop thru files ==============
+
+# we may want to calculate when sensitivity peaks for source decaying as (e.g.) 1/t
+
+      } # close if(defined(rerun_report
+      
+# write header to plot file
+	$xmax=undef;
+	$xmin=undef;
+	unless($noplot){
+	  $i=0;
+	  open(PLT,">$pltfile[$i]") || 
+	    die "error, unable to open $pltfile[$i] for writing, $!\n";
+	  print PLT "dev /null\n";
+	  print PLT "READ SERR 2\n";
+	  print PLT "READ TERR 3\n";
+	  print PLT "SKip Single\n";
+	  print PLT "\!  MET    MET-t0  dt  Flux   +     -\n";
+	}
+# initialize arrays for weighted rates for different filters	
+	@w_src=();
+	@w_bkg=();
+	@w_exp=();
+	@w_pred=();
+
+# ====== we either reprocess an old report or process actual image files
+
+       if(defined($rerun_report)){
+       
+# ---- process the old report
+
+	 $prev_filt=undef;
+	 $prev_zp=undef;
+	 $prev_fn="";
+	 $t0=undef;
+	 %seg_found=();
+	 $targid=undef;
+         $ny=0;
+	 @ymin=();
+	 @ymax=();
+	 @ylabels=();
+         while(<OLDRPT>){
+	  print RPT $_;
+#	  print $_;
+	  chomp;
+	  $line=$_;
+# look for file name and new filter
+	  if($line =~ /^\#\s*\=+\s*Reading file\s*(\S+)/){
+	    $zp=undef;
+	    $filt=undef;
+	    $fn=$1;
+print PLT "\! using data from file $fn\n";
+	    if($fn =~ /sw(\d{8})(\d{3})u(..)_sk\.img/){
+	      $tmp2=$1; # grab target ID
+	      $tmp=$2; # grab segment
+	      $tmp1=$3; # grab filter info
+	      unless(defined($filt_map{$tmp1})){
+	        print "Failed to recognize filter in $line\n";
+	        print LOG "Failed to recognize filter in $line\n";
+	      } else {
+	        $filt=$filt_map{$tmp1};
+print LOG "found filter of $filt in $line\n";
+		$seg_found{$tmp} = 1;
+		if(defined($targid) && ($targid ne $tmp2)){
+print LOG "New target ID $tmp2 does not match previous value of $targid\n";
+print     "New target ID $tmp2 does not match previous value of $targid\n";
+		} else {
+		  $targid = $tmp2;
+		}
+	      }
+	    }
+} elsif ($line =~ /trigger time is\:\s*(\d+).*Using zero point of\s+(\d+\.\d*)/){
+	  
+# find trigger time, zero point, and (for newer files) the filter
+# note that we are reading the zero point -- not looking up current value
+	    $t0=$1;
+	    $zp=$2;
+print LOG "Found trigger time $t0 and zp $zp in $line\n";
+	    if($line =~ /for\s+filter\s+(\S+)/){
+	      $tmp1=$1;
+	      unless(defined($filt_map2{$tmp1})){
+	        print "Failed to recognize filter in $line\n";
+	        print LOG "Failed to recognize filter in $line\n";
+	      } else {
+	        $filt=$tmp1;
+print LOG "found filter of $filt in $line\n";
+	      }
+	    } # close if($line =~ /for
+
+# process the old data if this is a new filter
+# print "filt: $filt prev_filt $prev_filt\n";
+	    unless(defined($prev_zp)){
+# this is the first file -- zero arrays, save values, but do not process
+	      @net_buf=();
+	      @net_sig_buf=();
+	      @t2_buf=();
+	      @t1_buf=();
+	      @dt_buf=();
+	      @dt_exp=();
+	      $prev_filt=$filt;
+	      $prev_zp=$zp;
+	      $prev_fn=$fn;
+	    } else {
+	      unless(defined($prev_filt) && defined($filt)){
+print     "unexpectedly, prev_filt or filt are not defined\n";
+print LOG "unexpectedly, prev_filt or filt are not defined\n";
+	      } else {
+	        if($filt ne $prev_filt){
+# write the qdp data
+# print     "call process_plot for $prev_filt\n";
+print LOG "call process_plot for $prev_filt\n";	  
+	  $ret=&process_plot($rebin,$snr_min,$t_ratio_max,$t_ratio_min,$snr_diff,
+	    $snr_diff_orph,$plot_mag,\@net_buf,\@net_sig_buf,\@t2_buf,\@dt_buf,
+	    \@dt_exp,$ul,\$ymin,\$ymax,$fhplt,$fhlog,$fhrpt,$prev_zp,\$prev_filt,\$ny,
+	    \@ymin,\@ymax,\@ylabels,$ystep,\@t1_buf,$prev_fn);
+# zero the arrays for new filter
+		  @net_buf=();
+	          @net_sig_buf=();
+	          @t2_buf=();
+	          @t1_buf=();
+	          @dt_buf=();
+	          @dt_exp=();
+	          $prev_filt=$filt;
+	          $prev_zp=$zp;
+	          $prev_fn=$fn;
+	        } # close if($filt ne
+	      } # close unless(defined($prev_filt
+	    } # close unless(defined($prev_zp
+	  } elsif ($line =~ /^\#\s*\=+\s*(GRB\d{6})/){
+# find grb name
+	     $grb_name=$1;
+print LOG "Found GRB name $grb_name in $line\n";
+	  } else {
+	     @words=split(/\s+/,$line);
+	     unless($#words > 18){next;}
+# make sure that $words[0] is not empty
+	     unless($words[0]){shift(@words);}
+	     if($words[1] =~ /^..\d{9,}/){
+# print "Found new rate of $words[8] at $words[1]\n";
+# we might want to re-calculate rate from counts and background
+	       push(@net_buf,$words[8]);
+	       push(@net_sig_buf,$words[9]);
+	       push(@t2_buf,($words[2]+($words[3]/2.0))); 
+	       push(@dt_buf,($words[3]/2.0));
+	       push(@dt_exp,$words[3]);
+	       push(@t1_buf,($t0 + $words[2]+($words[3]/2.0)));
+	       $tmp1=$words[2]+$words[3];
+	       if(defined($xmax)){
+		 if($tmp1 > $xmax){$xmax=$tmp1;}
+	       } else {
+		 $xmax=$tmp1;
+	       }
+	       $tmp1=$words[2];
+	       if($tmp1 < 0.1){print "x tmp1: $tmp1\n";}
+	       if(defined($xmin)){
+		 if($tmp1 < $xmin){$xmin=$tmp1;}
+	       } else {
+		 $xmin=$tmp1;
+	       }
+	     } # close if($words[1]    
+	   } # close if ($line
+	 } # close while
+# write the final set of qdp data
+	 if(defined($prev_zp) && defined($prev_filt) && $#net_buf >= 0){
+	 $ret=&process_plot($rebin,$snr_min,$t_ratio_max,$t_ratio_min,$snr_diff,
+	    $snr_diff_orph,$plot_mag,\@net_buf,\@net_sig_buf,\@t2_buf,\@dt_buf,
+	    \@dt_exp,$ul,\$ymin,\$ymax,$fhplt,$fhlog,$fhrpt,$prev_zp,\$prev_filt,\$ny,
+	    \@ymin,\@ymax,\@ylabels,$ystep,\@t1_buf,$fn);
+	 }
+	 close(OLDRPT);
+# update $seg_text with all the segments found
+	 $seg_text="";
+	 $n=0;
+	 foreach $key (sort keys %seg_found){
+	   $tmp=sprintf("%d",$key);
+	   $seg_text.=" $tmp";
+	   $seq=$targid . $key;
+	   $n++;
+	 }
+	 unless($n == 1){
+	   $seq=undef;
+	 }
+	 
+# ---- finished processing the old data
+
+       } else {
+       
+# ---- read the data files
+    
+# sort files before processing
+	@sorted_files = sort by_filter @files;
+	$prev_filt="xyz18";
+	for ($ifile=0;$ifile<=$#sorted_files;$ifile++){	
+	$fn=$sorted_files[$ifile];
+#	foreach $fn (sort by_filter @files) {
+# for some reason this is sorting M2 higher than W1
+	print RPT "\n# ============ Reading file $fn ================\n\n";
+	print LOG "Reading file $fn\n";
+	print     "\n# ============ Reading file $fn ================\n\n";
+
+	$t0=&get_t0($fn);
+	unless(defined($t0)){$t0=0;}
+	$ext_max=undef; # records longest exposure (to be used for background region)
+#	next;
+# should also check for TARG_ID
+# no longer look for EXTENSION as a key word starting 2007-01-12
+# ftlist is also run at the end of processing the file to check on value of filter
+#   in the next file
+	if($ifile == 0){
+@ans=`ftlist $fn hk include='TSTART,TELAPSE,SEQPNUM,FILTER,EXPOSURE,DATE-OBS,ASPCORR' outfile=STDOUT`;
+	$ret_parse=&parse_ftlist(\@ans,\@ext,\@exp,\@form,\@date,\@texp,\@filter,
+		\@aspcorr,\@seqpnum,\@tstart,\@telapse);
+	}
+	if($ret_parse){
+	  print LOG "Error parsing ftlist output: $ret for $fn -- skip file\n";
+	  print     "Error parsing ftlist output: $ret for $fn -- skip file\n";
+	  next;
+	}
+	if($#exp < 0){
+	  print LOG "Found no images to process for $fn -- skip file\n";
+	  print     "Found no images to process for $fn -- skip file\n";
+	  next;
+	}
+	$filt=$filter[0];
+	unless(defined($filt)){
+	  print LOG "Skip $fn -- filter is not defined.\n";
+	  print     "Skip $fn -- filter is not defined.\n";
+	  next;
+	}
+	$filt_lc=lc($filt);
+	$zp=$zp_buf{$filt_lc};
+	unless(defined($zp)){
+	  print LOG "Skip $fn -- zp is not defined for filter $filt_lc.\n";
+	  print     "Skip $fn -- zp is not defined for filter $filt_lc.\n";
+	  next;
+	}
+print RPT "The trigger time is: $t0  Using zero point of $zp for filter $filt\n";
+print     "The trigger time is: $t0  Using zero point of $zp for filter $filt\n";
+	if($ignore_aspcorr){for ($i=0;$i<=$#aspcorr;$i++){$aspcorr[$i]="DIRECT";}}
+# check for consistent processing version number
+# this will incorrectly flag problems if there are multiple files
+	unless($noplot){
+	  for ($i=0;$i<=$#seqpnum;$i++){
+	   if(defined($seqpnum[$i])){
+	    if(defined($proc_vrs)){
+	      unless($proc_vrs == $seqpnum[$i]){
+#		print LOG 
+# "Inconsistent proc. versions: $proc_vrs vs. $seqpnum[$i] for ext $i of $fn\n";
+	      }
+	    } else {
+	      $proc_vrs=$seqpnum[$i];
+	    }
+	   }
+	  } # close for	  
+	  unless($filt eq $prev_filt){
+# have a new filter
+#	    print PLT "No No No No\n";
+# initialize arrays to saving data points for this filter
+	    @t1_buf=();
+	    @t2_buf=();
+	    @dt_buf=();
+	    @dt_exp=();
+	    @net_buf=();
+	    @net_sig_buf=();
+	    $prev_filt=$filt;
+	  }
+	  print PLT "\! reading file $fn\n";	  	  
+	} # close unless($noplot
+#	print "filter: $filt  zp: $zp\n";
+
+# make background region if necessary
+	if($make_bkg_reg){
+# find longest exposure
+	  $tlong=-999;
+	  for ($i=0;$i<=$#texp;$i++){
+	   if(defined($texp[$i])){
+# print "exp: $texp[$i] max: $tlong\n";
+	    if($texp[$i] > $tlong){
+	      $tlong=$texp[$i];
+	      $ext_max=$ext[$i];
+	    }
+	   }
+	  } # close for
+	  unless(defined($ext_max)){
+	    print LOG "Found no maximum exposure for $fn -- skip file\n";
+	    print     "Found no maximum exposure for $fn -- skip file\n";
+	    next;
+	  } else {
+# run uvotdetect to generate source list
+#	    print "ext_max: $ext_max tmax: $tlong\n";
+$tmp1="outfile=detect.tmp expfile=NONE threshold=2.0 plotsrc=no zerobkg=-1. ";
+	    @ans=`uvotdetect '${fn}+$ext_max' $tmp1 clobber=yes`;
+$tmp1="columns='RA,DEC,RATE,RATE_ERR' rows=- colheader=no outfile=STDOUT ";
+#	    print "ftlist detect.tmp T $tmp1\n";
+	    @ans=`ftlist detect.tmp T $tmp1`;
+	    @ra_buf=();
+	    @dec_buf=();
+	    @star_id=();
+	    $i=0;
+print LOG "ftlist produced $#ans (+1) lines of output\n";
+print     "ftlist produced $#ans (+1) lines of output\n";
+	    foreach $line (@ans){
+#	      print $line;
+	      @words=split(/\s+/,$line);
+# discovered 2006-10-18 that after 99 lines, there are no leading blanks
+	      if($#words > 0){
+	        if($words[0] eq ""){shift(@words);}
+	      }
+	      if($#words == 4){
+#	        print "ra: $words[2] dec: $words[3] rate: $words[4]\n";
+# could use larger hole for bright sources (>50 cps) (actually cannot do this easily)
+		$ra_buf[$i]=$words[1];
+		$dec_buf[$i]=$words[2];
+		$star_id[$i]=$i+1; # needs to be > 0
+		$i++;
+	      }
+	    } # close foreach
+#	    print "found $i stars\n";
+# make the region file
+	    $bkg_reg="uvot_flux_${filt_lc}_bkg.reg";
+	    $ret=&write_uvot_bkg_reg($ra,$dec,$outer,$inner,
+	       \@ra_buf,\@dec_buf,\@star_id,$hole_size,$bkg_reg);
+	    if($ret){
+	        print LOG "problem making bkg region file for $fn -- skip file\n";
+		print     "problem making bkg region file for $fn -- skip file\n";
+		next;
+	    } else {
+		print LOG 
+  "wrote background region $bkg_reg using extension $ext_max which has $i sources\n";
+	    }
+	    unless(-r $bkg_reg){
+	        print LOG "cannot read/find bkg region file for $fn -- skip file\n";
+		print     "cannot read/find bkg region file for $fn -- skip file\n";
+		next;
+	    }
+	  } # close unless(defined($ext_max
+	} # close if($make_bkg_reg
+	
+	open(IN,$bkg_reg) || die "cannot open $bkg_reg";
+	$tmp="";
+	if(defined($ext_max)){$tmp=" based on sources found in extension $ext_max";}
+	print "Using background region${tmp}:\n";
+	print RPT "Using background region${tmp}:\n";
+	while(<IN>){
+	    print RPT $_;
+	    print $_;
+	}
+	print RPT "\n";
+	print "\n";
+	close(IN);
+
+# ======== process with ximage ========
+	
+# write ximage script
+	$ret=&write_ximage_script($fn,$src_reg,$bkg_reg,$fn_ximage,
+	  \@ext,\@exp,\@form,\@date,\@texp,\@filter,\@aspcorr,$image_only,$texp_min);
+	if($ret){
+	  print LOG "return from write_ximage_script: $ret for $fn -- skip file\n";
+	  print     "return from write_ximage_script: $ret for $fn -- skip file\n";
+	  next;
+	}
+# run the ximage script
+        @ans=`ximage \@$fn_ximage`;
+# parse the output of ximage
+	$ret=&read_ximage_ans(\@ans,\@src_cnts_buf,\@src_pix_buf,
+	  \@bkg_cnts_buf,\@bkg_pix_buf,$src_reg,$bkg_reg,$fhlog);
+
+	unless($nocoinc){
+# re-do with 5as aperture for coincidence loss calculation
+	  $ret=&write_ximage_script($fn,$src_reg_5as,undef,$fn_ximage,\@ext,
+	    \@exp,\@form,\@date,\@texp,\@filter,\@aspcorr,$image_only,$texp_min);
+	  if($ret){
+print LOG "return from write_ximage_script (5as): $ret for $fn -- skip file\n";
+print     "return from write_ximage_script (5as): $ret for $fn -- skip file\n";
+	    next;
+	  }
+          @ans=`ximage \@$fn_ximage`;
+# @bkg5_cnts_buf and @bkg5_pix_buf should not get any data
+	  $ret=&read_ximage_ans(\@ans,\@src5_cnts_buf,\@src5_pix_buf,
+	    \@bkg5_cnts_buf,\@bkg5_pix_buf,$src_reg_5as,"",$fhlog);
+	} # close unless($nocoinc
+
+	$next=-1;
+	$sum_cnts=0;
+	$sum_bkg=0;
+	$sum_bkg_sigsq=0;
+	$sum_dt=0;
+	$prev_exp="";
+	$plotted=0;
+	$ymax=undef;
+	$ymin=undef;
+	$rate=0.0;
+	$rate_err=0.0;
+# $rate_comp is the rate expected for the source strength used to compute
+#  predicted count rate
+	$rate_comp=0.0;
+	$sum_rt=0.0;
+	$sum_b=0.0;
+# use expected rate for 20th mag
+	$pred=10.0**(0.4*($zp - 20.0));
+print     "Ext   Exposure     t-trig  t_exp   src    pix    bkg   pix net_rate +/- ";
+print     "  mag UL_3 sum_rate  +/-    mag UL_3 sum_dt wtd_rate +/-   mag  wt/t\n";
+print RPT "Ext   Exposure     t-trig  t_exp   src    pix    bkg   pix net_rate +/- ";
+print RPT "  mag UL_3 sum_rate  +/-    mag UL_3 sum_dt wtd_rate +/-   mag  wt/t\n";
+	  
+# ===== loop thru each exposure ==========
+
+	if($ret){
+	  print "problem with read_ximage_ans of $ret\n";
+	  print LOG "problem with read_ximage_ans of $ret\n";
+	} else {
+	for ($next=1;$next<=$#src_cnts_buf;$next++){
+		  $src_cnts=$src_cnts_buf[$next];
+		  $src_pix=$src_pix_buf[$next];
+		  $bkg_cnts=$bkg_cnts_buf[$next];
+		  $bkg_pix=$bkg_pix_buf[$next];
+# print "next: $next src: $src_cnts pix: $src_pix bkg: $bkg_cnts pix: $bkg_pix\n";
+		  $dt=$texp[$next];
+		  $exp=$exp[$next];
+		  $new_exp=undef;
+		  if(defined($exp)){
+		    $new_exp=$exp;
+		    if($new_exp =~ /^..\d{9,}[A-Z]$/){chop($new_exp);}
+# print "new exp: $new_exp\n";
+		  }
+		  if(defined($src_cnts) && defined($bkg_cnts)){
+		    if(defined($tstart[$next])){
+# print "use tstart of $tstart[$next]\n";
+		      $t1=$tstart[$next];
+		    } else {
+		      $t1=0;
+		      if(length($exp) > 8){$t1=substr($exp,2,9);}
+		    }
+		    unless(defined($t0)){
+		      $t0=$1;
+		      print RPT "Adopt first time of $t1 as trigger time\n";
+		      print     "Adopt first time of $t1 as trigger time\n";
+		    }
+		    $t2=$t1-$t0; # start time since trigger
+		    $ratio=$src_pix/$bkg_pix;
+		    
+# correct for coincidence loss
+# adjust exposure time for the lost time
+# the background has a different dead time, and we adjust
+# the background counts so that can use the same exposure time
+# for source and background counts.
+# (Another possibility is to adjust the number of pixels in the
+# background region. Adopted 2007-02-01)
+# this causes a small error in the uncertainty in the background,
+# but it should be completely negligible
+		    $corr_src=1.0;
+		    $corr_bkg=1.0;
+		    unless($nocoinc){
+		      $tmp1=$src_cnts;
+		      $tmp2=$src5_cnts_buf[$next];
+		      $tmp3=$ratio;
+		      $tmp4=$src5_pix_buf[$next];
+# if the counts and pixels for the 5 arc sec region are available,
+# then use those counts to determine coincidence loss for source
+# and use the background rate per 5 arc sec region to calculate the
+# coincidence loss for the background
+		      if(defined($tmp2)){$tmp1=$tmp2;}
+		      if(defined($tmp4)){$tmp3=$tmp4/$bkg_pix;}
+		      $corr_src=&coinc_loss($tmp1,$dt,$frametime,$fhlog);
+		      $corr_bkg=&coinc_loss(($bkg_cnts*$tmp3),$dt,$frametime,$fhlog);
+# print "src_cnts: $src_cnts src5_cnts: $tmp2 src5_pix: $tmp4";
+# print " corr_src $corr_src corr_bkg $corr_bkg\n";
+# print RPT "src_cnts: $src_cnts src5_cnts: $tmp2 src5_pix: $tmp4";
+# print RPT " corr_src $corr_src corr_bkg $corr_bkg\n";
+# adjust the exposure to correct for coincidence loss in the source
+		      $dt*=$corr_src;
+# adjust the background counts for coincidence loss and change in the exposure
+#  (which does not apply to background)
+# corrected following line in vrs 2007-01-19a
+#		      $bkg_cnts*=($corr_src/$corr_bkg);
+# changed to adjusting $bkg_pix on 2007-02-01
+# I think that this produces the correct error estimate
+		      $bkg_pix*=($corr_bkg/$corr_src);
+		      $ratio=$src_pix/$bkg_pix;
+		    }
+		    
+# $t2 is start of exposure - trigger time; $dt is exposure time
+		    printf     "%3d %-12s %8.1f %6.1f %6.1f %5.1f %6.0f %5.0f ",
+			$next,$exp,$t2,$dt,$src_cnts,$src_pix,$bkg_cnts,$bkg_pix;
+		    printf RPT "%3d %-12s %8.1f %6.1f %6.1f %5.1f %6.0f %5.0f ",
+			$next,$exp,$t2,$dt,$src_cnts,$src_pix,$bkg_cnts,$bkg_pix;
+  
+# compute net count rate (added aper_corr 2007-02-08)
+		    $net=($src_cnts - $bkg_cnts*$ratio)/$dt*$aper_corr;
+		    $tmp1=$src_cnts;
+		    if($src_cnts < 0.1){$tmp1=1.0;} # sig is >= 1/$dt
+		    $net_sig=sqrt($tmp1 + $bkg_cnts*$ratio*$ratio)/$dt*$aper_corr;
+# bkg_sig is based on having the expected no. of counts in the source region (net=0)
+$bkg_sig=sqrt($bkg_cnts*$ratio + $bkg_cnts*$ratio*$ratio)/$dt*$aper_corr;
+		    $mag=99.0;
+		    $mag_ul=99.0;
+# starting 2006-07-20, 3-sig upper limit is mag that we should be able to see
+# it is based only on the background region and size of the source region
+		    if(defined($zp)){
+		      $mag=&calc_mag($net,$zp);
+#		      if($net > 0.){
+		        $mag_ul=&calc_mag(3.0*$bkg_sig,$zp);
+#		      } else {
+#		        $mag_ul=&calc_mag(3.0*$net_sig,$zp);
+#		      }
+		    }
+		  printf     "%6.3f %5.3f %5.2f %4.1f ",$net,$net_sig,$mag,$mag_ul;
+		  printf RPT "%6.3f %5.3f %5.2f %4.1f ",$net,$net_sig,$mag,$mag_ul;
+# compute running sum
+# avoid double counting for image/event
+		    $tmp1=0.;
+		    $tmp2=0;
+		    $tmp3=0.;
+# print "\nnew_exp: $new_exp prev_exp: $prev_exp\n";
+# if($new_exp =~ /^..\d{9,}$/){print "new_exp matches\n";}
+		    if(defined($new_exp) && ($new_exp ne $prev_exp ||
+		      !($new_exp =~ /^..\d{9,}$/)) ){
+# starting 2006-12-06 check that time is between tmin and tmax
+# print "t2: $t2\n";
+		      if($t2 > $tmin && $t2 < $tmax){
+			$sum_cnts+=$src_cnts;
+			$bkg_ratio=$bkg_cnts*$ratio;
+			$sum_bkg+=$bkg_ratio;
+			$sum_bkg_sigsq+=($bkg_cnts*$ratio*$ratio);
+			$sum_dt+=$dt;
+			$tmp1=($sum_cnts - $sum_bkg)/$sum_dt*$aper_corr;
+			$tmp=$sum_cnts;
+			if($tmp < 0.1){$tmp=1.0;} # sig is >= 1/$dt
+			$tmp2=sqrt($tmp + $sum_bkg_sigsq)/$sum_dt*$aper_corr;
+# bkg_sig is based on having the expected number of counts in the source region 
+# (i.e., net=0)
+			$bkg_sig=sqrt($sum_bkg + $sum_bkg_sigsq)/$sum_dt*$aper_corr;
+			$tmp3=$sum_dt;
+			$prev_exp=$new_exp;
+			$magsum=99.0;
+			$magsum_ul=99.0;
+		        if(defined($zp)){
+			  $magsum=&calc_mag($tmp1,$zp);
+#			  if($net > 0.){
+		            $magsum_ul=&calc_mag(3.0*$bkg_sig,$zp);
+#		          } else {
+#		            $magsum_ul=&calc_mag(3.0*$tmp2,$zp);
+#		          }
+			}
+# this prints summed rate for file, its error, corresponding mag and UL, summed t 
+printf     "%7.4f %6.4f %5.2f %4.1f %5.0f ",$tmp1,$tmp2,$magsum,$magsum_ul,$tmp3;
+printf RPT "%7.4f %6.4f %5.2f %4.1f %5.0f ",$tmp1,$tmp2,$magsum,$magsum_ul,$tmp3;
+
+# to do weighted average:
+#   assign a weight to each exposure =$wt (1/t?)
+#   define $wtd_src_cnts = $src_cnts*$wt
+#   define $wtd_bkg_cnts = $bkg_cnts*$wt
+#   define $wtd_dt = $dt*$wt
+#   then $wtd_bkg_sig=sqrt($wtd_sum_bkg + $wtd_sum_bkg_sigsq)/$wtd_sum_dt
+  $tsum=$tmp3;
+  $ti=$dt;
+  unless($ti > 0.0){
+    print "cannot calculate wtd rate because ti is $ti\n";
+  } else {
+    $bi=$bkg_ratio;
+    if($bi <= 0.){$bi=1.0;}
+    $si=$src_cnts;
+# starting 2006-12-07 have decaying source model
+    $predi=$pred * (($t2 + 0.5*$dt)/$gamma_t0)**(-$gamma);
+    $wi=$predi * $ti * $ti / $bi;
+# save entries for weighted rate
+    push(@w_src,$si);
+    push(@w_bkg,$bi);
+    push(@w_exp,$ti);
+    push(@w_pred,$predi);
+# printf "t,s,b,pred,wt: %5.0f %5.0f %5.0f %8.3f %8.1f\n",$ti,$si,$bi,$predi,$wi;
+# note that this rate has not been corrected for aperture loss ($aper_corr)
+# that will be done just before printing
+    $rate += $wi*($si - $bi)/$ti;
+# sum square of error
+# note that we use actual observed counts (s_i) instead of predicted (b_i)
+# use 1 instead of s_i if s_i not positive
+# starting 2007-02-08 include uncertainty due to counts in background (bierr)
+    $bierr=$bi*$ratio; # (=bkg_cnts*ratio*ratio)
+    if($si <= 0.){
+      $rate_err += $wi*$wi*(1.0+$bierr)/$ti/$ti;
+    } else {
+      $rate_err += $wi*$wi*($si+$bierr)/$ti/$ti;
+    }
+    $rate_comp += $wi*$predi;
+    $sum_rt += $predi * $ti;
+    $sum_b  += $bi;
+# printf "rate,err,comp: %8.1f %8.1f %8.1f\n",$rate,$err,$rate_comp; 
+  } # close unless($ti
+  $tmp1=$rate/$rate_comp*$aper_corr;
+  $tmp2=sqrt($rate_err)/$rate_comp*$aper_corr;
+  $tmp3=&calc_mag($tmp1,20.0);
+# ($tmp4 * sum(ti)) is the weight factor for current rate
+# it could be used for summing different filters
+  $tmp4=$sum_rt/$sum_b;
+# this prints wtd rate summed over all exposures so far, err, mag, and wt
+  printf     "%6.3f %6.3f %5.2f %5.3f ",$tmp1,$tmp2,$tmp3,$tmp4;
+  printf RPT "%6.3f %6.3f %5.2f %5.3f ",$tmp1,$tmp2,$tmp3,$tmp4;
+#  printf "%6.1f %6.1f %6.3f ",$sum_rt,$sum_b,$predi;
+#  printf "%6.3f %6.3f ",$predi,$wi;
+#  printf RPT "%6.3f %6.3f ",$predi,$wi;
+
+			unless($noplot){
+# $dt2 is half of the elapsed time for the exposure
+			  if(defined($telapse[$next])){
+			    $dt2=$telapse[$next]/2.0;
+			  } else {
+			    $dt2=$dt/2.0;
+			  }
+			  $t1+=$dt2; # correct MET to center of time window
+			  $t2+=$dt2;
+#			  $plotted=1;
+			  $tmp1=$t2+$dt2;
+			  if(defined($xmax)){
+			    if($tmp1 > $xmax){$xmax=$tmp1;}
+			  } else {
+			    $xmax=$tmp1;
+			  }
+			  $tmp1=$t2-$dt2;
+			  if($tmp1 < 0.1){print "tmp1: $tmp1\n";}
+			  if(defined($xmin)){
+			    if($tmp1 < $xmin){$xmin=$tmp1;}
+			  } else {
+			    $xmin=$tmp1;
+			  }
+# write an entry to the plot file
+#  printf PLT "%9d %6d %3d %6.3f %6.3f \n",$t1,$t2,$dt2,$net,$net_sig;
+# starting 2007-01-09 save the data points
+			  push(@t1_buf,$t1); # center time in MET
+			  push(@t2_buf,$t2); # center time since trigger
+			  push(@dt_buf,$dt2); # half width
+			  push(@dt_exp,$dt); # exposure time
+			  push(@net_buf,$net);
+			  push(@net_sig_buf,$net_sig);
+			} # close unless($noplot
+#			print "set prev exp to new exp $new_exp\n";
+		    } # close if($t2 > $tmin
+		   } # close if(defined($new_exp
+		   printf     "\n";
+		   printf RPT "\n";
+		   unless($nocoinc || $corr_src > 0.95){
+printf RPT "above line uses coinc_corr_src: %6.3f corr_bkg: %6.3f\n",
+  $corr_src,$corr_bkg;
+printf     "above line uses coinc_corr_src: %6.3f corr_bkg: %6.3f\n",
+  $corr_src,$corr_bkg
+		   }
+		  } # close if(defined($src_cnts)
+        } # close for($next
+	} # close if($ret
+
+# ======== end loop thru each exposure
+
+	printf RPT "    Sum: %30.1f %14.1f (est. in src region)\n",$sum_cnts,$sum_bkg;
+	printf     "    Sum: %30.1f %14.1f (est. in src region)\n",$sum_cnts,$sum_bkg;
+
+# calculate weighted rate
+	($wt_rate,$wt_err,$rate_comp,$msg)=&wt_calc(\@w_pred,\@w_src,\@w_bkg,\@w_exp);
+	if($msg){
+	  print LOG "sub wt_calc failed for $fn because $msg\n";
+	  print     "sub wt_calc failed for $fn because $msg\n";
+	} else {
+	  $tmp1=$wt_rate/$rate_comp*$aper_corr;
+	  $tmp2=$wt_err/$rate_comp*$aper_corr;
+	  $tmp3=&calc_mag($tmp1,20.0);
+# ($tmp4 * sum(ti)) is the weight factor for current rate
+# it could be used for summing different filters
+#  $tmp4=$sum_rt/$sum_b;
+	  $tmp4=$tmp1/$tmp2;
+	  printf 
+"Total wtd_rate (for all exposures so far): %6.3f +/-%6.3f snr: %4.1f mag: %5.2f\n",
+  $tmp1,$tmp2,$tmp4,$tmp3;
+	  printf RPT 
+"Total wtd_rate (for all exposures so far): %6.3f +/-%6.3f snr: %4.1f mag: %5.2f\n",
+  $tmp1,$tmp2,$tmp4,$tmp3;
+	}
+
+# read data for next file
+
+	$filt_next=undef;
+	unless($ifile == $#sorted_files){
+	  $fn_next=$sorted_files[$ifile + 1];
+@ans=`ftlist $fn_next hk include='TSTART,TELAPSE,SEQPNUM,FILTER,EXPOSURE,DATE-OBS,ASPCORR' outfile=STDOUT`;
+	  $ret_parse=&parse_ftlist(\@ans,\@ext,\@exp,\@form,\@date,\@texp,\@filter,
+		\@aspcorr,\@seqpnum,\@tstart,\@telapse);
+	  $filt_next=$filter[0];
+print "filt_next: $filt_next\n";
+	}
+
+# plot the data for this filter if this is the last file and have data		
+	if($#t1_buf >= 0 && (!defined($filt_next) || ($filt_next ne $filt)) ){
+	  $ret=&process_plot($rebin,$snr_min,$t_ratio_max,$t_ratio_min,$snr_diff,
+	    $snr_diff_orph,$plot_mag,\@net_buf,\@net_sig_buf,\@t2_buf,\@dt_buf,
+	    \@dt_exp,$ul,\$ymin,\$ymax,$fhplt,$fhlog,$fhrpt,$zp,\$filt,\$ny,
+	    \@ymin,\@ymax,\@ylabels,$ystep,\@t1_buf,$fn);
+	} # close if($$#t1_buf <=
+	} # close foreach $fn
+	
+      } # close if(defined($rerun_report
+
+# =========== end loop through files ========================
+
+	print "\n";
+	print RPT "\n";
+
+# ========= section for writing plot files ==================
+
+	unless($noplot){
+# experience shows that:
+# 1) plot visible and UV colors separately
+# 2) use log for x
+# 3) use log for y; y-scale should be 0.006 to 0.99En to avoid overwriting
+
+# determine the y-axis scale for this plot
+	  $j=0;
+	  print PLT "!\nfont roman\nlw 4.0\ncs 1.2\n";
+	  print PLT "xaxis 2\n";
+	  print PLT "color 2 on 8\n";
+	  print PLT "color 1 on 10\n";
+	  print PLT "color off 1,3,5,7,9,11,13,15\n";
+	  print PLT "label x t - BAT trigger time (MET \= $t0)\n";
+	  print PLT "time off\n";
+	  print PLT "plot vertical\n";
+	  if($plot_mag){
+	    print PLT "log y off\n"; # use linear for y axes for mag 
+	  } else {
+	    print PLT "log y on\n"; # use log for y axes for cps
+	  }
+	  for ($i=2;$i<=$#ylabels;$i+=$ystep){
+# eliminate UV colors for visible file
+	    if($j == 1 && $ylabels[$i] =~ /^UV/){
+	      print PLT "color off $i\n";
+	      next;
+	    }
+# eliminate visible colors for UV file
+	    if($j == 2 && !($ylabels[$i] =~ /^UV/)){
+	      print PLT "color off $i\n";
+	      next;
+	    }
+	    if(defined($ylabels[$i])){
+	      if($plot_mag){
+	        print PLT "label y$i $ylabels[$i] mag\n";
+	      } else {
+	        print PLT "label y$i $ylabels[$i] cps\n";
+	      }
+	    }
+	    if(defined($ymin[$i]) && defined($ymax[$i])){
+#	      print "ymin,ymax: $ymin[$i] $ymax[$i] $tmp1 $tmp2\n";
+	      if($plot_mag){print PLT "grid y$i 2 10\n";}
+	      print PLT "r y$i $ymin[$i] $ymax[$i]\n";
+	    } # close if(defined($ymin[$i]
+#	    unless($plot_mag){printf PLT "upper %5.2f on %d\n",$ul,$i;}
+	  } # close for ($i=2
+
+# determine the x-axis scale for this plot
+	  if(defined($xmax) && defined($xmin)){
+	    print RPT "The data range from T+$xmin to T+$xmax\n\n";
+	    print     "The data range from T+$xmin to T+$xmax\n";
+# make log x axis
+	    print PLT "log x on\n";
+	    ($fract,$whole)=&log_split($xmin);	    
+# check that log_split returns valid numbers
+# if it fails, then let qdp define x-axis on it own
+	    unless(defined($fract) && defined($whole)){
+	      print LOG "failed to log_split xmin of $xmin\n";
+	      print     "failed to log_split xmin of $xmin\n";
+	    } else {
+# for xmin, use either 1.0 or 3.0 times next lowest 10**n
+	      if($fract < 0.5){
+	        $tmp1=10**$whole;
+	      } else {
+	        $tmp1=3.0*(10**$whole);
+	      }
+# for xmax, use either 3 or 10 time next lowest 10**n
+	      ($fract,$whole)=&log_split($xmax);
+	      unless(defined($fract) && defined($whole)){
+	        print LOG "failed to log_split xmax of $xmax\n";
+		print     "failed to log_split xmax of $xmax\n";
+	      } else {
+	        if($fract > 0.4){
+	          $tmp2=10**(1.0 + $whole);
+	        } else {
+	          $tmp2=3.0*(10**$whole);
+		}
+	      }
+#	    print "xmin,xmax: $xmin $xmax $tmp1 $tmp2\n";
+	      print PLT "r x $tmp1 $tmp2\n";
+	    } # close unless(defined($fract
+	  } else {
+	    print PLT "r x\n";
+	  } # close if(defined($xmax
+# print title
+	  $title="Swift/UVOT";
+	  if(defined($grb_name)){$title .= " $grb_name";}
+	  if(defined($targid)){$title .= " Target ID $targid";}
+	  if($seg_text){$title .= " Segments $seg_text";}
+	  print PLT "label t $title\n";
+	  print PLT "hardcopy $giffile[$j]\/gif\n";
+	  print PLT "hardcopy $psfile[$j]\/cps\n";
+	  print PLT "exit\n";
+	  close(PLT);
+	  print "The plot file is $wrk_dir/$pltfile[$j]\n";
+	  @ans=`qdp $pltfile[$j]`;
+	  if(-e $giffile[$j]){
+	    print "Wrote $giffile[$j]\n";
+	    print RPT "Wrote $giffile[$j]\n";
+	  } else {
+	  }
+	  if(-e $psfile[$j]){
+	    print "Wrote $psfile[$j]\n";
+	    print RPT "Wrote $psfile[$j]\n";
+	  } else {
+	  }
+	  
+# ----- read plotfile and create files for visible and UV filters
+	  if(open(PLT,$pltfile[0])){
+	    if(open(PLTOUT,">$pltfile[1]") && open(PLTOUT1,">$pltfile[2]")){
+	      @ans=();
+	      @uv_list=();
+	      @vis_list=();
+	      while(<PLT>){
+	        push(@ans,$_);
+		if(/label y(\d\d?)\s+(\S+)\s+/){
+		    $i=$1;
+		    $j=$2;
+		    if(($j =~ /M2/) || ($j =~ /W1/) || ($j =~ /W2/)){
+		      push(@uv_list,$i);
+# print "push $i onto uv_list\n";
+		    } else {
+		      push(@vis_list,$i);
+# print "push $i onto vis_list\n";
+		    }
+		} # close if(/label
+	      } # close while
+	      foreach (@ans){
+	        if(/^hardcopy/){
+		  s/UT/UT_vis/;
+		  print PLTOUT $_;
+		  s/UT_vis/UT_uv/;
+		  print PLTOUT1 $_;
+		  next;
+		} elsif(/^color off/i){
+# turn UV colors off for visible file
+		  for ($i=0;$i<=$#uv_list;$i++){
+		    if($i){
+		      print PLTOUT " $uv_list[$i]";
+		    } else {
+		      print PLTOUT "color off $uv_list[$i]";
+		    }
+		    if($i == $#uv_list){print PLTOUT "\n";}
+		  } # close for
+# turn visible colors off for UV file
+		  for ($i=0;$i<=$#vis_list;$i++){
+		    if($i){
+		      print PLTOUT1 " $vis_list[$i]";
+		    } else {
+		      print PLTOUT1 "color off $vis_list[$i]";
+		    }
+		    if($i == $#vis_list){print PLTOUT1 "\n";}
+		  } # close for
+		} # close if(/^hardcopy
+		print PLTOUT $_;
+		print PLTOUT1 $_;
+	      } # close foreach
+	      close(PLTOUT);
+	      close(PLTOUT1);
+	      print "Wrote $pltfile[1]\n";
+	      print "Wrote $pltfile[2]\n";
+	      print RPT "Wrote $pltfile[1]\n";
+	      print RPT "Wrote $pltfile[2]\n";
+# make .gif file for visible filters
+	      if($#vis_list >= 0){
+	        @ans=`qdp $pltfile[1]`;
+		print "Wrote $giffile[1]\n";
+		print RPT "Wrote $giffile[1]\n";
+		print "Wrote $psfile[1]\n";
+		print RPT "Wrote $psfile[1]\n";
+		
+	      }
+# make .gif file for UV filters
+	      if($#uv_list >= 0){
+	        @ans=`qdp $pltfile[2]`;
+		print "Wrote $giffile[2]\n";
+		print RPT "Wrote $giffile[2]\n";
+		print "Wrote $psfile[2]\n";
+		print RPT "Wrote $psfile[2]\n";
+	      }	      
+	    } # close if(open(PLTOUT,
+	  } # close if(open(PLT,$pltfile[0]
+	} # close unless($noplot
+
+# ========= end section for writing plot files ==================
+
+	print RPT "\nNormal end of uvot_fluxes.pl\n";
+# close RPT file
+	close(RPT) || warn "warning, unable to close $rptfile, $!\n";
+	print "\nThe processing report is $wrk_dir/$rptfile\n";
+	unless($nolog){print "The log file is $wrk_dir/$logfile\n";}
+#	unless($noplot){print "The plot file is $wrk_dir/$pltfile\n";}
+	
+# ========== copy to web ===============
+
+# this section has not been updated to deal with multiple segments
+# it should still work if use seq=xxxx with a segment of 0 (or 992)
+	
+	if($web){
+	 unless(defined($seq)){
+# try to contruct sequence number
+	   if(defined($targid) && $#segs == 0){
+	     $seq=$targid . $segs[0];
+print LOG "Produced sequence number of $seq for writing to web.\n";
+print     "Produced sequence number of $seq for writing to web.\n";
+	   }
+	 }
+# try again
+	 unless(defined($seq)){
+	   print "cannot write to web without valid sequence number.\n";
+	   print LOG "cannot write to web without valid sequence number.\n";
+	 } else {
+# die "quit for now";
+	  $fn_wiki="";
+	  $trig=substr($seq,2,6);
+	  $seg=substr($seq,8,3);
+	  unless((($trig >= 20000 && $trig < 30000) || $trig > 100000) && 
+	    ($seg == 0 || $seg == 992)){
+	    print "Invalid trigger or segment number: $trig $seg\n";
+	    print LOG "Invalid trigger or segment number: $trig $seg\n";
+	  } else {
+	  unless(open(RPT1,$rptfile)){
+	    print LOG "Quiting -- failed to open $rptfile\n";
+	    die "failed to open $rptfile";
+	  }
+	  @web_rpt=();
+	  $ret=0;
+	  while(<RPT1>){
+	    if(/^Ext/){
+	      unless($ret){
+	        push(@web_rpt,"<pre>\n");
+	        $ret=1;
+	      }
+	    }
+	    push(@web_rpt,$_);
+	  }
+	  if($ret){push(@web_rpt,"</pre>\n");}
+	  close(RPT1);
+$web_dir="/local/data/khamseen4/marshall/swift/uvot_attach";
+# create directory if needed
+	  $trig_dir="$web_dir/$trig";
+	  unless(-d $trig_dir){
+	    system("mkdir $trig_dir");
+	    unless(-d $trig_dir){
+	      print LOG "Quitting failed to create directory $trig_dir\n";
+	      die "failed to create directory $trig_dir";
+	    }
+	    print "created directory $trig_dir\n";
+	  }
+	  $ret=&uvot_write_html(\@web_rpt,$trig,"lc0",undef,$trig_dir);
+	  if($ret == 1){
+# copy gif files to web directory
+print "copy gif files to web directory\n";
+	    if(-e $giffile[0]){
+	      system("cp $giffile[0] $trig_dir/${trig}_lc_all.gif");
+	      if($update_wiki){
+	        $fn_wiki="uvot_lc.gif";
+		$fn_fc_wiki="fc_image.jpg";
+		system("cp $giffile[0] $trig_dir/$fn_wiki");
+# copy the first finding genie image to standard name unless if already exists
+# this is to limit the number of transfers
+		if(-r "$trig_dir/$fn_fc_wiki"){
+print "$fn_fc_wiki already exists.\n";
+		  $fn_fc_wiki="";
+		} else {
+		  $fn_genie="${trig}_fc1_genie.jpg";
+		  if(-r "$trig_dir/$fn_genie"){
+# this could be made more robust by searching for other genie images
+print "copy $fn_genie to $fn_fc_wiki\n";
+		    system("cp $trig_dir/$fn_genie $trig_dir/$fn_fc_wiki");
+		  } else {
+		    $fn_fc_wiki="";
+print "could not find genie finding chart\n";
+		  }
+		}
+# we wait until after updating uvot web page before updating wiki
+	      } # close if($update_wiki
+	    } # close if(-e $giffile[0]
+	    if(-e $giffile[1]){
+	      system("cp $giffile[1] $trig_dir/${trig}_lc_vis.gif");
+	    }
+	    if(-e $giffile[2]){
+	      system("cp $giffile[2] $trig_dir/${trig}_lc_uv.gif");
+	    }
+# cd to web directory so that tar will work
+	    chdir ($web_dir) || die "could not cd to $wrk_dir";
+	    $web_host="heasarcdev.gsfc.nasa.gov";
+	    $web_user="marshall";
+$home="/usr/local/web_chroot.prod/.www_mountpnt/www/htdocs/docs/swift/uvot_tdrss";	    
+$tmp="tar cfp - $trig \| ssh $web_user\@$web_host \"(cd $home; tar xfp -)\"";
+	    print "copying files to the web\n";
+	    print LOG "copying files to the web\n";
+	    system("$tmp");
+	    $ret1=$?; # grab status
+	    if($ret1){
+	      print "tar to web returned status of $ret1";
+	      print LOG "tar to web returned status of $ret1";
+	    }
+# update wiki
+	    if($update_wiki && $fn_wiki){
+	      unless(chdir($trig_dir)){
+	        print LOG "failed to cd to $trig_dir -- cannot update wiki\n";
+	      } else {
+#	        $fn_wiki="";
+	        $ret=&update_burst_wiki($fn_wiki,$fn_fc_wiki,$grb_name,$fhlog);
+		if($ret){print LOG "updating wiki failed with message $ret\n";}
+		chdir("..") || print LOG "failed to cd to ..\n";
+	      }
+	    }
+	  } else {
+	    print "failure -- uvot_write_html returned $ret\n";
+	    print LOG "failure -- uvot_write_html returned $ret\n";
+	  } # close if($ret == 1
+	  } # close unless($trig > 100000
+	 } #close unless(defined($seq
+	} # close if($web
+	
+	
+	close(LOG);
+
+# =============================================
+# ========= subroutines follow =============
+
+# by_filter sorts files in filter, then sequence order
+# calc_mag calculates magnitude given zero point and count rate
+# calc_ul calculates the upper limit for a source detection
+# coinc_loss calculates correction for coincidence loss
+# fix_lc write data to qdp file after adjusting upper limits
+# get_t0 determines met of trigger
+# log_split  splits number into fract*(10**whole)
+# make_5as_reg produces region file with 5 arc sec radius
+# mage_segments parses list of segments
+# make_yscale determines ymin & ymax for light curve
+# parse_ftlist parse output of ftlist
+# process_region processes the image data for specified region
+# read_ximage_ans reads output from ximage and grabs counts and pixels
+# write_ximage_script writes a file to use as an ximage script
+# wt_calc does calculations for computing weight rate and error
+# y_adjust determines y-min and y-max for plotting (no longer used)
+#
+# help provides documentation
+#
+# =============================================
+
+# ================ by_filter ============
+
+  sub by_filter{
+
+# this sub sorts files by filter from red to blue
+# and starting 2007-01-31 then by sequence number
+# need to deal with seg=992
+
+my ($tmp1,$tmp2,$tmp3,%value);
+%value = qw(w2 7 m2 6 w1 5 uu 4 bb 3 vv 2 wh 1);
+
+$tmp1=$a;
+$tmp3=1; # $tmp3 used to make 992 < 0
+if($tmp1 =~ /sw(\d{8})(\d{3})u(\S\S)_sk\.img/){
+# $1 has target ID, $2 has segment no., and $3 has filter
+  if($2 > 989){$tmp3=0;}
+  if(defined($value{$3})){$tmp1=$value{$3} . $1 . $tmp3 . $2;}
+}
+$tmp2=$b;
+$tmp3=1;
+if($tmp2 =~ /sw(\d{8})(\d{3})u(\S\S)_sk\.img/){
+  if($2 > 989){$tmp3=0;}
+  if(defined($value{$3})){$tmp2=$value{$3} . $1 . $tmp3 . $2;}
+}
+# note that we are sorting from high to low
+if($tmp1 lt $tmp2){
+#  print "$a $tmp1 lt $b $tmp2\n";
+  -1;
+} elsif ($tmp1 gt $tmp2) {
+#  print "$a $tmp1 gt $b $tmp2\n";
+  1;
+} else {
+  0;
+}
+}
+	  
+# ================ calc_mag ============
+
+  sub calc_mag{
+
+# this sub calculates the mag corresponding to count rate
+
+# returns mag in format [d]d.dd
+# if problem or very low rate, returns 99.0
+
+my ($mag,$rate,$zp);
+
+unless($#_ == 1){return 99.0;}
+
+$rate=$_[0]; # rate in cps
+$zp=$_[1]; # zero point for filter (mag for count rate of 1.0)
+
+if($rate <= 0.){return 99.0;}
+$mag=$zp-log($rate)/2.302585/0.4;
+if($mag > 99.0){return 99.0;}
+$mag=sprintf("%4.2f",$mag);
+}
+
+# ================ calc_ul ============
+
+  sub calc_ul{
+
+# this sub calculates the upper limit for a source detection given
+# a background rate
+
+# this sub is no longer used and will eventually disappear
+
+# returns upper limit in mag or undef for a problem
+my ($area,$backg,$dt,$n,$radius,$rate,$sigma,$ul,$zp);
+
+unless($#_ == 4){return undef;}
+
+$backg=$_[0]; # background in cnts/sec/arc-sec-sq
+$dt=$_[1]; # exposure in sec
+$radius=$_[2]; # radius for detection region in arc sec
+$sigma=$_[3]; # confidence level for upper limit
+$zp=$_[4]; # zero point for filter (mag for count rate of 1.0)
+
+# compute number of counts in detection region
+if($dt <= 0.0 || $radius <= 0.0 || $sigma <= 0.0){return undef;}
+$area=3.14159265*$radius*$radius;
+$n=$backg*$area*$dt;
+if($n < 1){$n=1;}
+$rate=sqrt($n)*$sigma/$dt;
+$ul=$zp-log($rate)/2.302585/0.4; # convert to mag using ln
+print "n: $n rate: $rate ul: $ul\n";
+$ul;
+}
+
+# ============= coinc_loss ==============
+
+  sub coinc_loss {
+
+# this sub calculates the correction factor for the exposure time
+# due to coincidence loss using a simple dead time model with correction
+
+# usage: $corr=&coinc_loss($src_cnts,$dt,$frametime,$fhlog);
+
+# mod 2007-01-22 to update formuala
+# mod 2007-01-23 to return 1.0 if cnts, exp or ft <= 0
+# mod 2007-02-08 to divide theoretical value by polynomial (instead of mult)
+
+my ($cnew,$df,$raw,$tmp,$tmp1,$x,$x2);
+
+$tmp=1.0;
+unless ($#_ == 3){return $tmp;}
+
+my $cnts = $_[0]; # counts
+my $exp = $_[1]; # exposure time in sec (already corrected for dead time)
+my $ft = $_[2]; # frametime
+my $fhlog = $_[3]; # file handle for LOG
+
+# print "cnts: $cnts exp: $exp frame: $ft\n";
+  if($cnts <= 0.0 || $exp <= 0.0 || $ft <= 0.0){
+    print "cnts: $cnts exp: $exp frame: $ft\n";
+    return $tmp;
+  }
+  $df=0.01577; # dead time
+  $raw=$cnts*(1.0 - $df)/$exp; # un-do dead time correction
+  $x=$raw*$ft;
+  $x2=$x*$x;
+# $cnew is the corrected count rate
+  $cnew=(-log(1.0 - $x)/($ft*(1.0 - $df))) /
+  	(1.0 - 0.0663428*$x + 0.0900434*$x2 - 0.0237695*$x*$x2
+  	  - 0.0336789*$x2*$x2);
+# $tmp is the ratio of the old count rate to the corrected count rate
+# both count rates have been corrected for dead time
+# we expect $tmp to be slightly less than 1.0
+# the exposure needs to be multiplied by $tmp to correct for coinc loss
+  if($cnew <= 0.0){
+    print "**** Warning -- invalid coinc. correction result of $cnew\n";
+    print $fhlog "**** Warning -- invalid coinc. correction result of $cnew\n";
+    return 1.0;
+  } else {
+    $tmp = ($cnts/$exp)/$cnew;
+  }
+  if($tmp < 0.0){return 1.0;}
+#  print "raw: $raw x: $x cnew: $cnew corr: $tmp\n";
+  $tmp;
+}
+
+# ============= fix_lc ==============
+
+  sub fix_lc {
+  
+# this routine writes the data points to the plot file
+
+# input is pointers to x, x_err, y, and y_err arrays
+#    upper limit, ymin and ymax of plot, and output device
+# it returns empty string for success
+# it returns error message for problem
+
+# if $zp is defined, then
+#  it converts rates to magnitdues
+#  it computes y-range (ymin, ymax) for plot
+
+# it adjusts data values to handle upper limits
+
+# usage is:
+#  $ret=&fix_lc($x_pnt,$x_err_pnt,$y_pnt,$y_err_pnt,$ul,\$ymin,\$ymax,$fhplt,$zp);
+
+unless ($#_ == 9){return "invalid number of arguments";}
+
+my $pt = $_[0]; # pointer to MET
+my $px = $_[1]; # pointer to x-data
+my $pxerr = $_[2]; # pointer to x-error
+my $py = $_[3]; # pointer to y-data
+my $pyerr = $_[4]; # pointer to y-error
+my $ul=$_[5];
+my $pymin=$_[6]; # point to ymin (input for linear, output for mag)
+my $pymax=$_[7]; # point to ymax (input for linear, output for mag)
+my $fhplt=$_[8];
+my $zp=$_[9]; # zp if plotting mags
+
+my ($err,$errm,$errold,$errp,$i);
+my ($mag,$mag_errm,$mag_errp,$magm,$magp,$snr);
+my ($tmp,$tmp1,$tmp2,$y,$ymax,$ymin,$yold);
+
+unless($#$px == $#$pxerr && $#$px == $#$py && $#$px == $#$pyerr){
+  return "inconsistent array sizes";
+}
+
+print $fhplt "No No No No No No\n";
+
+$snr=2.0; # plot 2-sigma upper limits
+# adjust upper limit to be at least 1-sigma for linear 1.5 sigma for mag
+unless($ul > 0.001){$ul=1.0;}
+if(defined($zp)){
+  unless($ul > 1.5){$ul=1.5;}
+}
+
+$ymin=100.0; # initial value for ymin
+$ymax=0.0; # initial value for ymax
+
+# ----- loop thru data points
+for ($i=0;$i<=$#$px;$i++){
+# check for upper limit
+  $y=$$py[$i];
+  $err=$$pyerr[$i];
+  
+  if(($y - ($ul*$err)) < 0.0){
+# have upper limit
+    $yold=$y;
+    $errold=$err;
+    if(defined($zp)){
+# plot magnitudes
+# set ul to be $snr*err (+value if positive)
+      $y=$snr*$errold;
+      if($yold > 0.){$y+=$yold;}
+# plot the ul so that data point is ul and unc goes to 25th mag
+      $mag=&calc_mag($y,$zp);
+      $mag_errp=25.0 - $mag;
+      if($mag_errp < 1.0){$mag_errp = 1.0;}
+      $mag_errm = 0.;
+      if($ymin > $mag){$ymin=$mag;}
+      if($ymax < ($mag + 1.0)){$ymax=$mag + 1.0;}
+      printf $fhplt "%9d %6d %5d %6.3f %6.3f %6.3f\n",
+        $$pt[$i],$$px[$i],$$pxerr[$i],$mag,$mag_errp,$mag_errm;
+    } else {
+# plot rate
+# fix by setting value to upper limit, error to value/2
+      $y=$snr*$errold;
+      if($y > 0.){$y+=$yold;}
+      $errm=-$y/2.0;
+      $errp=0.;
+#      if($err < $$pymin*1.2){$err=$$pymin*1.2;}
+#      $y=$err/3.0;
+      printf $fhplt "%9d %6d %5d %7.4f %7.4f %8.4f \! %7.4f %7.4f\n",
+        $$pt[$i],$$px[$i],$$pxerr[$i],$y,$errp,$errm,$yold,$errold;
+# for upper limits, use top of symbol for ymax, 1/3 of top for ymin
+      $tmp=$y + $errp;
+      if($tmp > $ymax){$ymax=$tmp;}
+      if(($tmp/3.0) < $ymin){$ymin=$tmp/3.0;}	
+    }
+  } else {
+# plot data point that is not an upper limit
+    if(defined($zp)){
+      $mag=&calc_mag($y,$zp);
+      $magm=&calc_mag($y+$err,$zp);
+      $magp=&calc_mag($y-$err,$zp);
+      $mag_errm=$magm-$mag;
+      $mag_errp=$magp-$mag;
+      if($ymin > ($magm)){$ymin=$magm;}
+      if($ymax < ($magp)){$ymax=$magp;}
+      printf $fhplt "%9d %6d %5d %6.3f %6.3f %7.3f\n",
+        $$pt[$i],$$px[$i],$$pxerr[$i],$mag,$mag_errp,$mag_errm;
+    } else {
+      $errm=-$err;
+      printf $fhplt "%9d %6d %5d %7.4f %7.4f %8.4f\n",
+        $$pt[$i],$$px[$i],$$pxerr[$i],$y,$err,$errm;
+      $tmp=$y + $err;
+      if($tmp > $ymax){$ymax=$tmp;}
+      $tmp=$y - $err;
+      if($tmp < $ymin){$ymin=$tmp;}
+    }
+  } # close if(($y
+} # close for
+
+# set yscale (range) to make plots legible
+
+if(defined($zp)){ 
+# plotting magnitudes on linear scale
+# goal is to avoid integer values and to make range an even integer
+# we will use grid yn 2 10 later
+  $ymin=int($ymin - 0.5) - 0.2;
+  $ymax=int($ymax + 1.5) - 0.2;
+  if($ymin > 22.5){$ymin=22.8;}
+  if($ymax > 24.5){$ymax=24.8;}
+  $n=int($ymax - $ymin + 0.5);
+  if($n - 2*int($n/2)){$ymax+=1.0;} # make range an even integer
+  if(($ymax - $ymin) < 2.0){$ymax+=1.0;}
+  
+} else {
+
+# plotting rate on log scale
+# add some slack
+	      $ymax*=1.33;
+	      $ymin*=0.75;
+# ymin is never less than 0.00011
+	      $tmp=$ymax;
+	      if($tmp < 0.0025){
+		$tmp2=  0.029;
+		$tmp1=  0.00011;
+	      } else {
+# set ymax ($tmp2) for plot
+# use either 2.9 or 9.9 time next lowest 10**n (with a little margin)
+	        ($fract,$whole)=&log_split($tmp);
+		if($fract > 0.4){
+	          $tmp2=9.9*(10**($whole));
+		} else {
+		  $tmp2=2.9*(10**$whole);
+		}
+
+# set ymin ($tmp1) for plot
+# use larger of ymin or .00011
+		$tmp=$ymin;
+		if($tmp < 0.00012){
+		  $tmp1=  0.00011;
+		} else {
+		  ($fract,$whole)=&log_split($tmp);
+		  if($fract > 0.7){
+		    $tmp1=5.01*(10**($whole));
+		  } else {
+		    $tmp1=1.01*(10**$whole);
+		  }
+		}
+	      } # close if($tmp < 0.0025
+	      $ymin=$tmp1;
+	      $ymax=$tmp2;
+}
+
+# store ymin and ymax
+$$pymin=$ymin;
+$$pymax=$ymax;
+
+""; # return empty string for success
+}
+
+# ================ get image files ===================
+
+sub get_img_files {
+
+# gets UVOT image files from SDC QL ftp site and stores them in
+# current directory
+
+# mod 12-feb-2005 to add parameters $usex,$skip_renamed
+# mod 22-apr-2005 to be able to use HEASARC if $archive set
+#   heasarc has different directory structure
+#   for example
+#   heasarc: swift/data/obs/<month>/<seqno>/auxil/<file>
+#   QL:      sw<seqno>.<vrs>/auxil/<file>
+# mod 2005-08-19 to fix problem that caused us to 
+#   download the same file multiple times from the archive
+# mod 13-oct-2005 to be able to examine SDC re-processed data
+#   it needs home="archive/test", prefix="st"
+#   it also has an extra "/data" in the directory name
+#   it is identified by ftp_site =~ "sdc_repro"
+#     which causes $test to be set to 2
+# previously set up to handle test data
+#   it is flagged by ftp_site =~ test
+#     (when this is detected $test is set to 1)
+#   it uses ftp_replace instead of ftp
+#     (ftp_replace has the same interface, but access a directory)
+#   it has prefix="st", home=$archive_subidr, and an extra /data
+
+  my($pobs) = $_[0];
+  my($pvers) = $_[1]; # filled in by this sub
+  my($prenam) = $_[2];
+  my($psubdirs) = $_[3];
+  my($pglobs) = $_[4];
+  my($pvols) = $_[5];
+  my($host) = $_[6]; # used for ftp access
+  my($user) = $_[7];
+  my($password) = $_[8];
+  my($fhlog) = $_[9]; # log file
+  my $usex = 0;
+  if($#_ >= 10){$usex = $_[10]}; # if set, use existing files
+  my $skip_renamed = 0;
+  if($#_ >= 11){$skip_renamed = $_[11]}; # if set, do not look for re-named sequences
+  my ($get_xrt) = 0;
+  if($#_ >= 12){$get_xrt = $_[12]}; # if set, get xrt pci data
+  my ($get_uvot) = 0;
+  if($#_ >= 13){$get_uvot = $_[13]}; # if set, get uvot *_rw.img data
+  my ($ftp_site) = "";
+# ftp_site is only used to determine structure of data directories
+  if($#_ >= 14){$ftp_site = $_[14]}; 
+  my ($archive_subdir) = "2005_08";
+  if($#_ >= 15){$archive_subdir = $_[15]}; # set subdirectory that HEASARC uses
+  my ($archive_subdir_alt) = "";
+# set alternate subdirectory that HEASARC uses
+  if($#_ >= 16){$archive_subdir_alt = $_[16]}; 
+
+# $pobs is a pointer to an array of obsids
+#	this array is input to this sub
+# $pvers is a pointer to an array of obsid versions
+#	this array is filled in by this sub
+# $prenam is a pointer to a assoc array that contains
+#	pointers to anonymous arrays of segment numbers > 255
+#	the keys are target IDs
+# $psubdirs is a pointer to an array of subdirectories to search for data volume
+# $pglobs is a pointer to an array of globs to use to search for files
+# $pvols is a pointer to an assoc array of pointers to anon arrays with answers
+
+  my ($archive,$dir,$dir1,$dir_all,$f,$f0,$f1,$fnid,$ftp,$globi);
+  my ($home,$home1,$home_alt,$i,$i1,$id,$id1,$key);
+  my ($lastdir,$lastdir0,$n,$pnt,$prefix,$pvi,$ret,$subdiri,$seg,$sequence);
+  my ($targID,$test,$val,$vol,$vrs,$vrsmax);
+  my (@dirs,@tmpvol,%version);
+
+  $test=0;
+  $archive=0;
+  $home="";
+  $prefix="sw";
+  if($ftp_site =~ /heasarc/i){
+# this is used for data in HEASARC
+    $archive=1;
+    $home="/swift/data/obs/$archive_subdir";
+    if($archive_subdir_alt){
+      $home_alt="/swift/data/obs/$archive_subdir_alt";
+    } else {
+      $home_alt="";
+    }
+  } elsif ($ftp_site =~ /test/i) {
+# this is used for test data in a local directory
+    $test=1;
+    $prefix="st";
+  } elsif ($ftp_site =~ /repro/i) {
+# this is used for re-processed data at the SDC
+    $test=2;
+    $prefix="st";
+    $home="archive/test";
+  } else {
+# default is SDC QL data
+  }
+  print $fhlog "home: $home prefix: $prefix test:$test\n";
+  print        "home: $home prefix: $prefix test:$test\n";
+  $n = 0; # counts files transfered
+
+  if($test==1){
+# ftp_replace access a local directory with ftp-like methods
+   $ftp = ftp_replace->new();
+   $home=$archive_subdir;
+  } else {
+   print "Connecting to $host\n";
+# I am setting a long timeout because
+# ftp->dir is taking a long time because of the large number of directories
+   $ftp = Net::FTP->new($host, Timeout => 500);
+#  if (!$ftp) { # this is hanging, try
+   unless(defined($ftp)){
+    print "ftp failed to connect with error $@\n";
+    return "$n Could not create ftp object to host $host";
+   } else {
+    print $fhlog "Connected to $host\n";
+    print "attempt login as $user\n";
+    $ftp->login($user, $password)
+        or return "$n Could not login to $host as $user";
+   }
+   print "logged in as $user\n";
+  
+#  if($archive){
+   if($home){
+     $ftp->cwd("/$home") || return "$n Could not cd to /$home";
+   }
+   print $fhlog "ftp home directory is $home\n";
+   print        "ftp home directory is $home\n";
+  } # close if($test
+# %version is a hash array whose keys are obsids
+#   and values are the version for that obsid
+# it is used to avoid downloading the same file multiple times
+  %version=();
+  
+# ----- go through the list of obs IDs -----
+
+  for ($i=0;$i<=$#$pobs;$i++) {
+    $id=$$pobs[$i];
+
+print "Looking for observation $id\n";
+
+# check to see if we have already done this obs id
+    if(defined($version{$id})){
+      $$pvers[$i]=$version{$id};
+# print "*** Found snapshot $i with previous id $id\n";
+      next;
+    }
+    $$pvers[$i]=-1;
+
+# now get the data from the obsid
+
+   unless($ftp->cwd("/$home")){
+          print $fhlog "Could not change to directory /$home\n ";
+	  return "$n Could not cd to /$home";
+   }
+
+# there may be multiple directories for the same obs ID
+# we will take the one with the latest version number
+# construct directory search
+
+# I'm not sure that this works properly for test=1 or =2
+
+   if($archive){
+     $lastdir=$id;
+# there are no versions in the archive, but we want
+# to set it so that we don't go after the same data multiple times
+# added following 2 lines 2005-08-19
+     $$pvers[$i]="";
+     $version{$id}="";
+   } else {
+     if($test){
+# print "do dir on $home/st*\n";
+       @dirs = $ftp->dir("/$home/st*","-d");
+     } else {
+       @dirs = $ftp->dir("/$home/$prefix${id}*");
+     }
+# search for last one
+     $lastdir="";
+     foreach $dir (@dirs){
+# print "$dir\n";
+	if($dir =~ /(s[tw]$id\.\d{3})/){
+	  if($1 gt $lastdir){
+	    $lastdir=$1;
+	    $vrs=substr($1,-3);
+	    $$pvers[$i]=$vrs;
+	    $version{$id}=$vrs;
+	  }
+	}
+      } # close foreach
+     } # close if($archive
+# print "lastdir: $lastdir\n";
+     unless($lastdir){
+       print $fhlog "Did not find a directory for $id\n";
+     } else {
+       $home1=$home;
+       if($archive && $home_alt){
+# check to see if we should use alternate subdir
+	 unless($ftp->cwd("/$home/$lastdir")){
+# try alternate
+	   if($ftp->cwd("/$home_alt/$lastdir")){
+# alternate subdir works - use it
+	     $home1=$home_alt;
+	     print $fhlog "Use $home_alt for $lastdir\n";
+	   }
+	 }
+# return to home directory
+	 unless($ftp->cwd("/$home1")){
+           print $fhlog "Could not change to directory /$home1\n ";
+	   return "$n Could not cd to /$home1";
+	 }
+       } # close if($archive
+       $lastdir0=$lastdir;
+       if($test){$lastdir="$lastdir/data";} # adjust directory structure
+ print "lastdir is $lastdir\n";
+
+# get UVOT image data
+      if($get_uvot){
+         unless($ftp->cwd("/$home1/$lastdir/uvot/image")){
+          print $fhlog "Could not change to directory ${lastdir}/uvot/image\n ";
+         } else {
+print "call getuvotimg\n";
+	  $n=&getuvotimg($id,$ftp,$fhlog,$usex,$prefix,"sk");
+	 }
+      } # close if($get_uvot
+     } # close unless($lastdir
+
+  } # close for ($i=0
+  $ftp->quit();
+#       or return "Could not quit ftp to $host";
+
+    return $n;
+  }
+
+# ================ get_t0 ============
+
+  sub get_t0 {
+
+my ($fn,$line,$t0,@tmp,$trig);
+unless($#_ == 0){return undef;}
+
+$fn=$_[0]; #
+
+# try to read trigger time from fits file
+	@tmp=`fkeyprint mode=no keynam=TRIGTIME infile=${fn}+1 outfile=STDOUT`;
+	$t0=undef;
+	foreach $line(@tmp){
+	  if($line =~ /^TRIGTIME=\s+(\S+)\s/){
+	      $t0=$1;
+print "Found t0 of $t0 from TRIGTIME\n";
+	      last;
+	  }
+	}
+# if that fails, try to find from target ID
+	unless(defined($t0)){
+	  @tmp=`fkeyprint mode=no keynam=TARG_ID infile=${fn}+1 outfile=STDOUT`;
+	  $trig=undef;
+	  foreach $line(@tmp){
+	    if($line =~ /^TARG_ID\s*=\s+(\S+)\s/){
+	      $trig=$1;
+	      ($t0,$date)=&find_trig_time($trig);
+	      if(defined($t0)){
+print "Found t0 of $t0 from trigger $trig\n";
+	      } else {
+print "Failed to find t0 for trigger $trig\n";
+	      }
+	      last;
+	    }
+	  }
+	} # close unless(defined($t0
+$t0;
+}
+
+# ============= log_split ==============
+
+  sub log_split {
+  
+# this routine splits number into fract*(10**whole)
+# fract should be >= 0
+# it returns (undef,undef) for invalid inputs
+
+# usage is: ($fract,$whole)=&log_split($val);
+unless ($#_ == 0){return (undef,undef);}
+ 
+my $val = $_[0]; # image file name
+
+my ($fract,$tmp,$whole);
+
+unless(defined($val)){return (undef,undef);}
+if($val <= 0.0){
+  return (undef,undef);
+} else {
+  $tmp=log($val)/2.30258509299405;
+  $whole=floor($tmp);
+  $fract=$tmp - $whole;
+}
+($fract,$whole);
+}
+
+# ============= make_5as_reg ==============
+
+  sub make_5as_reg {
+  
+# this routine reads src region file and writes new one with 5 as aperture
+
+# usage is: $ret=&make_5as_reg($src_reg,$src_reg_5as,$fhlog);
+
+
+unless ($#_ == 2){return "incorrect number of arguments";}
+ 
+my $src_reg = $_[0]; # old file name
+my $src_reg_5as = $_[1]; # new file name
+my $fhlog=$_[2]; # handle for log file
+
+my ($n); 
+
+  unless(-r $src_reg){return "cannot find/read source region $src_reg";}
+  unless(open(REG,"$src_reg")){return "cannot open source region $src_reg";}
+  unless(open(REG_NEW,">$src_reg_5as")){
+    close(REG);
+    return "cannot open new source region $src_reg_5as";
+  }
+  $n=0;
+  while(<REG>){
+    chomp;
+    if(/^(fk5\;cir.+\,.+\,)(.+)\)/){
+      print REG_NEW "${1}5.0\"\)$'\n";
+print "${1}5.0\"\)$'\n";
+      $n++;
+    } else {
+      print REG_NEW "$_\n";;
+    }
+  }
+  close(REG);
+  close(REG_NEW);
+  unless($n==1){return "format problem in make_5as_reg because n=$n";}
+  ""; # return empty string for success
+}
+
+# ============= make_segments ==============
+
+  sub make_segments {
+  
+# this routine splits string into valid segment numbers
+
+# input is pointers to y and y_err arrays
+# it returns error message of empty string for success
+
+unless ($#_ == 1){return "invalid number of arguments";}
+ 
+my $text = $_[0]; # string with segments
+my $p_segs = $_[1]; # pointer to array of segments
+
+my ($i,$seg,$wd,@words);
+
+  unless(defined($text) && $text){return "empty list of segments";}
+  
+  @$p_segs=();
+  @words=split(/\s+/,$text);
+  if($words[0] eq ""){shift(@words);}
+# for now accept only a list of individual segments
+  for ($i=0;$i<=$#words;$i++){
+    $wd=$words[$i];
+    unless($wd =~ /^\d{1,3}$/){
+      return "invalid segment of $wd";
+    } else {
+      $seg=sprintf("%03d",$wd);
+      push(@$p_segs,$seg);
+    }
+  } # close for
+  
+""; # return empty string for success
+
+}
+
+# ============= make_yscale ==============
+
+  sub make_yscale {
+  
+# this routine determines ymin & ymax for light curve
+
+# input is pointers to y and y_err arrays
+# it returns (ymin,ymax)
+# it returns (undef,undef) for invalid inputs
+
+unless ($#_ == 1){return (undef,undef);}
+ 
+my $py = $_[0]; # pointer to y-data
+my $perr = $_[1]; # pointer to y-error
+
+my ($fract,$net,$net_sig,$tmp,$tmp1,$tmp2,$whole,$ymax,$ymin);
+
+$ymin=undef;
+$ymax=undef;
+unless($#$py == $#$perr){return ($ymin,$ymax);}
+
+for ($i=0;$i<=$#$py;$i++){
+  $net=$$py[$i];
+  $net_sig=$$perr[$i];
+  $tmp1=2.0*$net_sig;
+  if($net > 0.){$tmp1+=$net;}
+# ymax is at least 2*sigma + max(0,value)
+  if(defined($ymax)){
+    if($tmp1 > $ymax){$ymax=$tmp1;}
+  } else {
+    $ymax=$tmp1;
+  }
+  $tmp1=$net-$net_sig;
+# limit ymin to be >= 0.1*$net if $net > 0
+  if($net > 0.0 && ($net_sig > 0.9*$net)){
+    $tmp1=0.1*$net;
+  }
+  if(defined($ymin)){
+    if($tmp1 < $ymin){
+      $ymin=$tmp1;
+# print "ymin: $ymin\n";
+    }
+  } else {
+    $ymin=$tmp1;
+# print "ymin: $ymin\n";
+  }
+}
+	    if(defined($ymin) && defined($ymax)){
+# ymin is never less than 0.0011
+	      $tmp=$ymax;
+	      if($tmp < 0.025){
+		$tmp2=  0.029;
+		$tmp1=  0.0011;
+	      } else {
+# set ymax ($tmp2) for plot
+# use either 2.9 or 9.9 time next lowest 10**n (with a little margin)
+	        ($fract,$whole)=&log_split(1.1*$tmp);
+		if($fract > 0.4){
+	          $tmp2=9.9*(10**($whole));
+		} else {
+		  $tmp2=2.9*(10**$whole);
+		}
+
+# set ymin ($tmp1) for plot
+# use larger of ymin or .0011
+		$tmp=$ymin;
+		if($tmp < 0.0012){
+		  $tmp1=  0.0011;
+		} else {
+		  ($fract,$whole)=&log_split(0.9*$tmp);
+		  if($fract > 0.7){
+		    $tmp1=5.01*(10**($whole));
+		  } else {
+		    $tmp1=1.01*(10**$whole);
+		  }
+		}
+	      } # close if($tmp < 0.025
+	      return ($tmp1,$tmp2);
+	    } else {
+	      return (undef,undef);
+	    } # close if(defined($ymin
+}
+
+# ============= parse_ftlist ==============
+
+  sub parse_ftlist{
+  
+unless ($#_ == 10){return "invalid number of arguments";}
+
+my $pans = $_[0]; # pointer to output from ftlist
+my $pext = $_[1]; # pointer to extension number
+my $pexp = $_[2]; # pointer to exposure id
+my $pform = $_[3]; # pointer to format (image/null)
+my $pdate = $_[4]; # pointer to date
+my $ptexp = $_[5]; # pointer to exposure time
+my $pfilt = $_[6]; # pointer to filter
+my $paspcorr = $_[7]; # pointer to aspect correction
+my $pseqpnum = $_[8]; # pointer to processing version number
+my $ptstart  = $_[9]; # pointer to start time
+my $ptelapse = $_[10]; # pointer to elapsed time
+
+my ($i,$id,$line,$n,$tmp,@words);
+
+	@$pext=();
+	@$pexp=();
+	@$pform=();
+	@$pdate=();
+	@$ptexp=();
+	@$pfilt=();
+	@$paspcorr=();
+	@$pseqpnum=();
+	@$ptstart=();
+	@$ptelapse=();
+
+	$n=-1;
+
+	for ($i=0;$i<=$#$pans;$i++){
+	  $line=$$pans[$i];
+# print $line;
+	  @words=split(/\s+/,$line);
+	  if($#words < 0){next;}
+	  if($words[0] eq "HDU"){
+# have a new extension
+	    $n++;
+	    $$pext[$n]=undef;
+	    $$pexp[$n]=undef;
+	    $$pform[$n]=undef;
+	    $$pdate[$n]=undef;
+	    $$ptexp[$n]=undef;
+	    $$pfilt[$n]=undef;
+	    $$paspcorr[$n]=undef;
+	    $$ptstart[$n]=undef;
+	    $$ptelapse[$n]=undef;
+	    if($#words > 0){
+	      if($words[1] =~ /^\d+$/){
+	        $$pext[$n]=$words[1] - 1;
+	      }
+	    }
+	    if($#words > 1){$$pexp[$n]=$words[2];}
+	    if($#words > 2){$$pform[$n]=$words[3];}
+# print "start $n\n";
+	  } elsif ($words[0] eq "DATE-OBS="){
+	    $tmp=$words[1];
+	    $tmp =~ s/\'//g;
+	    $$pdate[$n]=$tmp;
+	  } elsif ($words[0] eq "EXPOSURE="){
+	    $$ptexp[$n]=$words[1];
+	  } elsif ($words[0] eq "FILTER"){
+	    $tmp=$words[2];
+	    $tmp =~ s/\'//g;
+	    $$pfilt[$n]=$tmp;
+	  } elsif ($words[0] eq "ASPCORR"){
+	    $tmp=$words[2];
+	    $tmp =~ s/\'//g;
+	    $$paspcorr[$n]=$tmp;
+	  } elsif ($words[0] eq "SEQPNUM"){
+	    $tmp=$words[2];
+	    $tmp =~ s/\'//g;
+	    $$pseqpnum[$n]=$tmp;
+	  } elsif ($words[0] eq "TSTART"){
+	    $$ptstart[$n]=$words[2];
+# print "found TSTART of $words[2]\n";
+	  } elsif ($words[0] eq "TELAPSE"){
+	    $$ptelapse[$n]=$words[2];
+# print "found TELAPSE of $words[2]\n";
+	  }
+	} # close for
+	
+	return ""; # signals success
+}
+
+# ============= process_plot ==============
+
+  sub process_plot{
+  
+unless ($#_ == 26){return "invalid number of arguments";}
+
+my $rebin = $_[0]; # whether to rebin data
+my $snr_min = $_[1]; # min snr for rebinning
+my $t_ratio_max = $_[2]; # 
+my $t_ratio_min = $_[3]; # 
+my $snr_diff = $_[4]; # 
+my $snr_diff_orph = $_[5]; # 
+my $plot_mag = $_[6]; # 
+my $p_net_buf = $_[7]; # pointer array of net rate
+my $p_net_sig_buf = $_[8]; # pointer to error on net rate
+my $p_t2_buf  = $_[9]; # pointer to time 
+my $p_dt_buf = $_[10]; # pointer to time error
+my $p_dt_exp = $_[11]; # pointer to exposure
+my $ul = $_[12]; # parameter for deciding to plot upper limit
+my $p_ymin = $_[13]; # pointer to ymin of data
+my $p_ymax = $_[14]; # pointer to ymax of data
+my $fhplot = $_[15]; # file handle for PLT
+my $fhlog = $_[16]; # file handle for LOG
+my $fhrpt = $_[17]; # file handle for RPT
+my $zp = $_[18]; # zero point
+my $p_filt = $_[19]; # pointer to filter
+my $p_ny = $_[20];
+my $p_ymin_buf = $_[21];
+my $p_ymax_buf = $_[22];
+my $p_ylabels = $_[23];
+my $ystep = $_[24];
+my $p_t1_buf = $_[25];
+my $fn = $_[26];
+
+my ($i,$mag,$magerr,$ret,$t1,$t2,$tmp,$tmp1,$x_err_pnt,$x_pnt,$y_pnt,$y_err_pnt);
+my (@new_exp,@x,@x_err,@y,@y_err);
+
+	  if($rebin){
+# rebin relies on data being in time order (at the moment)
+	    print $fhlog 
+" rebin lc with parameters $snr_min $t_ratio_max $t_ratio_min $snr_diff $snr_diff_orph\n";
+$ret=&rebin($p_net_buf,$p_net_sig_buf,$p_t2_buf,$p_dt_buf,$p_dt_exp,\@y,\@y_err,\@x,
+  \@x_err,\@new_exp,$snr_min,$t_ratio_max,$t_ratio_min,$snr_diff,$snr_diff_orph);
+# may want to rerun rebin
+	    unless($ret =~ /^\d+$/){
+	      print $fhlog "rebin failed with message $ret\n";
+	      print     "rebin failed with message $ret\n";
+	    } else {
+	     unless($ret > 0){
+print $fhlog "rebin produced no data points with input of $#net_buf + 1\n";
+print     "rebin produced no data points with input of $#net_buf + 1\n";
+	     } else {
+	      $x_pnt=\@x;
+	      $x_err_pnt=\@x_err;
+	      $y_pnt=\@y;
+	      $y_err_pnt=\@y_err;
+	      $tmp1=$t1_buf[0] - $t2_buf[0];
+# adjust the MET times
+	      for($i=0;$i<=$#y;$i++){$t1_buf[$i]=$x[$i] + $tmp1;}
+# print rebinned data
+	      if(0 && $ret == ($#net_buf + 1)){
+	        print $fhrpt "\nRebinning did not change any data points.\n";
+		print     "\nRebinning did not change any data points.\n";
+	      } else {
+print $fhrpt "\nRebinned Data for $fn:\n No Exposure   t-trig      dt net_rate    +/-   mag    +/-\n";
+print     "\nRebinned Data for $fn:\n No Exposure   t-trig      dt net_rate    +/-   mag    +/-\n";
+	        for ($i=0;$i<$ret;$i++){
+		  $t1=$x[$i] - $x_err[$i];
+		  $t2=2.0*$x_err[$i];
+		  $mag=99.0;
+		  $magerr=99.0;
+		  if(defined($zp)){
+		    $mag=&calc_mag($y[$i],$zp);
+		    if($mag < 98.0){
+		      $tmp=&calc_mag($y[$i]+$y_err[$i],$zp);
+		      if($tmp < 98.0){$magerr=$mag-$tmp;}
+		    }
+		  }
+	          printf $fhrpt "%3d %8.1f %8.1f %8.1f %7.4f %7.4f %5.2f %5.2f\n",
+		    $i,$new_exp[$i],$t1,$t2,$y[$i],$y_err[$i],$mag,$magerr;
+		  printf     "%3d %8.1f %8.1f %8.1f %7.4f %7.4f %5.2f %5.2f\n",
+		    $i,$new_exp[$i],$t1,$t2,$y[$i],$y_err[$i],$mag,$magerr;
+	        }
+	      } # close if($ret ==
+	     } # close if($ret > 0
+	    } # close unless($ret =~ /^\d+$/
+	  } else {
+# process if no rebinning
+	    $x_pnt=$p_t2_buf;
+	    $x_err_pnt=$p_dt_buf;
+	    $y_pnt=$p_net_buf;
+	    $y_err_pnt=$p_net_sig_buf;
+	    for ($i=0;$i<=$#t1_buf;$i++){
+#	      printf PLT "%9d %6d %3d %6.3f %6.3f \n",
+#	        $t1_buf[$i],$t2_buf[$i],$dt_buf[$i],$net_buf[$i],$net_sig_buf[$i];
+	     }
+#  printf PLT "%9d %6d %3d %6.3f %6.3f \n",$t1,$t2,$dt2,$net,$net_sig;
+	  } # close if($rebin
+# ----- finished rebinning
+
+# starting 2007-02-02 calculate ymin and ymax in sub fix_lc, write No No
+#	  ($ymin,$ymax)=&make_yscale($y_pnt,$y_err_pnt);
+# fix the light curve data to take care of upper limits
+# starting 2007-02-01, fix_lc can also convert to mags
+	  if($#$p_t1_buf >= 0){
+	   if($plot_mag){
+	    $ret=&fix_lc($p_t1_buf,$x_pnt,$x_err_pnt,$y_pnt,$y_err_pnt,$ul,
+	      $p_ymin,$p_ymax,$fhplt,$zp);
+	   } else {
+	    $ret=&fix_lc($p_t1_buf,$x_pnt,$x_err_pnt,$y_pnt,$y_err_pnt,$ul,
+	      $p_ymin,$p_ymax,$fhplt,undef);
+	   }
+	   if($ret){
+	     print $fhlog "fix_lc failed with message $ret\n";
+	     print $fhrpt "fix_lc failed with message $ret\n";
+	     print     "fix_lc failed with message $ret\n";
+	   } else {
+	     $$p_ny+=$ystep;
+# shorten names (eliminate "UV", white->wh)
+	     $$p_filt =~ s/UV//;
+	     $$p_filt =~ s/ITE//;
+	     $tmp=$$p_ny;
+	     $$p_ylabels[$tmp]=$$p_filt; # keep track of filter for labelling plots
+	     $$p_ymin_buf[$tmp]=$$p_ymin;
+	     $$p_ymax_buf[$tmp]=$$p_ymax;
+	   }
+	  } else {
+	    print $fhlog "No data points to plot.\n";
+	    print $fhrpt "No data points to plot.\n";
+	    print     "No data points to plot.\n";
+	  } # close if($#t1_buf
+""; # return empty string for success
+}
+
+# ============= read_ximage_ans ==============
+
+# this sub reads output from ximage and grabs counts and pixels
+
+  sub read_ximage_ans {
+
+my $pans=$_[0]; # pointer to array of output lines from ximage
+my $psrc_cnts=$_[1]; # pointer to array to be filled in with source counts
+my $psrc_pix=$_[2];
+my $pbkg_cnts=$_[3];
+my $pbkg_pix=$_[4];
+my $src_reg=$_[5]; # name of source region file
+my $bkg_reg=$_[6];
+my $fhlog=$_[7]; # handle for LOG
+
+my ($line,$next,$reg,@words);
+
+unless($#_ == 7){return "incorrect number of arguments";}
+
+@$psrc_cnts=();
+@$psrc_pix=();
+@$pbkg_cnts=();
+@$pbkg_pix=();
+
+# read_ximage_ans 
+# lines look like
+# ![XIMAGE>  read/size=2400 sw00217704000uwh_sk.img+5
+# ![XIMAGE>  counts/regionfile=src.reg
+# 808.44427      50.000000      200.00000      16.168885         4.0422214
+
+# print "src_reg: $src_reg bkg_reg: $bkg_reg\n";
+
+        foreach $line (@$pans){
+#    print $line;
+            if($line =~ /^[!#]/){
+print $fhlog $line;
+              @words=split(/\s+/,$line);
+	      if($line =~ /read\/size/){
+# notice new image/extension
+	        if($line =~ /\+(\d+)$/){
+		  $next=$1;
+		  $reg=undef;
+		} else {
+		  print $fhlog "parse problem with read image line $line";
+		  print     "parse problem with read image line $line";
+		} # close if($line =~ /\+(\d+
+	      } elsif ($line =~ /regionfile\=(.*)$/){
+# notice new region
+	        if($1 eq $src_reg){
+		  $reg="src";
+		} elsif ($1 eq $bkg_reg){
+		  $reg="bkg";
+		} else {
+		  print     "parse problem with region file line $line";
+		  print $fhlog "parse problem with region file line $line";
+		}
+	      } # close if($line =~ /read
+              if($line =~ /^#/ && $#words == 5){
+# print "next: $next w1: $words[1] reg: $reg\n";
+		if(defined($reg)){
+		  if($reg eq "src"){
+		    $$psrc_cnts[$next]=$words[1];
+		    $$psrc_pix[$next]=$words[3];
+		  } else {
+		    $$pbkg_cnts[$next]=$words[1];
+		    $$pbkg_pix[$next]=$words[3];
+		  }
+		} # close if(defined($reg
+	     } # close if($line
+	   } # close if($line =~ /^[!#]/
+	 } # close foreach
+
+""; # return empty string for success
+}
+
+# ============= update_burst_wiki ==============
+
+# this routine updates the burst_wiki with the uvot light curve
+
+  sub update_burst_wiki{
+
+# usage: $ret=&update_burst_wiki($fn_wiki,$fn_fc_wiki,$grb_name,$fhlog);
+
+unless ($#_ == 3){return "invalid number of arguments";}
+
+my $fn = $_[0]; # file name of .gif of light curve
+my $fn_fc = $_[1]; # file name of .jpg of fc image
+my $grb = $_[2]; # name of grb
+my $fhlog = $_[3]; # file handle for LOG file
+
+my (@ans,$cmd,$wiki_page);
+
+unless($grb =~ /^GRB\d{6}[A-Z]?$/){return "invalid GRB name of $grb";}
+unless($fn || $fn_fc){return "no file specified";}
+if($fn){
+  unless(-r $fn){return "cannot find/read $fn";}
+}
+if($fn_fc){
+  unless(-r $fn_fc){return "cannot find/read $fn_fc";}
+}
+
+$wiki_page="Report/$grb";
+$cmd="/Home/heasfs/marshall/perl/upload-wiki-snippet.pl --wiki=BURST ";
+if($fn){$cmd.="--attach-file=$fn ";}
+if($fn_fc){$cmd.="--attach-file=$fn_fc ";}
+$cmd.="--infile=NONE --verbose $wiki_page";
+print "$cmd\n";
+@ans=`$cmd`;
+
+print @ans;
+
+""; # return empty string for success
+
+}   
+
+# ============= write_ximage_script ==============
+
+# this routine writes a file to use as an ximage script
+
+  sub write_ximage_script {
+
+# usage: $ret=&write_ximage_script($fn,$fn_src,$fn_src,$fn_ximage,
+#   \@ext,\@exp,\@form,\@date,\@texp,\@filter,\@aspcorr,$image_only,$texp_min);
+
+unless ($#_ == 12){return "invalid number of arguments";}
+
+my $fn = $_[0]; # image file name
+my $fn_src = $_[1]; # source region file name
+my $fn_bkg = $_[2]; # background region file name
+my $fn_ximage = $_[3]; # output file name
+my $pext = $_[4]; # pointer to extension number
+my $pexp = $_[5]; # pointer to exposure id
+my $pform = $_[6]; # pointer to format (image/null)
+my $pdate = $_[7]; # pointer to date
+my $ptexp = $_[8]; # pointer to exposure time
+my $pfilt = $_[9]; # pointer to filter
+my $paspcorr = $_[10]; # pointer to aspect correction
+my $image_only = $_[11]; # if set, use only images made from image files
+my $texp_min = $_[12]; # if set, use only images with exposure times > $texp_min
+
+my ($i);
+
+unless($#$pext > -1){return "no extensions to process";}
+
+if(open(OUT,">$fn_ximage")){
+        print OUT "set exit_on_startfail 3\n";
+	print OUT "cpd /null\n";
+	for ($i=0;$i<=$#$pext;$i++){
+# print "i: $i $$paspcorr[$i] $$pform[$i] $$ptexp[$i] $texp_min\n";
+# only process images with ASPCORR defined
+	  if(defined($$paspcorr[$i]) && $$pform[$i] =~ /Image/){
+# check acceptable exposure lengths
+	   if(!defined($texp_min) || $$ptexp[$i] > $texp_min){
+# check for images from events
+	     unless($image_only && $$pexp[$i] =~ /E$/){
+               print OUT "read/size=2400 ${fn}+$$pext[$i]\n";
+               if(defined($fn_src)){print OUT "counts/regionfile=$fn_src\n";}
+	       if(defined($fn_bkg)){print OUT "counts/regionfile=$fn_bkg\n";}
+	     }
+	   }
+	  } # close if(defined($$paspcorr[$i]
+	} # close for
+        print OUT "exit\n";
+        close(OUT);
+} else {
+  return "failed to open $fn_ximage for writing";
+}
+0; # signals success
+}
+
+# ================ wt_calc ===================
+
+  sub wt_calc {
+
+# this sub takes information for an observation
+# and calculates weighted rate and its error
+
+# The goal is to produce a weight for each observation
+# so that the results can be combined to produce the highest SNR
+# The procedure here is only appropriate for weak sources.
+
+  my($p_rpred) = $_[0]; # pointer to array with predicted rates
+  my($p_src) = $_[1]; # pointer to array with source counts (not rate)
+  my($p_sig2) = $_[2]; # pointer to array with square of error for source counts
+# we are using background in source region for this value
+  my($p_t) = $_[3]; # pointer to array with exposure times
+
+my ($bi,$err,$i,$msg,$n,$predi,$rate,$si,$ti,$wi);
+
+  $msg=""; # error message that will be returned
+  $n=$#$p_src; # number of observations
+
+  $rate=0.0;
+  $err=0.0;
+# $rate_comp is the rate expected for the source strength used to compute
+#  predicted count rate ($p_pred)
+  $rate_comp=0.0;
+  if($n < 0){
+    return ($rate,$err,$rate_comp,"no observations");
+  }
+  unless( ($n == $#$p_rpred) && ($n == $#$p_sig2) && ($n == $#$p_t) ){
+    return ($rate,$err,$rate_comp,"inconsistent array sizes");
+  }
+# print "found $n observations\n";
+  for ($i=0;$i<=$n;$i++){
+    $si=${$p_src}[$i];
+    $ti=${$p_t}[$i];
+    unless($ti > 0.0){next;} # ignore 0 exposure times
+    $bi=${$p_sig2}[$i];
+    if($bi <= 0.){$bi=1.0;}
+    $predi=${$p_rpred}[$i];
+    $wi=$predi * $ti * $ti / $bi;
+# printf "t,s,b,pred,wt: %5.0f %5.0f %5.0f %8.3f %8.1f\n",$ti,$si,$bi,$predi,$wi;
+    $rate += $wi*($si - $bi)/$ti;
+# sum square of error
+# note that we use actual observed counts (s_i) instead of predicted (b_i)
+# use 1 instead of s_i if s_i not positive
+    if($si <= 0.){
+      $err += $wi*$wi/$ti/$ti;
+    } else {
+      $err += $wi*$wi*$si/$ti/$ti;
+    }
+    $rate_comp += $wi*$predi; 
+# printf "rate,err,comp: %8.1f %8.1f %8.1f\n",$rate,$err,$rate_comp; 
+  }
+  $err=sqrt($err);
+# printf "rate,err,comp: %8.1f %8.1f %8.1f\n",$rate,$err,$rate_comp; 
+  ($rate,$err,$rate_comp,$msg);
+
+}
+
+# ================ y_adjust ============
+
+  sub y_adjust{
+
+# this sub adjusts the y-scale for the plot
+
+unless($#_ == 1){return (undef,undef);}
+
+my $y1=$_[0]; # initial min
+my $y2=$_[1]; # initial max
+
+my ($dex,$log10,$ymin,$ymax);
+
+$log10=log(10.0);
+
+if($y1 >= 0.){
+# y1 and y2 both positive
+  $ymin=0.;
+  if($y2 > 0.0){
+    $dex=(log($y2)/$log10);
+    if($dex < 0.){
+      $dex=int($dex) - 1;
+    } else {
+      $dex=int($dex);
+    }
+    $dex=10**$dex;
+    $ymax=0.99*$dex*(int($y2/$dex)+1.0);
+  } else {
+    $ymax=0.99;
+  }
+} else {
+  if($y2 <= 0.){
+# y1 and y2 are both negative
+    $ymax=0.;
+    $y1=-$y1;
+    $dex=(log($y1)/$log10);
+    if($dex < 0.){
+      $dex=int($dex) - 1;
+    } else {
+      $dex=int($dex);
+    }
+    $dex=10**$dex;
+    $ymin=-$dex*(int($y1/$dex)+1.0);
+  } else {
+# y1 negative and y2 positive
+    $y1=-$y1;
+    if($y2 > $y1){
+      $dex=(log($y2)/$log10);
+    } else {
+      $dex=(log($y1)/$log10);
+    }
+    if($dex < 0.){
+      $dex=int($dex) - 1;
+    } else {
+      $dex=int($dex);
+    }
+    $dex=10**$dex;
+    $ymax=0.99*$dex*(int($y2/$dex)+1.0);
+    $ymin=-$dex*(int($y1/$dex)+1.0);
+  }
+}
+# print "y1: $y1  y2: $y2 ymin: $ymin  ymax: $ymax\n";
+($ymin,$ymax);
+}
+
+# ================ help ===================
+
+  sub help {
+
+  print <<END_OF_HELP_LINES;
+
+Help for $0
+
+This program produces light curves for each of specified uvot image files.
+A qdp file is produced unless noplot is specified.
+It calculates the rate and mag using a source region and background region.
+The source region can be specified using (ra,dec) on the command line.
+Otherwise the program tries to find an existing optical, uvot, or xrt position
+in file in \$wrk_dir. The files have names like 217750_uvot.txt and have lines
+with tokens and values.
+The background region can be specified using inner and outer.
+Holes around sources found with uvotdetect on the image with the longest
+exposure will be put in the region file unless the option use_fixed_bkg_region
+is specified.
+Rates for different exposures and filters are combined after weighting
+to maximize the SNR for a weak source with the same mag. in all filters.
+The light curve uses count rates unless -plot_mag is specified.
+
+The program can also read an existing report file and produce a new light
+curve using different parameters.
+
+If -web, the tabulated results in a .html file and 3 .gif files are
+written to the UVOT web page.
+
+The program uses the following Perl modules:
+  Astro::FITS::CFITSIO SimpleFITS Getopt::Long POSIX deg2sex find_trig_time 
+  rebin uvot_tdrss_subs xrt_butler_pos AFT_subs_wrk NET::FTP ftp_replace
+
+Sample execution is:
+
+uvot_fluxes.pl [-help]
+  [-all] [-bkg_region="bkg.reg"] [-dec=30.0] [-fn_glob="*.img"] 
+  [-frametime=0.011] [-ftpsite="xxx"] [-ftp_subdir="2006_07"] [-hole_size=6.0]
+  [-ignore_aspcorr] [-image_only] [-inner=10.0] [-nobutler] [nocoinc] [-noplot] 
+  [-outer=25.0] [-plot_mag] [-ra=180.0] 
+  [-radius=4.0] [-radius_opt=3.5] [-radius_uvot=3.5] [-radius_xrt=4.0] 
+  [-rebin] [-rerun_report="xxx.rpt"] [-seg=""] 
+  [-snr_diff=2.0] [-snr_diff_orph=2.0] [-snr_min=2.0] 
+  [-seq=xxxxxxxxxxx] [-src_region="src.reg"] [-t_ratio_max=2.0] [-t_ratio_min=1.2]  
+  [-texp_min=5.0] [-tmax=-100000000] [-tmin=100000000] [-update_wiki]
+  [-use_fixed_bkg_region] [-usex] [-web] [-wrk_dir="./"]
+  [-fn=xxx.fits]
+		
+Option help prints out documentation and exits.
+
+Option all specifies to use all files satisfying fn_glob 
+Option bkg_region specifies the name of the background region file
+	(not used if ra and dec are specified)
+Option dec specifies the center of the source region (degrees)
+Option fn specifies a single (image) fits file
+Option fn_glob specifies glob to use (default = *\$seq*.img*)
+  Note that fn_glob is not used if ftpsite is specified --
+    only newly downloaded files are processed.
+Option frametime specifies frame time (default=0.011 sec)
+Option ftpsite should be "heasarc" for access to HEASARC; default is SDC QL
+Option ftp_subdir specifies sub-directory in HEASARC (yyyy_mm)
+Option hole_size specifies size of holes in arc seconds
+Option ignore_aspcorr specifies to process all extensions 
+	(even if ASPCORR not defined)
+Option image_only specifies not to use images made from events
+Option inner specifies the inner radius of the background region (arc sec)
+Option nobutler specifies not to use the XRT positions compiled by Butler
+Option nocoinc specifies not to correction for coincidence loss
+Option noplot specifies not to write a .qdp plot of results
+Option outer specifies the outer radius of the background region (arc sec)
+Option plot_mag specifies to plot magnitudes instead of count rate
+Option ra specifies the center of the source region (degrees)
+Option radius specifies the radius of the source region (arc sec)
+Option radius_opt specifies the radius of the source region (arc sec) for optical pos.
+Option radius_uvot specifies the radius of the source region (arc sec) for uvot pos.
+Option radius_xrt specifies the radius of the source region (arc sec) for XRT pos.
+Option rebin specifies to rebin the light curve
+Option seg specifies segments as space-delimited string (e.g., "992 1 2 3")
+Option seq specifies to use files for specified 11-digit sequence number
+Option snr_diff specifies min. SNR to call 2 points different 
+	when rebinning light curves
+Option snr_diff_orph specifies min. SNR to call 2 points different when looking 
+	for orphans in rebinning light curves
+Option snr_min specifies min. SNR to accept point when rebining light curve
+Option src_region specifies the name of the source region file
+	(not used if ra and dec are specified)
+Option t_ratio_max specifies the max. time ratio allowed when rebinning light curves
+	Default is 2.0
+Option t_ratio_min specifies the min. time ratio allowed when rebinning light curves
+	Default is 1.2
+Option texp_min specifies minimum acceptable exposure length (in sec) (default is 5.0)
+Option tmax specifies max time since trigger to include in weighted sums
+Option tmin specifies min time since trigger to include in weighted sums
+Option update_wiki specifies to update burst wiki site
+	-web must also be set to update the wiki
+Option use_fixed_bkg_region specifies to use standard background region
+	without searching for and eliminating sources
+Option usex specifies to use existing files (do not get from archive over network)
+Option web specifies to copy .html file to uvot_tdrss web site
+Option wrk_dir specifies where to find/write all files
+
+END_OF_HELP_LINES
+
+        0;
+}
+

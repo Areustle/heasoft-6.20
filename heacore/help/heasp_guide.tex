@@ -1,0 +1,2504 @@
+\documentclass[11pt]{book}
+\input{html.sty}
+\htmladdtonavigation
+   {\begin{rawhtml}
+ <A HREF="http://heasarc.gsfc.nasa.gov/docs/software/lheasoft">HEAsoft Home</A>
+    \end{rawhtml}}
+\oddsidemargin=0.00in
+\evensidemargin=0.00in
+\textwidth=6.5in
+\topmargin=0.0in
+\textheight=8.5in
+\parindent=0cm
+\parskip=0.2cm
+\begin{document}
+
+\begin{titlepage}
+\normalsize
+\vspace*{4.0cm}
+\begin{center}
+{\Huge \bf HEASP Guide}\\
+\end{center}
+\medskip
+\medskip
+\begin{center}
+{\Large Version 1.03 \\}
+\end{center}
+\bigskip
+\begin{center}
+{\Large Keith A. Arnaud \\}
+\end{center}
+\medskip
+\medskip
+\begin{center}
+{HEASARC\\
+Code 662\\
+Goddard Space Flight Center\\
+Greenbelt, MD 20771\\
+USA}
+\end{center}
+
+\vfill
+\bigskip
+\begin{center}
+{\Large Aug 2016\\}
+\end{center}
+\vfill
+\end{titlepage}
+
+\pagenumbering{roman}
+
+\tableofcontents
+\pagenumbering{arabic}
+\chapter{Introduction}
+
+HEASP is a C/C++/Python library to manipulate files associated with
+high energy astrophysics spectroscopic analysis. Currently this
+handles PHA, RMF, ARF and xspec table model files. The eventual plan 
+is to be able to provide at least the functionality available in 
+current ftools but from a single library.
+
+The main code is written in C++ with classes for each file type. These
+classes and associated methods have been run through SWIG to produce
+Python code. C wrappers are provided for many of the C++ methods
+allowing simple use from C programs.
+
+These C wrappers are compatible
+with an earlier C only version of HEASP with two exceptions: a) the
+include file required is now Cheasp.h instead of heasp.h; b) all
+routines which used to require a FITS file pointer now just require
+the filename. One consequence of b) is that files no longer need to be
+opened and closed by the calling program.
+
+There are separate chapters describing the Python, C++, and C
+interfaces although users of Python should consult the C++ chapter for
+description of the classes.
+
+Highlights of HEASP are :
+\begin{itemize}
+
+\item Read and write spectra, responses, arfs and table model files.
+
+\item Rebin spectra using grouping arrays.
+
+\item Compress responses by removing all elements below some
+  value. Rebin responses in either energy or channel space based on a
+  grouping array.
+
+\item Use a response to generate random channel numbers for a photon
+  of a given energy.
+
+\item Sum both rmfs and arfs and multiply rmfs by arfs.
+
+\item Construct type II PHA or ARF from sets of spectra or arfs. Also
+  extract individual spectra or arfs from type II files.
+
+\end{itemize}
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%    Python description                                                 %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Python module}
+
+\section{Getting started}
+
+The standard HEAsoft build makes a Python module based on the HEASP
+C++ classes described in the next chapter. The standard HEAsoft
+initialization script adds the location of the HEASP Python module to
+PYTHONPATH. To load the module use
+\begin{verbatim}
+UNIX> python
+>>>from heasp import *
+\end{verbatim}
+If this produces name conflicts then loading the module by
+\begin{verbatim}
+UNIX> python
+>>>import heasp
+\end{verbatim}
+requires heasp. in front of all commands.
+
+To set up an HEASP object first give a simple command such as
+\begin{verbatim}
+>>>sp = pha()
+\end{verbatim}
+for a spectrum. This can then be read in and information about it
+displayed by
+\begin{verbatim}
+>>>sp.read("file1.pha")
+>>>sp.disp()
+\end{verbatim}
+Individual components of the object can be used by adding the
+component name to the object name without ``()''. For instance:
+\begin{verbatim}
+>>>first = sp.FirstChannel
+\end{verbatim}
+will place the first channel number in the variable first. The
+components of each class are given in the C++ chapter.
+
+Components which are arrays can be used only through their individual
+element numbers. For instance:
+\begin{verbatim}
+>>>counts = []
+>>>for i in xrange(sp.NumberChannels()):
+...   counts.append(sp.Pha[i])
+\end{verbatim}
+will place the contents of the PHA column in the list called
+counts. Going the other way, the current contents of the PHA column
+can be replaced by those in the counts list by:
+\begin{verbatim}
+>>>for i in xrange(sp.NumberChannels()):
+...   sp.Pha[i] = counts[i]
+\end{verbatim}
+
+\section{HEASP features not (yet) supported in Python}
+
+At present the HEASP Python module does not support binary
+operations defined in the C++ classes such as the addition of two
+responses by resp = resp1 + resp2. What are supported are the unary
+equivalents so responses can be added by resp1 += resp2.
+
+\section{Spectrum example}
+
+The following Python example reads a type II PHA file, rebins the
+channels in each spectrum by a factor of 2 and writes out the result.
+\begin{verbatim}
+# read the spectrum
+spectra = phaII()
+spectra.read("testin.pha")
+
+# loop round the spectra in the file
+# rebinning by a factor of 2 then placing
+# in the output spectra
+output = phaII()
+Nspectra = spectra.NumberSpectra()
+groupInfo = grouping()
+
+for i in xrange(Nspectra):
+  spectrum = spectra.get(i)
+  groupInfo.load(2,spectrum.NumberChannels())
+  status = spectrum.rebinChannels(groupInfo)
+  output.push(spectrum)
+
+# write out the spectrum copying any extra keywords and extensions
+# from testin.pha
+output.write("testout.pha", "testin.pha")
+\end{verbatim}
+
+\section{Response example}
+
+The following Python example reads RMF and ARF files, removes all
+elements smaller than $10^{-6}$ from the RMF, multiplies the
+compressed RMF and the ARF, and writes out the result.
+\begin{verbatim}
+# read RMF and ARF
+inputRMF = rmf()
+inputRMF.read("testin.rmf")
+inputARF = arf()
+inputARF.read("testin.arf")
+
+# compress the RMF
+inputRMF.compress(1.0e-6)
+
+# if the RMF and ARF are compatible then multiply them and write
+# the result adding extra keywords and extensions from testin.rmf.
+if inputRMF.checkCompatibility(inputARF) == 0:
+  inputRMF *= inputARF
+  inputRMF.write("testout.rsp", "testin.rmf")
+
+\end{verbatim}
+
+\section{Table model example}
+
+The following Python example sets up a table model grid with two
+parameters and one additional parameter (e.g. abundance). 
+The parameters, energies and fluxes are given arbitrary values, 
+in practice these could be read from text files.
+\begin{verbatim}
+test = table()
+
+# set table descriptors and the energy array
+test.ModelName = "Test"
+test.ModelUnits = " "
+test.isRedshift = True
+test.isAdditive = True
+test.isError = False
+
+# set up the energies. note that the size is one greater
+# than that of the array for the model fluxes
+for i in xrange(100): test.Energies.append(0.1+i*0.1)
+
+test.NumIntParams = 2
+test.NumAddParams = 1
+
+# define first parameter and give it 11 values ranging from
+# 0.0 to 2.0 in steps of 0.2.
+
+testpar = tableParameter()
+testpar.Name = "param1"
+testpar.InterpolationMethod = 0
+testpar.InitialValue = 1.0
+testpar.Delta = 0.1
+testpar.Minimum = 0.0
+testpar.Bottom = 0.0
+testpar.Top = 2.0
+testpar.Maximum = 2.0
+
+for i in xrange(11): testpar.TabulatedValues.append(0.2*i)
+
+# and push it onto the vector of parameters
+test.pushParameter(testpar)
+
+# define the second parameter and give it 5 values ranging from
+# 4.6 to 5.4 in steps of 0.2.
+
+testpar.clear()
+testpar.Name = "param2"
+testpar.InterpolationMethod = 0
+testpar.InitialValue = 5.0
+testpar.Delta = 0.1
+testpar.Minimum = 4.6
+testpar.Bottom = 4.6
+testpar.Top = 5.4
+testpar.Maximum = 5.4
+
+for i in xrange(11): testpar.TabulatedValues.append(4.6+0.2*i)
+
+# and push it onto the vector of parameters
+test.pushParameter(testpar);
+
+# define an additional parameter (usually the elemental abundance)
+# does not require tabulated values.
+
+testpar.clear()
+testpar.Name = "addparam"
+testpar.InterpolationMethod = 0
+testpar.InitialValue = 0.0
+testpar.Delta = 0.1
+testpar.Minimum = 0.0
+testpar.Bottom = 0.0
+testpar.Top = 5.0
+testpar.Maximum = 5.0
+
+# and push it onto the vector of parameters
+test.pushParameter(testpar)
+
+# now set up the spectra. these are arbitrarily calculated, in a real program 
+# this step would read a file or call a routine.
+
+addflux = []
+testspec = tableSpectrum()
+
+for i1 in xrange(11):
+  for i2 in xrange(5):
+    testspec.clear()
+    testspec.ParameterValues.append(0.2*i1)
+    testspec.ParameterValues.append(4.6+0.2*i2)
+    addflux = []
+    for j in xrange(99):
+      testspec.Flux.append(0.2*i1+10*(4.6+0.2*i2)+j*0.1)
+      addflux.append((i1+1)*(i2+1)+j*0.2)
+    testspec.pushaddFlux(addflux)
+    test.pushSpectrum(testspec)
+
+# now write out the table.
+test.write("test.mod");
+\end{verbatim}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%    C++ description                                                   %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\chapter{C++ classes and methods}
+
+\section{Global defines}
+
+HEASP uses the include file ``heasp.h'' to set a number of global
+definitions.
+
+\begin{verbatim}
+
+typedef int Integer;
+typedef float Real;
+
+\end{verbatim}
+
+set Integer and Real which are used in all classes. Note that this
+definition of Real is not the same as that within xspec (which is
+double) meaning that linking HEASP and xspec libraries together
+requires some care.
+
+This include file also contains the enumeration all error statuses.
+
+\begin{verbatim}
+
+enum{OK, NoSuchFile, NoData, NoChannelData, NoStatError, CannotCreate,
+     NoEnergLo, NoEnergHi, NoSpecresp, NoEboundsExt, NoEmin, NoEmax,
+     NoMatrixExt, NoNgrp, NoFchan, NoNchan, NoMatrix, CannotCreateMatrixExt,
+     CannotCreateEboundsExt, InconsistentGrouping, InconsistentEnergies,
+     InconsistentChannels, InconsistentUnits, UnknownXUnits, UnknownYUnits,
+     InconsistentNumelt, InconsistentNumgrp};
+
+\end{verbatim}
+
+It also has some handy conversion factors.
+
+\begin{verbatim}
+
+#define KEVTOA 12.3984191
+#define KEVTOHZ 2.4179884076620228e17
+#define KEVTOERG 1.60217733e-9
+#define KEVTOJY 1.60217733e14
+
+\end{verbatim}
+
+\section{Spectra}
+
+\subsection{Introduction and example}
+
+Spectrum files can be manipulated using the pha and phaII classes. The
+latter is simply a vector of pha classes and is useful for handling
+type II PHA files. The grouping class and utility routines are also
+useful for some tasks. As an example the code below reads in a type II
+PHA file, bins up all the spectra by a factor of 2, then writes out
+the result. Note that the data types Integer and Real are defined in heasp.h.
+
+\begin{verbatim}
+
+#include "grouping.h"
+#include "phaII.h"
+
+using namespace std;
+
+int main(int argc, char* argv[])
+{
+  string infile("testin.pha");
+  string outfile("testout.pha");
+
+  phaII inputSpectra;
+
+  Integer Status(0);
+
+
+  // read in all the spectra
+
+  Status = inputSpectra.read(infile, 1);
+
+  Integer Nspectra = inputSpectra.NumberSpectra();
+
+  // loop round the spectra
+
+  for (size_t i=0; i<(size_t)Nspectra; i++) {
+
+    // set up the grouping object to rebin by a factor of 2
+
+    grouping groupInfo;
+    groupInfo.load(2, inputSpectra.phas[i].NumberChannels());
+
+    // rebin this spectrum
+
+    Status = inputSpectra.phas[i].rebinChannels(groupInfo);
+
+  }
+
+  // write the new spectra out copying extra keywords and extensions from
+  // the input file
+
+  Status = inputSpectra.write(outfile, infile);
+
+  exit(0);
+}
+\end{verbatim}
+
+
+
+\subsection{pha class}
+
+\begin{verbatim}
+
+class pha{
+ public:
+
+  Integer FirstChannel;     // First legal channel number
+
+  vector<Real> Pha;         // PHA data
+  vector<Real> StatError;   // Statistical error 
+  vector<Real> SysError;    // Statistical error 
+
+  vector<Integer> Channel;  // Channel number
+  vector<Integer> Quality;  // Data quality 
+  vector<Integer> Group;    // Data grouping 
+
+  vector<Real> AreaScaling; // Area scaling factor 
+  vector<Real> BackScaling; // Background scaling factor 
+
+  Real Exposure;            // Exposure time 
+  Real CorrectionScaling;   // Correction file scale factor 
+
+  Integer DetChans;         // Total legal number of channels
+  bool Poisserr;            // If true, errors are Poisson 
+  string Datatype;          // "COUNT" for count data and "RATE" for count/sec 
+  string PHAVersion;        // PHA extension format version 
+
+  string Spectrumtype;      // "TOTAL", "NET", or "BKG" 
+
+  string ResponseFile;      // Response filename 
+  string AncillaryFile;     // Ancillary filename 
+  string BackgroundFile;    // Background filename 
+  string CorrectionFile;    // Correction filename 
+
+  string FluxUnits;                     // Units for Pha and StatError
+
+  string ChannelType;       // Value of CHANTYPE keyword 
+  string Telescope;                                          
+  string Instrument;
+  string Detector;
+  string Filter;
+  string Datamode;
+
+  vector<string> XSPECFilter; // Filter keywords 
+\end{verbatim}
+
+\subsection{pha class public methods}
+
+\begin{itemize}
+
+\item  \begin{verbatim}   Integer read(string filename) \end{verbatim}
+       \begin{verbatim}   Integer read(string filename, Integer PHAnumber) \end{verbatim}
+       \begin{verbatim}   Integer read(string filename, Integer PHAnumber,
+       Integer SpectrumNumber) \end{verbatim}
+
+          Read file into object. If PHAnumber is given then look for
+          the SPECTRUM extension with EXTVER=PHAnumber. The third
+          option is to read the pha from the SpectrumNumber row of 
+          a type II file.
+
+\item  \begin{verbatim} pha& operator= (const pha&) \end{verbatim}
+
+          Deep copy.
+
+\item  \begin{verbatim} Integer NumberChannels() \end{verbatim}
+
+          Return the size of vector<Real>s.
+
+\item  \begin{verbatim} string disp() \end{verbatim}
+
+          Display information about the spectrum - return as a string.
+
+\item  \begin{verbatim} void clear() \end{verbatim}
+
+          Clear information from the spectrum
+
+\item  \begin{verbatim} string check() \end{verbatim}
+
+          Check completeness and consistency of information in spectrum, 
+          if there is a problem then return diagnostic in string.
+
+\item  \begin{verbatim} Integer write(string filename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write spectrum as type I file. If copyfilename is given then
+          copy from it other HDUs and other keywords in the SPECTRUM
+          extension. If HDUnumber is specified then use the SPECTRUM
+          extension with EXTVER=HDUnumber in copyfilename. Note that 
+          if the output filename exists and already has a SPECTRUM 
+          extension then these methods will write an
+          additional SPECTRUM extension.
+
+\item  \begin{verbatim} pha& operator*= (const Real) \end{verbatim}
+
+           Multiply by a constant.
+
+\item  \begin{verbatim} pha& operator+= (const pha&) \end{verbatim}
+
+           Add to another pha. If one or both of the pha have
+           non-Poisson errors then they are added in quadrature. If
+           systematic errors are present then the resulting pha has
+           systematic errors equal to the maximum of those from the
+           input pha. The exposures are added.
+
+\item  \begin{verbatim} Integer checkCompatibility(const pha&) \end{verbatim}
+
+           Check compatibility with another pha. This should be done
+           before attempting to sum them.
+
+\item  \begin{verbatim} Integer setGrouping(grouping&) \end{verbatim}
+
+           Set the pha grouping array from a grouping object.
+
+\item  \begin{verbatim} Integer rebinChannels(grouping&) \end{verbatim}
+       \begin{verbatim} Integer rebinChannels(grouping&, string) \end{verbatim}
+
+           Rebin spectrum channels based on a grouping object. If no
+           string is input then the resulting StatError is calculated
+           by summing in quadrature. If a string is input then the
+           resulting StatError is calculated based on the value of the
+           input string. If it is PROPAGATE then summing in quadrature
+           is used. If not, then GAUSS uses 1/sqrt(Pha), POISS-0 sets
+           Poisserr to true, POISS-1 uses 1 + sqrt(N+0.75), POISS-2
+           uses sqrt(N-0.25), and POISS-3 uses the arithmetic mean of
+           POISS-1 and POISS-2. In general, only the options PROPAGATE
+           or POISS-0 should be used.
+
+\item  \begin{verbatim} Integer shiftChannels(Integer Start, Integer End,
+       Real Shift) \end{verbatim}
+       \begin{verbatim} Integer shiftChannels(Integer Start, Integer End, 
+       Real Shift, Real Factor) \end{verbatim}
+       \begin{verbatim} Integer shiftChannels(vector<Integer>& Start, 
+       vector<Integer>& End, vector<Real>& Shift, vector<Real>&
+       Factor) \end{verbatim}
+       \begin{verbatim} Integer shiftChannels(vector<Real>& ChannelLowEnergy,
+       vector<Real>& ChannelHighEnergy, Integer Start, Integer End, 
+       Real Shift, Real Factor) \end{verbatim}
+       \begin{verbatim} Integer shiftChannels(vector<Real>& ChannelLowEnergy,
+       vector<Real>& ChannelHighEnergy, vector<Integer>& Start, 
+       vector<Integer>& End, vector<Real>& Shift, vector<Real>& Factor) \end{verbatim}
+
+           Shift counts in channels. Those counts between channels
+           Start and End will be shifted by Shift channels and
+           stretched by Factor. If the channel energies are given then
+           Shift is assumed to be in energy, otherwise in channels.Total
+           counts are conserved.
+ 
+\item  \begin{verbatim} Integer convertUnits(vector<Real>& ChannelLowEnergy,
+       vector<Real>& ChannelHighEnergy, string EnergyUnits) \end{verbatim}
+
+           Convert flux units from whatever they are currently to 
+           ph/cm$^2$/s. This requires as input the channel energy arrays 
+           from the rmf object and the string specifying their
+           units. The allowed flux units are: ph/cm$^2$/s/X, where X is
+           one of MeV, GeV, Hz, A, cm, um, nm; ergs/cm$^2$/s;
+           ergs/cm$^2$/s/X, where X is one of Hz, A, cm, um, nm;
+           Jy. The allowed energy units are keV, GeV, Hz, angstrom,
+           cm, micron or nm.
+
+\end{itemize}
+
+\subsection{Other pha routines}
+
+\begin{itemize}
+
+\item  \begin{verbatim} pha operator+ (const pha& a, const pha& b) \end{verbatim}
+
+          Add pha a and b. If one or both of the pha have
+          non-Poisson errors then they are added in quadrature. If
+          systematic errors are present then the resulting pha has
+          systematic errors equal to the maximum of those from the
+          input pha. The exposures are added.
+
+\item  \begin{verbatim} Integer PHAtype(string filename, Integer PHAnumber) \end{verbatim}
+       \begin{verbatim} Integer PHAtype(string filename, Integer PHAnumber, 
+       Integer& Status) \end{verbatim}
+
+          Return the type of a SPECTRUM extension.
+
+\item  \begin{verbatim} bool IsPHAcounts(string filename, Integer PHAnumber) \end{verbatim}
+       \begin{verbatim} bool IsPHAcounts(string filename, Integer PHAnumber, 
+       Integer& Status) \end{verbatim}
+
+          Return true if the COUNTS column exists and is integer.
+
+\item  \begin{verbatim} Integer NumberofSpectra(string filename, 
+       Integer PHAnumber) \end{verbatim}
+       \begin{verbatim} Integer NumberofSpectra(string filename, 
+       Integer PHAnumber, Integer& Status) \end{verbatim}
+
+          Return the number of spectra in a type II SPECTRUM extension.
+
+\end{itemize}
+
+  
+\subsection{phaII class}
+
+\begin{verbatim}
+
+class phaII{
+ public:
+
+  vector<pha> phas;           // vector of pha objects
+
+\end{verbatim}
+
+\subsection{phaII class public methods}
+
+\begin{itemize}
+
+\item  \begin{verbatim} Integer read(string filename) \end{verbatim}
+       \begin{verbatim} Integer read(string filename, Integer PHAnumber) \end{verbatim}
+       \begin{verbatim} Integer read(string filename, Integer PHAnumber, 
+       vector<Integer> SpectrumNumber) \end{verbatim}
+
+           Read a PHA type II file into an object. If PHAnumber is
+           given then read from the SPECTRUM extension with EXTVER=PHAnumber.
+           If the SpectrumNumber array is given then read those rows
+           in the extension otherwise read all spectra.
+
+\item  \begin{verbatim} phaII& operator= (const phaII&) \end{verbatim}
+
+           Deep copy.
+
+\item  \begin{verbatim} pha get(Integer number) \end{verbatim}
+  
+           Get pha object (counts from zero).
+
+\item  \begin{verbatim} pha push(pha sp) \end{verbatim}
+
+           Push pha object into phaII object
+
+\item  \begin{verbatim} Integer NumberSpectra() \end{verbatim}
+
+           Return the number of spectra in the object.
+
+\item    \begin{verbatim} string disp() \end{verbatim}
+
+           Display information about the spectra - return as a string.
+
+\item    \begin{verbatim} void clear() \end{verbatim}
+
+           Clear information about the spectra
+
+\item    \begin{verbatim} string check() \end{verbatim}
+
+           Check completeness and consistency of information in spectrum,
+           if there is a problem then return diagnostic in string.
+
+\item  \begin{verbatim} Integer write(string filename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write spectra as type II file. If copyfilename is given then
+          copy from it other HDUs and other keywords in the SPECTRUM
+          extension. If HDUnumber is specified then use the SPECTRUM
+          extension with EXTVER=HDUnumber in copyfilename. Note that 
+          if the output filename exists and already has a SPECTRUM 
+          extension then these methods will write an additional 
+          SPECTRUM extension.
+
+\end{itemize}
+
+\section{Responses}
+
+\subsection{Introduction and example}
+
+Response files come in two varieties: RMFs and ARFs. The former
+contain the response matrices describing the probability of a photon
+of a given energy being registered in a given channel of the
+spectrum. The latter describes the effictive area versus energy. The rmf
+class is used for manipulating RMFs and the arf and arfII classes for
+manipulating ARFs. The arfII class is an analog of the phaII class and
+is useful for the case where an ARF file contains many individual
+effective area curves. The rmft class handles the transposed response matrix
+and is of limited use at present.
+
+The example code below shows a program to read in an RMF file, to
+compress the matrix to remove any element below 1.0e-6, to multiply
+the result by an ARF, and write a new RMF file.
+
+\begin{verbatim}
+#include "rmf.h"
+#ifndef HAVE_arf
+#include "arf.h"
+#endif
+
+using namespace std;
+
+int main(int argc, char* argv[])
+{
+  string rmffile("testin.rmf");
+  string arffile("testin.arf");
+  string outfile("testout.rmf");
+
+  rmf inputRMF, outputRMF;
+  arf inputARF;
+
+  Integer Status(0);
+
+  // read in the RMF and the ARF
+
+  Status = inputRMF.read(rmffile);
+  Status = inputARF.read(arffile);
+
+  // remove elements from the RMF with values < 1.0e-6
+
+  Real threshold(1.0e-6);
+  inputRMF.compress(threshold);
+
+  // multiply the compressed RMF and the ARF to make an output RMF
+
+  if ( inputRMF.checkCompatibility(inputARF) ) {
+
+    outputRMF = inputRMF * inputARF;
+
+    // and write out the result copying any extra HDUs and keywords from
+    // the input RMF
+    
+    Status = outputRMF.write(outfile, rmffile);
+
+  }
+
+  exit(0);
+}
+
+\end{verbatim}
+
+
+\subsection{rmf class}
+
+\begin{verbatim}
+
+class rmf{
+ public:
+
+  Integer FirstChannel;                // First channel number 
+
+  vector<Integer> NumberGroups;        // Number of response groups for this
+                                       //  energy bin 
+  vector<Integer> FirstGroup;          // First response group for this energy
+                                       // bin (counts from 0)
+
+  vector<Integer> FirstChannelGroup;   // First channel number in this group 
+  vector<Integer> NumberChannelsGroup; // Number of channels in this group 
+  vector<Integer> FirstElement;        // First response element for this group
+                                       // (counts from 0)
+  vector<Integer> OrderGroup;          // The grating order of this group 
+
+  vector<Real> LowEnergy;              // Start energy of bin 
+  vector<Real> HighEnergy;             // End energy of bin 
+
+  vector<Real> Matrix;                 // Matrix elements 
+
+  vector<Real> ChannelLowEnergy;       // Start energy of channel 
+  vector<Real> ChannelHighEnergy;      // End energy of channel 
+
+  Real AreaScaling;                    // Value of EFFAREA keyword 
+  Real ResponseThreshold;              // Minimum value in response 
+
+  string EnergyUnits;                  // Energy units used
+  string RMFUnits;                     // Units for RMF values
+
+  string ChannelType;                  // Value of CHANTYPE keyword 
+  string RMFVersion;                   // MATRIX extension format version 
+  string EBDVersion;                   // EBOUNDS extension format version 
+  string Telescope;                             
+  string Instrument;
+  string Detector;
+  string Filter;
+  string RMFType;                      // HDUCLAS3 keyword in MATRIX extension 
+  string RMFExtensionName;             // EXTNAME keyword in MATRIX extension 
+  string EBDExtensionName;             // EXTNAME keyword in EBOUNDS extension 
+
+\end{verbatim}
+
+\subsection{rmf class public methods}
+
+\begin{itemize}
+
+\item  \begin{verbatim} Integer read(string filename) \end{verbatim}
+       \begin{verbatim} Integer read(string filename, Integer RMFnumber) \end{verbatim}
+
+          Read the RMF file into an object. If RMFnumber is given read
+          from the MATRIX (or SPECRESP MATRIX) and EBOUNDS extensions 
+          with EXTVER=RMFnumber. If there is only one EBOUNDS
+          extension then that will be used.
+
+
+\item  \begin{verbatim} Integer readMatrix(string filename) \end{verbatim}
+       \begin{verbatim} Integer readMatrix(string filename, Integer RMFnumber) \end{verbatim}
+
+          Read the MATRIX (or SPECRESP MATRIX) extension from an RMF 
+          file into an object. If RMFnumber is given read from the 
+          MATRIX (or SPECRESP MATRIX) extension with EXTVER=RMFnumber. 
+
+\item  \begin{verbatim} Integer readChannelBounds(string filename) \end{verbatim}
+       \begin{verbatim} Integer readChannelBounds(string filename, Integer RMFnumber) \end{verbatim}
+
+          Read the EBOUNDS extension from an RMF file into an object. 
+          If RMFnumber is given read from the EBOUNDS extension with 
+          EXTVER=RMFnumber. 
+
+\item  \begin{verbatim} void update() \end{verbatim}
+
+          Update the FirstGroup and FirstElement arrays from
+          NumberGroups and NumberChannelsGroup, respectively.
+
+\item  \begin{verbatim} void initialize(const arf&) \end{verbatim}
+
+          Initialize from an arf object. Copies members in common between arfs and rmfs
+
+\item  \begin{verbatim} rmf& operator= (const rmf&) \end{verbatim}  
+
+          Deep copy.
+
+\item  \begin{verbatim} Integer NumberChannels() \end{verbatim}
+
+          Return the number of spectrum channels.
+
+\item  \begin{verbatim} Integer NumberEnergyBins() \end{verbatim}
+  
+          Return the number of response energies. 
+
+\item  \begin{verbatim} Integer NumberTotalGroups() \end{verbatim}
+  
+          Return the number of response groups. 
+
+\item  \begin{verbatim} Integer NumberTotalElements() \end{verbatim}
+  
+          Return the number of response elements. 
+
+\item  \begin{verbatim} Real ElementValue(Integer Channel, Integer EnergyBin) \end{verbatim}
+       \begin{verbatim} Real ElementValue(Integer Channel, Integer EnergyBin,
+       Integer GratingOrder) \end{verbatim}
+
+          Return the value for a particular channel, energy, and
+          grating order.
+
+\item  \begin{verbatim} vector<Real> RowValues(Integer EnergyBin) \end{verbatim}
+       \begin{verbatim} vector<Real> RowValues(Integer EnergyBin,
+       Integer GratingOrder) \end{verbatim}
+
+          Return the response array for a particular energy and
+          grating order.
+
+\item  \begin{verbatim} vector<Integer> RandomChannels(const Real energy, 
+       const Integer NumberPhotons) \end{verbatim}
+       \begin{verbatim} vector<Integer> RandomChannels(const vector<Real>& energy, 
+       const vector<Integer>& NumberPhotons) \end{verbatim}
+       \begin{verbatim} vector<Integer> RandomChannels(const Real energy, 
+       const Integer NumberPhotons, Integer GratingOrder) \end{verbatim}
+       \begin{verbatim} vector<Integer> RandomChannels(const vector<Real>& energy, 
+       const vector<Integer>& NumberPhotons, Integer GratingOrder) \end{verbatim}
+
+          Use the response matrix to generate random channel numbers 
+          for photons of given energy and grating order. For each
+          energy, NumberPhotons are generated.
+
+\item  \begin{verbatim} string disp() \end{verbatim}
+
+          Display information about the response. - return as a string.
+
+\item  \begin{verbatim} void clear() \end{verbatim}
+
+          Clear information from the response.
+
+\item  \begin{verbatim} void clearMatrix() \end{verbatim}
+
+          Clear only the matrix information from the response.
+
+\item  \begin{verbatim} string check() \end{verbatim}
+
+          Check completeness and consistency of information in the rmf,
+          if there is a problem then return diagnostic in string.
+
+\item  \begin{verbatim} void normalize() \end{verbatim}
+  
+          Normalize the rmf so it sums to 1.0 for each energy bin.
+
+\item  \begin{verbatim} void compress(const Real threshold) \end{verbatim}
+
+          Compress the rmf to remove all elements below the threshold value.
+
+\item  \begin{verbatim} void uncompress() \end{verbatim}
+
+          Uncompress the rmf i.e. turn it into a full rectangular matrix.
+
+\item  \begin{verbatim} Integer rebinChannels(grouping&) \end{verbatim}
+
+          Rebin in channel space using the specified grouping object.
+
+\item  \begin{verbatim} Integer rebinEnergies(grouping&) \end{verbatim}
+
+          Rebin in energy space using the specified grouping object.
+
+\item  \begin{verbatim} Integer shiftChannels(const Integer Start,
+       const Integer End, const Real Shift) \end{verbatim}
+       \begin{verbatim} Integer shiftChannels(const Integer Start, 
+       const Integer End, const Real Shift, const Real Factor, 
+       bool useEnergyBounds) \end{verbatim}
+       \begin{verbatim} Integer shiftChannels(const vector<Integer>& vStart,
+       const vector<Integer>& vEnd, const vector<Real>& vShift, 
+       const vector<Real>& vFactor, bool useEnergyBounds) \end{verbatim}
+       \begin{verbatim} Integer shiftEnergies(const Integer Start, 
+       const Integer End, const Real Shift, const Real Factor) \end{verbatim}
+       \begin{verbatim} Integer shiftEnergies(const vector<Integer>& vStart,
+       const vector<Integer>& vEnd, const vector<Real>& vShift, 
+       const vector<Real>& vFactor) \end{verbatim}
+
+          Remap the response up or down in channels. Moves response
+          between channels Start and End by Shift channels and
+          stretches by Factor. If useEnergyBounds is true then Shift
+          is assumed to be in energy, otherwise in channels.
+
+\item  \begin{verbatim} Integer interpolateAndMultiply(
+       const vector<Real>& energies, const vector<Real>&
+       factors) \end{verbatim}
+
+          Multiply by a vector which may not have the same energy
+          binning as the response.
+
+\item  \begin{verbatim} Integer write(string filename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write response to a RMF file. If copyfilename is given then
+          copy from it other HDUs and other keywords in the MATRIX and
+          EBOUNDS extensions. If HDUnumber is specified then use the
+          MATRIX and EBOUNDS extensions with EXTVER=HDUnumber in
+          copyfilename. Note that if the output filename exists and 
+          already has MATRIX and EBOUNDS extensions then these methods 
+          will write additional extensions.
+
+\item  \begin{verbatim} Integer writeMatrix(string filename) \end{verbatim}
+       \begin{verbatim} Integer writeMatrix(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer writeMatrix(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write the MATRIX extension to a RMF file. If copyfilename is 
+          given then copy from it other HDUs and other keywords in the 
+          MATRIX extension. If HDUnumber is specified then use the
+          MATRIX extension with EXTVER=HDUnumber in copyfilename. Note 
+          that if the output filename exists and already has a MATRIX 
+          extension then these methods will write an additional extension.
+
+\item  \begin{verbatim} Integer writeChannelBounds(string filename) \end{verbatim}
+       \begin{verbatim} Integer writeChannelBounds(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer writeChannelBounds(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write the EBOUNDS extension to a RMF file. If copyfilename is 
+          given then copy from it other HDUs and other keywords in the 
+          EBOUNDS extension. If HDUnumber is specified then use the
+          EBOUNDS extension with EXTVER=HDUnumber in copyfilename. Note 
+          that if the output filename exists and already has a EBOUNDS 
+          extension then these methods will write an additional extension.
+
+\item  \begin{verbatim} rmf& operator*=(const arf&) \end{verbatim}
+
+          Multiply current rmf by an arf.
+
+\item  \begin{verbatim} rmf& operator*=(const Real&) \end{verbatim}
+
+          Multiply current rmf by a factor.
+
+\item  \begin{verbatim} rmf& operator+=(const rmf&) \end{verbatim}
+
+          Add another rmf to the current rmf.
+
+\item  \begin{verbatim} Integer checkCompatibility(const rmf&) \end{verbatim}
+
+          Check compatibility with another rmf.
+
+\item  \begin{verbatim} Integer checkCompatibility(const arf&) \end{verbatim}
+
+          Check compatibility with an arf.
+
+\item  \begin{verbatim} Integer convertUnits() \end{verbatim}
+
+          Convert energy units from current units to keV. Valid
+          options for the current units are keV, MeV, GeV, Hz,
+          angstrom, cm, micron, nm.
+
+\item  \begin{verbatim} void reverseRows() \end{verbatim}  
+
+          Reverse the rows. This is useful if the rows are not in
+          increasing order of energy, which xspec requires.
+
+\item  \begin{verbatim} void addRow(const vector<Real> Response, 
+       const Real eLow, const Real eHigh) \end{verbatim}
+       \begin{verbatim} void addRow(const vector<vector<Real> > Response, 
+       const Real eLow, const Real eHigh, 
+       const vector<Integer> GratingOrder) \end{verbatim}
+
+          Add a row to the response using an input response vector and energy range.
+
+\item  \begin{verbatim} void substituteRow(const Integer RowNumber, 
+       const vector<Real> Response) \end{verbatim}
+       \begin{verbatim} void substituteRow(const Integer RowNumber, 
+       const vector<vector<Real> > Response, const vector<Integer>
+       GratingOrder) \end{verbatim}
+
+          Substitute a row into the response using an input response 
+          vector and energy range.
+
+
+\end{itemize}
+
+\subsection{Other rmf routines}
+
+\begin{itemize}
+
+\item  \begin{verbatim} rmf operator* (const rmf&, const arf&) \end{verbatim}
+       \begin{verbatim} rmf operator* (const arf&, const rmf&) \end{verbatim}
+
+          Multiply an rmf by an arf.
+
+\item  \begin{verbatim} rmf operator* (const rmf&, const Real&) \end{verbatim}
+       \begin{verbatim} rmf operator* (const Real&, const rmf&) \end{verbatim}
+
+          Multiply an rmf by a factor.
+
+\item  \begin{verbatim} rmf operator+ (const rmf&, const rmf&) \end{verbatim}
+
+          Add two rmfs.
+
+\item  \begin{verbatim} void calcGaussResp(const Real width, 
+       const Real energ, const Real threshold, const vector<Real>& 
+       ChannelLowEnergy, const vector<Real>& ChannelHighEnergy, 
+       vector<Real>& ResponseVector)  \end{verbatim}
+
+          Calculate the response vector for some energy give a gaussian width.
+          The gaussian is assumed to be in the units of energy,
+          ChannelLowEnergy and ChannelHighEnergy. The resulting
+          response vector can be added into a response using addRow.
+
+\end{itemize}
+
+\subsection{rmft class}
+
+\begin{verbatim}
+
+
+class rmft{
+ public:
+
+  Integer FirstChannel;                // First channel number 
+
+  vector<Integer> NumberGroups;        // Number of response groups for this 
+                                       // channel bin 
+  vector<Integer> FirstGroup;          // First response group for this channel
+                                       // bin (counts from 0)
+
+  vector<Integer> FirstEnergyGroup;    // First energy bin in this group 
+  vector<Integer> NumberEnergiesGroup; // Number of energy bins in this group 
+  vector<Integer> FirstElement;        // First response element for this group
+                                       // (counts from 0)
+  vector<Integer> OrderGroup;          // The grating order of this group 
+
+  vector<Real> LowEnergy;              // Start energy of bin 
+  vector<Real> HighEnergy;             // End energy of bin 
+
+  vector<Real> Matrix;                 // Matrix elements 
+
+  vector<Real> ChannelLowEnergy;       // Start energy of channel 
+  vector<Real> ChannelHighEnergy;      // End energy of channel 
+
+  Real AreaScaling;                    // Value of EFFAREA keyword 
+  Real ResponseThreshold;              // Minimum value in response 
+
+  string EnergyUnits;                  // Energy units
+  string RMFUnits;                     // RMF units
+
+  string ChannelType;                  // Value of CHANTYPE keyword 
+  string RMFVersion;                   // MATRIX extension format version 
+  string EBDVersion;                   // EBOUNDS extension format version 
+  string Telescope;                             
+  string Instrument;
+  string Detector;
+  string Filter;
+  string RMFType;                      // HDUCLAS3 keyword in MATRIX extension 
+  string RMFExtensionName;             // EXTNAME keyword in MATRIX extension 
+  string EBDExtensionName;             // EXTNAME keyword in EBOUNDS extension 
+
+\end{verbatim}
+
+\subsection{rmft class public methods}
+
+\begin{itemize}
+
+
+\item  \begin{verbatim} void load(rmf&) \end{verbatim}
+
+          Load object from a standard rmf object.
+
+\item  \begin{verbatim} void update \end{verbatim}
+
+          Update the FirstGroup and FirstElement arrays from 
+          NumberGroups and NumberEnergiesGroup, respectively.
+
+\item  \begin{verbatim} rmft& operator= (const rmft&) \end{verbatim}
+
+          Deep copy.
+
+\item  \begin{verbatim} Integer NumberChannels() \end{verbatim}
+
+          Number of spectrum channels 
+
+\item  \begin{verbatim} Integer NumberEnergyBins() \end{verbatim}
+
+          Number of response energies 
+
+\item  \begin{verbatim} Integer NumberTotalGroups() \end{verbatim}
+
+          Total number of response groups 
+
+\item  \begin{verbatim} Integer NumberTotalElements() \end{verbatim}
+
+          Total number of response elements 
+
+\item  \begin{verbatim} Real ElementValue(Integer Channel, Integer EnergyBin) \end{verbatim}
+
+          Return the value for a particular channel and energy.
+
+\item  \begin{verbatim} vector<Real> RowValues(Integer Channel) \end{verbatim}
+
+          Return the array for a particular channel.
+
+\item  \begin{verbatim} string disp() \end{verbatim}
+
+          Display information about the object. - return as a string.
+
+\item  \begin{verbatim} void clear() \end{verbatim}
+
+          Clear information from the object.
+
+\end{itemize}
+
+
+\subsection{arf class}
+
+
+\begin{verbatim}
+
+class arf{
+ public:
+
+  vector<Real> LowEnergy;   // Start energy of bin
+  vector<Real> HighEnergy;  // End energy of bin
+
+  vector<Real> EffArea;     // Effective areas
+
+  string EnergyUnits;       // Units for energies
+  string arfUnits;          // Units for effective areas
+
+  string Version;           // SPECRESP extension format version
+  string Telescope;                             
+  string Instrument;
+  string Detector;
+  string Filter;
+  string ExtensionName;     // EXTNAME keyword in SPECRESP extension
+
+\end{verbatim}
+
+
+\subsection{arf class public methods}
+
+\begin{itemize}
+
+\item  \begin{verbatim}   Integer read(string filename) \end{verbatim}
+       \begin{verbatim}   Integer read(string filename, Integer ARFnumber) \end{verbatim}
+       \begin{verbatim}   Integer read(string filename, Integer ARFnumber,
+       Integer RowNumber) \end{verbatim}
+
+          Read file into an object. If ARFnumber is given read from
+          the SPECRESP extension with EXTVER=ARFnumber. The third
+          option is to read an arf from the RowNumber row of a 
+          type II file.
+
+\item  \begin{verbatim}  arf& operator= (const arf&) \end{verbatim}
+
+          Deep copy.
+
+\item  \begin{verbatim}  Integer NumberEnergyBins() \end{verbatim}
+
+          Return size of vector<Real>s.
+
+\item  \begin{verbatim}  string disp() \end{verbatim}
+
+          Display information about the arf. - return as a string.
+
+\item  \begin{verbatim}  void clear() \end{verbatim}
+
+          Clear information from the arf.
+
+\item  \begin{verbatim}  string check() \end{verbatim}
+
+          Check completeness and consistency of information in the arf,
+          if there is a problem then return diagnostic in string.
+
+\item    \begin{verbatim} rebin(grouping&) \end{verbatim}
+
+           Rebin the arf using the input grouping.
+
+\item  \begin{verbatim} Integer write(string filename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write arf as type I file. If copyfilename is given then
+          copy from it other HDUs and other keywords in the SPECRESP
+          extension. If HDUnumber is specified then use the SPECRESP
+          extension with EXTVER=HDUnumber in copyfilename. Note that 
+          if the output filename exists and already has a SPECRESP 
+          extension then these methods will write an
+          additional SPECRESP extension.
+
+\item  \begin{verbatim}  arf& operator*=(const Real&) \end{verbatim}
+
+          Multiply by a constant.
+
+\item  \begin{verbatim}  arf& operator+=(const arf&) \end{verbatim}
+
+          Add another arf.
+
+\item  \begin{verbatim}  Integer checkCompatibility(const arf&) \end{verbatim}
+
+          Check compatibility with another arf.
+
+\item  \begin{verbatim} Integer convertUnits() \end{verbatim}
+
+          Convert the energies on which the arf is calculated from the
+          current units to keV. The allowed units are keV, MeV, GeV, Hz,
+          angstrom, cm, micron, nm.
+
+\end{itemize}
+
+\subsection{Other arf routines}
+
+\begin{itemize}
+
+\item  \begin{verbatim}  arf operator+ (const arf&, const arf&) \end{verbatim}
+
+          Add two arfs.
+
+\item  \begin{verbatim}  arf operator* (const arf&, const Real&) \end{verbatim}
+       \begin{verbatim}  arf operator* (const Real&, const arf&) \end{verbatim}
+
+          Multiply by a constant.
+
+\item  \begin{verbatim}  Integer NumberofARFs(string filename, Integer HDUumber) \end{verbatim}
+       \begin{verbatim}  Integer NumberofARFs(string filename, Integer HDUumber, 
+       Integer& Status) \end{verbatim}
+
+          Return the number of ARFS in the type II SPECRESP extension.
+
+\end{itemize}
+
+
+\subsection{arfII class}
+
+\begin{verbatim}
+
+
+class arfII{
+ public:
+
+  vector<arf> arfs;           // vector of arf objects
+
+\end{verbatim}
+
+\subsection{arfII class public methods}
+
+\begin{itemize}
+
+\item  \begin{verbatim} Integer read(string filename) \end{verbatim}
+       \begin{verbatim} Integer read(string filename, Integer ARFnumber) \end{verbatim}
+       \begin{verbatim} Integer read(string filename, Integer ARFnumber, 
+       vector<Integer> RowNumber) \end{verbatim}
+
+           Read an ARF type II file into an object. If ARFnumber is
+           given then read from the SPECRESP extension with EXTVER=ARFnumber.
+           If the RowNumber array is given then read those in the 
+           extension otherwise read all the arfs.
+
+\item  \begin{verbatim} arfII& operator= (const arfII&) \end{verbatim}
+
+           Deep copy.
+
+\item  \begin{verbatim} arf get(Integer number) \end{verbatim}
+
+           Get arf object (counts from zero).
+
+\item  \begin{verbatim} void push(arf ea) \end{verbatim}
+
+           Push arf object into arfII object
+
+\item  \begin{verbatim} Integer NumberARFs() \end{verbatim}
+
+           Return the number of ARFs in the object.
+
+\item    \begin{verbatim} string disp() \end{verbatim}
+
+           Display information about the ARFs. - return as a string.
+
+\item    \begin{verbatim} void clear() \end{verbatim}
+
+           Clear information from the ARFs.
+
+\item    \begin{verbatim} string check() \end{verbatim}
+
+           Check completeness and consistency of information in the arfs,
+           if there is a problem then return diagnostic in string.
+
+\item  \begin{verbatim} Integer write(string filename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename) \end{verbatim}
+       \begin{verbatim} Integer write(string filename, string copyfilename,
+       Integer HDUnumber) \end{verbatim}
+
+          Write ARFs as type II file. If copyfilename is given then
+          copy from it other HDUs and other keywords in the SPECRESP
+          extension. If HDUnumber is specified then use the SPECRESP
+          extension with EXTVER=HDUnumber in copyfilename. Note that 
+          if the output filename exists and already has a SPECRESP 
+          extension then these methods will write an additional 
+          SPECRESP extension.
+
+
+
+
+%
+%  General note: when extensions already exist and an additional one
+%  is written then the appropriate EXTVER keyword is not written. Is
+%  there any way to force this ?
+%
+
+\end{itemize}
+
+
+\section{Table Models}
+
+\subsection{Introduction and example}
+
+The table model file is used in xspec to provide grids of model
+calculations on which to interpolate when fitting a model to data. The
+table class can be used to create these files. The example code below
+sets up a grid with two parameters.
+
+\begin{verbatim}
+#include "table.h"
+
+using namespace std;
+
+int main(int argc, char* argv[])
+{
+
+  table test;
+
+  // set table descriptors and the energy array
+
+  test.ModelName = "Test";
+  test.ModelUnits = " ";
+  test.isRedshift = true;
+  test.isAdditive = true;
+  test.isError = false;
+
+  test.Energies.resize(100);
+  for (size_t i=0; i<100; i++) test.Energies[i] = 0.1+i*0.1;
+  test.EnergyUnits = "keV";
+
+  test.NumIntParams = 2;
+  test.NumAddParams = 1;
+
+
+  // define first parameter and give it 11 values ranging from
+  // 0.0 to 2.0 in steps of 0.2.
+
+  tableParameter testpar;
+
+  testpar.Name = "param1";
+  testpar.InterpolationMethod = 0;
+  testpar.InitialValue = 1.0;
+  testpar.Delta = 0.1;
+  testpar.Minimum = 0.0;
+  testpar.Bottom = 0.0;
+  testpar.Top = 2.0;
+  testpar.Maximum = 2.0;
+
+  testpar.TabulatedValues.resize(11);
+  for (size_t i=0; i<11; i++) testpar.TabulatedValues[i] = 0.2*i;
+
+  // and push it onto the vector of parameters
+
+  test.Parameters.push_back(testpar);
+
+  // define the second parameter and give it 5 values ranging from
+  // 4.6 to 5.4 in steps of 0.2.
+
+
+  testpar.Name = "param2";
+  testpar.InterpolationMethod = 0;
+  testpar.InitialValue = 5.0;
+  testpar.Delta = 0.1;
+  testpar.Minimum = 4.6;
+  testpar.Bottom = 4.6;
+  testpar.Top = 5.4;
+  testpar.Maximum = 5.4;
+
+  testpar.TabulatedValues.resize(5);
+  for (size_t i=0; i<5; i++) testpar.TabulatedValues[i] = 4.6+0.2*i;
+
+  // and push it onto the vector of parameters
+
+  test.Parameters.push_back(testpar);
+
+  // define an additional parameter (usually the elemental abundance)
+  // does not require tabulated values.
+
+  testpar.Name = "addparam";
+  testpar.InterpolationMethod = -1;
+  testpar.InitialValue = 0.0;
+  testpar.Delta = 0.1;
+  testpar.Minimum = 0.0;
+  testpar.Bottom = 0.0;
+  testpar.Top = 5.0;
+  testpar.Maximum = 5.0;
+  testpar.TabulatedValues.resize(0);
+
+  // and push it onto the vector of parameters
+
+  test.Parameters.push_back(testpar);
+
+  // now set up the spectra. these are arbitrarily calculated, in a real program 
+  // this step would read a file or call a routine.
+
+  tableSpectrum testspec;
+
+  testspec.Flux.resize(99);
+  testspec.ParameterValues.resize(2);
+
+  vector<Real> addFlux(99);
+
+  for (size_t i1=0; i1<11; i1++) {
+    for (size_t i2=0; i2<5; i2++) {
+      testspec.ParameterValues[0] = 0.2*i1;
+      testspec.ParameterValues[1] = 4.6+0.2*i2;
+      for (size_t j=0; j<99; j++) {
+	testspec.Flux[j] = testspec.ParameterValues[0]+10*testspec.ParameterValues[1];
+	addFlux[j] = 1.0*(i1+1)*(i2+1);
+      }
+      testspec.addFlux.push_back(addFlux);
+      test.Spectra.push_back(testspec);
+      testspec.addFlux.clear();
+    }
+  }
+
+  // now write out the table.
+
+  test.write("test.mod");
+
+  exit(0);
+}
+\end{verbatim}
+
+
+\subsection{table classes}
+
+The class for parameters:
+
+\begin{verbatim}
+class tableParameter{
+ public:
+
+  string Name;                  // Parameter name
+  int InterpolationMethod;      // 0==linear, 1==log, -1==additional (non-interp)
+  Real InitialValue;            // Initial value for fit
+  Real Delta;                   // Delta for fit
+  Real Minimum;                 // Hard lower-limit 
+                                // (should correspond to first tabulated value)
+  Real Bottom;                  // Soft lower-limit
+  Real Top;                     // Soft upper-limit
+  Real Maximum;                 // Hard upper-limit 
+                                // (should correspond to last tabulated value)
+  vector<Real> TabulatedValues; // Tabulated parameter values
+\end{verbatim}
+
+and its public methods:
+
+\begin{itemize}
+
+\item    \begin{verbatim} string disp() \end{verbatim}
+
+           Display information about the table parameter - return as a string.
+
+\item    \begin{verbatim} void clear() \end{verbatim}
+
+           Clear contents of the table parameter
+
+\end{itemize}
+
+The class for model spectra:
+
+\begin{verbatim}
+class tableSpectrum{
+ public:
+
+  vector<Real> Flux;               // Model flux
+  vector<Real> ParameterValues;    // Parameter values for this spectrum
+  vector<vector<Real>> addFlux;    // Model fluxes for any additional
+                                   // parameters
+\end{verbatim}
+
+and its public methods:
+
+\begin{itemize}
+
+\item    \begin{verbatim} void pushaddFlux(vector<Real>) \end{verbatim}
+            
+            Push an additional parameter spectrum
+
+\item    \begin{verbatim} vector<Real> getaddFlux(Integer Number) \end{verbatim}
+            
+            Get an additional parameter spectrum
+
+\item    \begin{verbatim} string disp() \end{verbatim}
+
+            Display information about the table spectrum - return as a string.
+
+\item    \begin{verbatim} void clear() \end{verbatim}
+
+            Clear contents of the table spectrum
+
+\end{itemize}
+
+Finally, the class for the complete table:
+
+\begin{verbatim}
+class table{
+ public:
+
+  vector <tableParameter> Parameters; // Parameter information
+  vector <tableSpectrum> Spectra;     // Tabulated model spectra
+  string ModelName;                   // Name to use in xspec
+  string ModelUnits;                  // Units (not used at present)
+  int NumIntParams;                   // Dimension of interpolation grid
+  int NumAddParams;                   // Number of additional parameters
+  bool isError;                       // If true then model errors included
+  bool isRedshift;                    // If true include redshift
+  bool isAdditive;                    // If true model is additive
+  vector<Real> Energies;              // Energy bins on which model is calculated
+                                      // The size should be one larger than that
+                                      // of the spectrum array
+  string EnergyUnits;
+\end{verbatim}
+
+and its public methods:
+
+\begin{itemize}
+
+\item    \begin{verbatim} Integer read(string filename) \end{verbatim}
+            
+            Read the table model object from filename.
+
+\item    \begin{verbatim} void pushParameter(tableParameter paramObject) \end{verbatim}
+            
+            Push a table parameter object
+
+\item    \begin{verbatim} void pushSpectrum(tableSpectrum spectrumObject) \end{verbatim}
+            
+            Push a table spectrum object
+
+\item    \begin{verbatim} tableParameter getParameter(Integer Number) \end{verbatim}
+            
+            Get a table parameter object
+
+\item    \begin{verbatim} tableSpectrum getSpectrum(Integer Number) \end{verbatim}
+            
+            Get a table spectrum object
+
+\item    \begin{verbatim} string disp() \end{verbatim}
+
+            Display information about the table - return as a string.
+
+\item    \begin{verbatim} void clear() \end{verbatim}
+
+            Clear contents of the table
+
+\item    \begin{verbatim} string check() \end{verbatim}
+
+            Check completeness and consistency of information in table,
+            if there is a problem then return diagnostic in string.
+
+\item    \begin{verbatim} Integer convertUnits() \end{verbatim}
+
+            Convert the table to standard units (keV and ph/cm$^2$/s).
+
+\item    \begin{verbatim} void reverseRows() \end{verbatim}
+
+            Reverse the spectra if energies are not increasing (this
+            can occur after using convertUnits to convert from wavelength).
+
+\item    \begin{verbatim} write(string filename) \end{verbatim}
+
+            Write to a FITS file
+
+\end{itemize}
+
+
+\section{Grouping}
+
+\subsection{grouping class}
+
+\begin{verbatim}
+class grouping{
+ public:
+
+  vector<Integer> flag;     // Grouping flag: 1=start of bin, 
+                            //                0=continuation of bin
+\end{verbatim}
+
+\subsection{grouping class public methods}
+
+\begin{itemize}
+
+\item  \begin{verbatim}grouping(vector<Integer> flaginput) \end{verbatim}
+
+          Constructor from an integer array of flag values.
+
+\item  \begin{verbatim}string disp() \end{verbatim}  
+
+          Display grouping information. - return as a string.
+
+\item  \begin{verbatim}void clear() \end{verbatim}  
+
+          Clear grouping information.
+
+\item  \begin{verbatim}Integer read(string filename, const Integer Number, 
+               const Integer First) \end{verbatim}
+
+          Read from an ascii file of grouping factors. Each line of
+          the file should have three numbers, the start bin, end bin, and
+          grouping factor. The input bin numbers start at First and
+          there are Number in total.
+
+\item  \begin{verbatim}void load(const Integer BinFactor, const Integer Number) \end{verbatim}
+
+          Set the grouping flags for Number bins with a binning factor
+          of BinFactor.
+
+\item  \begin{verbatim}Integer load(const vector<Integer>& StartBin, const vector<Integer>& EndBin, 
+               const vector<Integer>& BinFactor, const Integer Number, 
+               const Integer First) \end{verbatim}
+
+         Set grouping flags from an array of binning information in
+         the StartBin, EndBin and BinFactor arrays. The input bin
+         numbers start at First and there are Number in total.
+
+\item  \begin{verbatim}bool newBin(const Integer Bin) \end{verbatim}
+
+          Return whether Bin is the start of a group.
+
+\item  \begin{verbatim}Integer size() \end{verbatim}
+
+          Return number of bins in grouping object.
+
+\end{itemize}
+
+\subsection{Other grouping routines}
+
+\begin{itemize}
+
+\item  \begin{verbatim} template <class T> void GroupBin(const vector<T>& inArray, 
+       const Integer mode, const grouping& GroupInfo, vector<T>& outArray) \end{verbatim}
+       \begin{verbatim} template <class T> void GroupBin(const valarray<T>& inArray, 
+       const Integer mode, const grouping& GroupInfo, valarray<T>& outArray) \end{verbatim}
+
+          This routine applies GroupInfo to the input inArray to
+          create the output outArray. The behavior is determined by
+          mode which can take five values: SumMode which adds the
+          contents of all bins in a group; SumQuadMode which adds the
+          bins in quadrature; MeanMode which returns the arithmetic
+          mean of the all bins in a group; FirstEltMode which returns
+          the value of the first bin in each group; LastEltMode which
+          returns the value of the last bin in each group.
+
+\item  \begin{verbatim} Integer readBinFactors(string filename, vector<Integer>& StartBin, 
+               vector<Integer>& EndBin, vector<Integer>& BinFactor) \end{verbatim}
+
+          Read a file containing grouping information and place into
+          the arrays StartBin, EndBin and BinFactor. Each line of
+          the file should have three numbers, the start bin, end bin, and
+          grouping factor.
+
+\end{itemize}
+
+\section{Utility routines}
+
+\begin{itemize}
+
+\item  \begin{verbatim} void SPreadColUnits(ExtHDU&, string, string&) \end{verbatim}
+
+          Read the units associated with a column.
+
+\item  \begin{verbatim} void SPwriteColUnits(Table&, string, string) \end{verbatim}
+
+          Write the units associated with a column.
+
+\item  \begin{verbatim} string SPstringTform(const vector<string>& Data) \end{verbatim}
+
+          Returns the tform string for the longest string in the input vector.
+
+\item  \begin{verbatim} Integer SPcopyHDUs(string infile, string outfile) \end{verbatim}
+
+          Copy from infile to outfile all HDUs which are not manipulated by this library. 
+
+\item  \begin{verbatim} Integer SPcopyKeys(string infile, string outfile, string HDUname, 
+       Integer HDUnumber) \end{verbatim}
+       \begin{verbatim} Integer SPcopyKeys(string infile, string outfile, string HDUname, 
+       string outHDUname, Integer HDUnumber, Integer outHDUnumber) \end{verbatim}
+
+          Copy non-critical keywords from infile to outfile for HDUname 
+          extension with EXTVER HDUnumber.
+
+\item  \begin{verbatim} Integer SPwriteCreator(string filename, string HDUname,
+       string creator) \end{verbatim}
+       \begin{verbatim} Integer SPwriteCreator(string filename, string HDUname,
+       Integer HDUnumber, string creator) \end{verbatim}
+
+          Write the creating program and version id string into the
+          CREATOR keyword in the specified file.
+
+\item  \begin{verbatim} bool isValidXUnits(string xUnits) \end{verbatim}
+
+          Checks whether xUnits are supported.
+
+\item  \begin{verbatim} Integer calcXfactor(string xUnits, bool& isWave, Real& xFactor) \end{verbatim}
+
+          Calculates the conversion factor for xUnits
+          energies/wavelength to keV. If xUnits is wavelength then
+          returns isWave as true.
+
+\item  \begin{verbatim} bool isValidYUnits(string yUnits) \end{verbatim}
+
+          Checks whether yUnits are supported.
+
+\item  \begin{verbatim} Integer calcYfactor(string yUnits, bool&
+  isEnergy, bool& perWave, Real& yFactor) \end{verbatim}
+
+          Calculates the conversion factor for yUnits to ph/cm$^2$/s.
+          If yUnits contains an energy numerator (eg ergs) then
+          returns isEnergy as true. If yUnits contains a wavelength
+          denominator (eg micron) returns perWave as true.
+
+\item  \begin{verbatim} void SPreportError(int errorNumber, string optionalString) \end{verbatim}
+
+          Add to the error stack errorNumber along with an optional
+          string containing additional information.
+
+\item  \begin{verbatim} string SPgetErrorStack() \end{verbatim}
+
+          Write the entire error stack into a string.
+
+\item  \begin{verbatim} string SPclearErrorStack() \end{verbatim}
+
+          Clear the error stack.
+
+\item  \begin{verbatim} vector<string> SPreadStrings(const string& filename) \end{verbatim}
+
+          Read a text file and place each row into its own element of
+          a vector<string>.
+
+\item  \begin{verbatim} vector<string> SPtokenize(const string & str, 
+       const string & delim) \end{verbatim}
+
+          Divide a string into substrings delimited using delim.
+
+\item  \begin{verbatim} string SPmatchString(const string& str, 
+       const vector<string>& strArray, int& nmatch) \end{verbatim}
+
+          Partial match a string from a vector of strings.
+
+\item  \begin{verbatim} bool SPstring2Real(const vector<string>& str, 
+       vector<Real>& value) \end{verbatim}
+
+          Convert a vector of strings into a vector of Reals.
+
+\item  \begin{verbatim} bool SPstring2Real(const string& str, Real& value) \end{verbatim}
+
+          Convert a string into a Real.
+
+\item  \begin{verbatim} bool SPstring2Integer(const vector<string>& str, 
+       vector<Integer>& value) \end{verbatim}
+
+          Convert a vector of strings into a vector of Integers.
+
+\item  \begin{verbatim} bool SPstring2Integer(const string& str, Integer& value) \end{verbatim}
+
+          Convert a string into an Integer.
+
+\item  \begin{verbatim} void SPcalcShift(const vector<Real>& Low, 
+       const vector<Real>& High, const vector<Integer>& vStart, 
+       const vector<Integer>& vEnd, const vector<Real>& vShift, 
+       const vector<Real>& vFactor, vector<vector<size\_t> >& fromIndex, 
+       vector<vector<Real> >& Fraction) \end{verbatim}
+
+          Calculate factors for shifting an array
+
+\end{itemize}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%    C interface description                                           %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{C interface}
+
+\section{PHA files}
+
+\subsection{PHA structure}
+
+\begin{verbatim}
+
+struct PHA {
+
+  long NumberChannels;                 /* Number of spectrum channels */
+  long FirstChannel;                   /* First channel number */
+
+  float* Pha;/*NumberChannels*/        /* PHA data */
+  float* StatError;/*NumberChannels*/  /* Statistical error */
+  float* SysError;/*NumberChannels*/   /* Statistical error */
+
+  int*   Quality;/*NumberChannels*/    /* Data quality */
+  int*   Grouping; /*NumberChannels*/  /* Data grouping */
+  int*   Channel; /*NumberChannels*/   /* Channel number */
+
+  float* AreaScaling;/*NumberChannels*//* Area scaling factor */
+  float* BackScaling;/*NumberChannels*//* Background scaling factor */
+
+  float Exposure;                      /* Exposure time */
+  float CorrectionScaling;             /* Correction file scale factor */
+  int   DetChans;                      /* Content of DETCHANS keyword */
+
+  int Poisserr;                        /* If true, errors are Poisson */
+  char Datatype[FLEN_KEYWORD];         /* "COUNT" for count data and */
+                                       /* "RATE" for count/sec */
+  char Spectrumtype[FLEN_KEYWORD];     /* "TOTAL", "NET", or "BKG" */
+
+  char ResponseFile[FLEN_FILENAME];    /* Response filename */
+  char AncillaryFile[FLEN_FILENAME];   /* Ancillary filename */
+  char BackgroundFile[FLEN_FILENAME];  /* Background filename */
+  char CorrectionFile[FLEN_FILENAME];  /* Correction filename */
+
+  char ChannelType[FLEN_KEYWORD];      /* Value of CHANTYPE keyword */
+  char PHAVersion[FLEN_KEYWORD];       /* PHA extension format version */
+  char Telescope[FLEN_KEYWORD];                             
+  char Instrument[FLEN_KEYWORD];
+  char Detector[FLEN_KEYWORD];
+  char Filter[FLEN_KEYWORD];
+  char Datamode[FLEN_KEYWORD];
+
+  char *XSPECFilter[100];              /* Filter keywords */
+};
+
+\end{verbatim}
+
+\subsection{PHA routines}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int ReadPHAtypeI(char *filename, long PHAnumber, struct PHA *phastruct)\end{verbatim}
+
+               Read the type I SPECTRUM extension from a FITS file -
+               if there are multiple SPECTRUM extensions then read the
+               one with EXTVER=PHAnumber.
+
+\item      \begin{verbatim} int ReadPHAtypeII(char *filename, long PHAnumber, long NumberSpectra,
+                   long *SpectrumNumber, struct PHA **phastructs)\end{verbatim}
+
+               Read the type II SPECTRUM extension from a FITS file - 
+               if there are multiple SPECTRUM extensions then read the
+               one with EXTVER=PHAnumber. Within the SPECTRUM extension reads the
+               spectra listed in the SpectrumNumber vector.
+
+\item      \begin{verbatim} int WritePHAtypeI(char *filename, struct PHA *phastruct)\end{verbatim}
+
+               Write the spectrum to a type I SPECTRUM extension in a FITS file.
+
+\item      \begin{verbatim} int WritePHAtypeII(char *filename, long NumberSpectra, 
+                   struct PHA **phastructs)\end{verbatim}
+
+               Write the multiple spectra to a type II SPECTRUM
+               extension in a FITS file.
+
+\item      \begin{verbatim} int ReturnPHAtype(char *filename, long PHAnumber)\end{verbatim}
+
+               Return the type of the SPECTRUM extension with EXTVER=PHAnumber.
+
+\item      \begin{verbatim} void DisplayPHAtypeI(struct PHA *phastruct)\end{verbatim}
+
+               Write information about the spectrum to stdout.
+
+\item      \begin{verbatim} void DisplayPHAtypeII(long NumberSpectra, struct PHA **phastructs)\end{verbatim}
+
+               Write information about multiple spectra to stdout.
+
+\item      \begin{verbatim} int RebinPHA(struct PHA *phastruct, struct BinFactors *bin)\end{verbatim}
+
+               Rebin spectrum.
+
+\item      \begin{verbatim} int CheckPHAcounts(char *filename, long PHAnumber)\end{verbatim}
+
+               Return 0 if COUNTS column exists and is integer 
+               or COUNTS column does not exist.
+
+\item      \begin{verbatim} long ReturnNumberofSpectra(char *filename, long PHAnumber)\end{verbatim}
+
+               Return the number of spectra in the type II SPECTRUM
+               extension which has EXTVER equal to PHAnumber.
+
+\end{itemize}
+
+\section{RMF files}
+
+\subsection{RMF structure}
+
+\begin{verbatim}
+
+struct RMF {
+
+  long NumberChannels;                           /*Number of spectrum channels*/
+  long NumberEnergyBins;                         /*Number of response energies*/
+  long NumberTotalGroups;                        /*Total number of resp groups*/
+  long NumberTotalElements;                      /*Total number of resp elts*/
+  long FirstChannel;                             /*First channel number*/
+  long isOrder;                                  /*If true grating order*/
+                                                 /*information included*/
+
+  long* NumberGroups;/*NumberEnergyBins*/        /*Number of resp groups for*/
+                                                 /*this energy bin*/
+  long* FirstGroup;/*NumberEnergyBins*/          /*First resp group for this*/
+                                                 /*energy bin (counts from 0)*/
+
+  long* FirstChannelGroup;/*NumberTotalGroups*/  /*First channel number in*/
+                                                 /*this group*/
+  long* NumberChannelGroups;/*NumberTotalGroups*//*Num of channels in this grp*/
+  long* FirstElement;/*NumberTotalGroups*/       /*First resp elt for this grp*/
+                                                 /*(counts from 0)*/
+  long* OrderGroup;/*NumberTotalGroups*/         /*Grating order of this grp*/
+
+  float* LowEnergy;/*NumberEnergyBins*/          /*Start energy of bin*/
+  float* HighEnergy;/*NumberEnergyBins*/         /*End energy of bin*/
+
+  float* Matrix;/*NumberTotalElements*/          /*Matrix elements*/
+
+  float* ChannelLowEnergy;/*NumberChannels*/     /*Start energy of channel*/
+  float* ChannelHighEnergy;/*NumberChannels*/    /*End energy of channel*/
+
+  float AreaScaling;                             /*Value of EFFAREA keyword*/
+  float ResponseThreshold;                       /*Minimum value in response*/
+
+  char EnergyUnits[FLEN_KEYWORD];                /*Units for energies*/
+  char RMFUnits[FLEN_KEYWORD];                   /*Units for RMF*/
+
+  char ChannelType[FLEN_KEYWORD];                /*Value of CHANTYPE keyword*/
+  char RMFVersion[FLEN_KEYWORD];                 /*MATRIX format version*/
+  char EBDVersion[FLEN_KEYWORD];                 /*EBOUNDS format version*/
+  char Telescope[FLEN_KEYWORD];                             
+  char Instrument[FLEN_KEYWORD];
+  char Detector[FLEN_KEYWORD];
+  char Filter[FLEN_KEYWORD];
+  char RMFType[FLEN_KEYWORD];                    /*HDUCLAS3 keyword in MATRIX*/
+  char RMFExtensionName[FLEN_VALUE];             /*EXTNAME keyword in MATRIX*/
+  char EBDExtensionName[FLEN_VALUE];             /*EXTNAME keyword in EBOUNDS*/
+
+};
+
+struct RMFchan {
+
+  long NumberChannels;                          /*Number of spectrum channels*/
+  long NumberEnergyBins;                        /*Number of response energies*/
+  long NumberTotalGroups;                       /*Total number of resp groups*/
+  long NumberTotalElements;                     /*Total number of resp elts*/
+  long FirstChannel;                            /*First channel number*/
+  long isOrder;                                 /*If true grating order*/
+                                                /*information included*/
+
+  long* NumberGroups;/*NumberChannels*/         /*Number of resp groups for*/
+                                                /*this channel bin*/
+  long* FirstGroup;/*NumberChannels*/           /*First resp group for this*/
+                                                /*channel bin (counts from 0)*/
+
+  long* FirstEnergyGroup;/*NumberTotalGroups*/  /*First energy bin in this grp*/
+  long* NumberEnergyGroups;/*NumberTotalGroups*//*Number of energy bins in*/
+                                                /*this group */
+  long* FirstElement;/*NumberTotalGroups*/      /*First resp elt for this grp*/
+                                                /*(counts from 0)*/
+  long* OrderGroup;/*NumberTotalGroups*/        /*Grating order of this group*/
+
+  float* LowEnergy;/*NumberEnergyBins*/         /*Start energy of bin*/
+  float* HighEnergy;/*NumberEnergyBins*/        /*End energy of bin*/
+
+  float* Matrix;/*NumberTotalElements*/         /*Matrix elements*/
+
+  float* ChannelLowEnergy;/*NumberChannels*/    /*Start energy of channel*/
+  float* ChannelHighEnergy;/*NumberChannels*/   /*End energy of channel*/
+
+  float AreaScaling;                            /*Value of EFFAREA keyword*/
+  float ResponseThreshold;                      /*Minimum value in response*/
+
+  char EnergyUnits[FLEN_KEYWORD];               /*Units for energies*/
+  char RMFUnits[FLEN_KEYWORD];                  /*Units for RMF*/
+
+  char ChannelType[FLEN_KEYWORD];               /*Value of CHANTYPE keyword*/
+  char RMFVersion[FLEN_KEYWORD];                /*MATRIX format version*/
+  char EBDVersion[FLEN_KEYWORD];                /*EBOUNDS format version*/
+  char Telescope[FLEN_KEYWORD];                             
+  char Instrument[FLEN_KEYWORD];
+  char Detector[FLEN_KEYWORD];
+  char Filter[FLEN_KEYWORD];
+  char RMFType[FLEN_KEYWORD];                   /*HDUCLAS3 keyword in MATRIX*/
+  char RMFExtensionName[FLEN_VALUE];            /*EXTNAME keyword in MATRIX*/
+  char EBDExtensionName[FLEN_VALUE];            /*EXTNAME keyword in EBOUNDS*/
+
+};
+
+\end{verbatim}
+
+\subsection{RMF routines}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int ReadRMFMatrix(char *filename, long RMFnumber, struct RMF *rmf)\end{verbatim}
+
+               Read the RMF matrix from a FITS file - if there are 
+               multiple RMF extensions then read the one with EXTVER=RMFnumber.
+
+\item      \begin{verbatim} int WriteRMFMatrix(char *filename, struct RMF *rmf)\end{verbatim}
+
+               Write the RMF matrix to a FITS file.
+
+\item      \begin{verbatim} int ReadRMFEbounds(char *filename, long EBDnumber, struct RMF *rmf).\end{verbatim}
+
+               Read the RMF ebounds from a FITS file - if there
+               are multiple EBOUNDS extensions then read the one with 
+               EXTVER=EBDnumber.
+
+\item      \begin{verbatim} int WriteRMFEbounds(char *filename, struct RMF *rmf)\end{verbatim}
+
+               Write the RMF ebounds to a FITS file.
+
+\item      \begin{verbatim} void DisplayRMF(struct RMF *rmf)\end{verbatim}
+
+               Write information about RMF to stdout.
+
+\item      \begin{verbatim} void ReturnChannel(struct RMF *rmf, float energy, int NumberPhotons, 
+                   long *channel)\end{verbatim}
+ 
+               Return the channel for a photon of the given input 
+               energy - draws random numbers to return NumberPhotons 
+               entries in the channel array.
+
+\item      \begin{verbatim} void NormalizeRMF(struct RMF *rmf)\end{verbatim}
+
+               Normalize the response to unity in each energy.
+
+\item      \begin{verbatim} void CompressRMF(struct RMF *rmf, float threshold)\end{verbatim}
+
+               Compress the response to remove all elements 
+               below the threshold value.
+
+\item      \begin{verbatim} int RebinRMFChannel(struct RMF *rmf, struct BinFactors *bins)\end{verbatim}
+
+               Rebin the RMF in channel space.
+
+\item      \begin{verbatim} int RebinRMFEnergy(struct RMF *rmf, struct BinFactors *bins)\end{verbatim}
+
+               Rebin the RMF in energy space.
+
+\item      \begin{verbatim} void TransposeRMF(struct RMF *rmf, struct RMFchan *rmfchan)\end{verbatim}
+
+               Transpose the matrix.
+
+\item      \begin{verbatim} float ReturnRMFElement(struct RMF *rmf, long channel, long energybin)\end{verbatim}
+
+               Return a single value from the matrix.
+
+\item      \begin{verbatim} float ReturnRMFchanElement(struct RMFchan *rmfchan, long channel, 
+                   long energybin)\end{verbatim}
+
+               Return a single value from the transposed matrix.
+
+\item      \begin{verbatim} int AddRMF(struct RMF *rmf1, struct RMF *rmf2)\end{verbatim}
+
+               Add rmf2 onto rmf1.
+
+\end{itemize}
+
+\section{ARF files}
+
+\subsection{ARF structure}
+
+\begin{verbatim}
+struct ARF {
+
+  long NumberEnergyBins;                  /* Number of response energies */
+
+  float* LowEnergy; /*NumberEnergyBins*/  /* Start energy of bin */
+  float* HighEnergy; /*NumberEnergyBins*/ /* End energy of bin */
+
+  float* EffArea;    /*NumberEnergyBins*/ /* Effective areas */
+
+  char EnergyUnits[FLEN_KEYWORD];         /* Units for energies */
+  char arfUnits[FLEN_KEYWORD];            /* Units for effective areas */
+
+  char ARFVersion[FLEN_KEYWORD];          /* SPECRESP extension format version */
+  char Telescope[FLEN_KEYWORD];                             
+  char Instrument[FLEN_KEYWORD];
+  char Detector[FLEN_KEYWORD];
+  char Filter[FLEN_KEYWORD];
+  char ARFExtensionName[FLEN_VALUE];      /* EXTNAME keyword in SPECRESP */
+
+};
+\end{verbatim}
+
+\subsection{ARF routines}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int ReadARF(char *filename, long ARFnumber, struct ARF *arf)\end{verbatim}
+
+               Read the effective areas from a FITS file - if there
+               are multiple SPECRESP extensions then read the one with
+               EXTVER=ARFFnumber.
+
+\item      \begin{verbatim} int WriteARF(char *filename, struct ARF *arf)\end{verbatim}
+
+               Write the ARF to a FITS file.
+
+\item      \begin{verbatim} void DisplayARF(struct ARF *arf)\end{verbatim}
+
+               Write information about ARF to stdout.
+
+\item      \begin{verbatim} int AddARF(struct ARF *arf1, struct ARF *arf2)\end{verbatim}
+
+               Add arf2 onto arf1.
+
+\item      \begin{verbatim} long MergeARFRMF(struct ARF *arf, struct RMF *rmf)\end{verbatim}
+
+               Multiply the ARF into the RMF.
+
+\end{itemize}
+
+\section{Binning and utility}
+
+\subsection{BinFactors structure}
+
+\begin{verbatim}
+
+struct BinFactors {
+
+  long NumberBinFactors;
+
+  long *StartBin;
+  long *EndBin;
+  long *Binning;
+
+};
+
+\end{verbatim}
+
+\subsection{Binning and utility routines}
+
+\begin{itemize}
+
+\item      \begin{verbatim} int SPReadBinningFile(char *filename, struct BinFactors *binning)\end{verbatim}
+
+               Read an ascii file with binning factors and load the binning array.
+
+\item      \begin{verbatim} int SPSetGroupArray(int inputSize, struct BinFactors *binning, 
+                   int *groupArray)\end{verbatim}
+
+               Set up a grouping array using the BinFactors structure.
+
+\item      \begin{verbatim} int SPBinArray(int inputSize, float *input, int *groupArray, int mode, 
+                   float *output)\end{verbatim}
+
+               Bin an array using the information in the grouping array.
+
+\item      \begin{verbatim} void SPsetCCfitsVerbose(int mode)\end{verbatim}
+
+               Set the CCfits verbose mode.
+
+\item      \begin{verbatim} int SPcopyExtensions(char *infile, char *outfile)\end{verbatim}
+
+               Copy all HDUs which are not manipulated by this library.
+
+\item      \begin{verbatim} int SPcopyKeywords(char *infile, char *outfile, char *hduname, 
+                   int hdunumber)\end{verbatim}
+
+               Copy all non-critical keywords for the hdunumber
+               instance of the extension hduname.
+
+\end{itemize}
+
+\appendix
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  Appendix on ftools and heasp                                                    %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Ftools and Heasp}
+
+The following table lists ftools that operate on spectra or responses
+and the related HEASP routines. The read and write routines apply in
+all cases so are not included in the table. In some, relatively
+simple, cases the ftool equivalent could be performed by directly
+getting and setting class members. 
+
+\begin{table}
+  \begin{tabular}{ll}
+    \hline\hline
+    {Ftool} & {corresponding HEASP C++ routines} \\
+    \hline
+    addarf      & arf::operator+=, arf::operator+  \\
+    addrmf      & rmf::operator+=, rmf::operator+  \\
+    cmppha      & phaII::get \\
+    cmprmf      & rmf::compress \\
+    dmprmf      & directly access rmf class members \\
+    gcorpha     & pha::shiftChannels \\
+    gcorrmf     & rmf::shiftChannels \\
+    marfrmf     & rmf::operator*=, rmf::operator* \\
+    rbnrmf      & grouping::load, rmf::rebinChannels, rmf::rebinEnergies \\
+    arf2arf1    & arfII:get \\
+    ascii2pha   & directly set pha class members \\
+    chkarf      & arf::check, arfII::check \\
+    chkpha      & pha::check, phaII::check \\
+    chkrmf      & rmf::check \\
+    flx2xsp     & directly set pha and rmf class members \\
+    flx2tab     & directly set table class members \\
+    grppha      & grouping::load, pha::setGrouping \\
+    grppha2     & phaII::get, grouping::load \\
+                & pha::setGrouping, phaII::push \\
+    mathpha     & pha::operator+=, pha::operator+, pha::operator*= \\
+    mkfiltrsp   & directly set rmf class members \\
+    rbnpha      & grouping::load, pha::setGrouping, pha::rebinChannels \\
+    rsp2rmfarf  & directly get and set rmf and arf class members \\
+    sdss2xsp    & directly set pha and rmf class members \\
+    sprbnarf    & grouping::load, GroupBin \\
+    \hline
+  \end{tabular}
+\end{table}
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  Appendix with error codes                                                       %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Error Codes}
+
+\begin{itemize}
+
+\item 1 : NoSuchFile : Cannot find the file specified.
+
+\item 2 : NoData : A column read has no members.
+
+\item 3 : NoChannelData : The SPECTRUM has no Channel column and no
+channel data can be constructed.
+
+\item 4 : NoStatError : The SPECTRUM has no statistical error column and POISSERR=F.
+
+\item 5 : CannotCreate : Cannot create a new file.
+
+\item 6 : NoEnergLo : The ENERG\_LO column in an ARF or RMF file has no data.
+
+\item 7 : NoEnergHi : The ENERG\_HI column in an ARF or RMF file has no data.
+
+\item 8 : NoSpecresp : The SPECRESP column in an ARF has no data.
+
+\item 9 : NoEboundsExt : There is no EBOUNDS extension in an RMF file.
+
+\item 10 : NoEmin : The E\_MIN column in an RMF file has no data.
+
+\item 11 : NoEmax : The E\_MAX column in an RMF file has no data.
+
+\item 12 : NoMatrixExt : There is no MATRIX extension in an RMF file.
+
+\item 13 : NoNgrp : The N\_GRP column in an RMF file has no data.
+
+\item 14 : NoFchan : The F\_CHAN column in an RMF file has no data.
+
+\item 15 : NoNchan : The N\_CHAN column in an RMF file has no data.
+
+\item 16 : NoMatrix : The MATRIX column in an RMF file has no data.
+
+\item 17 : CannotCreateMatrixExt : The output MATRIX extension cannot be created.
+
+\item 18 : CannotCreateEboundsExt : The output EBOUNDS extension cannot be created.
+
+\item 19 : InconsistentGrouping : The grouping information size is
+different from that of the array to which it is being applied.
+
+\item 20 : InconsistentEnergies : The energy information differs
+between the objects which are being compared.
+
+\item 21 : InconsistentChannels : The channel information differs
+between the objects which are being compared.
+
+\item 22 : InconsistentUnits : The units information differs
+between the objects which are being compared.
+
+\item 23 : UnknownXUnits : The wavelength or energy units are not
+  supported.
+
+\item 24 : UnknownYUnits : The flux units are not supported.
+
+\item 25 : InconsistentNumelt : The RMF MATRIX extension NUMELT
+  keyword is inconsistent with the actual number of response elements.
+
+\item 26 : InconsistentNumgrp : The RMF MATRIX extension NUMGRP
+  keyword is inconsistent with the actual number of response groups.
+
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  Appendix with changes                                                           %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Change log}
+
+\section{v1.02}
+
+\subsection{General}
+
+\begin{itemize}
+
+\item Added SPwriteCreator routine to write the CREATOR keyword.
+
+\item Added SPreadStrings routine to read a text file into a
+  vector<string>.
+
+\item Added SPtokenize routine to divide a string into substrings.
+
+\item Added SPmatchString routine to partial match a string from a
+  vector of strings.
+
+\item Added SPstring2Real routine to convert a string to a Real.
+
+\item Added SPstring2Integer routine to convert a string to an Integer.
+
+\item Added SPcalcShift routine to calculate factors used for shifting
+  an array.
+
+\end{itemize}
+
+\subsection{pha, phaII}
+
+\begin{itemize}
+
+\item Added shiftChannels options to include a stretch by specified
+  factor, to deal with multiple shifts at the same time, and to allow
+  the shift to be specified in energy instead of channels.
+
+\end{itemize}
+
+\subsection{rmf}
+
+\begin{itemize}
+
+\item Added RandomChannels options to use multiple input energies,
+  each with a different number of output photons.
+
+\item Added an uncompress method to turn a compressed matrix into the
+  full rectangular form.
+
+\item Added shiftChannels options to include a stretch by specified
+  factor, to deal with multiple shifts at the same time, and to allow
+  the shift to be specified in energy instead of channels.
+
+\item Added a *= and * operators to multiply by a constant.
+
+\item Added substituteRow method to replace a given row in the
+  rmf. Note that this is inefficient so should not be used repeatedly
+  to construct a new rmf.
+
+\end{itemize}
+
+\subsection{arf}
+
+\begin{itemize}
+
+\item Added a rebin method.
+
+\item Added *= and * operators to multiply by a constant.
+
+\end{itemize}
+
+\section{v1.01}
+
+\subsection{General}
+
+\begin{itemize}
+
+\item Added unit conversions through calcXfactor and calcYfactor
+  routines.
+
+\item Added a global SPerrorStack to improve error reporting. Entries
+  are added to the stack using SPreportError and can be retrieved
+  using SPgetErrorStack which returns a string. SPclearErrorStack
+  resets the stack.
+
+\item Added modifications to all classes to handle case where user
+  writes an extension of some type into a file which already contains
+  an extension of the same type. Now writes the new extension with an
+  EXTVER keyword set to one more than the highest EXTVER of other
+  extensions of the same type in the file.
+
+\item Made checkCompatibility routines consistent across classes and
+  added a check for units.
+
+\end{itemize}
+
+\subsection{pha, phaII}
+
+\begin{itemize}
+
+\item Overloaded +, += for pha objects to add them and *= to multiply
+  by a constant.
+
+\item Added version of pha::rebinChannels which allows control of the
+  method for calculating the new StatError.
+
+\item Added pha::shiftChannels to shift channels.
+
+\item Added missing write of the DETCHANS keyword/column for type II
+  PHA files.
+
+\item Fixed problem in C wrappers for spectra with arrays containing
+  identical values.
+
+\end{itemize}
+
+\subsection{rmf}
+
+\begin{itemize}
+
+\item Replaced the compressLine function with the rmf::addRow
+  method. Added the reverseRows method to use in cases where the
+  original energy bins are not in increasing order. Added
+  calcGaussResp function to calculate the gaussian response for one
+  row of a response matrix.
+
+\item Added rmf::clearMatrix method to wipe only the response matrix
+  part of the rmf object.
+
+\item Added rmf::shiftChannels to shift channels.
+
+\item Added support for grating orders to the rmf class.
+
+\item Corrected error in rmf when reading a file with MATRIX as a
+  fixed length vector column.
+
+\item Fixed a counting from 0 or 1 bug in rmf::RowValues.
+
+\end{itemize}
+
+\subsection{table}
+
+\begin{itemize}
+
+\item Added table::read method.
+
+\item Added table::reverseRows method to reverse the order of the
+  Energy, Flux and addFlux vectors. This may be necessary if input is in
+  wavelengths and convertUnits has been used.
+
+\end{itemize}
+
+
+\end{document}

@@ -1,0 +1,660 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotscreen/uvotscreen,v $
+# $Revision: 1.19 $
+# $Date: 2016/04/28 14:38:49 $
+#
+#	uvotscreen
+#
+#	screen UVOT events
+#
+#
+# $Log: uvotscreen,v $
+# Revision 1.19  2016/04/28 14:38:49  rwiegand
+# Update GTI and WINDOW extensions to reflect screening
+#
+# Revision 1.18  2008/03/11 17:33:42  rwiegand
+# Reimplemented to use rowfiltering instead of extractor for filter events.
+# Propagate updated WINDOW extension to output.
+#
+# Revision 1.17  2005/11/02 15:19:33  rwiegand
+# Updated external command invocations to use Task::shell.
+#
+# Revision 1.16  2005/09/16 12:17:52  rwiegand
+# Allow user to qualify CALDB queries.
+#
+# Revision 1.15  2005/06/07 13:30:52  rwiegand
+# Write notes for CALDB parameters.
+#
+# Revision 1.14  2005/03/17 21:39:03  rwiegand
+# Pass copyall to extractor to prevent WINDOW extension from being lost.
+# Assume data is time-ordered.  Write parameter history.
+#
+# Revision 1.13  2005/01/19 21:45:38  rwiegand
+# Corrected bad pixel list CALDB code name.
+#
+# Revision 1.12  2004/10/15 14:14:38  rwiegand
+# Pass prefr=0 and postfr=1 parameters to maketime.
+#
+# Revision 1.11  2004/07/09 16:20:53  rwiegand
+# Implemented CALDB support.  Renamed bad pixel list field.
+#
+# Revision 1.10  2004/06/23 14:32:32  rwiegand
+# Use extractor support for dealing with GTI extensions.
+#
+# Revision 1.9  2004/05/20 20:06:12  rwiegand
+# Parameter renaming.
+#
+# Revision 1.8  2004/05/05 22:11:19  rwiegand
+# Updated to use UVOT::BadPixels module and account for bad pixel list entry
+# TIME attribute.
+#
+# Revision 1.7  2003/12/03 14:46:09  rwiegand
+# Updated event table extension name to 'EVENTS'.
+#
+# Revision 1.6  2003/11/26 15:27:38  rwiegand
+# Only close files that exist.
+#
+# Revision 1.5  2003/09/11 18:07:08  miket
+# filelist must be space-separated, not comma-separated
+#
+# Revision 1.4  2003/08/05 17:12:21  rwiegand
+# Provide parameter evexpr for filtering EVENT table.  Renamed old expr parameter
+# to aoexpr (for attitude/orbit expression).  Removed old passqual parameter.
+#
+# Revision 1.3  2003/08/04 19:36:05  rwiegand
+# Update QUALITY column in EVENT table based on bad pixel list when badpixels
+# parameter is not NONE.  Added unit test.
+#
+# Revision 1.2  2003/07/25 20:10:03  rwiegand
+# Implemented passqual parameter to ignore specified quality flags.
+#
+# Revision 1.1  2003/06/13 13:26:19  rwiegand
+# Tool for screening event lists.
+#
+
+use strict;
+
+package UVOT::Screen;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use SimpleFITS;
+
+use UVOT::BadPixels;
+use Math;
+
+
+# how many rows in the EVENTS table to process at a time
+use constant MAX_CHUNK => 4000;
+
+
+# main
+{
+	my $tool = UVOT::Screen->new(version => 'v1.2');
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			produceGoodTimeIntervals
+			screenEventList
+			processBadPixels
+			refineHDUs
+			qualifyEventList
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file attorbfile=file badpixfile=file
+				aoexpr=string evexpr=string
+				cleanup=bool clobber=bool history=bool chatter=int
+				) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	if (not $args->{clobberFlag}) {
+
+		foreach my $key (qw(outfile)) {
+
+			my $path = $args->{$key};
+
+			if (-e $path) {
+				$self->error(BAD_OUTPUT,
+						"output $path exists and clobber not set");
+			}
+		}
+	}
+
+}
+
+
+sub processBadPixels
+{
+	my ($self) = @_;
+
+	my $arg = $self->args->{badpixfile};
+
+	my $path = 'NONE';
+	if ($arg !~ /^NONE$/i) {
+
+		if ($arg =~ /^CALDB/i) {
+			$self->storeKeywords($self->args->{infile},
+					keys => [ qw(TELESCOP INSTRUME DATE-OBS) ],
+					);
+
+			$path = $self->queryCALDB('BADPIX',
+					header => $self,
+					qualifiers => $arg,
+					asString => 1, withExt => 1,
+					);
+			$self->parameterNote(badpixfile => $path)
+				if $path;
+		}
+		else {
+			$path = $arg;
+		}
+
+		my $badpixels = UVOT::BadPixels->new;
+		$badpixels->loadPath($path);
+		if (not $badpixels->isValid) {
+			$self->error(BAD_INPUT, "unable to load bad pixel list");
+		}
+		else {
+			$self->updateEventQualityFlags($badpixels);
+		}
+	}
+	else {
+		$self->report("no bad pixel list to process")
+			if $self->chatter(2);
+	}
+}
+
+
+sub updateEventQualityFlags
+{
+	my ($self, $badpixels) = @_;
+
+	my $path = $self->{screened};
+	my $status = 0;
+
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READWRITE, $status);
+	if (not $fits) {
+		$self->error(BAD_INPUT, "unable to open $path: $status");
+	}
+
+	if (not $status) {
+		$fits->movnam_hdu(BINARY_TBL, 'EVENTS', 0, $status);
+		if ($status) {
+			$self->error(BAD_INPUT, 'unable to move to EVENTS extension');
+		}
+	}
+
+	my $rows = 0;
+	if (not $status) {
+		$fits->get_num_rows($rows, $status);
+		if ($status) {
+			$self->error(BAD_INPUT, 'unable to get number of rows');
+		}
+		else {
+			$self->report("screened event table contains $rows rows");
+		}
+	}
+
+	my @columns = (
+		{ name => 'RAWX' },
+		{ name => 'RAWY' },
+		{ name => 'QUALITY' },
+		{ name => 'TIME', typ => 'dbl' },
+	);
+	my %columns = map { $_->{name} => $_ } @columns;
+
+	if (not $status) {
+		foreach my $col (@columns) {
+			$col->{column} = 0;
+			$fits->get_colnum(CASEINSEN, $col->{name}, $col->{column}, $status);
+			if ($status) {
+				$self->error(BAD_INPUT,
+					"unable to find '$col->{name}' column in event table");
+			}
+			else {
+				$col->{data} = [ (0) x MAX_CHUNK ];
+			}
+		}
+	}
+
+	my $processed = 0;
+	while (not $status and $processed < $rows) {
+
+		my $chunk = $rows - $processed;
+		if ($chunk > MAX_CHUNK) {
+			$chunk = MAX_CHUNK;
+		}
+
+		# load the next chunk
+		foreach my $col (@columns) {
+			my $nulls = 0;
+			my $method = $col->{typ} ? "read_col_$col->{typ}" : 'read_col_int';
+			$fits->$method($col->{column}, $processed + 1, 1,
+						$chunk, -1, $col->{data}, $nulls, $status);
+			if ($status) {
+				$self->error(BAD_INPUT,
+					"unable to read '$col->{name}' data");
+			}
+		}
+
+		# update the flags
+		my $QUALITY = $columns{QUALITY};
+		my $rawx = $columns{RAWX}{data};
+		my $rawy = $columns{RAWY}{data};
+		my $time = $columns{TIME}{data};
+		my $quality = $QUALITY->{data};
+		my $changed = 0;
+		for (my $i = 0; $i < $chunk; ++$i) {
+			my $q = $badpixels->isBad($rawx->[$i], $rawy->[$i]);
+			if ($q and $time->[$i] > $q->{TIME}) {
+				$quality->[$i] |= $q->{QUALITY};
+				++$changed;
+			}
+		}
+
+		if ($changed) {
+			$self->report("updating $changed QUALITY flags")
+				if $self->chatter(5);
+			# write updated chunk of QUALITY
+			$fits->write_col_int($QUALITY->{column}, $processed + 1, 1,
+						$chunk, $QUALITY->{data}, $status);
+			if ($status) {
+				$self->error(BAD_INPUT,
+					"unable to write updated '$QUALITY->{name}' data");
+			}
+		}
+
+		$processed += $chunk;
+	}
+
+	if ($fits) {
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+
+}
+
+
+sub produceGoodTimeIntervals
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# run maketime on orbit/attitude quantities to produce GTIs
+	my $gti = $self->{pregtis} = $self->temporary('screen', ext => '.gti');
+
+	my $command = $self->buildCommand('maketime',
+		infile => $args->{attorbfile},
+		outfile => $gti,
+		expr => $args->{aoexpr},
+		time => 'TIME',
+		compact => 'no',
+		prefr => 0,
+		postfr => 1,
+		clobber => $args->{clobber},
+	);
+
+	$self->shell($command);
+
+	my @gtis;
+	my $status = SimpleFITS->readonly($gti)
+		->move(2)
+		->loadtable(\@gtis)
+		->close
+		->status;
+
+	if (not @gtis) {
+		$self->warning("found no good times; all events will be screened");
+		$self->{NO_GOOD_TIMES} = 1;
+	}
+}
+
+
+sub screenEventList
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $screened = $self->temporary('screened');
+	$self->{screened} = $screened;
+
+	my $filter = '[EVENTS]' . "[gtifilter('$self->{pregtis}')]";
+
+	# filter the entire event table using extractor
+	my $command = $self->buildCommand('ftcopy',
+		infile  => $args->{infile} . $filter,
+		outfile => $screened,
+		copyall => 'yes',
+		clobber => $args->{clobber},
+	);
+
+	$self->shell($command);
+}
+
+
+sub refineGTI
+{
+	my ($self, $i, $header, $name) = @_;
+
+	my @table;
+	my $gti = $self->temporary('gti');
+	my %info;
+
+	if (not $self->{NO_GOOD_TIMES}) {
+		my $command = $self->buildCommand('mgtime',
+			ingtis => join(',', $self->{screened} . "[$name]", $self->{pregtis}),
+			outgti => $gti,
+			merge => 'AND',
+			indates => '-',
+		);
+		$self->shell($command);
+		return if not $self->isValid;
+
+		$command = $self->buildCommand('cphead',
+			infile => $self->{screened} . "[$name]",
+			outfile => $gti . '[1]',
+		);
+		$self->shell($command);
+		return if not $self->isValid;
+
+		my $status = SimpleFITS->readonly($gti . '[1]')
+				->loadtable(\@table)
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to load $gti");
+			return;
+		}
+
+		%info = (
+			HDU0 => $i,
+			NAME => $name,
+			TABLE => \@table,
+		);
+		push(@{ $self->{GTIs} }, \%info);
+
+		my $expref = 0;
+		if ($name =~ /^GTI(\d+)$/) {
+			$expref = $1;
+		}
+		$info{EXPREF} = $expref;
+	}
+
+	if ($self->{NO_GOOD_TIMES} or not @table) {
+		$self->warning("refineGTI: $name excluded by screening");
+		$info{EMPTY} = 1;
+	}
+	else {
+		my $command = $self->buildCommand('ftappend',
+			infile => $gti . '[1]' . "[col #EXTNAME='$name']",
+			outfile => $self->{middle},
+		);
+		$self->shell($command);
+	}
+}
+
+
+sub refineWINDOW
+{
+	my ($self, $windows) = @_;
+
+	my $window = $self->temporary('window');
+	my $command = $self->buildCommand('ftcopy',
+		infile => $self->{screened} . '[WINDOW]',
+		outfile => $window,
+		copyall => 'no',
+	);
+	$self->shell($command);
+	return if not $self->isValid;
+
+	my @old = @$windows;
+	my @new;
+
+	my %gthdu;
+	foreach my $o (@{ $self->{GTIs} }) {
+		if (my $expref = $o->{EXPREF}) {
+			$gthdu{$expref} = $o;
+		}
+	}
+
+	$self->report('updating WINDOW extension');
+
+	my $fits = SimpleFITS->readwrite($window . '[WINDOW]');
+
+	my $row = 1;
+	foreach my $w (@old) {
+		my $expref = $w->{EXPREF} || -1;
+		my $delete = undef;
+		if (my $o = $gthdu{$expref}) {
+			if ($o->{EMPTY}) {
+				$delete = 'screened';
+			}
+			else {
+				$self->report("updating WINDOW row with EXPREF=$expref")
+					if $self->chatter(3);
+				my $gtis = $o->{TABLE};
+				my $goodTime = 0;
+				foreach my $gti (@$gtis) {
+					if ($gti->{START} < $gti->{STOP}) {
+						$goodTime += $gti->{STOP} - $gti->{START};
+					}
+				}
+				$w->{UTSTART} = $gtis->[0]{START};
+				$w->{UTSTOP} = $gtis->[-1]{STOP};
+				$w->{UTELAPSE} = $w->{UTSTOP} - $w->{UTSTART};
+				$w->{UONTIME} = $goodTime;
+				$w->{UEXPOSUR} = $goodTime * $w->{UDEADC};
+				$w->{ULIVETIM} = $w->{UEXPOSUR};
+				push(@new, $w);
+			}
+		}
+		else {
+			$delete = 'no corresponding GTI';
+		}
+
+		if ($delete) {
+			$self->report("removing WINDOW row with EXPREF=$expref because $delete")
+				if $self->chatter(3);
+			$fits->delrows([$row]);
+		}
+		else {
+			++$row;
+		}
+	}
+
+	foreach my $col (qw(UTSTART UTSTOP UTELAPSE UONTIME ULIVETIM UEXPOSUR)) {
+		my @data = map { $_->{$col} } @new;
+		$fits->writecol($col, { }, \@data);
+	}
+
+	my $status = $fits->close->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to update WINDOW [$status]");
+		return;
+	}
+
+	my $command = $self->buildCommand('ftappend',
+		infile => $window,
+		outfile => $self->{middle},
+	);
+	$self->shell($command);
+}
+
+
+sub refineHDUs
+{
+	my ($self) = @_;
+
+	# intersect each GTI extension with $self->{pregtis}
+	my $middle = $self->temporary('fixhdu');
+	$self->{middle} = $middle;
+
+	my $fits = SimpleFITS->readonly($self->{screened});
+	if (not $fits) {
+		$self->error(BAD_INPUT, "unable to open $self->{screened}");
+		return;
+	}
+
+	$self->{GTIs} = [ ];
+
+	my $nhdu = $fits->nhdu;
+	for (my $i = 0; $self->isValid and $i < $nhdu; ++$i) {
+
+		my ($append, $name);
+
+		if ($i == 0) {
+			my $command = $self->buildCommand('ftcopy',
+				infile => $self->{screened} . '[0]',
+				outfile => $middle,
+				copyall => 'no',
+			);
+			$self->shell($command);
+		}
+		else {
+			my $header;
+			$fits->move($i+1)->readheader($header, clean => 1);
+			$name = $header->{EXTNAME};
+
+			if ($name eq 'EVENTS') {
+				$append = 1;
+			}
+			elsif ($name =~ /GTI/) {
+				$self->refineGTI($i, $header, $name);
+			}
+			elsif ($name eq 'WINDOW') {
+				my @window;
+				my $status = $fits->loadtable(\@window)->status;
+				$self->refineWINDOW(\@window);
+			}
+			else {
+				# append unknown HDUs
+				$append = 1;
+			}
+		}
+
+		if ($self->isValid and $append) {
+			my $command = $self->buildCommand('ftappend',
+				infile => $self->{screened} . "[$name]",
+				outfile => $middle,
+			);
+			$self->shell($command);
+		}
+	}
+
+	$fits->close;
+}
+
+
+sub writeWINDOW
+{
+	my ($self) = @_;
+
+	my $fits = SimpleFITS->readwrite($self->{screened} . '[WINDOW]');
+
+	my @window = @{ $self->{WINDOWs} };
+
+	foreach my $col (qw(UTSTART UTSTOP UTELAPSE UONTIME ULIVETIM UEXPOSUR)) {
+		my @data = map { $_->{$col} } @window;
+		$fits->writecol($col, { }, \@data);
+	}
+
+	my $status = $fits->close->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to update WINDOW [$status]");
+	}
+}
+
+
+sub qualifyEventList
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $qualified = $self->temporary('qualified');
+	$self->{tmpout} = $qualified;
+
+	my $qualify = "[$args->{evexpr}]";
+
+#	my $qualify = '[QUALITY';
+#	# quality flags in passqual are ignored
+#	my $q = $args->{passqual};
+#	my $bit = 1;
+#	while ($q) {
+#		if ($args->{passqual} & $bit) {
+#			$qualify .= "-((QUALITY/$bit)%2)*$bit";
+#		}
+#		$q >>= 1;
+#		$bit <<= 1;
+#	}
+#
+#	$qualify .= '==0]';
+
+	my $command = $self->buildCommand('ftcopy',
+		infile => $self->{middle} . '[EVENTS]' . $qualify,
+		outfile => $qualified,
+		copyall => 'yes',
+		clobber => 'yes',
+	);
+
+	$self->shell($command);
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		$self->putParameterHistory($self->{tmpout});
+
+		$self->updateChecksums($self->{tmpout});
+
+		rename($self->{tmpout}, $args->{outfile})
+			or $self->error(BAD_OUTPUT, "unable to rename output [$!]");
+	}
+	else {
+		$self->report("output placed in $args->{outfile}");
+	}
+
+	$self->removeTemporaries
+		if $args->{cleanup} eq 'yes';
+}
+
+
+1;
+

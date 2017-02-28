@@ -1,0 +1,214 @@
+.help finterp Jun96 ftools.futils
+.ih
+NAME
+finterp -- Interpolate a column from one FITS table extension into another.
+.ih
+USAGE
+finterp infile1 infile2 outfile incol [sortkey1] [sortkey2] [order]
+        [tcheck] [extrap] [strnull] [intnull]
+.ih
+DESCRIPTION
+This task uses values from a source column in a FITS table to compute
+and write values to a destination column in another FITS table of the
+same type (ASCII or binary). For each row of the destination column,
+the task attempts to find values in the source column from
+which a representative single value may be interpolated. Source values are
+selected based on a comparison of values in two additional columns, 
+one in the source table and one in the destination table. These secondary 
+columns (hereafter referred to as "sort key columns") typically contain
+time stamp data, but can contain whatever information the user wishes,
+subject to certain restrictions. See the discussion of parameters
+sortkey1 and sortkey2 for more details of the interpolation process,
+and restrictions on the data types and values these columns may contain.
+
+The file containing the destination table may be copied to a new file,
+and the output from the program written to this copy, thus leaving the
+original file intact. The user may also opt to write the program output
+directly into the destination table in the original file. (see parameter
+outfile below).
+
+For source columns with numerical data types, the user may choose between
+0th order interpolation, which is a direct copy of a source column value
+selected by comparison of the sort key columns, and 1st order (linear)
+interpolation (see parameter order below).
+
+If the sort key columns contain time stamps, the user has the option
+of having the program check and correct for differences between the
+temporal origins in the source and destination files. When this option
+is selected, a consistency check of the time units is also performed (see
+parameter tcheck below).
+
+Options also exist for how to handle rows of the destination column
+which are out of bounds, that is, for which no value of the destination
+column can be computed, based on the values in the sort key columns (see
+parameters extrap, strnull and intnull below).
+
+The source column may be of any data type, and there are no restrictions on
+the values it may hold. It may even be a vector valued column. The task also
+properly handles scaled-integer values (using TSCALn and TZEROn keywords).  
+
+A new column with the same name and qualities as the source column
+will be inserted at the end of the destination table if a column with
+this name does not already exist.  The standard FITS tabular keywords
+are copied to the output (TFORMn, TTYPEn, TNULLn, TUNITn, TSCALn,
+TZEROn, TDISPn).  Also, the standard World Coordinate System (WCS)
+keywords for pixel lists are also copied, if present.
+
+The input column name maybe a single FITS column name.  The user may
+also specify multiple columns in a comma-separated list.
+.ih
+PARAMETERS
+.ls infile1 [string]
+The name and extension number of the ASCII or binary table to be
+augmented.
+.le
+.ls infile2 [string]
+The name and extension of the file table containing the source column for
+the interpolation.
+.le
+.ls outfile [string]
+The name of the output file. If this is the same as infile1, the output
+is written directly into infile1, and no new file is created. In all
+cases, any extension specified with the outfile parameter is ignored.
+.le
+.ls incol [string]
+The name of the source column(s).  If multiple columns are desired,
+incol should be a comma-separated list of column names.  All specified
+columns must be present in infile2. The data type and values of the
+input column(s) are completely unrestricted.
+.le
+.ls (sortkey1 = TIME) [string]
+The name of the sort key column in the destination table. This column
+must have a numerical data type (not string or logical). It must also be
+a monotonically increasing scalar column, and may not have any undefined
+elements. The following keywords must have the same value for the columns
+sortkey1 and sortkey2: TTYPEn, TUNITn. 
+.le
+.ls (sortkey2 = TIME) [string]
+The name of the key column in the source table. This column must obey
+the same restrictions listed under the description of sortkey1 above.
+The method for computing values in the source column to use for the
+interpolation is as follows. For each row in the column sortkey1 (destination),
+the column sortkey2 (source) is searched for two sequential values
+which form an interval containing the value in sortkey1. The corresponding
+values of the source column are then used to perform the 1st order
+interpolation. The 0th order interpolation option simply copies to the
+destination column the source column value corresponding to the lower
+limit of this interval.
+.le
+.ls (order = 0) [integer]
+The desired order of interpolation, either 0 or 1. An error is generated
+if a 1 is entered and the source column (incol) is a string or logical
+data type.
+.le
+.ls (tcheck = YES) [boolean]
+If tcheck is "YES", the keywords TIMESYS and TIMEUNIT will be checked in the
+source and
+destination table extensions. The program will correctly account for any
+differences in temporal origins reflected in the keywords TIMESYS. An error
+is generated if the keyword TIMESYS is missing in either table. 
+An error is also generated if the units specified by TIMEUNIT are different.
+However, the units will be ignored if the keyword TIMEUNIT is missing from
+either table.  If tcheck is "NO", no consistency check is performed.
+.le
+.ls (extrap = "NULL") [string]
+This parameter chooses what action to take in rows of the destination
+table which are "out of bounds". A row is "out of bounds" if no interval
+can be extracted from the source key column which contains the destination
+key value for that row. Out of bounds rows can only occur at the beginning
+or the end of a destination table, because their sort key values must come
+"before" the first row of the source table, or "after" the last row of the
+source table.  Note that any rows of the destination column which are NOT
+out of bounds are set to undefined if and only if the corresponding source
+column value(s) are undefined, regardless of the value of this parameter.
+
+There are three choices for this parameter:
+
+NULL - set out of bounds rows in the destination column to undefined, using
+the parameters strnull and intnull below, if necessary.  This is also the
+default selection made if a null string is entered for the extrap parameter.
+
+REPEAT - repeatedly copy a value from the source column to all rows in the
+destination column which are out of bounds. The first value in the source
+column is copied to all rows of the destination column whose key value is
+smaller than the first source key value. The last value in the source
+column is copied to all rows of the destination column whose key value is
+larger than the last source key value.
+
+IGNORE - do not write anything at all if rows are out of bounds.
+This is useful if several different source files, covering different,
+disjoint ranges of the destination table, are to be interpolated one
+at a time into the same destination table without overwriting each other.
+.le
+.ls (strnull = "INDEF") [string]
+The string used in ASCII tables when values are set to undefined. This
+parameter is ignored if the parameter extrap (see above) is set to REPEAT
+or IGNORE.  If a valid TNULLn keyword is present in the source table, it
+is used instead of strnull, regardless of the value of the parameter interp.
+In any case, if any table value is set to null, an appropriate TNULLn 
+keyword will be added, if it is not already present in the destination
+file.
+.le
+.ls (intnull = 0) [integer]
+The integer written in binary tables when values are set to undefined. This
+parameter is ignored if the parameter extrap (see above) is set to REPEAT
+or IGNORE.  If a valid TNULLn keyword is present in the source table, it
+is used instead of intnull, regardless of the value of the parameter interp.
+In any case, if any table value is set to null, an appropriate TNULLn 
+keyword will be added, if it is not already present in the destination
+file.
+.le
+.ih
+EXAMPLES
+1. Interpolate a column named ETI, with TTYPE = '4B' from the 1st extension
+in file hk.fits into the 1st extension of file events.fits. Store the result
+in file output.fits.
+
+	ft>finterp events.fits+1 hk.fits+1 output.fits ETI
+
+2. Interpolate a column named VALUE, with TTYPE = '1J' from the 3rd
+extension of file hk1.fits into the 2nd extension of file events.fits.
+Store the result in file output.fits. For undefined values, use the
+integer -999. Perform the linear interpolation option. (Assume that the
+extensions are both binary tables.)
+
+	ft>finterp events.fits[2] hk1.fits[3] output.fits VALUE \
+           order = 1 intnull = -999 
+
+Now, perform a similar interpolation from a second file,
+hk2.fits, storing the results in place in the file output.fits.
+Do not take any action on out of bounds rows, as this would 
+overwrite some of the values which were just written.
+
+	ft>finterp output.fits[2] hk2.fits[3] output.fits VALUE \
+           order = 1 extrap = IGNORE
+
+3. Perform an interpolation of two column values, RA and DEC, in a
+single call to the finterp task.
+
+	ft>finterp table.fits[1] catalog.fits[1] table2.fits RA,DEC \
+           order=1
+
+The multiple columns are given as a comma-separated list to the incol
+keyword parameter.
+
+4. Interpolate a column named LOCATION, TTYPE = 'A80' from the file
+atlas.fits into the file travel_log.fits. Use the column in each file
+named MILEAGE as its sort key, and set undefined values to the string
+NOWHERE. Store the results in place in the file travel_log.fits. It is
+necessary to disable time checking, since the sort keys do not contain
+time stamp data. (Assume that the extensions in both files are ASCII tables.)
+
+	ft>finterp travel_log.fits+1 atlas.fits+1 travel_log.fits \
+	   LOCATION sortkey1 = MILEAGE sortkey2 = MILEAGE \
+	   tcheck = no strnull = NOWHERE 
+
+In this example, it is assumed that the columns named MILEAGE in each
+column contain values which may be converted to numbers, and that these
+numbers are in ascending order.
+.fi
+.ih
+BUGS
+.ih
+SEE ALSO
+.endhelp

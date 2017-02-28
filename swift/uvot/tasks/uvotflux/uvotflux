@@ -1,0 +1,535 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotflux/uvotflux,v $
+# $Revision: 1.3 $
+# $Date: 2011/11/07 22:58:00 $
+#
+#	uvotflux
+#		Update UVOT source list with calibrated magnitudes
+#
+#		The input source table has an extension with columns RATE and
+#		RATE_ERR by default.  The user can override the input column
+#		names using the ratecol and errcol parameters.  The input table
+#		is updated with columns MAG, MAG_ERR, FLUX, FLUX_ERR.
+#
+#		The formats of the UVOT source list and zero points file are
+#		described in the UVOT Data Handbook and UVOT Calibration Handbook.
+#
+#
+# $Log: uvotflux,v $
+# Revision 1.3  2011/11/07 22:58:00  rwiegand
+# Report magnitude system along with filter zero point.
+#
+# Revision 1.2  2007/07/25 21:29:45  rwiegand
+# Log zero point and write to FITS output with keyword UVOTZPT.
+#
+# Revision 1.1  2007/05/21 17:23:31  rwiegand
+# Split uvotmag into two tools: uvotflux for magnitude and flux calibration
+# and uvotcoincidence for coincidence loss correction.
+#
+# Revision 1.2  2007/04/19 19:43:10  wiegand
+# Use library for source calibration.
+#
+# Revision 1.1  2007/04/19 19:06:22  wiegand
+# Initial revision
+#
+# Revision 1.36  2007/03/14 17:37:32  rwiegand
+# Report coincidence loss polynomial and zero point values for chatter >= 1.
+#
+# Revision 1.35  2007/02/22 20:14:01  rwiegand
+# Coincidence loss polynomial is applied to counts either by multiplying
+# (if coefficients from MULTFUNC column) or dividing (if coefficients from
+# PLINFUNC column).
+#
+# Revision 1.34  2007/02/06 20:39:54  rwiegand
+# Fixes from Wayne for corrected rate error for weak source on high background.
+#
+# Revision 1.33  2006/10/23 16:14:27  rwiegand
+# Improved coincidence loss correction from Wayne Landsman.
+#
+# Revision 1.32  2006/05/18 18:25:29  rwiegand
+# Allow coinfile=NONE which causes the coincidence loss polynomial correction
+# to be skipped.  By default, read the FRAMTIME keyword for the frame time,
+# and use a slightly tweaked value if it not present.  The user can still
+# provide a value by passing frametime=<some_real_number>.
+#
+# Revision 1.31  2006/02/03 18:37:28  rwiegand
+# Another update to frame count limit.
+#
+# Revision 1.30  2006/02/02 23:26:37  rwiegand
+# Increased frame count limit.  Test for saturation before evaluating
+# coincidence loss polynomial to avoid problems with large rates.
+#
+# Revision 1.29  2006/01/25 18:54:40  rwiegand
+# Added parameters for frame time, source aperture and whether dead time
+# correction has already been performed.  Write saturated column.  Derive
+# dead time from frame time.  Allow negative rates.
+#
+# Revision 1.28  2005/10/17 12:35:11  rwiegand
+# Source table modules relocated.
+#
+# Revision 1.27  2005/09/16 12:18:45  rwiegand
+# Allow user to qualify CALDB queries.
+#
+# Revision 1.26  2005/09/12 13:22:05  rwiegand
+# Update primary and table HDU checksums.
+#
+# Revision 1.25  2005/08/05 12:28:00  rwiegand
+# Added parameter to control whether or not systematic errors are included
+# in MAG_ERR and FLUX_ERR calculations.
+#
+# Revision 1.24  2005/06/20 15:19:07  rwiegand
+# Invent rate error for unreal rates.
+#
+# Revision 1.23  2005/06/20 14:21:02  rwiegand
+# Typo in parameterNote call.
+#
+# Revision 1.22  2005/06/07 13:30:52  rwiegand
+# Write notes for CALDB parameters.
+#
+# Revision 1.21  2005/04/04 18:11:06  rwiegand
+# Write coincidence loss corrected rate (and error) to output table.
+#
+# Revision 1.20  2005/03/24 19:19:36  rwiegand
+# Disabled code that placed output columns in canonical order.
+#
+# Revision 1.19  2004/12/29 21:44:12  rwiegand
+# Implemented rate correction formulae.  Allow the input table to be
+# anonymous.
+#
+# Revision 1.18  2004/12/07 22:30:47  rwiegand
+# Reworked source background to be in units of rate/arcsec^2 to avoid
+# needing to know binning.
+#
+# Revision 1.17  2004/11/04 14:57:18  rwiegand
+# Do not generate an error if a column that would be propagated is missing.
+#
+# Revision 1.16  2004/11/03 20:35:57  rwiegand
+# Use column specifications from UVOT::SourceTable.
+#
+# Revision 1.15  2004/11/02 19:45:11  rwiegand
+# Account for background in coincidence loss correction.  Implemented
+# output column ordering.
+#
+# Revision 1.14  2004/10/22 20:57:47  rwiegand
+# Ignore case when checking for CALDB parameter value.
+#
+# Revision 1.13  2004/07/09 16:19:01  rwiegand
+# Implemented CALDB support.
+#
+# Revision 1.12  2004/05/12 16:41:59  rwiegand
+# Intra-tool parameter consistency renaming effort.
+#
+# Revision 1.11  2004/05/06 20:38:55  rwiegand
+# Special handling for low and high count rates.
+#
+# Revision 1.10  2004/05/05 19:19:40  rwiegand
+# Avoid errors correcting count rates; corresponding MAG/FLUX will appear in
+# output as NULLs.
+#
+# Revision 1.9  2004/04/20 14:44:53  rwiegand
+# Added parameters for names of source rate/error columns.
+#
+# Revision 1.8  2004/03/25 22:12:56  rwiegand
+# Only process a single extension.  Implemented coincidence loss correction.
+# Updated calculation of magnitude, flux and corresponding error columns.
+#
+# Revision 1.7  2004/03/04 16:08:44  rwiegand
+# Get EXPOSURE keyword from image instead of source list.
+#
+# Revision 1.6  2004/03/02 18:18:14  rwiegand
+# Was using wrong name for filter parameter.
+#
+# Revision 1.5  2004/02/03 18:45:22  rwiegand
+# Allow user to specify filter.  Corrected magnitude calculation to use
+# count _rate_.  Do not require the EXTNAME keyword if the user specifies
+# a the source and image extensions.
+#
+# Revision 1.4  2003/09/30 14:01:51  rwiegand
+# Support processing of multiple image/source list pairs.  The MAG column
+# of the uvotdetect source list table is updated.
+#
+# Revision 1.3  2003/06/11 20:59:02  miket
+# global name change from umag to uvotmag
+#
+# Revision 1.2  2002/12/18 01:22:00  rwiegand
+# Updated format of zero points file.
+#
+# Revision 1.1  2002/06/24 20:04:26  rwiegand
+# Initial release of umag into HEAdas
+#
+
+use strict;
+
+package UVOT::MagFlux;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+use SimpleFITS;
+use StarID::SourceTable;
+use UVOT::Calibration;
+use UVOT::Source;
+
+use constant EXTNAME => 'SOURCES';
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->setFilter
+		if $self->isValid;
+
+	$self->loadCalibration
+		if $self->isValid;
+
+	$self->processTable
+		if $self->isValid;
+
+	$self->finalize
+		if $self->isValid;
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file filter=string zerofile=file
+				syserr=boolean ratecol=string errcol=string
+				chatter=int
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	my $path = $args->{infile};
+
+	my $inspec = $self->parseInputURL($path);
+	if (not $inspec) {
+		$self->error(BAD_INPUT,
+				"unable to parse input name $path");
+	}
+
+	$self->{inspec} = $inspec;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READWRITE, $status);
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to open $path [$status]");
+	}
+	else {
+		$self->{sourcefits} = $fits;
+	}
+
+	my $numhdus = 0;
+	if ($self->isValid and $fits->get_num_hdus($numhdus, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to get HDU info for $path [$status]");
+	}
+	else {
+		$inspec->{numhdus} = $numhdus;
+	}
+
+	if (length($inspec->{extspec}) > 0) {
+		# user specified extension, ensure a table
+		my $hdutype = 0;
+		my $tmp = '';
+		$self->{hdu1} = $fits->get_hdu_num($tmp);
+		if ($fits->get_hdu_type($hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to get $path HDU type");
+		}
+		elsif ($hdutype != BINARY_TBL and $hdutype != ASCII_TBL) {
+			$self->error(BAD_INPUT,
+					"specified HDU is not a table");
+		}
+	}
+	else {
+		# try to determine correct extension by finding table
+		my $chosen = undef;
+		my @tables;
+		my $hdutype = 0;
+
+		for (my $hdu = 2; $hdu <= $inspec->{numhdus}; ++$hdu) {
+			if ($fits->movabs_hdu($hdu, $hdutype, $status)) {
+				$self->error(BAD_INPUT,
+						"unable to move to $path HDU $hdu [$status]");
+			}
+			elsif ($hdutype == BINARY_TBL || $hdutype == ASCII_TBL) {
+				push(@tables, $hdu);
+			}
+		}
+
+		if (@tables > 1) {
+			my $tlist = join(', ', @tables);
+			$self->error(BAD_INPUT,
+					"multiple table extensions in $path [$tlist]");
+		}
+		elsif (@tables == 0) {
+			$self->error(BAD_INPUT,
+					"no table extensions in $path");
+		}
+		else {
+			$chosen = $tables[0];
+			$self->{hdu1} = $chosen;
+			$self->report("found single table extension $chosen")
+				if $self->chatter(3);
+		}
+
+		if ($self->isValid and $fits->movabs_hdu($chosen, $hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"trouble positioning at input HDU [$status]");
+		}
+	}
+
+	if ($self->isValid) {
+		my $header = $fits->read_header;
+		$self->{header} = $header;
+
+		my %tmp;
+		$self->storeHeaderKeywords($header,
+				keys => [ qw(EXTNAME HDUNAME) ],
+				optional => 1,
+				hash => \%tmp,
+				);
+		$self->{extname} = $tmp{EXTNAME} || $tmp{HDUNAME};
+
+		if (not exists($header->{TSTOP})) {
+			$header->{TSTOP} = 1e20;
+			$self->warning("header missing TSTOP keyword;"
+					. " using $header->{TSTOP}");
+		}
+		else {
+			$self->report("TSTOP => $header->{TSTOP}")
+				if $self->chatter(3);
+		}
+
+		$self->{magspec} = StarID::SourceTable::getSpec($self, 'MAG');
+		if (not $self->{magspec}) {
+			$self->error(BAD_EXECUTE, "unable to initialize MAG column");
+		}
+
+	}
+}
+
+
+sub loadCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	local($self->{header}{FILTER}) = $self->{FILTER};
+
+	my %colortable;
+	UVOT::Calibration::loadColorTable($self, \%colortable,
+			PAR => $args->{zerofile}, PAR_NOTE => 'zerofile',
+			HEADER => $self->{header},
+			);
+
+	my $cal = $self->{CAL_COLORTABLE} = \%colortable;
+
+	if ($self->chatter) {
+		$self->report("using $cal->{SYSTEM} / $self->{FILTER} zero point $cal->{ZPT} +/- $cal->{ZPE}");
+	}
+
+}
+
+
+sub setFilter
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{filter} =~ /^DEFAULT$/i) {
+		$self->storeHeaderKeywords($self->{header},
+				keys => [ qw(FILTER) ],
+				);
+	}
+	else {
+		$self->{FILTER} = $args->{filter};
+	}
+}
+
+
+sub loadRates
+{
+	my ($self) = @_;
+
+	my $path = $self->{inspec}{filebase};
+
+	my @sources;
+	my $status = SimpleFITS->readonly($path)
+			->move($self->{hdu1})
+			->loadtable(\@sources)
+			->close
+			->status;
+
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load rates from $path [$status]");
+		return;
+	}
+
+	my $args = $self->args;
+	my $ratecol = $args->{ratecol};
+	my $errcol = $args->{errcol};
+	my $i = 0;
+	foreach my $o (@sources) {
+		$o->{ROW} = ++$i;
+		$o->{RATE} = $o->{$ratecol};
+		$o->{RATE_ERR} = $o->{$errcol};
+	}
+
+	if (not @sources) {
+		$self->warning('loaded zero sources');
+	}
+	else {
+		my $o = $sources[0];
+		if (not exists($o->{$ratecol})) {
+			$self->error(BAD_INPUT, "table does not include $ratecol column");
+		}
+		if (not exists($o->{$errcol})) {
+			$self->error(BAD_INPUT, "table does not include $errcol column");
+		}
+	}
+
+	$self->{sources} = \@sources;
+}
+
+
+sub calibrateSources
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	foreach my $source (@{ $self->{sources} }) {
+
+		my $problem = UVOT::Source::findMagFlux($self,
+				$self->{CAL_COLORTABLE}, $source);
+		if ($problem) {
+			$self->warning("unable to calibrate source $source->{ROW}: $problem");
+		}
+
+		if ($args->{syserrFlag}) {
+			$source->{MAG_ERR} = $source->{MAG_ERR_TOTAL};
+			$source->{FLUX_ERR} = $source->{FLUX_ERR_TOTAL};
+		}
+		else {
+			$source->{MAG_ERR} = $source->{MAG_ERR_STAT};
+			$source->{FLUX_ERR} = $source->{FLUX_ERR_STAT};
+		}
+
+		$self->report(sprintf(
+				'source [%d] RATE %.2f, RATE_ERR %.2f, MAG %.2f, FLUX %.2e',
+				$source->{ROW}, $source->{RATE}, $source->{RATE_ERR},
+				$source->{MAG}, $source->{FLUX}))
+			if $self->chatter(3);
+
+	}
+
+	my $qualifier = $args->{syserrFlag} ? 'are' : 'are not';
+	$self->report('the systematic zero point and flux conversion error '
+			. $qualifier . ' included as part of the statistical errors '
+			. 'computed for each source');
+}
+
+
+sub updateTable
+{
+	my ($self) = @_;
+
+	my $fits = $self->{sourcefits};
+
+	my @columns;
+	foreach my $colname (qw(MAG MAG_ERR FLUX FLUX_ERR)) {
+		my $spec = StarID::SourceTable::getSpec($self, $colname);
+		if ($spec) {
+			push(@columns, $spec);
+		}
+		else {
+			$self->error(BAD_EXECUTE,
+					"unable to initialize $colname column");
+		}
+	}
+
+	foreach my $c (@columns) {
+		my @data = map { $_->{$c->{name}} } @{ $self->{sources} };
+		$self->writeColumn($fits, $c, \@data);
+		$self->report("updated $c->{name}")
+			if $self->isValid;
+	}
+
+	{
+	my $status = 0;
+	my $ZPT_DIGITS = -5;
+	$fits->update_key_flt('UVOTZPT', $self->{CAL_COLORTABLE}{ZPT},
+			$ZPT_DIGITS, 'uvotflux zero point used', $status);
+	}
+
+}
+
+
+sub processTable
+{
+	my ($self) = @_;
+
+	$self->loadRates
+		if $self->isValid;
+
+	$self->calibrateSources
+		if $self->isValid;
+
+	$self->updateTable
+		if $self->isValid;
+
+}
+
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	# close output
+	{
+		my $fits = $self->{sourcefits};
+		my $status = 0;
+		if ($fits and $self->isValid) {
+			$self->putParameterHistory($fits);
+			$self->updateChecksums($fits, 1, $self->{hdu1});
+			$fits->close_file($status);
+		}
+		else {
+			# do not save changes
+		}
+	}
+}
+
+
+
+# main
+{
+	my $task = __PACKAGE__->new(version => '3.1');
+
+	$task->run;
+
+	exit($task->{code});
+}
+

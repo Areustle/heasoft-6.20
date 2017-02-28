@@ -1,0 +1,143 @@
+#!/opt1/bin/perl
+#
+# Mike Tripicco
+# 12 Feb 1996
+# XTE GSFC/NASA
+#
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('o:t:h');
+		
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    fparstamp - Copy the entire contents of a FTOOLS .par 
+                file into a FITS file as a HISTORY block.
+    
+USAGE
+    fparstamp -t taskname -o filename[ext#]
+or  
+    fparstamp
+    
+DESCRIPTION
+    This script is designed to be used immediately after running
+    any FTOOL which writes or modifies a FITS file. The user must
+    specify the name of an FTOOL (presumably the one which wrote or
+    modified the FITS file) and the name of the output FITS file.
+    FPARSTAMP will copy the current state of the FTOOL's parameter
+    file into a HISTORY block in the specified FITS file (appended
+    to the first extension unless another extension number is given).
+
+PARAMETERS (SWITCHES/FLAGS)
+    -h                       - print this help file
+
+    -o {FITS filename[ext#]} - the FITS file (and optional extension #)
+                               into which to copy the .par file contents
+
+    -t {FTOOLS taskname}     - the FTOOL whose .par file should be copied
+    
+EXAMPLES
+    1. fparstamp -t fcollect -o myfile+0
+
+     Append the contents of the parameter file from fcollect 
+     onto the primary array header of "myfile".
+
+    2. fparstamp
+
+     Prompt for the name of a valid FTOOLS task and FITS filename,
+     then write a HISTORY block listing the .par file contents
+     into the FITS file.
+
+NOTES
+    This script will NOT work on Perl scripts, only on compiled FTOOLS
+    tasks (because only the latter have associated .par files!)
+
+BUGS
+    Please report problems to miket\@rosserv.gsfc.nasa.gov. Provide a
+    detailed  description  of  the  problem and an e-mail address at
+    which you can be reached if  further  information  is  required.
+    
+SEE ALSO
+    PLIST, FMODHEAD
+
+EOHELP
+exit 0;
+}
+
+require "utils.pl";
+
+if(defined $opt_t) {
+    print "FTOOL provided was: $opt_t \n";
+    $ftool = $opt_t;
+} else {
+    print "Name of FTOOL: ";
+    chop($ftool = <STDIN>);
+}
+@result=&runcom("plist $ftool");
+until ($result[0] =~ /^Parameter/) {
+  print "No .par file. Name of valid FTOOL: ";
+  chop($ftool = <STDIN>);
+  @result=&runcom("plist $ftool");
+}
+
+if(defined $opt_o) {
+    print "Output filename provided was: $opt_o \n";
+    $filen = $opt_o;
+} else {
+    print "Output filename: ";
+    chop($filen = <STDIN>);
+}
+$extn = 1;
+if ($filen =~ /\+/ ){
+  $orig=$filen;
+  $pos=index($orig,'+');
+  $filen=substr($orig,0,$pos);
+  $extn=substr($orig,$pos+1,length($orig)-($pos+1));
+}
+if ($filen =~ /\[/ ){
+  $orig=$filen;
+  $pos=index($orig,'[');
+  $filen=substr($orig,0,$pos);
+  $extn=substr($orig,$pos+1,length($orig)-($pos+1)-1);
+}
+until (-e $filen && length($filen) != 0) {
+  print "No such file. Output filename: ";
+  chop($filen = <STDIN>);
+  if ($filen =~ /\+/ ){
+    $orig=$filen;
+    $pos=index($orig,'+');
+    $filen=substr($orig,0,$pos);
+    $extn=substr($orig,$pos+1,length($orig)-($pos+1));
+  }
+  if ($filen =~ /\[/ ){
+    $orig=$filen;
+    $pos=index($orig,'[');
+    $filen=substr($orig,0,$pos);
+    $extn=substr($orig,$pos+1,length($orig)-($pos+1)-1);
+  }
+}
+
+$TMPFIL="tmpfil$$";
+open(TEMPLATE,">$TMPFIL") || die "Couldn't open $TMPFIL";
+for (@result){
+  if ( $_ =~ /^./ ) {
+    s/^\s*//;
+    print TEMPLATE 'HISTORY '.$_
+  }
+}
+close TEMPLATE;
+
+$fmodhead_string = "fmodhead infile='$filen+$extn' tmpfil='$TMPFIL'";
+
+@result=&runcom("$fmodhead_string");
+
+print @result;
+
+unlink($TMPFIL);

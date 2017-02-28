@@ -1,0 +1,142 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/tristarid/ut-tristarid,v $
+# $Revision: 1.5 $
+# $Date: 2005/11/02 21:01:14 $
+#
+#		tristarid unit test
+#
+#
+# $Log: ut-tristarid,v $
+# Revision 1.5  2005/11/02 21:01:14  rwiegand
+# Updated partition => catspec and radius => unradius.
+#
+# Revision 1.4  2005/10/17 13:10:02  rwiegand
+# Distinguish size of position correction from error in corrected position.
+#
+# Revision 1.3  2005/09/20 19:17:25  rwiegand
+# Store partial catalog with test input.
+#
+# Revision 1.2  2005/09/19 14:58:29  rwiegand
+# Increased tolerance.
+#
+# Revision 1.1  2005/09/19 14:55:51  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::Tristarid;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::Tristarid->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runTristarid
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runTristarid
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{template} = "$input/template.fits";
+	$self->{outfile} = "$output/starid.fits",
+
+	my @task = (
+		infile		=> "$input/sources.fits[SOURCES]",
+		catspec		=> "$input/PARTITION",
+		outfile		=> $self->{outfile},
+
+		cntcorr		=> 5,
+		poscorr		=> 5,	# arcsec
+		rotcorr		=> 60,	# arcmin
+		errcorr		=> 2,	# arcsec
+
+		starid		=> 'NONE',
+
+		matchtol	=> 2,
+		unradius	=> 0,
+		reflist		=> 'NONE',
+
+		chatter		=> $args->{chatter},
+	);
+
+	my %task = @task;
+
+	# build command line
+	my $command = $self->buildCommand('tristarid', @task);
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{outfile}) {
+		$self->error(BAD_OUTPUT, "missing result file");
+	}
+
+	{
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template},
+				infile2 => $self->{outfile},
+				tolerance => 1e-4,
+				exclude => 'CREATOR,DATASUM',
+				);
+
+		$self->shell($command);
+	}
+
+}
+

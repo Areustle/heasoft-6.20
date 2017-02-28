@@ -1,0 +1,163 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/aberrator/ut-aberrator,v $
+# $Revision: 1.8 $
+# $Date: 2006/04/18 19:50:37 $
+#
+#		aberrator unit test
+#
+#
+# $Log: ut-aberrator,v $
+# Revision 1.8  2006/04/18 19:50:37  miket
+# Merging Swift Build18 branch
+#
+# Revision 1.7.6.1  2006/03/29 19:12:35  miket
+# slightly relaxed tolerance for QPARAM
+#
+# Revision 1.7  2005/09/20 19:24:40  rwiegand
+# Was not writing output to correct directory.
+#
+# Revision 1.6  2005/09/20 19:20:15  rwiegand
+# Ensure local copy of attitude file is writable.
+#
+# Revision 1.5  2005/09/16 17:04:02  rwiegand
+# Added a CALDB test mode.
+#
+# Revision 1.4  2005/03/21 15:13:54  rwiegand
+# Exclude DATASUM keyword from comparison.
+#
+# Revision 1.3  2005/03/07 17:51:56  rwiegand
+# Distinguish tolerances on quaternion and pointing since pointing values
+# are more than 2 orders of magnitude larger.
+#
+# Revision 1.2  2005/02/04 19:53:32  rwiegand
+# Added a small tolerance on the output.
+#
+# Revision 1.1  2005/02/04 19:49:12  rwiegand
+# Unit test for aberrator.
+#
+
+use strict;
+
+package Test::Aberrator;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::Aberrator->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runAberrator
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file caldb=boolean chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runAberrator
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{result} = "$output/attitude.fits";
+	$self->{template} = "$input/template.fits";
+
+	$self->shell("cp -f $input/attitude.fits $self->{result}");
+	$self->shell("chmod +w $self->{result}");
+
+
+	my @task = (
+		infile     => $self->{result},
+		alignfile  => $args->{caldbFlag} ? 'CALDB' : "$input/align.fits",
+		orbfile    => "$input/orbit.fits",
+		earthvel   => 'yes',
+		satvel     => 'yes',
+		history    => 'yes',
+		chatter    => $args->{chatter},
+	);
+
+	my %task = @task;
+
+	# build command line
+	my $command = $self->buildCommand('aberrator', @task);
+
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{result}) {
+		$self->error(BAD_OUTPUT, "missing result file");
+	}
+
+	{
+		my $cols = '[col QPARAM]';
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template} . $cols,
+				infile2 => $self->{result} . $cols,
+				tolerance => 1.2e-12,
+				exclude => 'DATASUM',
+				);
+
+		$self->runCommand($command, report => 3);
+	}
+
+	{
+		my $cols = '[col POINTING]';
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template} . $cols,
+				infile2 => $self->{result} . $cols,
+				tolerance => 1e-8,
+				exclude => 'DATASUM',
+				);
+
+		$self->runCommand($command, report => 3);
+	}
+}
+

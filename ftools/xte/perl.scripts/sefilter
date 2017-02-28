@@ -1,0 +1,1519 @@
+#! /bin/sh
+# This is the LHEA perl script: sefilter
+# The purpose of this special block is to make this script work with
+# the user's local perl, regardless of where that perl is installed.
+# The variable LHEAPERL is set by the initialization script to
+# point to the local perl installation.
+#-------------------------------------------------------------------------------
+eval '
+if [ "x$LHEAPERL" = x ]; then
+  echo "Please run standard LHEA initialization before attempting to run sefilter."
+  exit 3
+elif [ "$LHEAPERL" = noperl ]; then
+  echo "During LHEA initialization, no acceptable version of Perl was found."
+  echo "Cannot execute script sefilter."
+  exit 3
+elif [ `$LHEAPERL -v < /dev/null 2> /dev/null | grep -ic "perl"` -eq 0 ]; then
+  echo "LHEAPERL variable does not point to a usable perl."
+  exit 3
+else
+  exec $LHEAPERL -x $0 ${1+"$@"}
+fi
+'
+if(0);
+# Do not delete anything above this comment from an installed LHEA script!
+#-------------------------------------------------------------------------------
+#! /usr/contrib/irix/bin/perl
+#
+# Script to run sebitmask and fselect one after the other and create
+# an output file
+#
+# Brian K. Elza 3/7/95
+# XTE GSFC/NASA
+#
+# A C-shell script performing similar operations will also exist.
+# version 1.0.0 3/7/95
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('c:h');			
+if (defined $opt_h) {
+    print <<EOHELP1;
+
+NAME
+    sefilter -- a script that helps the user generate an expression
+    that is fed into SEBITMASK and then will examine the result of that 
+    run to determine if the file can be directly input into SEEXTRCT 
+    for filtering, or if it needs to be input to FSELECT to generate
+    an SE FITS file ready for input into SEEXTRCT.
+    
+    
+USAGE
+    sefilter -h (for help) -c (for chatty behavior - this option 
+                               will update the user of everything
+                               found in the file and generally provide
+                               useful information.)
+    
+    
+DESCRIPTION
+    This  FTOOL  script queries the user for an input science event fits
+    file, and reads the data descriptor contained in that file. This 
+    information is parsed and examined to determine which type of information 
+    in contained in the nX bit pattern within the file. If the types are
+    supported then the number of bits is examined to determine the maximum
+    value that can be expressed, and the user is supplied with this 
+    information and can select which values he is interested in. For instance 
+    say that data descriptors contains the expression D[0:4]{3} from this
+    the code will know that this expression can take on values from 0 --> 7
+    (4+2+1)=7, although the information in the []s show that only 0 --> 4 
+    are meaningful. The user will be asked if they want to filter on this
+    "token". If the response is "Yes" than you will be prompted to enter 
+    a string of values of the form 0,1,2 or 0-2, or 0-2, 4. From this 
+    information the script will generate an expression. For the first the 
+    expression generated will be (D[0:4] == 0 || D[0:4] == 1 || D[0:4] == 2)
+    for the second the exprssion will be (D[0:4] <= 2) and for the last
+    (D[0:4] >= 2 || D[0:4] == 4). Of these three expressions ONLY the second 
+    would be a candidate for SEEXTRCT to preform the filtering, the 
+    others MUST be input to FSELECT for pre-filtering. The reason for this 
+    is that SEEXTRCT does NOT support ORed values, and the parentheses have 
+    to be striped since that may show a heirarchy for comparison, which 
+    SEEXTRCT does NOT support. Note that the first (0,1,2) and second 
+    (0-2) expressions give the same information, yet only the second gives 
+    and expression capable of being filtered by SEEXTRCT. This is because
+    it is assumed that the USER is inputting the information in the 
+    most efficient way. If that is not the case, then he will have to 
+    wait a LONG time for FSELECT to pre-filter the file. 
+	So what CAN SEEXTRCT filter? Any expression that can be expressed 
+    purely as a list of ANDed comparisons, e.g., D[0:4] <= 0 && 
+    E[CAL] == 1 && E[VXH] == 0 && Z[] >= 2 && Z[] <= 24. This will be 
+    translated into a series of non-heirarchy, ANDed comparisons that 
+    SEEXTRCT can filter. So what is the best way to ensure that the bitmask
+    expression generated can be filtered by SEEXTRCT? The code will tell
+    you if this bitmask can be processed by SEEXTRCT and give you the 
+    option to do so, or you can simply examine the filter for yourself. 
+    
+    
+PARAMETERS
+    
+    infile [filename or \@filename (only the first file is used)]
+        The name of the input XTE science event FITS file that is to  be
+        operated upon, or a file of filenames of which only the first is
+        used since it is assumed that ALL of the other contain EXACTLY the
+        same data descriptor.
+    
+    column_name [column_name - Event in all standard SE files)
+        This is the column name EXACTLY as given in the file that is  to
+        have  the  above  FILTER  expression applied to it. Under normal
+        circumstances this should be given as "Event".
+    
+    bitfile [filename]
+        The name of the  output  file  that  will  contain  the  bitmask
+        expression   that   was   generated  from the constructed  "filter" 
+        expression. This will change from SE file to SE file  since  the
+        data is stored as and nX bit pattern that varies according to the
+        data descriptor. 
+    
+    filter [created by this script]
+	This script reads the data descriptor stored in the input file
+        and queries the user for what is wanted, and from those responses
+	builds up a filter expression that is expressed in standard C
+        notation, e.g., (E[CAL]  ==  1  &  (D[0:4]==0  |  D[0:4]==1) & 
+	E[VXH,VXL] == 3) Note that this programs is NOT to be used for
+	selecting CHANNELS since each detector channel may be different 
+	from from each file channel. SEEXTRCT handles this correctly, so
+	for channel and time filtering use SEEXTRCT, otherwise your 
+	results may be complete garbage!!!! YOU HAVE BEEN WARNED!
+    
+    *outfile [filename]
+        The  name  of  the  SE  FITS  file  that  is  to be created that
+        contains all of  the  information  that  matched  you  filtering
+        criteria. *This is ONLY output if FSELECT is run. If SEEXTRCT is
+        run, than the outroot+extenlc(pha) files are the output.
+    
+    
+EXAMPLES
+    1. sefilter
+    
+NOTES:
+    
+BUGS
+    
+    SEFILTER*
+    
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov. Provide a
+        detailed  description  of  the  problem and an e-mail address at
+        which you can be reached if  further  information  is  required.
+        Before  reporting  a  bug  please  check  your .PAR file. At the
+        moment all comparisons are CASE SENSITIVE.
+    
+    
+SEE ALSO
+    SESELECT, SEBITMASK, FSELECT, and SEEXTRCT for more information
+
+EOHELP1
+exit;
+    }
+
+# now onto the program ...
+
+require "utils.pl";
+
+$cont1 = "Yes";
+$expr_string="";
+$expr_val=0;
+$expr_val_old=0;
+
+print " Running SEFILTER version 4.0a   \n";
+print "===========================================\n";
+
+
+@infile2=&runcom('pget sebitmask infile');
+chop($infile2[0]);
+print "Enter SE FITS file for filtering:[$infile2[0]]";
+($infile = <STDIN>);
+if($infile =~ /^./){
+    chop($infile);}
+else{
+    $infile = $infile2[0];
+}
+
+$origfile = $infile;
+
+# Now we will test to see if the input file is a LIST of files. If it is
+# then we will copy all of the files contained within this file to a
+# unique filename
+if($infile =~ /^@/ ){
+
+    $tempfile = $infile;
+    $tempfile =~ s/^@//;	# Remove the @ symbol
+    open(INPUT_FILE,"$tempfile") || die "Sorry can't find $tempfile\n"; # Open the input file
+# Set the input file to be equal to the first file in the input data file.
+    $infile = <INPUT_FILE>;
+    chop($infile);
+    close(INPUT_FILE);	# We are finished with the input file.
+    print "Input file is: \n$infile\n";
+
+}
+
+@outfile2=&runcom("pset sebitmask infile='".$infile."'");
+
+@infile2=&runcom('pget sebitmask mtoken');
+chop($infile2[0]);
+print "Enter the M-token to be processed (M[1]{1}):[$infile2[0]]";
+($mtoken = <STDIN>);
+if($mtoken =~ /^./){
+    chop($mtoken);}
+else{
+    $mtoken = $infile2[0];
+}
+
+@outfile2=&runcom("pset sebitmask mtoken='".$mtoken."'");
+
+@infile2=&runcom('pget sebitmask column');
+chop($infile2[0]);
+print "Enter the column name to be operated upon (Event):[$infile2[0]]";
+($column = <STDIN>);
+if($column =~ /^./){
+    chop($column);}
+else{
+    $column = $infile2[0];
+}
+
+@outfile2=&runcom("pset sebitmask column='".$column."'");
+
+@infile2=&runcom('pget sebitmask bitfile');
+chop($infile2[0]);
+print "Enter the output bitfile name to contain processed boolean expression:[$infile2[0]]";
+($bitfile = <STDIN>);
+if($bitfile =~ /^./){
+    chop($bitfile);}
+else{
+    $bitfile = $infile2[0];
+}
+
+@outfile2=&runcom("pset sebitmask bitfile='".$bitfile."'");
+
+@result=&runcom('sebitmask infile="'.$infile.'" filter=" " mtoken="'.$mtoken.'" column="'.$column.'" bitfile="'.$bitfile.'" help=no dryrun=yes clobber=yes mode=h');
+
+print "\n\n";
+
+$length_of_array = @result;
+$i_count=0;
+for($i_count=0; $i_count <= $length_of_array; $i_count++){
+    if($result[$i_count] =~ /^TEVTB value stored infile is:/) {
+	@tevtb_array = split(/\^/,$result[$i_count+1]);
+
+	if(defined $opt_c){
+	    print"TEVTB is \n $result[$i_count +1]\n";
+	    print "Continue? [Yes/No]\n";
+	    $cont = <STDIN>;
+	    if($cont =~ /^[nN]/){
+		exit;
+	    }
+	}
+
+    }
+
+    if($result[$i_count] =~ /^The M-token being selected for processing is:/) {
+	if(defined $opt_c){
+	    print"M-token selected for processing is: \n $result[$i_count +1]\n";
+	}
+	@mtoken_array = split(/\^/,$result[$i_count+1]);
+
+    }
+
+    if($result[$i_count] =~ /^The TDDESM value which interests us is:/) {
+	@tevtbt_array = split(/\}/,$result[$i_count+1]);
+        $length_of_marray = @tevtbt_array;
+	if(defined $opt_c){
+	    print"TEVTB M-token section of interest is: \n $result[$i_count +1]\n";
+	    print "Continue? [Yes/No] ";
+	    $cont = <STDIN>;
+	    if($cont =~ /^[nN]/){
+		exit;
+	    }
+	} 
+    }
+}
+
+$length_of_marray--;
+
+if(defined $opt_c){
+    print "Number of separate descriptor patterns was: $length_of_marray\n";
+}
+
+for($i_count=0; $i_count < $length_of_marray; $i_count++){
+    @tevtbm_arrayt = split(/\{/,$tevtbt_array[$i_count]);
+    $tevtb_array[$i_count] = $tevtbm_arrayt[0];
+    $tevtb_iarray[$i_count] = $tevtbm_arrayt[1];
+    $tevtb_array[$i_count] =~ s/^,//;
+    if(defined $opt_c){
+	print "For $i_count we have $tevtb_iarray[$i_count] bits to express:\n$tevtb_array[$i_count]\n\n";
+    }
+}
+
+print "Beginning generation of filter description.\n";
+print "###########################################\n";
+
+for($i_count=0; $i_count < $length_of_marray; $i_count++){
+    if($tevtb_array[$i_count] =~ /^D/){
+
+	print "\nThis file contains a D-token, specifically:\n";
+	print "$tevtb_array[$i_count].\n";
+	print "We have $tevtb_iarray[$i_count] bits for this token.\n";
+	$bit_value = 1;
+	for($i=1; $i <= $tevtb_iarray[$i_count]; $i++){
+	    $bit_value = $bit_value * 2;
+	}
+	$bit_value = $bit_value - 1;
+	print "So this token can take on values from 0 --> $bit_value\n";
+
+	@dtoken_array = split(/:/,$tevtb_array[$i_count]);
+	$dtoken_iarray = @dtoken_array;
+	$dtoken_array[0] =~ s/D\[//;
+	$dtoken_array[$dtoken_iarray-1] =~ s/\]//;
+	
+	if($dtoken_iarray == 2) {
+	    print "\nD-token values from $dtoken_array[0] to $dtoken_array[1] are present.\n";
+	}
+	elsif($dtoken_iarray > 2) {
+	    print "ERROR! \nThe number of tokens is $dtoken_iarray, which is greater than 2. \nThis should not occur. Examine TEVTB value and modify with FPARKEY is necessary!";
+	    exit;
+	}
+	elsif($dtoken_iarray < 1) {
+	    print "ERROR! \nThe number of tokens is $dtoken_iarray, which is less than 1. \nThis should not occur. Examine TEVTB value and modify with FPARKEY is necessary!";
+	    exit;
+	}
+	    
+
+        if($dtoken_array[$dtoken_iarray-1] > $bit_value){
+	    print "ERROR! \nThe number of tokens exceed the maximum value that can be expressed in $tevtb_iarray[$i_count] bits!\nPlease check TEVTB2.\nSend a copy of this file's header to xtehelp\@athena.gsfc.nasa.gov since this should never occur.";
+	    exit;
+	}
+
+	print "Do you want to filter on the D-token? [Yes, No]: ";
+	$cont = <STDIN>;  
+
+	if($cont =~ /^[Yy]/){
+	    do {
+		do {
+		    $loop = 0;
+		    print "\nEnter the detector numbers of interest: ";
+		    print "[0,2-4]\n";
+		    print "The above syntax must be followed: ";
+
+		    ($dtoken_in=<STDIN>);
+		    if($dtoken_in =~ /^./){
+			chop($dtoken_in);
+			print "You entered $dtoken_in.\nIs this correct? [Yes, No]: ";
+			$cont = <STDIN>;  
+		    } 
+		    else {
+			print "\nYou did not enter a D-token!\n";
+			print "Do you want to filter on the D-token? [Yes, No]:";
+			$cont1 = "Yes";
+			$cont1 = <STDIN>;  
+
+			if($cont1 =~ /^[Yy]/){
+			    $cont = "No";
+			    print "Please re-enter a valid D-token\n";
+			}
+		    }
+		} until ($cont =~ /^[Yy]/) ;
+		$cont1 = "Yes";
+		@dtoken_in_array = split(/,/,$dtoken_in);
+		$dtoken_in_iarray = @dtoken_in_array;
+		
+		for($j=0; $j < $dtoken_in_iarray; $j++) {
+		    @dtoken_sort = split(/-/,$dtoken_in_array[$j]);
+		    $dtoken_sort_num = @dtoken_sort;
+		    
+		    if($dtoken_sort_num > 2 | $dtoken_sort_num < 1){
+			print"\nERROR you have violated the syntax format. Please re-enter command.\n\n";
+			$loop = 1;
+		    }
+
+		    if($dtoken_sort_num == 2 && $loop == 0){
+			if($j == 0){
+			    if($expr_estring =~ /^./) {
+				$expr_estring .= " & ";
+			    }
+			} elsif($j != 0){
+			    $expr_dstring .= "|";
+			    }
+
+			if($dtoken_sort[0] == 0 & $dtoken_sort[1] != 0){
+			    $expr_dstring .= " $tevtb_array[$i_count] <= $dtoken_sort[1] ";
+			}
+			elsif($dtoken_sort[1] >= $bit_value & $dtoken_sort[0] < $bit_value){
+			    $expr_dstring .= " $tevtb_array[$i_count] >= $dtoken_sort[0] ";
+			}
+			elsif($dtoken_sort[0] < $dtoken_sort[1]){
+			    $expr_dstring .= "( $tevtb_array[$i_count] >= $dtoken_sort[0] & $tevtb_array[$i_count] <= $dtoken_sort[1] ) ";
+			}
+			elsif($dtoken_sort[0] > $dtoken_sort[1]){
+			    $expr_dstring .= "( $tevtb_array[$i_count] >= $dtoken_sort[1] & $tevtb_array[$i_count] <= $dtoken_sort[0] ) ";
+			}
+			elsif($dtoken_sort[0] == $dtoken_sort[1]){
+			    $expr_dstring .= " $tevtb_array[$i_count] == $dtoken_sort[0] ";
+			}
+		    }
+		    elsif($loop == 0) {
+			if($j != 0){
+			    $expr_dstring .= "|";
+			}
+
+			$expr_dstring .= " $tevtb_array[$i_count] == $dtoken_sort[0] ";
+		    }
+		}
+	    } until ($loop == 0);
+	}
+
+	else{
+	    print "You selected no D-token filtering. Continuing...\n";
+	}
+	print "The D-token expression built up was: $expr_dstring\n";
+    }
+
+
+#----------------------------------------------------------------------
+
+
+    if($tevtb_array[$i_count] =~ /^Z/){
+	
+	print "\nThis file contains a Z-token, specifically:\n";
+	print "$tevtb_array[$i_count].\n";
+	print "We have $tevtb_iarray[$i_count] bits for this token.\n";
+	$bit_value = 1;
+	for($i=1; $i <= $tevtb_iarray[$i_count]; $i++){
+	    $bit_value = $bit_value * 2;
+	}
+	$bit_value = $bit_value - 1;
+	print "So this token can take on values from 0 --> $bit_value\n\n";
+	print "The Z-token is SPECIAL. So we will deal with it in detail.\n";
+	@ztoken_array = split(/,/,$tevtb_array[$i_count]);
+	$ztoken_iarray = @ztoken_array;
+	$ztoken_array[0] =~ s/Z\[//;
+	$ztoken_array[$ztoken_iarray-1] =~ s/\]\]/\]/;
+	print "Number of Z-tokens is $ztoken_iarray \n";
+	if($ztoken_iarray > $bit_value){
+	    print "ERROR! \nThe number of tokens exceed the maximum value that can be expressed in $tevtb_iarray[$i_count] bits!\nPlease check TEVTB2.\nSend a copy of this file's header to xtehelp\@athena.gsfc.nasa.gov since this should never occur.";
+	    exit;
+	}
+	$loops = $ztoken_iarray/2;
+	for($i=1; $i <= $loops; $i++){
+	    $a=$i-1;
+	    $b=$i+$loops-1;
+	    printf "$ztoken_array[$a] ==%3d           $ztoken_array[$b] ==%3d\n", $a, $b; 
+	}
+
+	print "Do you want to select any of these? [Yes, No]: ";
+	$cont = <STDIN>;  
+
+	if($cont =~ /^[Yy]/){
+	    do {
+		do {
+		    $loop = 0;
+		    print "Enter the numbers associated with the items you want to select: ";
+		    print "[0-5,15,24-30]\n";
+		    print "The above syntax must be followed (no negative values!): ";
+
+		    ($ztoken_in=<STDIN>);
+		    if($ztoken_in =~ /^./){
+			chop($ztoken_in);
+			print "You entered $ztoken_in.\nIs this correct? [Yes, No]: ";
+			$cont = <STDIN>;  
+		    } 
+		    else {
+			print "\nYou did not enter a Z-token!\n";
+			print "Do you want to filter on the Z-token? [Yes, No]:";
+			$cont1 = "Yes";
+			$cont1 = <STDIN>;  
+
+			if($cont1 =~ /^[Yy]/){
+			    $cont = "No";
+			    print "Please re-enter a valid Z-token\n";
+			}
+		    }
+
+		} until ($cont =~ /^[Yy]/) ;
+		$cont1 = "Yes";
+		@ztoken_in_array = split(/,/,$ztoken_in);
+		$ztoken_in_iarray = @ztoken_in_array;
+		
+		for($j=0; $j < $ztoken_in_iarray; $j++) {
+		    @ztoken_sort = split(/-/,$ztoken_in_array[$j]);
+		    $ztoken_sort_num = @ztoken_sort;
+		    if($ztoken_sort_num > 2){
+			print"\nERROR you have violated the syntax format. Please re-enter command.\n\n";
+			$loop = 1;
+		    }
+
+		    if($ztoken_sort_num == 2 && $loop == 0){
+			if($j != 0){
+			    $expr_zstring .= "|";
+			}
+
+			if($ztoken_sort[0] == 0 & $ztoken_sort[1] != 0){
+			    $expr_zstring .= " Z[] <= $ztoken_sort[1] ";
+			}
+			elsif($ztoken_sort[1] >= ($ztoken_iarray - 1) & $ztoken_sort[0] != ($ztoken_iarray - 1) ){
+			    $expr_zstring .= " Z[] >= $ztoken_sort[0] ";
+			}
+			elsif($ztoken_sort[0] < $ztoken_sort[1]){
+			    $expr_zstring .= " Z[] >= $ztoken_sort[0] & Z[] <= $ztoken_sort[1] ";
+			}
+			elsif($ztoken_sort[0] > $ztoken_sort[1]){
+			    $expr_zstring .= " Z[] >= $ztoken_sort[1] & Z[] <= $ztoken_sort[0] ";
+			}
+			elsif($ztoken_sort[0] == $ztoken_sort[1]){
+			    $expr_zstring .= " Z[] == $ztoken_sort[0] ";
+			}
+		    }
+		    elsif($loop == 0) {
+			if($j != 0){
+			    $expr_zstring .= "|";
+			}
+
+			$expr_zstring .= " Z[] == $ztoken_sort[0] ";
+		    }
+		}
+	    } until ($loop == 0);
+	}
+
+	else{
+	    print "You selected no Z-token filtering. Continuing...\n";
+	}
+	print "The Z-token expression built up was: $expr_zstring\n";
+    }
+
+#----------------------------------------------------------------------
+
+    if($tevtb_array[$i_count] =~ /^E/){
+
+	print "\nThis file contains an E-token, specifically:\n";
+	print "$tevtb_array[$i_count].\n";
+	print "We have $tevtb_iarray[$i_count] bits for this token.\n";
+	$bit_value = 1;
+	for($i=1; $i <= $tevtb_iarray[$i_count]; $i++){
+	    $bit_value = $bit_value * 2;
+	}
+	$bit_value = $bit_value - 1;
+	print "So this token can take on values from 0 --> $bit_value\n";
+
+	if($tevtb_iarray[$i_count] > 1) {
+	    @etoken_array = split(/:/,$tevtb_array[$i_count]);
+	    $etoken_iarray = @etoken_array;
+	    $etoken_array[0] =~ s/E\[//;
+	    $etoken_array[$etoken_iarray-1] =~ s/\]//;
+	
+	    if($etoken_iarray == 2) {
+		print "\nE-token values from $etoken_array[0] to $etoken_array[1] are present.\n";
+	}
+	    elsif($etoken_iarray > 2) {
+		print "ERROR! \nThe number of tokens is $etoken_iarray, which is greater than 2. \nThis should not occur. Examine TEVTB value and modify with FPARKEY is necessary!";
+		exit;
+	    }
+	    elsif($etoken_iarray > 1) {
+		print "ERROR! \nThe number of tokens is $etoken_iarray, which is less than 1. \nThis should not occur. Examine TEVTB value and modify with FPARKEY is necessary!";
+		exit;
+	    }
+	    
+
+	    if($etoken_array[$etoken_iarray-1] > $bit_value){
+		print "ERROR! \nThe number of tokens exceed the maximum value that can be expressed in $tevtb_iarray[$i_count] bits!\nPlease check TEVTB2.\nSend a copy of this file's header to xtehelp\@athena.gsfc.nasa.gov since this should never occur.";
+		exit;
+	    }
+	}
+
+	print "Do you want to filter on this E-token? [Yes, No]: ";
+	$cont = <STDIN>;  
+
+	if($cont =~ /^[Yy]/){
+	    do {
+		do {
+		    if($tevtb_iarray[$i_count] > 1){
+			$loop = 0;
+			print "\nEnter the layer values of interest: ";
+			print "[0-10, 15, 22-50]\n";
+			print "The above syntax must be followed: ";
+
+			($etoken_in=<STDIN>);
+			if($etoken_in =~ /^./){
+			    chop($etoken_in);
+			    print "You entered $etoken_in.\nIs this correct? [Yes, No]: ";
+			    $cont = <STDIN>;  
+			} 
+			else {
+			    print "\nYou did not enter an E-token!\n";
+			    print "Do you want to filter on the E-token? [Yes, No]:";
+			    $cont1 = "Yes";
+			    $cont1 = <STDIN>;  
+			    
+			    if($cont1 =~ /^[Yy]/){
+				$cont = "No";
+				print "Please re-enter a valid E-token\n";
+			    }
+			}
+
+		    }
+		    else {
+			print "\nDo you want to set this E-token to TRUE (or FALSE), i.e., $tevtb_array[$i_count] == 1 (0) [True False]";
+			
+			($etoken_in=<STDIN>);
+			if($etoken_in =~ /^./){
+			    chop($etoken_in);
+			    print "You entered $etoken_in.\nCorrect? [Yes, No]: ";
+			    $cont = <STDIN>;  
+
+			    if($cont =~ /^[Yy]/ & $etoken_in =~ /^[Tt]/){
+				if($expr_estring =~ /^./) {
+				    $expr_estring .= " & ";
+				}
+				$expr_estring .= "$tevtb_array[$i_count] == 1";
+			    } elsif($cont =~ /^[Yy]/ & $etoken_in =~ /^[Ff]/){
+				if($expr_estring =~ /^./) {
+				    $expr_estring .= " & ";
+				}
+				$expr_estring .= "$tevtb_array[$i_count] == 0";
+			    }
+			} 
+			
+		    }
+
+		} until ($cont =~ /^[Yy]/) ;
+
+		if($tevtb_iarray[$i_count] > 1) {
+		    @etoken_in_array = split(/,/,$etoken_in);
+		    $etoken_in_iarray = @etoken_in_array;
+		
+		    for($j=0; $j < $etoken_in_iarray; $j++) {
+			@etoken_sort = split(/-/,$etoken_in_array[$j]);
+			$etoken_sort_num = @etoken_sort;
+			if($etoken_sort_num > 2){
+			    print"\nERROR you have violated the syntax format. Please re-enter command.\n\n";
+			    $loop = 1;
+			}
+
+			if($etoken_sort_num == 2 && $loop == 0){
+
+			    if($expr_estring =~ /^./ && $j == 0) {
+			       $expr_estring .= " & ( ";
+			    }
+
+			    if($j != 0){
+				$expr_estring .= "|";
+			    }
+
+			    if($etoken_sort[0] == 0 & $etoken_sort[1] != 0){
+				$expr_estring .= " $tevtb_array[$i_count] <= $etoken_sort[1] ";
+			    }
+			    elsif($etoken_sort[1] >= $bit_value & $etoken_sort[0] < $bit_value){
+				$expr_estring .= " $tevtb_array[$i_count] >= $etoken_sort[0] ";
+			    }
+			    elsif($etoken_sort[0] < $etoken_sort[1]){
+				$expr_estring .= "( $tevtb_array[$i_count] >= $etoken_sort[0] & $tevtb_array[$i_count] <= $etoken_sort[1] )";
+			    }
+			    elsif($etoken_sort[0] > $etoken_sort[1]){
+				$expr_estring .= "( $tevtb_array[$i_count] >= $etoken_sort[1] & $tevtb_array[$i_count] <= $etoken_sort[0] )";
+			    }
+			    elsif($etoken_sort[0] == $etoken_sort[1]){
+				$expr_estring .= " $tevtb_array[$i_count] == $etoken_sort[0] ";
+			    }
+			}
+
+			elsif($loop == 0 & $cont1 =~ /^[Yy]/) {
+
+			    if($expr_estring =~ /^./ && $j == 0) {
+				$expr_estring .= " & ";
+			    }
+
+			    if($j != 0){
+				$expr_estring .= "|";
+			    }
+			    
+			    $expr_estring .= " $tevtb_array[$i_count] == $etoken_sort[0] ";
+			}
+		    }
+		}
+	    } until ($loop == 0);
+
+	    if($expr_estring =~ /^./) {
+
+		if($expr_estring =~/&  &/){
+		 $expr_estring =~ s/&  &/&/;   
+		}
+		print "E-String is $expr_estring\n";
+
+		if($expr_estring =~ /\(/){
+
+		    @temp_sort=split(/\(/,$expr_estring);
+		    $temp_sort_num=@temp_sort;
+		    $temp_sort_num--;
+
+#Since the ( begins a string there will be one more than )'s so we 
+# decrement the count by one.
+#		    $temp_sort_num--;
+
+		    @temp_sort2=split(/\)/,$expr_estring);
+		    $temp_sort_num2=@temp_sort2;
+#		    $temp_sort_num2--;
+
+		    if($temp_sort_num2 > $temp_sort_num && $temp_sort_num > 0 ){
+			print "There is a problem! Too many )s\n";
+		    }
+		    elsif($temp_sort_num > $temp_sort_num2){
+			for($i=0; $i < ($temp_sort_num - $temp_sort_num2); $i++){
+			    $expr_estring .= ")";
+			}
+		    }
+		}
+	    }
+	}
+
+	else{
+	    print "You selected no E-token filtering. Continuing...\n";
+	}
+	print "The E-token expression built up was: $expr_estring\n";
+    }
+
+#----------------------------------------------------------------------
+    if($tevtb_array[$i_count] =~ /^G/){
+
+	print "\nThis file contains an G-token, specifically:\n";
+	print "$tevtb_array[$i_count].\n";
+	print "We have $tevtb_iarray[$i_count] bits for this token.\n";
+	$bit_value = 1;
+	for($i=1; $i <= $tevtb_iarray[$i_count]; $i++){
+	    $bit_value = $bit_value * 2;
+	}
+	$bit_value = $bit_value - 1;
+	print "So this token can take on values from 0 --> $bit_value\n";
+
+	@etoken_array = split(/:/,$tevtb_array[$i_count]);
+	$etoken_iarray = @etoken_array;
+	$etoken_array[0] =~ s/E\[//;
+	$etoken_array[$etoken_iarray-1] =~ s/\]//;
+	
+	if($etoken_iarray == 2) {
+	    print "\nD-token values from $etoken_array[0] to $etoken_array[1] are present.\n";
+	}
+	elsif($etoken_iarray > 2) {
+	    print "ERROR! \nThe number of tokens is $etoken_iarray, which is greater than 2. \nThis should not occur. Examine TEVTB value and modify with FPARKEY is necessary!";
+	    exit;
+	}
+	elsif($etoken_iarray > 1) {
+	    print "ERROR! \nThe number of tokens is $etoken_iarray, which is less than 1. \nThis should not occur. Examine TEVTB value and modify with FPARKEY is necessary!";
+	    exit;
+	}
+	    
+        if($etoken_array[$etoken_iarray-1] > $bit_value){
+	    print "ERROR! \nThe number of tokens exceed the maximum value that can be expressed in $tevtb_iarray[$i_count] bits!\nPlease check TEVTB2.\nSend a copy of this file's header to xtehelp\@athena.gsfc.nasa.gov since this should never occur.";
+	    exit;
+	}
+
+	print "Do you want to filter on the E-token? [Yes, No]: ";
+	$cont = <STDIN>;  
+
+	if($cont =~ /^[Yy]/){
+	    do {
+		do {
+		    $loop = 0;
+		    print "\nEnter the layer values of interest: ";
+		    print "[0-10, 15, 22-50]\n";
+		    print "The above syntax must be followed: ";
+
+		    ($etoken_in=<STDIN>);
+
+		    if($etoken_in =~ /^./){
+			chop($etoken_in);
+			print "You entered $etoken_in.\nIs this correct? [Yes, No]: ";
+			$cont = <STDIN>;  
+		    } 
+		    else {
+			print "\nYou did not enter an E-token!\n";
+			print "Do you want to filter on the E-token? [Yes, No]:";
+			$cont1 = "Yes";
+			$cont1 = <STDIN>;  
+
+			if($cont1 =~ /^[Yy]/){
+			    $cont = "No";
+			    print "Please re-enter a valid E-token\n";
+			}
+		    }
+
+		} until ($cont =~ /^[Yy]/) ;
+		@etoken_in_array = split(/,/,$etoken_in);
+		$etoken_in_iarray = @etoken_in_array;
+		
+		for($j=0; $j < $etoken_in_iarray; $j++) {
+		    @etoken_sort = split(/-/,$etoken_in_array[$j]);
+		    $etoken_sort_num = @etoken_sort;
+		    if($etoken_sort_num > 2){
+			print"\nERROR you have violated the syntax format. Please re-enter command.\n\n";
+			$loop = 1;
+		    }
+
+		    if($etoken_sort_num == 2 && $loop == 0){
+			if($j != 0){
+			    $expr_estring .= "|";
+			}
+
+			if($etoken_sort[0] < $etoken_sort[1]){
+			    $expr_estring .= " $tevtb_array[$i_count] >= $etoken_sort[0] & $tevtb_array[$i_count] <= $etoken_sort[1] ";
+			}
+			elsif($etoken_sort[0] > $etoken_sort[1]){
+			    $expr_estring .= " $tevtb_array[$i_count] >= $etoken_sort[1] & $tevtb_array[$i_count] <= $etoken_sort[0] ";
+			}
+			elsif($etoken_sort[0] == $etoken_sort[1]){
+			    $expr_estring .= " $tevtb_array[$i_count] == $etoken_sort[0] ";
+			}
+		    }
+		    elsif($loop == 0 & $cont1 =~ /^[Yy]/) {
+			if($j != 0){
+			    $expr_estring .= "|";
+			}
+
+			$expr_estring .= " $tevtb_array[$i_count] == $etoken_sort[0] ";
+		    }
+		}
+	    } until ($loop == 0);
+	}
+
+	else{
+	    print "You selected no E-token filtering. Continuing...\n";
+	}
+	print "The E-token expression built up was: $expr_estring\n";
+    }
+    $cont1 = "Yes";
+
+}
+
+if($expr_dstring =~ /^./){
+    $filter = "( $expr_dstring ) ";
+    print "D-Filter is $expr_dstring\n";
+}
+
+if($expr_zstring =~ /^./){
+    print "Z-Filter is $expr_zstring\n";
+
+    if($filter =~ /^./){
+	$filter .= " & ( $expr_zstring )";
+    }
+    else {
+	$filter = "( $expr_zstring ) ";
+    }
+}
+
+if($expr_estring =~ /^./){
+    print "E-Filter is $expr_estring\n";
+    if($filter =~ /^./){
+	$filter .= "& ( $expr_estring ) ";
+    }
+    else {
+	$filter = "( $expr_estring ) ";
+    }
+
+}
+
+if(!($filter =~ /\|/)){
+    print "\nNo ORs were found within the string. Removing parentheses.\n";
+    print "It is possible that this expression can be run directly through SEEXTRCT.\n";
+    print "This would negate the necessity of running FSELECT first.\n";
+    print "No intermediate files will be created - only the final processed output.\n";
+    print "Do you want to by-pass FSELECT and run SEEXTRCT directly? [Yes,No]";
+    $rSE = <STDIN>;  
+    if($rSE =~ /^[Yy]/){
+#	print "Sorry, this option is not yet supported in SEEXTRCT.\n";
+#	print "Fselect will run after SEBITMASK.\n";
+
+    }
+    else {
+	print "Fselect will be run!\n";
+    }
+
+    $filter =~ s/\(//g;
+    $filter =~ s/\)//g;
+}
+
+print "\n\nThe constructed filter is: \n$filter\n";
+if(!($filter =~ /^./)){
+    print "No filter was constructed!\n";
+    print "Creating filter mask on M-token value alone!\n";
+}
+
+print "\n";
+print "Running sebitmask to create the bitmask pattern:\n";
+
+
+# Unfortunately due to XPI limitations we CANNOT pass in the filter expression
+# as a string. We will have to write it to a file, close the file, and then
+# input that file. Then we will delete the temporary file.
+open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+print OUTPUT_FILE "$filter\n"; # Copy files from INFILE to OUTPUT
+close(OUTPUT_FILE);	# Close the output file.
+
+$tmp_file='@'."outfile_${$}";
+
+$temp_string = 'sebitmask infile="'.$infile.'" filter="'.$tmp_file.' " column="'.$column.'" bitfile="'.$bitfile.'" dryrun=no clobber=yes mode=h';
+
+print "Calling sebitmask with: \n $temp_string\n";
+
+@result2=&runcom('sebitmask infile"='.$infile.'" filter="'.$tmp_file.' " column="'.$column.'" bitfile="'.$bitfile.'" dryrun=no clobber=yes mode=h');
+
+print "Completed running sebitmask:\n\n";
+
+print "Expression generated by SEFILTER stored in outfile_${$}\n";
+
+print "Do you want to save this file? [Yes,No]";
+chop($answer10 = <STDIN>);
+if($answer10 =~ /^[Yy]/){
+}
+else{
+    print "Deleting outfile_${$}\n\n";
+    unlink("outfile_${$}") || print "Having trouble deleting outfile_${$}\n"; # Remove the output file if not told to save it.
+}
+
+@result3=&runcom('pset sebitmask infile="'.$infile.'" filter="'.$filter.'" column="'.$column.'" bitfile="'.$bitfile.'" ');
+print "Updating parfile for sebitmask:\n\n";
+
+open(INPUT_FILE,"$bitfile") || die "Sorry can't find $bitfile\n"; # Open the input file
+
+print "Final bitmask generated by SEBITMASK is:\n";
+
+while(<INPUT_FILE>) {
+    print $_; # Copy files from INFILE to OUTPUT
+    }
+close(INPUT_FILE);	# We are finished with the input file.
+
+#exit;
+
+if(!($rSE =~ /^[Yy]/)){
+
+    @infile2=&runcom('pget fselect outfile');
+    chop($infile2[0]);
+    print "Enter the output filename to contain the processed data:[$infile2[0]]";
+    ($outfile = <STDIN>);
+    if($outfile =~ /^./){
+	chop($outfile);}
+    else{
+	$outfile = $infile2[0];
+    }
+    if(!($outfile =~ /^./)){
+	$outfile = "out_fselect_${$}";
+	print "\nNo output file specified. We will create $outfile\n";
+    }
+
+    print "Using output of sebitmask as input and running Fselect:\n";
+    @resultf=&runcom('fselect infile="'.$infile.'" outfile="'.$outfile.'" expr="@'.$bitfile.'" mode=h');
+    @resultf=&runcom('pset fselect infile="'.$infile.'" outfile="'.$outfile.'" expr="@'.$bitfile.'" ');
+    print "Completed running fselect and created $outfile\n";
+
+    @outfile2=&runcom("pset fselect outfile='".$outfile."'");
+
+}
+
+#====================================================================
+
+if($rSE =~ /^[Yy]/){
+    print "Beginning SEEXTRCT run:\n";
+    print "Do you want full filtering capability (Yes/No)?";
+    chop($answer = <STDIN>);
+
+    @infile2=&runcom('pget seextrct infile');
+    chop($infile2[0]);
+    print "Input file name or \@file-of-filenames:[$infile2[0]]";
+    ($infile = <STDIN>);
+    if($infile =~ /^./ ){
+	chop($infile);
+    }
+    else{
+	$infile = $infile2[0];
+    }
+
+    $origfile = $infile;
+
+# Now we will test to see if the input file is a LIST of files. If it is
+# then we will copy all of the files contained within this file to a
+# unique filename
+    if($infile =~ /^@/ ){
+
+	$infile =~ s/^@//;	# Remove the @ symbol
+#	$origfile = $infile;	# Store the filename in origfile
+	open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+	open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+	while(<INPUT_FILE>) {
+	    print OUTPUT_FILE $_; # Copy files from INFILE to OUTPUT
+	}
+	close(INPUT_FILE);	# We are finished with the input file.
+	close(OUTPUT_FILE);	# Close up the output file too.
+	print "Temporary infile created was outfile_${$}\n";
+    }
+    else {
+	open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # open a unique output file
+	print OUTPUT_FILE "$infile \n"; # Copy the filename to output file
+	close(OUTPUT_FILE);	# Close the output file.
+    }
+
+    if($answer =~ /^[yY]/){
+	@infile2=&runcom('pget seextrct gtiorfile');
+	chop($infile2[0]);
+	print "Input GTI files to be OR'd with INFILE:[$infile2[0]]";
+	($gtiorfile = <STDIN>);
+	if($gtiorfile =~ /^./){
+	    chop($gtiorfile);}
+	else{
+	    $gtiorfile = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct gtiandfile');
+	chop($infile2[0]);
+	print "Input GTI files to be AND'd with INFILE:[$infile2[0]]";
+	($gtiandfile = <STDIN>);
+	if($gtiandfile =~ /^./){
+	    chop($gtiandfile);}
+	else{
+	    $gtiandfile = $infile2[0];
+	}
+    }
+
+    @infile2=&runcom('pget seextrct outroot');
+    chop($infile2[0]);
+    print "Root name for output file:[$infile2[0]]";
+    ($outroot = <STDIN>);
+    if($outroot =~ /^./){
+	chop($outroot);}
+    else{
+	$outroot = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct timecol');
+    chop($infile2[0]);
+    print "Name of TIME column:[$infile2[0]]";
+    ($timecol = <STDIN>);
+    if($timecol =~ /^./){
+	chop($timecol);}
+    else{
+	$timecol = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct columns');
+    chop($infile2[0]);
+    print "Name of COLUMN to be accumulated:[$infile2[0]]";
+    ($columns = <STDIN>);
+    if($columns =~ /^./){
+	chop($columns);}
+    else{
+	$columns = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct binsz');
+    chop($infile2[0]);
+    print "Input the binsize in seconds, use 0.1 etc. if nec (INDEF):[$infile2[0]]"; 
+    ($binsz = <STDIN>); 
+    if($binsz =~ /^./){
+	chop($binsz);}
+    else{
+	$binsz = $infile2[0];
+    }
+
+    if($answer =~ /^[yY]/){
+	@infile2=&runcom('pget seextrct mfracexp');
+	chop($infile2[0]);
+	print "Minimum acceptable fractional exposure (INDEF):[$infile2[0]]";
+	($mfracexp = <STDIN>);
+	if($mfracexp =~ /^./){
+	    chop($mfracexp);}
+	else{
+	    $mfracexp = $infile2[0];
+	}
+    }
+
+    @infile2=&runcom('pget seextrct printmode');
+    chop($infile2[0]);
+    print "Chose print option, LIGHTCURVE, SPECTRUM, or BOTH:[$infile2[0]]";
+    ($printmode = <STDIN>);
+    if($printmode =~ /^./){
+	chop($printmode);}
+    else{ 
+	$printmode = $infile2[0];
+    }
+			      
+    @infile2=&runcom('pget seextrct lcmode');
+    chop($infile2[0]);
+    print "Type of binning for LIGHTCURVE: (SUM, RATE, MEAN):[$infile2[0]]";
+    ($lcmode = <STDIN>);
+    if($lcmode =~ /^./){
+	chop($lcmode);}
+    else{
+	$lcmode = $infile2[0];
+    }
+
+    @infile2=&runcom('pget seextrct spmode');
+    chop($infile2[0]);	    
+    print "Type of binning for SPECTRUM (SUM, RATE, MEAN):[$infile2[0]]";
+    ($spmode = <STDIN>);
+    if($spmode =~ /^./){
+	chop($spmode);}
+    else{
+	$spmode = $infile2[0];
+    }
+
+    if($answer =~ /^[yY]/){
+	@infile2=&runcom('pget seextrct mlcinten');
+	chop($infile2[0]);
+	print "Maximum acceptable intensity for Light Curve (INDEF):[$infile2[0]]";
+	($mlcinten = <STDIN>);
+	if($mlcinten =~ /^./){
+	    chop($mlcinten);}
+	else{
+	    $mlcinten = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct mspinten');
+	chop($infile2[0]);
+	print "Maximum acceptable intensity for Spectrum (INDEF):[$infile2[0]]";
+	($mspinten = <STDIN>);
+	if($mspinten =~ /^./){
+	    chop($mspinten);}
+	else{
+	    $mspinten = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct timemin');
+	chop($infile2[0]);
+	print "Starting time for summation in seconds (INDEF):[$infile2[0]]";
+	($timemin = <STDIN>);
+	if($timemin =~ /^./){
+	    chop($timemin);}
+	else{
+	    $timemin = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct timemax');
+	chop($infile2[0]);
+	print "Ending time for summation in seconds (INDEF):[$infile2[0]]";
+	($timemax = <STDIN>);
+	if($timemax =~ /^./){
+	    chop($timemax);}
+	else{
+	    $timemax = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct timeint');
+	chop($infile2[0]);
+	print "Input time intervals t1-t2,t3-t4 in seconds (INDEF):[$infile2[0]]";
+	($timeint = <STDIN>);
+	if($timeint =~ /^./){
+	    chop($timeint);}
+	else{
+	    $timeint = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct chmin');
+	chop($infile2[0]);
+	print "Minimum energy bin to include in Spectra (INDEF) or 0-255:[$infile2[0]]";
+	($chmin = <STDIN>);
+	if($chmin =~ /^./){
+	    chop($chmin);}
+	else{
+	    $chmin = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct chmax');
+	chop($infile2[0]);
+	print "Maximum energy bin to include in Spectra (INDEF) or 0-255:[$infile2[0]]";
+	($chmax = <STDIN>);
+	if($chmax =~ /^./){
+	    chop($chmax);}
+	else{
+	    $chmax = $infile2[0];
+	}
+    
+	@infile2=&runcom('pget seextrct chint');
+	chop($infile2[0]);
+	print "Input energy intervals to be retained 0-1,2-255 (INDEF):[$infile2[0]]";
+	($chint = <STDIN>);
+	if($chint =~ /^./){
+	    chop($chint);}
+	else{
+	    $chint = $infile2[0];
+	}
+    
+	@infile2=&runcom('pget seextrct chbin');
+	chop($infile2[0]);
+	print "Input channels for each bin 0-5,6-255 (INDEF):[$infile2[0]]";
+	($chbin = <STDIN>);
+	if($chbin =~ /^./){
+	    chop($chbin);}
+	else{
+	    $chbin = $infile2[0];
+	}
+ 
+	@infile2=&runcom('pget seextrct ephem');
+	chop($infile2[0]);
+	print "Input the ephemeris of the phase in seconds (INDEF):[$infile2[0]]";
+	($ephem = <STDIN>);
+	if($ephem =~ /^./){
+	    chop($ephem);}
+	else{
+	    $ephem = $infile2[0];
+	}
+    
+	@infile2=&runcom('pget seextrct period');
+	chop($infile2[0]);
+	print "Input the period in seconds, use 0.1 etc. if nec (INDEF):[$infile2[0]]";
+	($period = <STDIN>);
+	if($period =~ /^./){
+	    chop($period);}
+	else{
+	    $period = $infile2[0];
+	}
+
+	@infile2=&runcom('pget seextrct phaseint');
+	chop($infile2[0]);
+	print "Input phase interval 0.0-0.5,0.75-1.0 (INDEF):[$infile2[0]]";
+	($phaseint = <STDIN>);
+	if($phaseint =~ /^./){
+	    chop($phaseint);}
+	else{
+	    $phaseint = $infile2[0];
+	}
+    }
+    print "\n";
+    print "Running seextrct:\n";
+
+# Here we set up seextrct_string to get ready to call seextrct.
+
+    if($answer =~ /^[yY]/){
+	$tmp_file='@'."outfile_${$}";
+	$seextrct_string = "seextrct infile='".$tmp_file."' gtiorfile=$gtiorfile " ; 
+	$seextrct_string .= "gtiandfile=$gtiandfile outroot=$outroot extenpha='.pha' extenlc='.lc' ";  
+	$seextrct_string .= "phasefile=' ' bitfile=$bitfile timecol=$timecol ";
+	$seextrct_string .= "columns='".$columns."' multiple='no' "; 
+	$seextrct_string .= "binsz=$binsz mfracexp=$mfracexp tnull=0.0 printmode=$printmode "; 
+	$seextrct_string .= "lcmode=$lcmode spmode=$spmode mlcinten=$mlcinten ";
+	$seextrct_string .= "mspinten=$mspinten timemin=$timemin timemax=$timemax "; 
+	$seextrct_string .= "timeint='".$timeint."' gticols='START STOP' "; 
+	$seextrct_string .= "chmin=$chmin chmax=$chmax "; 
+	$seextrct_string .= "chint=$chint chbin=$chbin ephem=$ephem period=$period "; 
+	$seextrct_string .= "phaseint=$phaseint obsdate='MJDREF' obstime='TSTART TSTOP' " ;   
+	$seextrct_string .= "sensecase=no ";
+	$seextrct_string .= "chkit=no clobber=yes negative=IGNORE bailout=no mode='h' ";
+
+    } 
+    else {
+	$tmp_file='@'."outfile_${$}";
+	$seextrct_string = " seextrct infile='".$tmp_file."' gtiorfile='-' " ; 
+	$seextrct_string .= "gtiandfile='-' outroot=$outroot extenpha='.pha' extenlc='.lc' ";  
+	$seextrct_string .= "phasefile=' ' bitfile=$bitfile timecol=$timecol ";
+	$seextrct_string .= "columns='".$columns."' multiple='no' "; 
+	$seextrct_string .= "binsz=$binsz mfracexp='INDEF' tnull=0.0 printmode=$printmode "; 
+	$seextrct_string .= "lcmode=$lcmode spmode=$spmode mlcinten='INDEF' ";
+	$seextrct_string .= "mspinten='INDEF' timemin='INDEF' timemax='INDEF' "; 
+	$seextrct_string .= "timeint='INDEF' gticols='START STOP' "; 
+	$seextrct_string .= "chmin='INDEF' chmax='INDEF' "; 
+	$seextrct_string .= "chint='INDEF' chbin='INDEF' ephem='INDEF' period='INDEF' "; 
+	$seextrct_string .= "phaseint='INDEF' obsdate='MJDREF' obstime='TSTART TSTOP' " ;   
+	$seextrct_string .= "sensecase=no ";
+	$seextrct_string .= "chkit='no' clobber='yes' negative='IGNORE' bailout=no mode='h' ";
+    }
+
+    $extenpha = '.pha';
+    $extenlc = '.lc';
+
+    print "Running seextrct - be patient!\n";
+    print "$seextrct_string\n";
+
+    system($seextrct_string);
+
+#@result=&runcom($seextrct_string);
+#print "@result";
+
+    print "\n";
+    print "###########################################################\n";
+    print "Completed running seextrct\n";
+
+    print "Do you want to call FPLOT to view your data? [Yes,No]";
+    $fprun = <STDIN>;
+    if(!($fprun =~ /^[Yy]/)){
+	@result=&runcom("pset seextrct infile='".$origfile."' ");
+	unlink("outfile_${$}") || print "Having trouble deleting outfile_${$}\n"; # Remove the output file if not told to save it.
+	exit;
+    }
+
+    print "Calling FPLOT\n\n";
+
+
+# This is where we have to get ready for plotting the light-curve,
+# spectra, or both. We allow the user to change the output and select
+# the rows to be applied for each call...
+
+    if($printmode =~ /^both/i){
+	print "Do you want to plot the light-curve (l), spectra (s), or both (b): [l,s,b]";
+	$answer2 = <STDIN>;
+	if($answer2 =~ /^./){
+	    chop($answer2);}
+	else{
+	    print "Defaulting to plotting both files...\n";
+	    $answer2 = 'b'
+	    }
+	
+	if($answer2 =~ /^[Bb]/){
+	    print "Since you have selected both, lets deal with the LIGHT-CURVE first.\n";
+	}
+    }
+
+    if($printmode =~ /^lightcurve/i){
+	$pltfilelc = "$outroot" . "$extenlc";
+	$xparmlc = "TIME";
+	if($lcmode =~ /^sum/i){
+	    $yparmlc = "COUNTS";
+	}elsif($lcmode =~ /^rate/i){
+	    $yparmlc = "RATE";
+	}elsif($lcmode =~ /^mean/i){
+	    $yparmlc = "MEAN";
+	}else {
+	    print "ERROR LCMODE can only be SUM, RATE, or MEAN\n";
+	}
+
+    } elsif($printmode =~ /^spectrum/i){
+	$pltfilesp = "$outroot" . "$extenpha";
+	$xparmsp = "CHANNEL";
+	if($spmode =~ /^sum/i){
+	    $yparmso = "COUNTS";
+	}elsif($spmode =~ /^rate/i){
+	    $yparmsp = "RATE";
+	}elsif($spmode =~ /^mean/i){
+	    $yparmsp = "MEAN";
+	}else {
+	    print "ERROR SPMODE can only be SUM, RATE, or MEAN\n";
+	}
+    } elsif($printmode =~ /^both/i){
+	if($answer2 =~ /^[Ll]/ || $answer2 =~ /^[Bb]/){
+	    $pltfilelc = "$outroot" . "$extenlc";
+	    $xparmlc = "TIME";
+	    if($lcmode =~ /^sum/i){
+		$yparmlc = "COUNTS";
+	    }elsif($lcmode =~ /^rate/i){
+		$yparmlc = "RATE";
+	    }elsif($lcmode =~ /^mean/i){
+		$yparmlc = "MEAN";
+	    }else {
+		print "ERROR LCMODE can only be SUM, RATE, or MEAN\n";
+	    }
+	} 
+    
+	if($answer2 =~ /^[Ss]/ || $answer2 =~ /^[Bb]/){
+	    $pltfilesp = "$outroot" . "$extenpha";
+	    $xparmsp = "CHANNEL";
+	    if($spmode =~ /^sum/i){
+		$yparmsp = "COUNTS";
+	    }elsif($spmode =~ /^rate/i){
+		$yparmsp = "RATE";
+	    }elsif($spmode =~ /^mean/i){
+		$yparmsp = "MEAN";
+	    }else {
+		print "ERROR SPMODE can only be SUM, RATE, or MEAN\n";
+	    }
+	}
+    }
+
+    if($answer2 =~ /^[Ll]/ || $answer2 =~ /^[Bb]/){
+	print"\nPlotting Light-curve with FPLOT\n";
+
+	@infile2=&runcom('pget fplot rows');
+	chop($infile2[0]);
+	print "Lists of rows:[$infile2[0]]";
+	($rows = <STDIN>);
+	if($rows =~ /^./){
+	    chop($rows);}
+	else{
+	    $rows = $infile2[0];
+	}
+
+	@infile2=&runcom('pget fplot device');
+	chop($infile2[0]);
+	print "Device: /XWindow, /XTerm, /TK, /PS, etc:[$infile2[0]]";
+	($device = <STDIN>);
+	if($device =~ /^./){
+	    chop($device);}
+	else{
+	    $device = $infile2[0];
+	}
+
+	@infile2=&runcom('pget fplot pltcmd');
+	chop($infile2[0]);
+	print "Any legal PLT command:[$infile2[0]]";
+	($pltcmd = <STDIN>);
+	if($pltcmd =~ /^./){
+	    chop($pltcmd);}
+	else{
+	    $pltcmd = $infile2[0];
+	}
+
+	$fplot_stringlc = "fplot infile=$pltfilelc xparm=$xparmlc yparm=$yparmlc rows='".$rows."' device='".$device."' pltcmd='".$pltcmd." ' offset=no maxpts=10000 binmode=DEFAULT mode=h";
+
+	print "$fplot_stringlc\n";
+	system($fplot_stringlc);
+    } 
+
+    if($answer2 =~ /^[Ss]/ || $answer2 =~ /^[Bb]/){
+	print "\nPlotting Spectra with FPLOT\n";
+    
+	@infile2=&runcom('pget fplot rows');
+	chop($infile2[0]);
+	print "Lists of rows:[$infile2[0]]";
+	($rows = <STDIN>);		
+	if($rows =~ /^./){		
+	    chop($rows);}
+	else{
+	    $rows = $infile2[0];
+	}
+
+	@infile2=&runcom('pget fplot device');
+	chop($infile2[0]);
+	print "Device: /XWindow, /XTerm, /TK, /PS, etc:[$infile2[0]]";
+	($device = <STDIN>);
+	if($device =~ /^./){
+	    chop($device);}
+	else{
+	    $device = $infile2[0];
+	}
+
+	@infile2=&runcom('pget fplot pltcmd');
+	chop($infile2[0]);
+	print "Any legal PLT command:[$infile2[0]]";
+	($pltcmd = <STDIN>);
+	if($pltcmd =~ /^./){
+	    chop($pltcmd);}
+	else{
+	    $pltcmd = $infile2[0];
+	}
+
+	$fplot_stringsp = "fplot infile=$pltfilesp xparm=$xparmsp yparm='".$yparmsp."' rows='".$rows."' device='".$device."' pltcmd='".$pltcmd." ' offset=no maxpts=10000 binmode=DEFAULT mode=h";
+
+	print "$fplot_stringsp\n";
+	system($fplot_stringsp);
+    }
+
+    print "\n";
+    print "###########################################################\n";
+
+    print "Do you want to apply this bitmask to other files?\n";
+    print "If so enter the file or list of files to be processed? \n";
+    print "(RETURN to terminate this program.)\n";
+
+$infile = <STDIN>;
+    if($infile =~ /^./){
+	chop($infile);
+	$terminate=0;}
+    else{
+	print "Terminating.... a list of all files processed was stored in outfile_${$}\n";
+	$terminate=1;
+    }
+
+    until($terminate){
+	if($infile =~ /^@/ ){
+	    
+	    $infile =~ s/^@//;	# Remove the @ symbol
+#	    $origfile = $infile;	# Store the filename in origfile
+	    open(INPUT_FILE,"$infile") || die "Sorry can't find $infile\n"; # Open the input file
+	    open(OUTPUT_FILE,">>outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+	    while(<INPUT_FILE>) {
+		print OUTPUT_FILE $_; # Copy files from INFILE to OUTPUT
+	    }
+	    close(INPUT_FILE);	# We are finished with the input file.
+	    close(OUTPUT_FILE);	# Close up the output file too.
+	    print "output file created was outfile_${$}\n";
+	}
+	else {
+#	    $origfile = $infile;
+	    open(OUTPUT_FILE,">>outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # open a unique output file
+	    print OUTPUT_FILE "$infile \n"; # Copy the filename to output file
+	    close(OUTPUT_FILE);	# Close the output file.
+	}
+
+	print "Calling seextrct\n";   
+	system($seextrct_string);
+
+	print "Calling fplot\n";
+	if($answer2 =~ /^[Lc]/ || $answer2 =~ /^[Bb]/){
+	    print "Plotting Light-curve\n";
+	    system($fplot_stringlc);
+	} 
+    
+	if($answer2 =~ /^[Ss]/ || $answer2 =~ /^[Bb]/){
+	    print "Plotting Spectra\n";
+	    system($fplot_stringsp);
+	}
+
+	print "Next file or list of files to be processed? (RETURN to end)\n";
+	$infile = <STDIN>;
+	if($infile =~ /^./){
+	    chop($infile);
+	    $terminate=0;}
+	else{
+	    print "Terminating.... a list of all files processed is in outfile_${$}\n";
+	    $terminate=1;
+	}
+    }
+
+
+    @result=&runcom("pset seextrct infile='".$origfile."' ");
+    print "All files processed were stored in outfile_${$}\n";
+    print "Do you want to save this file? [Yes,No]";
+    chop($answer10 = <STDIN>);
+    if($answer10 =~ /^[Yy]/){
+    }
+    else{
+	print "Deleting outfile_${$}\n";
+	unlink("outfile_${$}") || print "Having trouble deleting outfile_${$}\n"; # Remove the output file if not told to save it.
+    }
+
+}  

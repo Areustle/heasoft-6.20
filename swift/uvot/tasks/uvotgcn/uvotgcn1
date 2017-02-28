@@ -1,0 +1,1292 @@
+#!/usr/bin/perl
+# $Revision: 1.19 $
+# $Source: /headas/headas/swift/uvot/tasks/uvotgcn/uvotgcn1,v $
+# $Date: 2012/07/30 21:36:57 $
+#
+# $Log: uvotgcn1,v $
+# Revision 1.19  2012/07/30 21:36:57  rwiegand
+# Update ASPCORR keyword written when quaternion taken from earlier processing.
+#
+# Revision 1.18  2011/08/29 17:44:59  rwiegand
+# Support for appending a flag image to the genie image.
+#
+# Revision 1.17  2011/03/31 21:33:22  rwiegand
+# Added threshold parameter.
+#
+# Revision 1.16  2011/03/02 22:16:29  rwiegand
+# When processing a genie image, prepare a flag file which identifies
+# unexposed pixels and provide it to uvotdetect.
+#
+# Revision 1.15  2009/01/15 21:51:41  rwiegand
+# If an aspect correction is not found for the image, reload the trigger info
+# just in case a correction was found since it was initially loaded.
+#
+# Revision 1.14  2008/10/24 21:12:00  rwiegand
+# Do not require teldef to be a regular file.
+#
+# Revision 1.13  2008/07/02 15:44:10  rwiegand
+# Was not marking source file done for IMAGE packet processing.  Updated
+# star identification parameters for consistency between tristarid and
+# tristarid1.
+#
+# Revision 1.12  2007/05/25 15:22:45  rwiegand
+# It is only necessary to run uvotcoincidence and uvotflux if processing
+# a SRCLIST since uvotdetect calibrates detected sources in IMAGE packets.
+#
+# Revision 1.11  2007/05/23 19:07:41  rwiegand
+# Split uvotmag call into uvotcoincidence and uvotflux.
+#
+# Revision 1.10  2006/08/08 19:27:12  rwiegand
+# Using a previously found quaternion for running tristarid was failing
+# because of a change to aspcorr/tristarid (which now keep the results
+# file even if star identification is not successful).
+#
+# Revision 1.9  2005/12/16 18:18:30  rwiegand
+# Retrieve exposure duration estimate after uvottfc processing.
+#
+# Revision 1.8  2005/12/05 20:10:41  rwiegand
+# Only attempt star identification if there are a few sources available.
+# Draw unmatched rather than matched sources on the fieldfile and only
+# if there was an aspect solution.
+#
+# Revision 1.7  2005/12/01 16:07:55  rwiegand
+# If an aspect correction cannot be found for the input packet, but one was
+# previously found for the same exposure, use it to correct the sky image
+# and to create a correlated source catalog.
+#
+# Revision 1.6  2005/11/21 18:52:01  rwiegand
+# Relocated email distribution capability to uvotgcn0.  The module
+# UVOT::GCN contains routines shared by the uvotgcn* tasks.
+#
+# Revision 1.5  2005/11/15 15:39:44  rwiegand
+# Implemented distribution of results.
+#
+# Revision 1.4  2005/11/04 19:44:54  rwiegand
+# Added scale parameter.
+#
+# Revision 1.3  2005/11/02 14:37:52  rwiegand
+# Use uvotdetect output parameter to determine number of detected sources.
+#
+# Revision 1.2  2005/10/31 16:23:40  rwiegand
+# Streamline parameter interface.
+#
+# Revision 1.1  2005/10/31 14:05:55  rwiegand
+# Back-end for UVOT TDRSS packet processing.
+#
+# Revision 1.21  2005/10/12 13:33:17  rwiegand
+# Updated the tristarid invocation to increase the number of objects that
+# are used when searching for a match.  Write a message when a product is
+# not created.
+#
+# Revision 1.20  2005/10/06 13:51:52  rwiegand
+# Only invoke uvotdetect once (with the lowest threshold).  tristarid now
+# has separate parameters for magnitude of position correction and error
+# associated with corrected positions.  Set radius for reporting unmatched
+# sources based on FOV.
+#
+# Revision 1.19  2005/09/21 08:55:53  rwiegand
+# Only apply aspect correction to sky image if one exists.
+#
+# Revision 1.18  2005/09/16 12:17:09  rwiegand
+# Allow user to qualify CALDB query.
+#
+# Revision 1.17  2005/09/07 18:31:39  rwiegand
+# Updated invocation of tristarid for new parameter list.  Apply aspect
+# correction if available to sky images.
+#
+# Revision 1.16  2005/08/29 12:04:39  rwiegand
+# Compress output files with names ending in .gz.  Updated default parameter
+# values.  Produce field image whether or not star identification succeeds.
+# Use tristarid for star identification.
+#
+# Revision 1.15  2005/06/20 15:21:44  rwiegand
+# Corrected string identifying GRB position error.
+#
+# Revision 1.14  2005/04/25 18:16:19  rwiegand
+# Delete pre-existing output files which may be created during this run.
+# Write the names of created output files to the signal file.
+#
+# Revision 1.13  2005/03/11 22:09:57  rwiegand
+# Added parameter for passing parameters to uvotstarid.  Parse units of
+# GRB_ERROR in notices.
+#
+# Revision 1.12  2005/03/04 19:14:07  rwiegand
+# Added alignment file parameter that is passed to swiftxform (to convert
+# RA/DEC/ROLL to quaternions).  Compress TDRSS finding chart sparse image.
+#
+# Revision 1.11  2005/02/09 18:49:12  rwiegand
+# Was failing to pass target to uvotpict sub-process.  Pass uvotdetect
+# threshold of 3.
+#
+# Revision 1.10  2005/02/02 22:59:28  rwiegand
+# Failed to wrap an error in an else.
+#
+# Revision 1.9  2005/02/02 22:39:28  rwiegand
+# Modified to generate products if there is no GRB position notice.
+#
+# Revision 1.8  2005/02/01 16:11:44  rwiegand
+# Changed some parameters to PIL file type to avoid trouble with trailing
+# spaces.  Ignore case when checking for special value CALDB.
+#
+# Revision 1.7  2004/12/10 16:58:46  rwiegand
+# Resolve telescope definition file here instead of in each child.
+#
+# Revision 1.6  2004/10/15 21:57:00  rwiegand
+# Use UVOT::Convert to build attitude file.
+#
+# Revision 1.5  2004/08/31 19:08:41  rwiegand
+# Updated from swifttrans to swiftxform.
+#
+# Revision 1.4  2004/08/05 19:55:23  rwiegand
+# Proceed with either BAT or XRT notice instead of requiring both.  Compare
+# notice TRIGGER_NUM to keyword TARG_ID instead of OBS_ID.  Only create
+# signal file if mode correctly set.
+#
+# Revision 1.3  2004/07/09 16:17:43  rwiegand
+# No longer necessary to catch ALRM signal since the signal is now sent to
+# the correct children instead of the process group.
+#
+# Revision 1.2  2004/06/25 15:40:23  rwiegand
+# Separated out the parameters being passed to buildCommand.
+#
+# Revision 1.1  2004/06/17 21:44:48  rwiegand
+# UVOT GRB Coordinates Network (GCN) tools.
+#
+
+use strict;
+
+package UVOT::GCN1;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use UVOT::GCN;
+
+use SimpleFITS;
+
+
+# main
+{
+print '--- UVOTGCN1 STARTING AT ', scalar(gmtime()), "\n";
+
+	my $task = __PACKAGE__->new(
+			version => '0.3',
+			);
+
+	$task->run;
+
+print '--- UVOTGCN1 COMPLETE AT ', scalar(gmtime()), "\n";
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			loadJobFile
+			loadPacket
+			assimilateJob
+			determineTriggerFile
+			installTriggerInformation
+			determineCalibrationFiles
+			runUvottfc
+			makeFlagFile
+			runTransform
+			runUvotdetect
+			runStarid
+			aspectCorrect
+			getSkyImage
+			runUvotpict
+			appendFlagImage
+			archiveResults
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				posture=string jobfile=file packetfile=file
+				archive=file catspec=file
+				skyfile=file sourcesfile=file catalogfile=file fieldfile=file
+				signalfile=file timeout=int threshold=real
+				clobber=bool cleanup=bool history=bool chatter=int
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	$self->{posture} = $args->{posture};
+
+	foreach my $par (qw(jobfile packetfile catspec)) {
+		my $value = $args->{$par};
+		next if ($par eq 'packetfile' and $value =~ /^DEFAULT$/i);
+		if (not -f $value) {
+			$self->error(BAD_INPUT, "invalid $par '$value'");
+		}
+	}
+
+	if (not -d $args->{archive}) {
+		$self->error(BAD_INPUT, "invalid archive '$args->{archive}'");
+	}
+
+}
+
+
+sub loadPacket
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $job = $self->{jobInfo};
+
+	my $path;
+	my $value = $args->{packetfile};
+	if ($value =~ /^DEFAULT$/) {
+		my ($name, $dir) = File::Basename::fileparse($args->{jobfile});
+		$path = "$dir/$job->{PACKET}{FILE}";
+	}
+	else {
+		$path = $value;
+	}
+
+	my $header;
+	my $status = SimpleFITS->readonly($path)
+			->move(2) # 2nd HDU holds the goodies
+			->readheader($header, clean => 1)
+			->close
+			->status;
+
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to load $path [$status]");
+	}
+	else {
+		$self->{packetFile} = $path;
+		$self->markForArchive(packet => $path);
+
+		$self->{packetHeader} = $header;
+
+		if ($header->{XTENSION} eq 'IMAGE') {
+			$self->{packetType} = UVOT::GCN::PACKET_IMAGE;
+		}
+		elsif ($header->{EXTNAME} eq 'TDRSS_FC') {
+			$self->{packetType} = UVOT::GCN::PACKET_SRCLIST;
+		}
+		else {
+			$self->error(BAD_INPUT, "unable to determine packet type");
+		}
+	}
+
+	if (my $type = $self->{packetType}) {
+		$self->{'have' . $type} = 1;
+	}
+}
+
+
+
+sub loadJobFile
+{
+	my ($self) = @_;
+
+	my $jobfile = $self->args->{jobfile};
+
+	my $jobInfo = UVOT::GCN::loadJobInfo($self, $jobfile);
+	if (not $jobInfo) {
+		$self->error(BAD_INPUT, "unable to load jobfile $jobfile");
+	}
+	else {
+		$self->{jobInfo} = $jobInfo;
+		$self->markForArchive(job => $jobfile);
+	}
+}
+
+
+
+sub assimilateJob
+{
+	my ($self) =  @_;
+
+	my $info = $self->{jobInfo};
+
+	{
+		my $s = time;
+		$self->{JOB_ID} = "pid $$, time $s";
+	}
+
+	foreach my $key (qw(TARG_ID)) {
+		if (not exists($info->{$key})) {
+			$self->warning("job info missing $key");
+		}
+	}
+	return if not $self->isValid;
+
+	my $packet = $info->{PACKET} || { };
+
+	if ($packet->{TYPE} ne $self->{packetType}) {
+		$self->warning("job PACKET TYPE does not match parameters, updating");
+		$packet->{TYPE} = $self->{packetType};
+	}
+
+	{
+		my $header = $self->{packetHeader};
+
+		if ($info->{TARG_ID} != $header->{TARG_ID}) {
+			$self->warning("job TARG_ID does not match packet, updating");
+			$info->{TARG_ID} = $header->{TARG_ID};
+		}
+
+		if ($packet->{EXPID} != $header->{EXPID}) {
+			$self->warning("job EXPID does not match packet, updating");
+			$packet->{EXPID} = $header->{EXPID};
+		}
+
+		my %pos = (
+			RA => $header->{RA_PNT},
+			DEC => $header->{DEC_PNT},
+			ROLL => $header->{PA_PNT},
+		);
+		$self->{PNT_POSITION} = \%pos;
+	}
+
+	foreach my $tag (qw(XRT BAT BLC)) {
+
+		my $key = $tag . '_NOTICE';
+
+		if (my $notice = $info->{$key}) {
+
+			my %pos = (
+				RA => $notice->{GRB_RA},
+				DEC => $notice->{GRB_DEC},
+			);
+
+			if (defined($notice->{GRB_ERROR})) {
+				$pos{ERROR} = $notice->{GRB_ERROR};
+			}
+
+			$self->{$tag . '_POSITION'} = \%pos;
+
+			if (not $self->{target}) {
+				$self->{target} = \%pos;
+			}
+		}
+		else {
+			$self->warning("no $tag position/error");
+		}
+
+	}
+
+	if (not $self->{target}) {
+		# fall back on PNT_*
+		$self->{target} = $self->{PNT_POSITION};
+	}
+
+	UVOT::GCN::determineTriggerTime($self, $info);
+}
+
+
+sub determineTriggerFile
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $info = $self->{jobInfo};
+
+	my $problem = UVOT::GCN::locateTriggerInfo($self,
+				ARCHIVE => $args->{archive},
+				TARG_ID => $info->{TARG_ID},
+				);
+
+	if ($problem) {
+		$self->error(BAD_INPUT, "unable to locate trigger info: $problem");
+	}
+}
+
+
+
+sub installTriggerInformation
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $info = $self->{jobInfo};
+
+	my @info;
+
+	UVOT::GCN::acquireLock($self, $self->{triggerLock});
+
+	if (-f $self->{triggerFile}) {
+		@info = UVOT::GCN::loadTriggerInfo($self);
+		my $count = @info;
+		$self->report("loaded $count previous $info->{TARG_ID} runs");
+	}
+	else {
+		$self->report("no trigger info at $self->{triggerFile}");
+	}
+
+	$self->{triggerInfo} = \@info;
+
+	$self->determineOutputNames
+		if $self->isValid;
+
+	my $job = $info->{JOB};
+	$job->{ID} = $self->{JOB_ID};
+	$job->{START} = scalar(gmtime) . ' GMT';
+
+	$info->{PACKET}{TYPE} = $self->{packetType};
+
+	my @input = (
+		[ FILE => $args->{jobfile} ],
+	);
+
+	foreach my $input (@input) {
+		my ($key, $path) = @$input;
+		my ($name, $dir) = File::Basename::fileparse($path);
+		$job->{$key} = $name;
+	}
+
+	push(@info, $info);
+
+	UVOT::GCN::saveInfo($self, $self->{triggerFile}, @info);
+
+	UVOT::GCN::releaseLock($self, $self->{triggerLock});
+}
+
+
+
+sub determineOutputNames
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $info = $self->{jobInfo};
+
+	my $uniquer = UVOT::GCN::uniquer($self, $info, $self->{triggerInfo});
+
+	my %arcname;
+
+	foreach my $which (qw(job packet sky sources catalog field signal)) {
+
+		my $arcname = UVOT::GCN::nameOutputFile($self, $which,
+				TARG_ID => $info->{TARG_ID},
+				TYPE => $self->{packetType},
+				UNIQUER => $uniquer,
+				);
+
+		$arcname{$which} = $arcname;
+	}
+
+	$self->{arcnames} = \%arcname;
+
+}
+
+
+sub markForArchive
+{
+	my ($self, $which, $path) = @_;
+	$self->{archive}{$which} = $path;
+}
+
+
+sub markDone
+{
+	my ($self, $which, $path) = @_;
+	$self->{done}{$which} = $path;
+}
+
+
+sub determineCalibrationFiles
+{
+	my ($self) = @_;
+
+	# set up to use CALDB
+	foreach my $par (qw(alignfile badpixlist zerofile coinfile)) {
+		$self->{$par} = 'CALDB';
+	}
+
+	my $path = $self->queryCALDB('TELDEF',
+			header => $self->{packetHeader},
+			asString => 1,
+			);
+	if ($path) {
+		$self->{teldef} = $path;
+	}
+	else {
+		$self->error(BAD_INPUT,
+				"unable to resolve telescope definition file");
+	}
+}
+
+
+
+sub runUvottfc
+{
+	my ($self) = @_;
+
+	return if not $self->{haveSRCLIST};
+
+	my $args = $self->args;
+
+	$self->{detectfile} = $self->temporary('sources');
+	$self->{rawfile} = $self->temporary('raw');
+
+	my $command = $self->buildCommand('uvottfc',
+			infile => $self->{packetFile},
+			teldeffile => $self->{teldef},
+			badpixlist => $self->{badpixlist},
+			outfile => $self->{detectfile},
+			sparsefile => $self->{rawfile},
+			clobber => 'yes',
+			history => 'yes',
+			cleanup => $args->{cleanup},
+			chatter => 3,
+			);
+
+	$self->shell($command);
+
+	if (-f $self->{detectfile}) {
+		my $header;
+		my $status = SimpleFITS->readonly($self->{detectfile})
+				->move('SOURCES')
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->warning("unable to load $self->{detectfile} header [$status]");
+		}
+		else {
+			$self->{EXPOSURE} = $header->{EXPOSURE};
+			$self->{EXPGUESS} = $header->{EXPGUESS};
+		}
+
+		$self->runUvotcoincidence;
+
+		$self->runUvotflux;
+	}
+}
+
+
+sub makeFlagFile
+{
+	my ($self) = @_;
+
+	return if not $self->{haveIMAGE};
+
+	my $pixfile = $self->{packetFile} . '[1][pixi ('
+			. '(#ROW<=#NAXIS1).OR.(#ROW%#NAXIS1==1)' # first row and column
+			. '.OR.(#ROW%#NAXIS1==0)'	# last column
+			. '.OR.(#ROW>#NAXIS1*(#NAXIS2-1)))?0:1]'	# last column
+			;
+	my $rawfile = $self->temporary('mask', ext => '.img');
+
+	{
+		my $command = $self->buildCommand('ftcopy',
+				infile => $pixfile,
+				outfile => $rawfile,
+				);
+		$self->shell($command);
+	}
+
+	my $skyfile = $self->temporary('masksky', ext => '.img');
+
+	$self->runTransformAux(
+			rawfile => $rawfile,
+			outfile => $skyfile,
+			method => 'FLAG',
+			);
+
+	my $flagfile = $self->temporary('flag', ext => '.img');
+	$self->{flagfile} = $flagfile;
+	if ($self->isValid) {
+		# invert the image
+		my $command = $self->buildCommand('ftcopy',
+				infile => $skyfile . '[pixi (X==1)?0:1]',
+				outfile => $flagfile,
+				);
+		$self->shell($command);
+	}
+}
+
+
+sub appendFlagImage
+{
+	my ($self) = @_;
+
+	return if not $self->{haveIMAGE};
+
+	if (not $ENV{UVOTGCN_APPEND_FLAG_IMAGE}) {
+		$self->verbose("not including flag image in sky image");
+		return
+	}
+
+	my $command = $self->buildCommand('ftappend',
+			infile => $self->{flagfile} . q([col #EXTNAME='FLAG']),
+			outfile => $self->{transfile},
+			);
+	$self->shell($command);
+}
+
+
+sub runTransformAux
+{
+	my ($self, %args) = @_;
+
+	my $rawfile = $args{rawfile};
+	if (not -f $rawfile) {
+		$self->error(BAD_INPUT, "runTransformAux: missing rawfile");
+		return;
+	}
+
+	my $outfile = $args{outfile};
+	if (not $outfile) {
+		$self->error(BAD_INPUT, "runTransformAux: missing outfile");
+		return;
+	}
+
+	my $header = $self->{packetHeader};
+	my $method = $args{method} || 'DEFAULT';
+
+	my $command = $self->buildCommand('swiftxform',
+			infile => $rawfile,
+			outfile => $outfile,
+
+			attfile => 'CONST:PAR',
+			alignfile => $self->{alignfile},
+			ra => $header->{RA_PNT},
+			dec => $header->{DEC_PNT},
+			roll => $header->{PA_PNT},
+
+			method => $method,
+			to => 'SKY',
+			teldeffile => $self->{teldef},
+			bitpix => -32,  # for real valued output
+
+			clobber => 'yes',
+			cleanup => $self->args->{cleanup},
+			chatter => 3,
+			);
+
+	$self->shell($command);
+
+}
+
+
+sub runTransform
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{transfile} = $self->temporary('sky');
+
+	my $rawfile = $self->{haveSRCLIST}
+			? $self->{rawfile} : $self->{packetFile};
+
+	$self->runTransformAux(
+			rawfile => $rawfile,
+			outfile => $self->{transfile},
+			);
+
+	$self->markDone(sky => $self->{transfile})
+		if $self->isValid;
+}
+
+
+sub runUvotdetect
+{
+	my ($self) = @_;
+
+	return if not $self->{haveIMAGE};
+
+	my $args = $self->args;
+
+	my $tmp = $self->temporary('dbdetect');
+	$self->{detectfile} = $self->temporary('dbsource');
+
+	my $command = $self->buildCommand('uvotdetect',
+			infile => $self->{transfile},
+			outfile => $tmp,
+			zerobkg => -1,
+			expfile => "FLAG:$self->{flagfile}",
+			threshold => $args->{threshold},
+			clobber => $args->{clobber},
+			cleanup => $args->{cleanup},
+			chatter => 3,
+			);
+
+	$self->shell($command);
+
+	# check how many sources were detected
+	{
+		my $count = -1;
+		my $pget = qq(pget uvotdetect detected);
+		my $result = $self->shell($pget);
+		foreach my $line (@{ $result->{lines} || [ ] }) {
+			if ($line =~ /(\d+)/) {
+				$count = $1;
+				$self->report("detected $count sources");
+			}
+		}
+		$self->{sourcecount} = $count;
+	}
+
+	if ($self->isValid) {
+		# set PACKET column to genie
+		my $command = $self->buildCommand('ftcopy',
+				infile => $tmp . "[col *; PACKET(8A)='genie']",
+				outfile => $self->{detectfile},
+				clobber => 'yes',
+				chatter => 3,
+				);
+
+		$self->shell($command);
+	}
+
+	if ($self->isValid) {
+		$self->markDone(sources => $self->{detectfile});
+	}
+}
+
+
+# 2007May24 this will only be called by runUvottfc
+sub runUvotcoincidence
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('uvotcoincidence',
+			infile => $self->{detectfile},
+			coinfile => $self->{coinfile},
+			chatter => 3,
+			);
+
+	$self->shell($command);
+}
+
+
+# 2007May24 this will only be called by runUvottfc
+sub runUvotflux
+{
+	my ($self) = @_;
+
+	my $command = $self->buildCommand('uvotflux',
+			infile => $self->{detectfile},
+			zerofile => $self->{zerofile},
+			filter => 'DEFAULT',
+			ratecol => 'COI_RATE',
+			errcol => 'COI_RATE_ERR',
+			chatter => 3,
+			);
+
+	$self->shell($command);
+
+	if ($self->isValid) {
+		$self->markDone(sources => $self->{detectfile});
+		my $nrows = 0;
+		my $status = SimpleFITS->readonly($self->{detectfile})
+				->move('SOURCES')
+				->nrows($nrows)
+				->close
+				->status;
+
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to determine rows in $self->{detectfile} [$!]");
+		}
+		else {
+			$self->{sourcecount} = $nrows;
+		}
+	}
+}
+
+
+sub makeReflist
+{
+	my ($self, $error, @tag) = @_;
+
+	my $reflist = '';
+
+	foreach my $tag (@tag) {
+		my $key = $tag . '_POSITION';
+		if (my $pos = $self->{$key}) {
+			$reflist .= ',' if $reflist;
+			$reflist .= "$tag:";
+			$reflist .= sprintf('%f%+f', $pos->{RA}, $pos->{DEC});
+			if ($error and defined($pos->{ERROR})) {
+				$reflist .= "~$pos->{ERROR}";
+			}
+		}
+	}
+
+	if (not $reflist) {
+		$reflist = 'NONE';
+	}
+
+	return $reflist;
+}
+
+
+sub runStarid
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	# accept a single triangle (3 matches) for a genie image
+	my $minMatches = $self->{haveIMAGE} ? 3 : 5;
+
+	$self->{matchtol} = 2;
+	$self->{catreflist} = $self->makeReflist(0, qw(XRT BAT));
+
+	my $dx = $self->{packetHeader}{WINDOWDX} || 0;
+	# choose a circle that should fit inside the FOV
+	$self->{unradius} = sprintf('%.2f', $dx / 2048 * 8 * 60);
+	$self->{uncount} = 10;
+	$self->{unmag} = 20;
+
+	$self->{staridfile} = $self->temporary('starid');
+
+	if ($self->{sourcecount} < $minMatches) {
+		$self->{noSTARID} = 1;
+		$self->warning("no acceptable aspect correction possible with < $minMatches sources");
+		return;
+	}
+
+	my @base = qw(n.reference=50 n.observation=30
+				mag.err=3 group.angle=2
+				filter.count=1 filter.range=1
+				);
+
+
+	my $rotcorr = 60;
+	my $errcorr = $self->{haveIMAGE} ? 0.7 : 1;
+
+	push(@base,
+			"filter.base=$errcorr",
+			"rot.err=$rotcorr",
+			);
+
+	my @par;
+	my %par;
+	foreach my $arg (@base, split(/\s+/, $args->{starid})) {
+		next if $arg =~ /^NONE$/i;
+		my ($k, $v) = split('=', $arg);
+		if (not exists($par{$k})) {
+			push(@par, $k);
+		}
+		$par{$k} = $v;
+	}
+
+	my $starid = join(' ', map { "$_=$par{$_}" } @par);
+
+	my $command = $self->buildCommand('tristarid',
+			infile => $self->{detectfile} . '[SOURCES]',
+			catspec => $args->{catspec},
+			outfile => $self->{staridfile},
+
+			poscorr => 60, # arcsec position correction
+			errcorr => $errcorr, # arcsec error after correction
+			rotcorr => $rotcorr, # arcmin
+			cntcorr => $minMatches,
+			matchtol => $self->{matchtol},
+			reflist => $self->{catreflist},
+
+			clobber => $args->{clobber},
+			starid => $starid,
+
+			unradius => $self->{unradius},
+			uncount => $self->{uncount},
+			unmag => $self->{unradius},
+			);
+	$self->shell($command);
+
+	if ($self->isValid) {
+		$self->markDone(catalog => $self->{staridfile});
+	}
+	else {
+		$self->{noSTARID} = 1;
+		$self->{code} = 0;
+		$self->warning("star identification failed, continuing without results");
+	}
+}
+
+
+
+sub aspectCorrect
+{
+	my ($self) = @_;
+
+	my $transfile = $self->{transfile};
+	if (not $transfile or not -f $transfile) {
+		$self->report('no sky file to apply correction quaternion');
+		return;
+	}
+
+	my $args = $self->args;
+
+	my @q = (0) x 4;
+	my $quatmode = undef;
+
+	my $idfile = $self->{staridfile};
+	if (not $idfile or not -f $idfile) {
+		$self->warning("no starid file to load correction quaternion");
+	}
+	else {
+		my $status = SimpleFITS->readonly($idfile)
+				->readkey(ASPQ0 => $q[0])
+				->readkey(ASPQ1 => $q[1])
+				->readkey(ASPQ2 => $q[2])
+				->readkey(ASPQ3 => $q[3])
+				->close
+				->status;
+		if ($status) {
+			$self->warning("$idfile missing ASPQn keys");
+		}
+		else {
+			$self->{QUATERNION} = \@q;
+			$quatmode = 'DIRECT';
+		}
+	}
+
+	if (not $self->{QUATERNION}) {
+		# try to get correction from processing of associated packet(s)
+		my $header = $self->{packetHeader};
+
+		# Reload the trigger info just in case a quaternion has been found
+		# for this image since the processing started.  This measure reduces
+		# the likelihood of events where IMAGE processing begins before
+		# SRCLIST processing completes so a SRCLIST correction is not
+		# available to the IMAGE.  A check found that processing of IMAGE
+		# started before SRCLIST completed in 5 of 725 cases where both
+		# packets were available.
+		my @info;
+		eval {
+			UVOT::GCN::acquireLock($self, $self->{triggerLock});
+			@info = UVOT::GCN::loadTriggerInfo($self);
+		};
+		UVOT::GCN::releaseLock($self, $self->{triggerLock});
+
+		foreach my $info (@info) {
+			my $packet = $info->{PACKET};
+			if ($info->{QUATERNION}
+					and $info->{TARG_ID} == $header->{TARG_ID}
+					and $packet->{EXPID} == $header->{EXPID}) {
+				@q = @{ $info->{QUATERNION} };
+				$quatmode = 'from ' . $packet->{TYPE};
+				$self->report("found quaternion in [$info->{JOB}{ID}]");
+			}
+		}
+	}
+
+	if (not $quatmode) {
+		$self->warning('no correction quaternion available');
+		return;
+	}
+
+	my $hdu0 = $self->{haveSRCLIST} ? 0 : 1;
+	$self->report("applying correction to $self->{transfile} HDU $hdu0 +1");
+
+	{
+		my $command = $self->buildCommand('aspcorr',
+				infile => $transfile,
+				inhdu => 0, # unused
+				outhdu => $hdu0,
+				method => 'QUAT',
+				quat => join(' ', @q),
+				history => 'yes',
+				checksum => 'yes',
+				record => $quatmode,
+				);
+
+		$self->shell($command);
+	}
+
+	if ($self->{noSTARID}) {
+		$self->report('producing source catalog based on earlier solution');
+		if (-f $idfile) {
+			unlink($idfile) or $self->warning("unable to remove $idfile [$!]");
+		}
+
+		my $command = $self->buildCommand('tristarid',
+				infile => $self->{detectfile} . '[SOURCES]',
+				catspec => $args->{catspec},
+				outfile => $self->{staridfile},
+				quat => join(' ', @q),
+
+				matchtol => $self->{matchtol},
+				reflist => $self->{catreflist},
+				unradius => $self->{unradius},
+				uncount => $self->{uncount},
+				unmag => $self->{unradius},
+
+				clobber => $args->{clobber},
+				history => 'yes',
+				);
+
+		$self->shell($command);
+
+		if ($self->isValid and -f $self->{staridfile}) {
+
+			my $tmp = SimpleFITS->readwrite($self->{staridfile})
+					->move(1)
+					->writekey(ASPCORR => $quatmode)
+					->move(2)
+					->writekey(ASPCORR => $quatmode)
+					->close
+					->status;
+
+			$self->markDone(catalog => $self->{staridfile});
+		}
+		else {
+			$self->{code} = 0;
+			$self->warning('catalog creation failed, continuing without it');
+		}
+	}
+}
+
+
+
+sub getSkyImage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{fieldfile} =~ /^NONE$/i) {
+		$self->report('skipping SKY image');
+		return;
+	}
+
+	if ($self->{haveIMAGE}) {
+		$self->{skyfile} = $self->{transfile} . '[1]';
+	}
+	else {
+		my $skyout = $self->temporary('skyview');
+		my $catout = $self->temporary('catfield');
+
+		my $target = $self->{target};
+
+		my $primary = $self->buildCommand('fetchsky',
+				ra => $target->{RA},
+				dec => $target->{DEC},
+				arcmin => 20,
+				outfile => $skyout,
+				);
+
+		my $secondary = $self->buildCommand('uvotskyfield',
+				ra => $target->{RA},
+				dec => $target->{DEC},
+				arcmin => 20,
+				outfile => $catout,
+				catspec => $args->{catspec},
+				teldeffile => $self->{teldef},
+				scale => 0.25,
+				cleanup => $args->{cleanup},
+				);
+
+		my $command = 'waiter'
+			. " -primary='$primary'"
+			. " -secondary='$secondary'"
+			. " -limit=$args->{timeout}"
+			;
+
+		my $result = $self->shell($command);
+
+		my $summary = $result->{lines}[-1];
+		if ($result->{error}) {
+			$self->error(BAD_TASK, "parallel task failure");
+		}
+		elsif ($summary =~ /primary completed/) {
+			$self->{skyfile} = $skyout;
+			$self->report("using Skyview field for background");
+		}
+		elsif ($summary =~ /secondary completed/) {
+			$self->{skyfile} = $catout;
+			$self->report("using field generated from catalog for background");
+		}
+		else {
+			$self->error(BAD_TASK, "did not end with completion [$summary]");
+		}
+	}
+}
+
+
+sub runUvotpict
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{fieldfile} =~ /^NONE$/i) {
+		$self->report('skipping uvotpict');
+		return;
+	}
+
+	my $reflist = $self->makeReflist(1, qw(XRT BAT PNT));
+
+	$self->{pictfile} = $self->temporary('uvotpict', ext => '.ps');
+
+	my $target = $self->{target};
+
+	my $detectfile = $self->{detectfile};
+	my $showunmatch = 'no';
+	my $idfile = $self->{staridfile};
+	if ($idfile and -f $idfile) {
+		$detectfile = $idfile;
+		$showunmatch = 'yes';
+	}
+
+	my $command = $self->buildCommand('uvotpict',
+			infile => $detectfile,
+			extname => 'SOURCES',
+			skyfile => $self->{skyfile},
+
+			reflist => $reflist,
+			ra => $target->{RA},
+			dec => $target->{DEC},
+
+			outfile => $self->{pictfile},
+			outformat => 'postscript',
+
+			showmatch => 'no',
+			showunmatch => $showunmatch,
+
+			exitds9 => 'yes',
+			clobber => 'yes',
+			cleanup => $args->{cleanup},
+
+			chatter => 3,
+			);
+
+	$self->shell($command);
+
+	$self->markDone(field => $self->{pictfile})
+		if $self->isValid;
+}
+
+
+sub archiveResults
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my @order = qw(sky sources catalog field signal job packet);
+	my @created;
+	my $arcnames = $self->{arcnames};
+
+	foreach my $which (@order) {
+		my $par = $which . 'file';
+		my $arg = $args->{$which . 'file'} || 'NONE';
+		my $dest = ($arg eq 'DEFAULT') ? $arcnames->{$which} : $arg;
+		
+		if ($which eq 'signal') {
+			my $fh = FileHandle->new($dest, 'w');
+			if ($fh) {
+				foreach my $e (@created) {
+					$fh->print("$e->[1]\n");
+				}
+				$fh->close;
+				$self->report("created $dest");
+				push(@created, [ $which => $dest ]);
+			}
+			else {
+				$self->error(BAD_OUTPUT,
+						"unable to create $dest [$!]");
+			}
+		}
+		elsif (my $file = $self->{archive}{$which}) {
+			push(@created, [ $which => $file ]);
+		}
+		elsif (my $file = $self->{done}{$which} and $dest ne 'NONE') {
+			my $from = $file;
+
+			if ($dest =~ /\.gz$/) {
+				$self->shell("gzip $from");
+				$from .= '.gz';
+			}
+
+			if (not rename($from, $dest)) {
+				$self->error(BAD_OUTPUT,
+						"unable to rename $from to $dest [$!]");
+			}
+			else {
+				push(@created, [ $which => $dest ]);
+				$self->report("saved $dest");
+			}
+		}
+		else {
+			$self->report("$which $dest was not created");
+		}
+	}
+
+	UVOT::GCN::acquireLock($self, $self->{triggerLock});
+
+	my @info = UVOT::GCN::loadTriggerInfo($self);
+	$self->{triggerInfo} = \@info;
+
+	my @results;
+
+	foreach my $created (@created) {
+		my ($which, $path) = @$created;
+		my ($name, $dir) = File::Basename::fileparse($path);
+		my $arcfile = "$self->{triggerDir}/$arcnames->{$which}";
+		push(@results, {
+					which => $which,
+					outfile => $path,
+					arcfile => $arcfile,
+				});
+	}
+
+	UVOT::GCN::archiveResults($self, @results);
+
+	# update current job
+	my $current;
+	foreach my $info (@info) {
+		if ($info->{JOB}{ID} eq $self->{JOB_ID}) {
+			$current = $info;
+			last;
+		}
+	}
+	if (not $current) {
+		$self->warning("unable to locate JOB ID $self->{JOB_ID}");
+	}
+	else {
+		my %archived = map { $_->{which} => $_->{arcname} } @results;
+		$current->{ARCHIVED} = \%archived;
+		if ($self->{QUATERNION}) {
+			$current->{QUATERNION} = $self->{QUATERNION};
+		}
+		$current->{JOB}{FINISH} = scalar(gmtime) . ' GMT';
+
+		my $packet = $current->{PACKET};
+		if (not $packet->{EXPOSURE} and $self->{EXPOSURE}) {
+			$packet->{EXPOSURE} = $self->{EXPOSURE};
+			$packet->{EXPGUESS} = $self->{EXPGUESS};
+		}
+	}
+
+	UVOT::GCN::saveInfo($self, $self->{triggerFile}, @info);
+
+	UVOT::GCN::releaseLock($self, $self->{triggerLock});
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+}
+

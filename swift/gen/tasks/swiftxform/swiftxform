@@ -1,0 +1,1265 @@
+#! /usr/bin/perl -w
+# $Source: /headas/headas/swift/gen/tasks/swiftxform/swiftxform,v $
+# $Revision: 1.36 $
+# $Date: 2011/11/07 22:54:31 $
+#
+#	swiftxform
+#		Transform Swift image files
+#
+#
+# $Log: swiftxform,v $
+# Revision 1.36  2011/11/07 22:54:31  rwiegand
+# Use reference attitude for alternate WCS keywords.
+#
+# Revision 1.35  2011/10/12 21:18:19  rwiegand
+# Added optional check to catch bogus/missing attitude (refattopt).
+#
+# Revision 1.34  2009/10/26 17:41:07  rwiegand
+# Allow requesting method=INTERPOLATE.
+#
+# Revision 1.33  2008/07/03 17:13:26  rwiegand
+# Write SWX{RA,DEC,ATT} keywords for UVOT sky transforms.
+#
+# Revision 1.32  2008/03/26 17:42:23  rwiegand
+# Removed the invalid/broken INTENSITY method.  Allow negative ra parameter
+# which causes {RA,DEC}_PNT to be used.  Write keywords giving attitude used
+# for sky projection.
+#
+# Revision 1.31  2007/11/01 22:28:19  rwiegand
+# Implemented support for rounding output.
+#
+# Revision 1.30  2007/10/10 21:23:10  rwiegand
+# Added support for FLAT transform method.
+#
+# Revision 1.29  2007/06/27 19:48:12  rwiegand
+# Update test of CALDB query results from file-ness to true-ness.
+#
+# Revision 1.28  2007/03/06 21:04:41  rwiegand
+# Base CALDB TELDEF queries on DETNAM if present rather than WHEELPOS.
+#
+# Revision 1.27  2006/10/19 16:21:45  rwiegand
+# Write TELDEF keywords for UVOT data.
+#
+# Revision 1.26  2005/09/16 21:24:49  rwiegand
+# Updated skytime parameter.
+#
+# Revision 1.25  2005/09/16 21:07:18  rwiegand
+# Allow the user to control the time at which attitude is sample for sky
+# transformations.
+#
+# Revision 1.24  2005/09/14 17:25:42  rwiegand
+# Include FILTER and WHEELPOS in TELDEF CALDB query.  Determine the
+# correct TELDEF for each HDU.
+#
+# Revision 1.23  2005/06/07 14:58:44  rwiegand
+# Note resolution of CALDB parameters.
+#
+# Revision 1.22  2005/04/29 16:26:59  rwiegand
+# Turned off overriding of bitpix default for AREA method used on XRT images.
+#
+# Revision 1.21  2005/04/28 13:51:49  rwiegand
+# Reworked HDU processing.
+#
+# Revision 1.20  2005/04/14 17:40:59  rwiegand
+# Override default bitpix for AREA method since real valued output is most
+# likely intended.
+#
+# Revision 1.19  2005/03/04 19:20:44  rwiegand
+# Added special values of attfile parameter that will result in a constant
+# attitude file being created.  When attfile=CONST:*, an alignment file and
+# possibly roll must also be specified.
+#
+# Revision 1.18  2005/02/18 15:43:16  rwiegand
+# The zeronulls and aberration parameters were not being accepted from the
+# user.  Note that aberration is a special case since it is only used for
+# certain transformations (those involving sky positions).
+#
+# Revision 1.17  2005/01/31 22:36:44  rwiegand
+# Changed PIL type of teldeffile and attfile parameters to avoid problems
+# with trailing spaces.
+#
+# Revision 1.16  2005/01/19 19:34:51  rwiegand
+# Broke out code for creating transforms to the Astro::Transform module.
+# Implemented Chandra style PHYSICAL WCS keywords for SKY output images.
+# Changed UVOT alternate WCS code for detector coordinates to 'D'.
+#
+# Revision 1.15  2004/11/01 20:59:33  rwiegand
+# Unhid TELDEF file parameter.
+#
+# Revision 1.14  2004/10/17 11:38:15  rwiegand
+# Support CALDB value for telescope definition parameter.
+#
+# Revision 1.13  2004/07/21 18:40:41  rwiegand
+# Added zeronulls parameter which is passed straight through to imagetrans.
+#
+# Revision 1.12  2004/07/09 18:13:16  rwiegand
+# Fixed outfile parameter type.
+#
+# Revision 1.11  2004/07/09 16:27:49  rwiegand
+# Parameter consistency effort.  Use PIL interface.
+#
+# Revision 1.8  2004/05/28 15:36:50  rwiegand
+# Allow MJDREF or MJDREFI/MJDREFF.
+#
+# Revision 1.7  2004/05/13 18:43:54  rwiegand
+# Added test tool for swiftxform.
+#
+# Revision 1.6  2004/04/26 14:18:04  rwiegand
+# Fail if a keyword is missing.
+#
+# Revision 1.5  2004/04/26 13:54:39  rwiegand
+# Exit with status code.  Abort closer to errors.  Skip alternate WCS keywords
+# if no attitude file is provided.
+#
+# Revision 1.4  2004/04/22 21:43:56  rwiegand
+# Write alternate WCS keywords to actual output [instead of temporary file].
+#
+# Revision 1.3  2004/04/21 22:27:59  rwiegand
+# Added function to run combinexform.  Create alternate WCS keywords [but
+# currently written to secondary file].
+#
+# Revision 1.2  2004/04/16 18:32:07  rwiegand
+# HEADAS-ified and added error messages.
+#
+# Revision 1.1  2004/04/15 17:25:47  rwiegand
+# Swift image transform driver.
+#
+
+use strict;
+
+package Swift::Transform;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+use Astro::Transform;
+use Astro::Convert;
+use SimpleFITS;
+
+
+my %SKYTIME_MODE = map { $_ => 1 }
+		qw(DEFAULT MET TSTART TSTOP TMIDDLE DURATION NONE);
+
+
+# main
+{
+	my $task = Swift::Transform->new(version => '2.3');
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->inspectInput
+		if $self->isValid;
+
+	$self->processData
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file attfile=file method=string
+				to=string ra=real dec=real roll=real
+				teldeffile=file alignfile=file bitpix=int skytime=string
+				seed=int aberration=bool copyall=bool zeronulls=bool
+				allempty=bool extempty=bool round=real refattopt=string
+				clobber=bool cleanup=bool history=bool chatter=int
+			) ],
+
+			# these parameters are always used; the rest are queried as needed
+			get => [ qw(
+				infile outfile method to teldeffile bitpix
+				allempty extempty skytime round refattopt
+				zeronulls copyall clobber cleanup history chatter
+			) ],
+			)
+		if $self->isValid;
+
+	my $args = $self->args;
+	
+	if (not $args->{clobberFlag}) {
+		my $path = $args->{outfile};
+		if (-e $path) {
+			$self->error(BAD_OUTPUT,
+					"$path exists and clobber not set");
+		}
+	}
+
+	$self->{outext} = 0;
+
+	my $skytime = $args->{skytime};
+	my ($mode, $control) = split(':', $skytime);
+	if ($SKYTIME_MODE{$mode}) {
+		# ok a value mode
+		if ($control and $control !~ /^-?\d+(\.\d+)?(e\d+)?$/i) {
+			$self->error(BAD_INPUT,
+				"invalid skytime $mode number [$control]");
+		}
+	}
+	else {
+		$self->error(BAD_INPUT, "invalid skytime '%s'\n", $skytime);
+	}
+}
+
+
+
+sub loadHeader
+{
+	my ($self, $path) = @_;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $path [$status]");
+		return;
+	}
+
+	my $header = $fits->read_header;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read $path header [$status]");
+	}
+
+	{
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+
+	return $header;
+}
+
+
+
+
+sub inspectInput
+{
+	my ($self) = @_;
+
+	my $input = $self->getParameter('infile');
+
+	$self->{input} = $self->parseInputURL($input);
+	$self->{userext} = length($self->{input}{extspec}) > 0;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($input, READONLY, $status);
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to open $input [$status]");
+		return;
+	}
+
+	my $nhdus;
+	$fits->get_num_hdus($nhdus, $status);
+
+	$self->{hdus} = [ ];
+
+	for (my $hdu = 0; $self->isValid and $hdu < $nhdus; ++$hdu) {
+		$self->inspectHDU($fits, $hdu);
+	}
+
+
+	{
+		my $tmp = 0;
+		$fits->close_file($tmp);
+	}
+}
+
+
+
+sub inspectHDU
+{
+	my ($self, $fits, $hdu0) = @_;
+
+	my %hdu = (
+		ext0 => $hdu0,
+		ext1 => $hdu0 + 1,
+	);
+
+	my $status = 0;
+	if ($fits->movabs_hdu($hdu{ext1}, ANY_HDU, $status)) {
+		$self->error(BAD_INPUT,
+			"unable to move to input HDU $hdu0+1 [$status]");
+		return;
+	}
+
+	my $header = $hdu{header} = $fits->read_header;
+	Task::FITS::cleanHeaderStrings($header);
+	my $hduid = $header->{EXTNAME} || $header->{HDUNAME} || $hdu0;
+	$hdu{id} = $hduid;
+	$hdu{tag} = "HDU[$hduid]";
+
+	$self->isTransformable(\%hdu, $header);
+
+	if ($self->{userext}) {
+		my $input = $self->{input};
+		if ($input->{extspec} =~ /^\d+$/) {
+			if ($input->{extspec} == $hdu0) {
+				$hdu{selected} = 1;
+			}
+		}
+		elsif (uc($input->{extspec}) eq uc($hduid)) {
+			$hdu{selected} = 1;
+		}
+
+		if ($hdu{selected} and not $hdu{transformable}) {
+			$self->error(BAD_INPUT,
+					"selected $hdu{tag} is not transformable");
+		}
+	}
+
+	push(@{ $self->{hdus} }, \%hdu);
+}
+
+
+sub isTransformable
+{
+	my ($self, $hdu, $header) = @_;
+
+	my $tag = $hdu->{tag};
+	my $type = defined($header->{SIMPLE}) ? 'IMAGE' : $header->{XTENSION};
+
+	if (not defined($type)) {
+		$self->error(BAD_INPUT,
+				"$tag missing SIMPLE and XTENSION keyword");
+	}
+	elsif ($type ne 'IMAGE') {
+		# not an IMAGE
+	}
+	elsif (not defined($header->{NAXIS})) {
+		$self->error(BAD_INPUT,
+				"$tag missing NAXIS keyword");
+	}
+	elsif ($header->{NAXIS} != 2) {
+		# not a two dimensional image
+	}
+	elsif (not defined($header->{NAXIS1}) or not defined($header->{NAXIS2})) {
+		$self->error(BAD_INPUT,
+				"$tag NAXIS=2 but missing NAXIS[12] keyword(s)");
+	}
+	elsif ($header->{NAXIS1} * $header->{NAXIS2} == 0) {
+		# degenerate image
+	}
+	else {
+		$hdu->{transformable} = 1;
+	}
+
+	if ($self->isValid and $type eq 'IMAGE') {
+		$hdu->{empty} = $header->{NAXIS} == 0;
+		for (my $i = 1; $i <= $header->{NAXIS}; ++$i) {
+			if ($header->{'NAXIS' . $i} == 0) {
+				$hdu->{degenerate} = 1;
+			}
+		}
+		if ($hdu->{degenerate}) {
+			$hdu->{empty} = 1;
+		}
+	}
+}
+
+
+sub primeTelescopeDefinition
+{
+	my ($self, $hdu, %args) = @_;
+
+	my $arg = $self->args->{teldeffile};
+
+	# determine what TELDEF is to be used
+	my $path;
+	if ($arg =~ /^CALDB/i) {
+		my $header = $hdu->{header};
+		my $expression = '';
+		my @query;
+		if ($hdu->{uvot}) {
+			$expression = $header->{FILTER} || 'UNKNOWN';
+			if (defined($header->{DETNAM})) {
+				$expression .= ",DETNAM=$header->{DETNAM}";
+			}
+			elsif (my $wheelpos = $header->{WHEELPOS}) {
+				# if no DETNAM on which to base selection, try to use WHEELPOS
+				push(@query, detector => $wheelpos);
+				$expression .= ",WHEELPOS=$wheelpos";
+			}
+		}
+		else {
+			$expression = '-';
+		}
+
+		my $spec = "$header->{INSTRUME} [$expression]";
+		my $cachedspec = $self->{teldefspec} || '';
+
+		if ($spec ne $cachedspec) {
+			if ($expression) {
+				$path = $self->queryCALDB('TELDEF',
+						header => $header,
+						qualifiers => $arg,
+						asString => 1,
+						@query,
+						);
+				if (not $path) {
+					$self->error(BAD_INPUT, "unable to get TELDEF from CALDB");
+					return;
+				}
+				$self->parameterNote(teldeffile => "[$expression] $path");
+				$self->{teldefspec} = $spec;
+			}
+		}
+		else {
+			$self->verbose("TELDEF $spec already primed");
+			$path = $self->{teldefpath};
+		}
+	}
+	else {
+		$path = $arg;
+	}
+
+	my $cachedpath = $self->{teldefpath} || '';
+	if ($path ne $cachedpath) {
+		$self->{teldefpath} = $path;
+		$self->{teldef} = $self->loadHeader($self->{teldefpath});
+	}
+
+	if ($hdu->{uvot}) {
+		my $spec = $self->parseInputURL($path);
+		$hdu->{UTELDEF} = $spec->{name};
+		$hdu->{DTELDEF} = $spec->{dir};
+	}
+
+	return $self->{teldef};
+}
+
+ 
+sub processData
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	$self->{tmpout} = $self->temporary('output', release => 1);
+
+	{
+		my $outputEmpty = 0;
+
+		if ($self->{userext}) {
+			if (not $args->{copyallFlag} and $args->{extemptyFlag}) {
+				$outputEmpty = 1;
+			}
+		}
+		else {
+			my $first = $self->{hdus}[0];
+			if ($args->{copyallFlag}) {
+				if ($args->{allemptyFlag} and not $first->{empty}) {
+					$outputEmpty = 1;
+				}
+			}
+			else {
+				if ($args->{allemptyFlag} or $first->{empty}) {
+					$outputEmpty = 1;
+				}
+			}
+		}
+
+		if ($outputEmpty) {
+			$self->createEmptyFITS(
+					$self->{tmpout},
+					infile => $args->{infile},
+					);
+
+			++$self->{outext};
+		}
+	}
+
+	foreach my $hdu (@{ $self->{hdus} }) {
+		$self->processHDU($hdu);
+	}
+
+}
+
+
+
+
+use constant WHAT_SKIP   => 1;
+use constant WHAT_XFORM  => 2;
+use constant WHAT_COPY   => 3;
+
+
+
+sub processHDU
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+	my $copyall = $args->{copyallFlag};
+	my $userext = 0;
+
+	my $what = WHAT_SKIP;
+
+	if ($self->{userext}) {
+
+		if ($hdu->{selected}) {
+			$what = WHAT_XFORM;
+		}
+
+		if ($what == WHAT_SKIP and $copyall) {
+			$what = WHAT_COPY;
+		}
+	}
+	else {
+		if ($hdu->{transformable}) {
+			$what = WHAT_XFORM;
+		}
+		elsif ($copyall) {
+			$what = WHAT_COPY;
+		}
+	}
+
+	if ($self->isValid) {
+
+		if ($what == WHAT_XFORM) {
+			$self->{hdu} = $hdu;
+			$self->transformHDU($hdu);
+		}
+		elsif ($what == WHAT_COPY) {
+			$self->appendHDU($hdu);
+		}
+
+		if ($what != WHAT_SKIP) {
+			++$self->{outext};
+		}
+	}
+
+	if ($args->{cleanupFlag}) {
+		$self->removeTemporaries;
+	}
+}
+
+
+
+sub appendHDU
+{
+	my ($self, $hdu) = @_;
+
+	my $input = $self->{input};
+
+	if (-e $self->{tmpout}) {
+		my $command = $self->buildCommand('ftappend',
+				infile => "$input->{filebase}+$hdu->{ext0}",
+				outfile => $self->{tmpout},
+				);
+	
+		$self->shell($command);
+	}
+	else {
+		if ($hdu->{degenerate}) {
+			$self->createEmptyFITS($self->{tmpout},
+					infile => $input->{path},
+					);
+		}
+		else {
+			my $command = $self->buildCommand('ftcopy',
+					infile => "$input->{filebase}+$hdu->{ext0}",
+					outfile => $self->{tmpout},
+					copyall => 'no',
+					);
+			$self->shell($command);
+		}
+
+	}
+}
+
+
+sub getAlignment
+{
+	my ($self) = @_;
+
+	if ($self->{ALIGNFILE}) {
+		return $self->{ALIGNFILE};
+	}
+
+	my $arg = $self->getParameter('alignfile');
+	my $align = '';
+	if ($arg =~ /^CALDB/i) {
+		$align = $self->queryCALDB('ALIGNMENT',
+				header => $self->{hdu}{header},
+				qualifiers => $arg,
+				asString => 1,
+				instrument => 'SC',
+				);
+		$self->parameterNote(alignfile => $align)
+			if $align;
+	}
+	else {
+		$align = $arg;
+	}
+
+	if (not $align) {
+		$self->error(BAD_INPUT, "missing alignment file");
+		return;
+	}
+
+	$self->{ALIGNFILE} = $align;
+
+	return $align;
+}
+
+
+sub createAttitudeFile
+{
+	my ($self, $ra, $dec, $roll) = @_;
+
+	my $attmode = $self->args->{attfile};
+	if (not defined($ra) or not defined($dec) or not defined($roll)) {
+		$self->error(BAD_INPUT,
+				"unable to get RA/DEC/ROLL for attitude mode $attmode");
+		return;
+	}
+
+	my $align = $self->getAlignment;
+
+	my $helper = Astro::Convert->new(task => $self, alignfile => $align);
+
+	my $attfile = $self->temporary('attitude');
+
+	$helper->constantAttitudeFile($attfile, $ra, $dec, $roll);
+
+	return $attfile;
+}
+
+
+sub transformHDU
+{
+	my ($self, $hdu) = @_;
+
+	my $args = $self->args;
+
+	my $helper = Astro::Transform->new(
+			task => $self,
+			args => {
+				chatter => $self->chatter,
+			},
+			);
+
+	my $inspec = $self->{input}{filebase} . "[$hdu->{ext0}]";
+	my $outspec = $self->{tmpout} . "[$self->{outext}]";
+
+	my $ra = 0;
+	my $dec = 0;
+	my $roll = undef;
+
+	my $segment = 0;
+	my $bitpix = $args->{bitpix};
+	my $zeronulls = $args->{zeronulls};
+	my $aberration = $args->{aberration};
+	my $history = $args->{history};
+
+	my $header = $hdu->{header};
+	my $instrument = $header->{INSTRUME};
+	my $xrt = $hdu->{xrt} = $instrument eq 'XRT';
+	my $uvot = $hdu->{uvot} = $instrument =~ /^UVOT[AB]$/;
+
+	if (not $self->primeTelescopeDefinition($hdu)) {
+		$self->error(BAD_INPUT, "unable to determine TELDEF for $inspec");
+		return;
+	}
+
+	my $from = 'UNKNOWN';
+	{
+		if (not exists($header->{CTYPE1})) {
+			$self->error(BAD_INPUT, "$inspec is missing CTYPEn");
+		}
+		else {
+			my $ctype = substr($header->{CTYPE1}, 0, 3);
+			if ($ctype eq 'RA-') {
+				$from = 'SKY';
+			}
+			else {
+				$from = $ctype;
+			}
+		}
+	}
+
+	my $to = $args->{to};
+	my $attfile = 'NONE';
+	my $skytime = 'NONE';
+
+	if ($from eq 'SKY' or $to eq 'SKY'
+			or ($uvot and $to eq 'DET')) {
+
+		$attfile = $self->getParameter('attfile');
+		$skytime = $args->{skytime};
+
+		if ($from eq 'SKY') {
+			$ra = $header->{CRVAL1};
+			$dec = $header->{CRVAL2};
+		}
+		elsif ($attfile =~ /^CONST:PAR$/i) {
+			$ra = $self->getParameter('ra');
+			$dec = $self->getParameter('dec');
+			$roll = $self->getParameter('roll');
+			$attfile = $self->createAttitudeFile($ra, $dec, $roll);
+		}
+		elsif ($attfile =~ /^CONST:KEY$/i) {
+			$ra = $header->{RA_PNT};
+			$dec = $header->{DEC_PNT};
+			$roll = $header->{PA_PNT};
+			$attfile = $self->createAttitudeFile($ra, $dec, $roll);
+		}
+		elsif ($attfile =~ /^CONST:KEY:(\w+,\w+,\w+)$/i) {
+			$ra = $header->{$1};
+			$dec = $header->{$2};
+			$roll = $header->{$3};
+			$attfile = $self->createAttitudeFile($ra, $dec, $roll);
+		}
+		elsif ($attfile !~ /^NONE$/i) {
+			$ra = $self->getParameter('ra');
+			if ($ra < 0) {
+				$ra = $header->{RA_PNT};
+				$dec = $header->{DEC_PNT};
+				$roll = $header->{PA_PNT};
+			}
+			else {
+				$dec = $self->getParameter('dec');
+			}
+		}
+
+		return if not $self->isValid;
+		$aberration = $self->getParameter('aberration');
+	}
+
+	my $method = $args->{method};
+	{
+		if ($method =~ /^DEFAULT$/i) {
+			if ($xrt) {
+				$method = 'CENTER';
+			}
+			elsif ($uvot) {
+				$method = 'AREA';
+			}
+			else {
+				$self->error(BAD_INPUT,
+						"$inspec has unknown instrument '$instrument'");
+			}
+		}
+
+		if ($xrt) {
+			$segment = $header->{AMP};
+		}
+
+		if (($method eq 'AREA' or $method eq 'FLAT' or $method eq 'INTERPOLATE')
+				and $bitpix == 0) {
+			if (not $xrt and $header->{BITPIX} > 0) {
+				$bitpix = -32;
+				$self->report('overriding default bitpix for real valued method')
+					if $self->chatter(4);
+			}
+		}
+	}
+
+	my @skytime = $self->getSkyTime($hdu, $skytime);
+
+	return if not $self->isValid;
+
+	my $swxFix = 0;
+	if ($skytime ne 'NONE' and uc($args->{refattopt}) ne 'NONE') {
+		if (not defined($roll)) {
+			$roll = $self->getParameter('roll');
+		}
+		my $options = "OUTLIER,$args->{refattopt}";
+		my $tmpfile = $self->checkAttitudeFile($attfile, TIME_s => $skytime[1],
+				RA_deg => $ra, DEC_deg => $dec, ROLL_deg => $roll, OPTIONS => $options);
+		if ($tmpfile) {
+			$self->note("using reference attitude for HDU $hdu->{id}");
+			$attfile = $tmpfile;
+			$swxFix = 'MINNOW / Rejected extrapolation; using reference attitude';
+		}
+	}
+
+
+	my $info = $helper->buildTransform(
+			inspec   => $inspec,
+			outspec  => $outspec,
+
+			from     => $from,
+			to       => $to,
+
+			header   => $hdu->{header},
+			teldef   => $self->{teldef},
+			teldefpath => $self->{teldefpath},
+
+			attfile  => $attfile,
+			ra       => $ra,
+			dec      => $dec,
+			@skytime,
+
+			method   => $method,
+			segment  => $segment,
+			zeronulls=> $zeronulls,
+			aberration=> $aberration,
+			bitpix   => $bitpix,
+
+			bbox     => $uvot,
+
+			history  => $args->{history},
+			fullHistory  => ($args->{historyFlag} and $self->chatter(4)),
+			);
+
+	if (not $helper->isValid) {
+		$self->error(BAD_INPUT, "unable to build transform for $inspec");
+		return;
+	}
+
+	$info->{attfile} = $attfile;
+	$helper->performTransform($info);
+	if (not $helper->isValid) {
+		$self->error(BAD_INPUT, "error transforming $inspec");
+		return;
+	}
+
+
+	if ($uvot) {
+		$self->addTelescopeDefinition($info->{outpathext}, $hdu);
+		if ($to eq 'SKY') {
+			$info->{SWXAFIX} = $swxFix;
+			$self->addTransformAttitude($info);
+		}
+	}
+
+	if ($to eq 'SKY') {
+		$self->addPhysicalWCS($info);
+	}
+
+	if ($uvot and $from eq 'RAW' and $attfile !~ /^NONE$/i) {
+		$self->addOtherWCS($helper, $info);
+	}
+}
+
+
+
+sub addTelescopeDefinition
+{
+	my ($self, $path, $hdu) = @_;
+
+	my $headfile = $self->temporary('teldef', ext => '.key');
+	my $fh = FileHandle->new($headfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $headfile [$!]");
+	}
+	else {
+		$fh->print("
+UTELDEF = '$hdu->{UTELDEF}' / UVOT TELDEF file name
+DTELDEF = '$hdu->{DTELDEF}' / UVOT TELDEF directory
+");
+		$fh->close;
+
+		my $edit = $self->buildCommand('fthedit',
+				infile     => $path,
+				keyword    => '@' . $headfile,
+				operation  => 'add',
+				value      => 0,
+				);
+		$self->shell($edit);
+	}
+}
+
+
+sub getSkyTime
+{
+	my ($self, $hdu, $skytime) = @_;
+
+	my $time = undef;
+	my $header = $hdu->{header};
+
+	my ($mode, $control) = split(':', $skytime);
+	$mode = uc($mode);
+	$control ||= 0;
+	my $modestr = $mode eq 'DEFAULT' ? $mode : uc($skytime);
+
+	if ($mode eq 'DEFAULT') {
+		# determine the default mode
+		if ($hdu->{uvot}) {
+			if ($hdu->{id} =~ /I$/ and $header->{ONBASPCT}) {
+				# aspect following exposure corrected back to TSTART
+				$mode = 'TSTART';
+			}
+			else {
+				$mode = 'TMIDDLE';
+			}
+		}
+		else {
+			$mode = 'TMIDDLE';
+		}
+		if ($mode ne $modestr) {
+			$modestr .= "[$mode]";
+		}
+	}
+
+	if ($mode eq 'TSTART') {
+		if (not defined($header->{TSTART})) {
+			$self->error(BAD_INPUT,
+					"skytime $modestr missing TSTART keyword");
+		}
+		else {
+			$time = $header->{TSTART} + $control;
+		}
+	}
+	elsif ($mode eq 'TSTOP') {
+		if (not defined($header->{TSTOP})) {
+			$self->error(BAD_INPUT,
+					"skytime $modestr missing TSTOP keyword");
+		}
+		else {
+			$time = $header->{TSTOP} + $control;
+		}
+	}
+	elsif ($mode eq 'TMIDDLE') {
+		if (not defined($header->{TSTART})) {
+			$self->error(BAD_INPUT,
+					"skytime $modestr missing TSTART keyword");
+		}
+		else {
+			if (defined($header->{TSTOP})) {
+				$time = ($header->{TSTART} + $header->{TSTOP}) / 2 + $control;
+			}
+			else {
+				if (defined($header->{EXPOSURE})) {
+					$self->warning("skytime $modestr missing TSTOP keyword");
+					$time = $header->{TSTART} + $header->{EXPOSURE} / 2 + $control;
+				}
+				else {
+					$self->error(BAD_INPUT,
+							"skytime $modestr missing TSTOP/EXPOSURE keyword");
+				}
+			}
+		}
+	}
+	elsif ($mode eq 'DURATION') {
+		if (not defined($header->{TSTART})) {
+			$self->error(BAD_INPUT,
+					"skytime $modestr missing TSTART keyword");
+		}
+		else {
+			my $delta = 0;
+			if (defined($header->{TSTOP})) {
+				$delta = $header->{TSTOP} - $header->{TSTART};
+			}
+			elsif (defined($header->{EXPOSURE})) {
+				$delta = $header->{EXPOSURE};
+			}
+			else {
+				$self->error(BAD_INPUT,
+						"skytime $modestr missing TSTOP/EXPOSURE keyword");
+			}
+			$time = $header->{TSTART} + $delta * $control;
+		}
+	}
+	elsif ($mode eq 'MET') {
+		$time = $control;
+	}
+	elsif ($mode eq 'NONE') {
+	}
+	else {
+		$self->error(BAD_TASK, "unhandled skytime $skytime");
+	}
+
+	my @skytime;
+	if (defined($time)) {
+		$self->verbose("$hdu->{tag} skytime $modestr => $time");
+		push(@skytime, time => $time);
+	}
+
+	return @skytime;
+}
+
+
+sub addPhysicalWCS
+{
+	my ($self, $info) = @_;
+
+	########################################################
+	# use postxform to transform TELDEF SKY system
+	#########################################################
+	my $altSuffix = 'P';
+
+	my $headfile = $self->temporary('skywcs');
+	my $fh = FileHandle->new($headfile, 'w');
+	if (not $fh) {
+		$self->error(BAD_OUTPUT, "unable to create $headfile [$!]");
+		return;
+	}
+	$fh->print("
+WCSNAMEP= 'PHYSICAL'
+CTYPE1P = 'X       '           / Source of X-axis
+CRPIX1P = 1.000000000000000E+00 / X axis reference pixel
+CRVAL1P = 1.000000000000000E+00 / coord of X ref pixel in original image
+CDELT1P = 1.000000000000000E+00 / X axis increment
+CTYPE2P = 'Y       '           / Source of Y-axis
+CRPIX2P = 1.000000000000000E+00 / Y axis reference pixel
+CRVAL2P = 1.000000000000000E+00 / coord of Y ref pixel in original image
+CDELT2P = 1.000000000000000E+00 / Y axis increment
+");
+	$fh->close;
+
+	if ($info->{postxform}) {
+
+		my $physwcs = $self->temporary('physwcs');
+		my $getwcs = $self->buildCommand('ftimgcreate',
+				bitpix     => 8,
+				naxes      => 'none',
+				datafile   => 'none',
+				outfile    => $physwcs,
+				headfile   => $headfile,
+				);
+
+		$self->shell($getwcs);
+		return if not $self->isValid;
+
+		my $transform_wcs = $self->buildCommand('transform_wcs',
+				infile     => $physwcs,
+				transform  => $info->{postxform},
+				outfile    => $info->{outpathext},
+				insuffix   => $altSuffix,
+				outsuffix  => $altSuffix,
+				history    => $info->{fullHistory},
+				);
+
+		$self->shell($transform_wcs);
+	}
+	else {
+		my $edit = $self->buildCommand('fthedit',
+				infile     => $info->{outpathext},
+				keyword    => '@' . $headfile,
+				operation  => 'add',
+				value      => 0,
+				);
+		$self->shell($edit);
+	}
+}
+
+
+
+sub addOtherWCS
+{
+	my ($self, $helper, $info) = @_;
+
+	########################################################
+	# extract the transform from $other => $to
+	#########################################################
+	my $other;
+	my $altSuffix;
+	if ($info->{to} eq 'SKY') {
+		$other = 'DET';
+		$altSuffix = 'D';
+	}
+	elsif ($info->{to} eq 'DET') {
+		$other = 'SKY';
+		$altSuffix = 'S';
+	}
+	else {
+		$self->error(BAD_EXECUTE,
+				"cannot determine alternate WCS for to=$info->{to}");
+	}
+	return if not $self->isValid;
+
+	my $other_transform = $self->temporary('otherxform');
+
+	my $getxform = $self->buildCommand('getxform',
+			teldef   => $info->{teldefpath},
+			from     => $other,
+			to       => $info->{to},
+			image    => 'yes',
+			segment  => $info->{segment},
+			ra       => $info->{ra},
+			dec      => $info->{dec},
+			attfile  => $info->{attfile},
+			time     => $info->{time},
+			mjdref   => $info->{mjdref},
+			aberration => $info->{aberration},
+			outfile  => $other_transform,
+			history  => $info->{fullHistory},
+			);
+
+	$self->shell($getxform);
+	return if not $self->isValid;
+
+	my $otherwcs = $self->temporary('otherwcs');
+	my $getwcs = $self->buildCommand('getwcs',
+			teldef   => $info->{teldefpath},
+			coord    => $other,
+			segment  => $info->{segment},
+			ra       => $info->{ra},
+			dec      => $info->{dec},
+			outfile  => $otherwcs,
+			history  => $info->{fullHistory},
+			);
+
+	$self->shell($getwcs);
+	return if not $self->isValid;
+
+	my $alt_transform = $self->temporary('altwcs');
+	{
+		my $command = "file($other_transform) " .
+					 "file($info->{postxform})";
+
+		$helper->combineTransform($alt_transform, $command);
+		return if not $self->isValid;
+	}
+
+	my $transform_wcs = $self->buildCommand('transform_wcs',
+			infile     => $otherwcs,
+			transform  => $alt_transform,
+			outfile    => $info->{outpathext},
+			outsuffix  => $altSuffix,
+			history    => $info->{fullHistory},
+			);
+
+	$self->shell($transform_wcs);
+}
+
+
+sub addTransformAttitude
+{
+	my ($self, $info) = @_;
+
+	my $header;
+	my $status = SimpleFITS->readonly($info->{tel2tel})
+			->readheader($header, clean => 1)
+			->close
+			->status;
+	if ($status) {
+		$self->warning("unable to load $info->{tel2tel} header [$status]");
+	}
+	elsif (not $header->{SKYTIME}) {
+		$self->warning("$info->{tel2tel} header missing SKYTIME");
+	}
+	else {
+		my @parts = split(/[\/\\]/, $info->{attfile});
+		my $attname = $parts[-1];
+		my $keyfile = $self->temporary('skyq', ext => '.key');
+		my $fh = FileHandle->new($keyfile, 'w');
+		$fh->print("
+SWXRA = $info->{ra} / [deg] R.A. at center of SKY
+SWXDEC = $info->{dec} / [deg] Dec. at center of SKY
+SWXATT = $attname / Name of attitude file
+SKYTIME = $header->{SKYTIME} / Time of SWXQn
+SWXQ0 = $header->{SWXQ0} / Attitude at SKYTIME
+SWXQ1 = $header->{SWXQ1} / Attitude at SKYTIME
+SWXQ2 = $header->{SWXQ2} / Attitude at SKYTIME
+SWXQ3 = $header->{SWXQ3} / Attitude at SKYTIME
+");
+
+		$fh->print("
+SWXAFIX = $info->{SWXAFIX}
+") if $info->{SWXAFIX};
+
+		$fh->close;
+		my $command = $self->buildCommand('fthedit',
+				infile => $info->{outpathext},
+				keyword => '@' . $keyfile,
+				);
+		$self->shell($command);
+	}
+}
+
+
+sub checkAttitudeFile
+{
+	my ($self, $attfile, %args) = @_;
+
+	my $tmpfile = $self->{NOMATT_file};
+	if (not $tmpfile) {
+		$tmpfile = $self->temporary('nominal', extension => '.att');
+		$self->{NOMATT_file} = $tmpfile;
+	}
+
+	my $command = $self->buildCommand('minnow',
+			infile => $attfile,
+			outfile => $tmpfile,
+			alignfile => $self->getAlignment,
+			time => $args{TIME_s},
+			ra => $args{RA_deg},
+			dec => $args{DEC_deg},
+			roll => $args{ROLL_deg},
+			options => $args{OPTIONS},
+			clobber => 'YES',
+			);
+	
+	$self->shell($command);
+
+	if (-f $tmpfile) {
+		return $tmpfile;
+	}
+
+	return undef;
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	my $tmpout = $self->{tmpout};
+
+	if ($self->isValid) {
+		if ($args->{round} > 0) {
+			my $roundfile = $self->temporary('round');
+			my $command = $self->buildCommand('swiftround',
+					infile => $tmpout,
+					outfile => $roundfile,
+					round => $args->{round},
+					checksum => 'NO',  # avoid calculating checksums twice
+					);
+			$self->shell($command);
+			$tmpout = $roundfile;
+		}
+	}
+
+	if ($self->isValid) {
+
+		$self->putParameterHistory($tmpout);
+
+		my $command = $self->buildCommand('ftchecksum',
+				infile => $tmpout,
+				update => 'yes',
+				datasum => 'yes',
+				);
+		$self->shell($command . ' 2>&1', { report => 4 });
+	}
+
+	if ($self->isValid) {
+
+		my $output = $self->getParameter('outfile');
+
+		if (-e $output) {
+			unlink($output)
+				or $self->warning("unable to unlink $output [$!]");
+		}
+
+		rename($tmpout, $output)
+			or $self->error(BAD_OUTPUT,
+					"unable to rename $tmpout to $output [$!]");
+	}
+
+	$self->addTemporary($self->{tmpout})
+		if $self->{tmpout};
+
+}
+
+

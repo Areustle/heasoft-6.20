@@ -1,0 +1,125 @@
+#!/usr/bin/perl
+
+use strict;
+
+package Test::Swifttime;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+# main
+{
+  my $tool = Test::Swifttime->new;
+
+  $tool->unitTest;
+
+  exit($tool->{code});
+}
+
+sub execute
+{
+  my ($self) = @_;
+
+  $self->pilOptions(
+    options => [
+      qw(input=string output=string chatter=int)
+    ],
+    get => 1,
+  );
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runSwifttime
+		if $self->isValid;
+
+}
+
+sub validate
+{
+
+  my ($self) = @_;
+
+# validate environment
+
+  $self->validateEnvironment;
+
+# validate input/output directories
+
+  foreach my $key (qw(input output)) {
+    my $arg = $self->args->{$key};
+    if (not -d $arg) {
+      $self->fatal(BAD_INPUT,"invalid $key directory: $arg");
+    }
+  }
+}
+
+sub runSwifttime
+{
+
+  my ($self) = @_;
+
+  my $args = $self->args;
+
+  my $input = $args->{input};
+  my $output = $args->{output};
+
+  # test points: shortly after launch and then bracketing 2006.0 leapsec
+  my @testtimes = (123456789.0, 157766399, 157766401);
+  my @templates = ("swt.template1", "swt.template2", "swt.template3");
+
+  for (my $i=0; $i<3; $i++) {
+    my @args = (
+		intime  => $testtimes[$i],
+		insystem  => "MET",
+		informat  => "s",
+		outsystem  => "UTC",
+		outformat  => "c",
+		swcofile  => "swco.dat",
+		allowcorr  => "yes",
+		chatter  => 0,
+	       );
+    my %args = @args;
+    $args{template} = "$input/$templates[$i]";
+
+    # validate required files
+    foreach my $key (qw(template)) {
+      if (not -f $args{$key}) {
+	$self->fatal(BAD_INPUT, "invalid $key file: $args{$key}");
+      }
+    }
+
+    # construct command
+    {
+      my $command = $self->buildCommand('swifttime', @args);
+      $self->shell($command);
+    }
+
+    # run command and compare output with template
+    if ($self->isValid) {
+      my $template = "hello";
+      my $swtout = "hello";
+
+      my $result = $self->doCommand("cat $args{template}");
+      if ($result->{error}) {
+	$self->fatal(BAD_OUTPUT, "read of $args{template} failed [$result->{error}]");
+      }else{
+	$template = ${ $result->{lines} }[0];
+      }
+
+      my $result = $self->doCommand('plist swifttime |grep outtime');
+      if ($result->{error}) {
+	$self->fatal("plist failed [$result->{error}]");
+      }
+      else {
+	$swtout = ${ $result->{lines} }[0],"\n\n";
+      }
+
+      unless ($swtout eq $template) {
+	$self->fatal(BAD_OUTPUT, "Output mismatch:\n$template\n  vs.\n$swtout");
+      }
+    }
+
+  }
+}

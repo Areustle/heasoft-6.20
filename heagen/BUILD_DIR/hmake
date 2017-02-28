@@ -1,0 +1,416 @@
+#! /bin/sh
+#       Script: hmake
+#  Author/Date: James Peachey, HEASARC/GSFC/NASA, Hughes STX / August, 1997
+#  Description: run standard UNIX make, but with variables set on the
+#               command line, to force configuration-specific overrides.
+#               Which variables are set is controlled by a customizable
+#               Bourne shell script, called a resource script.
+# $Id: hmake,v 1.19 2003/09/26 15:15:10 peachey Exp $
+#
+
+# get path to this hmake and set default variables
+scripthome=`echo $0 | sed "s:/*[^/]*$::"`
+if [ "x$scripthome" = x ]; then
+    scripthome=.
+fi
+scripthome=`cd $scripthome; pwd`
+PATH="$scripthome:$PATH"
+export PATH
+hmake_prompt='hmake:'
+hmake_rcfile=hmakerc
+this_dir=`pwd`
+
+# check command line for hmake options; pass unrecognized options to final make
+for var in "$@"; do
+    # strip out spurious empty options
+    var=`echo $var | sed -e 's:^[ 	]*::'`
+    if [ "x$var" = "x-h" -o "x$var" = "x--help" ]; then
+        help=true
+    elif [ "x$var" = "x--noexec" ]; then
+        noexec=true
+    elif [ "x$var" != "x" ]; then
+        cl_args="$cl_args \"$var\""
+    fi
+done
+
+# handle user's request for help
+if [ "x$help" = "xtrue" ]; then
+    cat << EOHELP
+NAME
+
+    hmake - HEASARC make
+
+SYNOPSIS
+
+    hmake [ option ]
+    hmake [ target-name ]... [ MACRO=text_or_variable ]...
+
+DESCRIPTION
+
+    General usage
+
+    The utility hmake is a development tool which is configured and
+    installed with HEASARC software. Its purpose is to provide a
+    wrapper for standard UNIX make which will build software in the
+    context of a particular HEASARC package structure, for any
+    supported platform/compiler combination, without the need to
+    modify local Makefiles. With hmake, a developer can go to a
+    directory containing a particular set of source files, type
+    hmake, and expect all the macros in the local Makefiles to be
+    set to values appropriate to the architecture and compiler for
+    which hmake is configured. Moreover, it is not necessary to
+    build within the package\'s source tree structure, provided
+    that the minimal necessary files (libraries, headers, etc.) are
+    accessible by hmake.
+
+    Hmake is a Bourne Shell script which simply "execs" make, with
+    certain macros set explicitly on the command line. The macros
+    which are set by default are configured when hmake is installed.
+    Therefore, to obtain the proper default behavior, developers
+    should use a version of hmake which was installed for their
+    platform. This should happen automatically if the developer
+    runs the setup script for the mother HEASARC package in question.
+    For builds within a standard package source tree structure,
+    the default behavior should be adequate for most purposes.
+    However, the behavior of hmake is completely customizable,
+    making it possible, for instance, to link to a particular
+    set of libraries, install binaries in a non-standard location,
+    or use a different compiler other than the one used to install
+    the mother software package. See the section Customized Usage,
+    below.
+
+    Example 1
+
+    Developer Ozob wishes to perform some work on a new Ftool in his
+    home directory, and test build it against the libraries which
+    are currently installed in his local development area, without
+    disturbing this local area.
+
+    > setenv LHEASOFT /home/ozob/ftools/Linux_2.2_i686
+    > source $LHEASOFT/lhea-init.csh
+    > source $LHEASOFT/BUILD_DIR/devinit.csh
+    > cd /home/ozob/newftool
+    > which hmake
+    /home/ozob/ftools/Linux_2.2_i686/BUILD_DIR/hmake
+    > hmake
+    hmake: Using /usr/bin/make
+    hmake: Using resource file /home/ozob/ftools/Linux_2.2_i686/BUILD_DIR/hmakerc
+
+    make CC=gcc FC=f77 FTOOLS=/home/ozob/ftools/Linux_2.0_i686 FTOOLS_SRC=/home/ozob/ftools FTOOLS_BIN=/home/ozob/ftools/Linux_2.0_i686/bin FTOOLS_LIB=/home/ozob/ftools/Linux_2.0_i686/lib LIB_COMMON=-lcftools -lcfitsio -lftools -lxanlib -lfitsio -ltermcap -lpgplot LIB_SYSTEM=  -L/usr/lib/gcc-lib/i486-linux/2.7.2.1.f.1  -lf2c -lm -lgcc -lc -lgcc  -L/usr/X11R6/lib -lX11 FFLAGS=-g -O -fno-second-underscore -fno-f2c -fno-automatic CFLAGS=-g -O -DHAVE_DIRENT_H -DHAVE_STRING_H -trigraphs -Dg77Fortran  -DSTDC_HEADERS=1 -DHAVE_ALLOCA_H=1 -DHAVE_ALLOCA=1  -I/home/ozob/ftools/Linux_2.0_i686/include
+
+    Options
+
+    --noexec
+        Echo the command that hmake would issue under current
+        circumstances, but do not actually execute the command.
+        Note that -n is not recognized as a synonym for this;
+        instead, -n will be added to the make command line.
+
+    Customized Usage
+
+    The names of the macros set, and their values, are determined
+    by a required companion resource file, which is configured to
+    work properly for the platform being used when hmake is
+    installed. It may of course be configured again later, in order
+    to change compilers, for example. The base name for this resource
+    file is $hmake_rcfile. When hmake is invoked, first the current
+    directory is checked for the existence of a file with this name.
+    If no such file is found, hmake looks in the directory in which
+    it is installed. This default file is installed along with
+    hmake, and is created by configure from the file $hmake_rcfile.in
+    to match the platform on which it is installed. Developers who
+    wish to customize hmake\'s behavior should, in general, start
+    with, and edit, an $hmake_rcfile copied from such a file.
+
+    The resource file must consist entirely of legal Bourne shell
+    commands, because it is executed (sourced) within hmake\'s
+    subshell prior to "execing" the UNIX make. Each variable which
+    is explicitly exported in the $hmake_rcfile will cause the
+    argument "variable=\$variable" to be added to the "execed"
+    make command line. For example, if the $hmake_rcfile contained:
+
+        # use env variable CC unless it is not defined
+        # in which case, pick gcc
+        if [ "x\$CC" = x ]; then
+            CC=gcc
+        fi
+
+        # choose a Fortran compiler
+        ARCH=`uname`
+        if [ \$ARCH = "Linux" ]; then
+            FC=g77 # only use g77 on Linux
+        else
+            FC=f77 # otherwise use f77
+        fi
+        export CC FC # for make's command line
+
+    the make command "execed" by hmake would be:
+
+        make "CC=\$CC" "FC=\$FC"
+
+    with the actual values of CC and FC being determined when hmake
+    is invoked by the logic in $hmake_rcfile. Note that the ARCH
+    variable was not added to make\'s command line, because ARCH was
+    not exported. This allows the user to use environment variables
+    to override Makefile defaults as much or as little as he/she
+    wishes, simply by adjusting his or her personal $hmake_rcfile.
+
+    Other Features
+
+    There are other conveniences to hmake. One is that a developer
+    can treat hmake as a regular make, specifying targets and/or
+    macro definitions on the command line, and they will be passed
+    to the "execed" make. These will override any settings in the
+    resource file. For example, if the resource file contains:
+
+        CC=gcc
+        export CC
+
+    and the user invokes hmake as follows:
+
+        hmake -f makefile.special "CC=cc"
+
+    hmake will exec the command:
+
+        make -f makefile.special CC=cc
+
+EOHELP
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Start main script
+#-------------------------------------------------------------------------------
+
+HEATOP=`echo $HEADAS | sed 's:/[^/]*$::'`
+HOST=`echo $HEADAS | sed "s:$HEATOP/::"`
+# determine whether this is a LHEASOFT or HEADAS makefile
+# HEADAS makefiles are required to have the HD_COMPONENT_NAME macro
+# LHEASOFT makefiles better not have the HD_COMPONENT_NAME macro
+if [ -f $this_dir/makefile ]; then
+  headaspkg=`sed -ne 's:^HD_COMPONENT_NAME[ 	]*=[ 	]*::p' $this_dir/makefile | \
+    sed -e 's:[	 ]*$::'`
+elif [ -f $this_dir/Makefile ]; then
+  headaspkg=`sed -ne 's:^HD_COMPONENT_NAME[ 	]*=[ 	]*::p' $this_dir/Makefile | \
+    sed -e 's:[	 ]*$::'`
+else
+  echo $hmake_prompt Cannot find a makefile or Makefile
+  exit 1
+fi
+
+# assemble a path upon which to look for a resource file
+# in any case, first place to look is ., then ./BUILD_DIR, and where this script lives
+hmakerc_path="$this_dir:$this_dir/BUILD_DIR:$scripthome"
+
+# if headaspkg is an empty string, there was no HD_COMPONENT_NAME -> not HEADAS
+if [ "x$headaspkg" = x ]; then
+  # non-HEADAS case, just add in addition the installed BUILD_DIR
+  if [ "x$LHEASOFT" != x ]; then
+    hmakerc_path="$hmakerc_path:$LHEASOFT/BUILD_DIR"
+  fi
+else
+  # headaspkg defined, giving the name of this HEADAS package
+  # recurse upwards, looking for BUILD_DIR until we reach the top of this
+  # package
+  # start one level up from current directory
+  pkg_hmakerc_path=
+  tmp=`cd $this_dir/..; pwd`
+
+  # hmake assumes that while the current directory contains the string
+  # $headaspkg, the current directory is at or below the "top" of the
+  # package tree. If there is a BUILD_DIR at any level it thus adds it
+  # to the path.
+  while [ `echo $tmp | grep -c $headaspkg` -gt 0 ]; do
+#    if [ -d $tmp/BUILD_DIR ]; then
+      # found a candidate directory which might contain an rcfile
+      pkg_hmakerc_path="$pkg_hmakerc_path:$tmp/BUILD_DIR"
+#    fi
+
+    # go "up" one more level
+    tmp=`cd $tmp/..; pwd`
+  done
+
+  # add the sub-path which was just constructed to the search path
+  hmakerc_path="$hmakerc_path$pkg_hmakerc_path"
+
+  # finally add the "installed" headas BUILD_DIR if there is one
+  if [ "x$HEADAS" != x ]; then
+#    if [ -d $HEADAS/$headaspkg/BUILD_DIR ]; then
+      hmakerc_path="$hmakerc_path:$HEATOP/$headaspkg/$HOST/BUILD_DIR"
+#    fi
+  fi
+fi
+
+# go through the path just assembled, and try to find an rcfile appropriate 
+# for this Makefile
+rcfile_dir=
+for dir in `echo $hmakerc_path | awk -F: '{ for(i=1; i<=NF; ++i) print $i }'`;
+do
+  if [ -f $dir/$hmake_rcfile ]; then
+    # see if this file is consistent with the current situation
+    # the funny construction of the cases is to get past a limitation
+    # in sh syntax
+    rcfilepkg=`sed -ne 's:^[ 	]*HD_COMPONENT_NAME[ 	]*=[ 	]*::p' \
+      $dir/$hmake_rcfile | sed -e 's:[	 ]*$::'`
+    if [ "x$rcfilepkg" = "x$headaspkg" ]; then
+      # exact match (HEADAS makefile/rcfile or LHEASOFT makefile/rcfile)
+      rcfile_dir=$dir
+      break
+    elif [ "x$rcfilepkg" = x -o "x$headaspkg" = x ]; then
+      # complete mismatch (a HEADAS makefile with LHEASOFT rcfile or vv)
+      # skip it and go on
+      :
+    elif [ `echo $rcfilepkg | grep -c $headaspkg` -gt 0 ]; then
+      # one contained the other -- close enough for HEADAS
+      rcfile_dir=$dir
+      break
+    elif [ `echo $headaspkg | grep -c $rcfilepkg` -gt 0 ]; then
+      # one contained the other -- close enough for HEADAS
+      rcfile_dir=$dir
+      break
+    fi
+  fi
+done
+
+# check whether an appropriate resource file was found
+if [ "x$rcfile_dir" = x ]; then
+  if [ "x$headaspkg" != x ]; then
+    echo $hmake_prompt Unable to find a resource file appropriate for HEADAS component $headaspkg
+  else
+    echo $hmake_prompt Unable to find a LHEASOFT resource file
+  fi
+  echo "$hmake_prompt in the following path: $hmakerc_path"
+  exit 1
+fi
+
+HMAKE_CONF_DIR=$rcfile_dir
+
+export HMAKE_CONF_DIR
+
+hmake_rcfile=$rcfile_dir/$hmake_rcfile
+
+# execute the resource file
+. $hmake_rcfile
+
+# set MAKE variable, unless it's already set
+# tell user which make is being used
+if [ "x$MAKE" = x ]; then
+  /bin/sh -c "gmake -n" > /dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    MAKE=gmake
+  else
+    /bin/sh -c "make -n" > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+      MAKE=make
+    else
+      # no gmake or make -- throw an error
+      echo $hmake_prompt Unable to find gmake or make -- check path
+      exit 1
+    fi
+  fi
+  export MAKE
+  whichmake=`type $MAKE 2> /dev/null`
+  echo $hmake_prompt which $MAKE?
+  echo $hmake_prompt $whichmake
+else
+  echo $hmake_prompt Using environment variable MAKE == $MAKE
+fi
+
+# tell user which make resource file is being used
+echo $hmake_prompt Using resource file $hmake_rcfile
+echo $hmake_prompt
+
+# form a list of variables which are exported in the resource file
+macro_list=\
+`sed -e 's:#.*::' $hmake_rcfile | sed -ne 's:export[ 	]*\(.*\)#*.*:\1:p'| sort | uniq`
+
+# print verbose chatter of the variables set in the resource file
+for macro in $macro_list; do
+    eval echo "\$macro = \$$macro"
+done
+
+# echo and then perform the actual make
+eval echo $MAKE $cl_args
+
+# bail if user is running in "noexec" mode
+if [ "x$noexec" = "xtrue" ]; then exit 0; fi
+
+eval exec $MAKE $cl_args
+
+# $Log: hmake,v $
+# Revision 1.19  2003/09/26 15:15:10  peachey
+# Fix check for gmake/make. Problem before was that 'type' writes to
+# stdout sometimes even when it fails to find its objective.
+#
+# Revision 1.18  2002/09/20 18:36:05  peachey
+# Hack to help hmake find its rcfile if only the installed hmakerc is available.
+#
+# Revision 1.17  2002/08/07 21:47:58  peachey
+# Change THISPKG to HD_COMPONENT_NAME.
+#
+# Revision 1.16  2002/05/28 19:02:43  irby
+# Update setup/usage example.
+#
+# Revision 1.15  2002/03/19 17:33:25  peachey
+# Change to work in HEADAS or LHEASOFT contexts.
+#
+# Revision 1.14  1999/04/21 16:40:46  peachey
+#  - use MAKE env variable to choose the make to run; simply set it
+#    to "make" unless it's already set.
+#  - changed slightly the format of how the results of a "type make"
+#    are reported, in line with the preceeding change
+#  - escaped some single quotes in the help message which were not
+#    properly escaped
+#
+# Revision 1.13  1999/03/10  19:29:28  peachey
+# Do not use -e any longer
+#
+# Revision 1.12  1998/11/13  22:33:25  peachey
+# Use make -e instead of putting everything on the command line
+# Use the command line supplied by the user as is, and print each
+# macro definition on its own line.
+#
+# Revision 1.11  1998/08/28 04:36:08  peachey
+# Alphas do not export PATH by default. If you find that hard to believe, you're
+# not alone
+#
+# Revision 1.10  1998/08/27 22:15:58  peachey
+# Compute hmake_path by cd; pwd rather than a clever sed. Changed name of
+# hmake_path variable to scripthome to match other scripts
+#
+# Revision 1.9  1998/07/27 20:08:01  peachey
+# Simplify identification of hmakerc file: do not try to \'dereference\' symlinks
+#
+# Revision 1.8  1998/07/16  13:39:44  peachey
+# No longer look for a resource file in user's home directory
+#
+# Revision 1.7  1998/07/09 22:02:57  peachey
+# Simplified means of setting variables. Now all variables which are
+# explicitly exported in hmakerc will be used on the command line, period.
+# This is more straightforward than the previous method (checking for
+# variables assigned in hmakerc).
+#
+# Revision 1.6  1998/04/21 14:09:23  peachey
+# Use 'type' instead of 'which' to find make. The former is universal to Bourne
+# shell, while the latter is not (e.g. it doesn't work on Suns)
+#
+# Revision 1.5  1998/03/02  20:59:16  peachey
+# Strip out spurious empty options which are added in by DEC /bin/sh for
+# unknown reasons
+#
+# Revision 1.4  1998/02/12  20:00:34  peachey
+# When listing the hmakerc file, list the actual file, rather than any
+# symbolic link to that file. Also a bug fix associated with the last
+# commit.
+#
+# Revision 1.3  1998/02/12 19:34:36  peachey
+# Better implementation of --noexec option. Also, -n is now *not* treated
+# as a synonym for --noexec; rather it is passed to the final execed make.
+# This allows user to invoke make -n as well as hmake --noexec.
+#
+# Revision 1.2  1998/02/12 18:22:58  peachey
+# Added support for a 'noexec' feature, which echoes hmake command info without actually execing the final make command
+#
+# Revision 1.1  1997/11/05 20:40:58  peachey
+# New development tool to make easier building on different platforms
+#

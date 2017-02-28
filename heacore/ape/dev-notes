@@ -1,0 +1,203 @@
+2008-07-17
+
+Change Request: GLAST/LAT team requests Ape be more tolerant of
+  empty paths in PFILES. Specifically, they find it convenient
+  to use PFILES="/local/pfiles;:/system/pfiles" so the system
+  part of the path is ":/system/pfiles". Currently the leading
+  blank path element causes Ape to fail to find the parameter file.
+
+Change Analysis:
+  1) In UNIX, these sorts of constructs are tolerated
+     in the PATH environment variable. Since it may be argued
+     that each half of PFILES is a path, it is reasonable for
+     Ape to behave similarly.
+  2) PIL accepted such constructs.
+  3) The chance of side-effects is very low, since this change
+     allows Ape to work in situations that previously caused
+     errors.
+  Thus the change is accepted.
+
+Changes Made:
+  1) Added tests of ape_io_get_loc_path and
+     ape_io_get_sys_path to confirm they handle blank path
+     elements (they do). Corrected a bug in the test code in
+     the process.
+  2) Added test of ape_io_read_file_path that replicates the
+     behavior (blank path elements cause Ape to fail).
+     Modified ape_io_read_file_path to skip blank directories
+     in the path without causing errors.
+
+Tagged: v2r4
+
+
+2009-06-23
+
+Change Request: Fermi/GLAST/LAT team requests that if the
+  system parameter file changes, local parameters be overwritten.
+
+Change Analysis:
+  1) Ape v2r4 is clever about reconciling system and local
+     parameter files. It uses local values unless the type,
+     min or max is different in the system parameter file.
+  2) The requested change defeats some of this user-friendly
+     cleverness, because it would cause local values to be
+     forgotten. Ape cannot distinguish between a user who has
+     pset a value and a change to the system parameter file
+     in which the developer requires a new default behavior.
+  3) Different solutions were discussed by the HEASARC software
+     team, including having a "parameter version" dedicated
+     parameter that could be used to synchronize local and
+     system parameter files.
+  4) Final solution, which was accepted by Fermi team as well
+     as the HEASARC, was for dates on system and local files
+     to be compared. If the system parameter file is more
+     recent than the local one, hidden parameters only will
+     be "unlearned", that is, the system parameter value will
+     be used. For prompted/auto parameters, the local parameter
+     will still prevail.
+
+Changes Made:
+  1) Added unit tests for the new behavior to ape_io.c.
+  2) Added a utility ape_util_sleep for unit tests to simulate
+     different time stamps on files.
+  3) Modified merge functions and utilities to use the time stamp
+     to override hidden parameters as described above.
+  4) Unit tests re-run and used to create reference output data
+     for Unix and Windows.
+
+Tagged: v2r5
+
+
+2009-06-24
+
+Change Request: Standalone exported distribution fails to create
+  some needed directories. Also, -fPIC is not used, causing problems
+  linking to Ape on some systems.
+
+Change Analysis: These changes should be made and do not impact
+  functionality.
+
+Changes Made:
+  1) Added LOC_CFLAGS to configure.in, configure, Makefile-config.in
+     and Makefile-config. (For -fPIC).
+  2) Added targets for creating bin, lib and pfiles directories
+     needed for build and test.
+
+Tagged: v2r5p1
+
+
+2009-07-09
+
+Change Request:
+  a. Configure puts two copies of optimization and symbol flags
+     into compiler flags. Should be just one.
+  b. Address issue 1 (see below).
+  c. Detect lines too long that are truncated and generate an
+     appropriate error message.
+  d. Typographical error in file include/ape/ape_par.h.
+  e. Attempt to clean up memory leaks from readline to make
+     valgrind output more useful without using the valgrind.supp.
+
+Change Analysis:
+  a. Small impact only on configure script.
+  b. Issue affecting unit test output only.
+  c. Genuine bug that needs to be addressed. In the unlikely
+     event that a line in a parameter file exceeds 8192 characters
+     the line is silently truncated. Moreover, the input gets
+     garbled because Ape continues to read from the spot of the
+     overflow. Worst of all, no error is generated. Important fix
+     concerning only the ape_io.c file. No interface changes.
+     
+Changes Made:
+  a. Configure script (configure, configure.in) modified.
+  b. src/test/Makefile modified (see below).
+  c. src/ape_io.c modified. In addition, unit test outputs
+     src/test/unix-ref/ape_test-log and src/test/win-ref/ape_test-log
+     were regenerated to reflect the new behavior.
+  d. Error corrected.
+  e. Attempts not entirely successful. Some readline errors
+     are in non-reachable code that would require hacking readline.
+     Partial progress checked into src/ape_par.c but commented out.
+
+Tagged: v2r5p2
+
+
+2009-07-21
+
+Change Request:
+  In some contexts (Fermi LAT build system), stat is a missing
+  symbol at link time. Request that we use _stat instead.
+
+Change Analysis:
+  _stat is compatible with stat, with a parallel struct _stat.
+  The change affects Windows only.
+
+Changes Made:
+  OS-specific code with conditional compilation was moved into
+  new static function get_mod_time. Unit tests work on Windows
+  and Unix.
+
+Tagged: v2r5p3
+
+
+Open Issues:
+  None.
+
+Resolved Issues:
+  1) Resolved 2009-07-13. Open 2009-06-23. Version: v2r5.
+     Description: Unit test output sometimes seems to include
+     a spurious message:
+
+ape_io_read: unable to open file "pfiles/ape_test.par" for reading.
+
+     This seems to occur incorrectly in cases where that file is
+     present and should be accessible. However it goes away when
+     the test is run in the debugger. It's not clear what is going
+     on with this or whether it relates to latest changes.
+
+     Resolution: Problem is in src/test/Makefile. The clean-test
+     target is designed to clean up from test output. The target
+     run-test calls clean-test before running the unit test.
+     However, this deletes the file src/test/pfiles/ape_test.par.
+     This file is needed as input for the unit test of punlearn.
+     This latter test then correctly includes the error message
+     noted in the report. Resolution is for the run-test and
+     win-test targets to copy the missing file before running the
+     unit test. Regenerated canonical output of unit test.
+
+
+2014-05-23
+
+Change Request:
+  Unit test output is difficult to understand. Output can be
+  different on different systems, leading to reports of differences
+  in the output that may or may not be correct. Reference output
+  has not been updated consistently as the code has changed.
+  The request is to clean up the test code, including inputs and
+  outputs, document how the test works, eliminate spurious
+  discrepancies, ensure that the test always behaves the same
+  way, and make sure clean/distclean properly reset the directory
+  tree to its pristine state.
+
+Change Analysis:
+  Unit test passes and produces mainly consistent output, but
+  it is not clear which parameter files should exist before
+  the test, which should exist after, and which should be
+  changed as a result of the test execution. In addition, there
+  are diffs in the output. Most of these appear to be related
+  to changes in the code (production and test code) that are
+  functioning correctly. Need to sort all this out, however.
+
+Changes Made:
+  1. Bug fixed in ape_par.c, in which two longs were subtracted
+     and the result was stored in an int. This naturally led
+     to some misbehavior.
+  2. Updated the reference parameter files in the src/test/unix-ref
+     and src/test/win32-ref directories to match expectations based on
+     the current test code.
+  3. Updated and subsequently deleted unnecessary parameter
+     files src/test/ape_test_unix.par and src/test/ape_test_win32.par.
+  4. Modified the test code to write parameter files that had all
+     current parameters required by other parts of the tests..
+
+Tagged: v2r7p1

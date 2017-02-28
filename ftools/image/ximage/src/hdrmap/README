@@ -1,0 +1,494 @@
+
+  Dynamic memory allocation
+
+     mapsalloc - Very specific allocation for ximage (Map, Rmap, Exmap)
+
+     workalloc - allocation of 2D integer map
+     i2alloc   - allocation of 2D integer*2 map
+     ralloc    - allocation of 2D real map
+
+     Usage:
+
+     include '../include/dynmem.inc'
+
+     call [work|i2|r]alloc(mode, szx, szy, p_ptr, status)
+     mode=0 to free, mode=1 to allocate
+
+     call generic_routine(mem[i|s|r](p_ptr), status)
+
+--------------------------------------------------------------------
+      subroutine chheader
+      implicit none
+c
+c  Manipulate internal header
+c  Any field in the header can be changed 
+--------------------------------------------------------------------
+      subroutine copymap (P_map,P_exmap,P_rmap,Szx,Szy,P_mapsv,
+     &                    P_exmapsv,P_rmapsv,Svszx,Svszy,Mode)
+c
+c Copy maps between current and saved
+c
+c  I  P_map        (i)  Image map
+c  I  P_exmap      (r)  Exposure map
+c  I  P_rmap       (r)  Image display map
+c  I  Szx, Szy     (i)  Size of current maps
+c  I  P_mapsv      (i)  Saved image map
+c  I  P_exmapsv    (r)  Saved exposure map
+c  I  P_rmapsv     (r)  Saved image display map
+c  I  Svszx, Svszy (i)  Size of saved maps
+c  I  Mode         (i)  Copy mode ( 1 = Map->Mapsv, 2 = Mapsv->Map )
+c
+--------------------------------------------------------------------
+      subroutine counts(Map, Szx, Szy, Status)
+c
+c  Sum counts in an area specified by a region file, cursor or 
+c    x and y range
+c
+c  I  Map       (i)  Image map
+c  I  Szx/y     (i)  Size of map
+c  O  Status    (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine cphead(frommap, tomap)
+c
+c  Copies one map's header to another
+c  
+c  I  frommap  (c) Header to be copied
+c  I  tomap    (c) Header copy
+c
+--------------------------------------------------------------------
+      subroutine cpiimap (Imap1, Imap2, Szx, Szy)
+c
+c  Copy integer map into another integer map
+c
+c  I  Imap1    (i)  Integer map
+c  O  Imap2    (i)  Real map
+c  I  Szx,Szy  (i)  Size of maps
+c
+--------------------------------------------------------------------
+      subroutine cprrmap (Rmap1, Rmap2, Szx, Szy)
+c
+c  Copy real map into another real map
+c
+c  I  Rmap1    (i)  Integer map
+c  O  Rmap2    (r)  Real map
+c  I  Szx,Szy  (i)  Size of maps
+c
+--------------------------------------------------------------------
+      subroutine fillrmap (Rval, Rmap, Szx, Szy)
+c
+c  Fill real map with constant value
+c
+c  I  Rval    (r)  Constant
+c  O  Rmap    (r)  Real map
+c  I  Szx/y   (i)  Size of map
+c
+--------------------------------------------------------------------
+      subroutine flip (P_map, Szx, Szy, Status)
+c
+c  Flips image (horiz/vert) or Rotates by 90 (+/-)
+c
+c I/O P_map  (i)  Pointer to image map
+c  I  Szx/y  (i)  Size of map
+c  O  Status (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine flip90work (Map, Work, Szx, Szy, Mode, Status)
+c
+c  Core routine for rotating by +/-90
+c
+c I/O Map    (i)  Image map
+c I/O Work   (i)  Result map
+c  I  Szx/y  (i)  Size of map
+c  I  Mode   (i)  Flip mode (3=+90 4=-90)
+c
+      integer*4 Szx, Szy, Mode, Status
+      integer*4 Map(Szx,Szy), Work(Szy,Szx)
+c                                  ^^^^^^^ tricky bit
+--------------------------------------------------------------------
+      subroutine flipwork (Map, Work, Szx, Szy, Mode, Status)
+c
+c  Core routine for flipping image horizontally or vertically
+c
+c I/O Map    (i)  Image map
+c I/O Work   (i)  Work map
+c  I  Szx/y  (i)  Size of map
+c  I  Mode   (i)  Flip mode (1=horiz 2=vert)
+c
+--------------------------------------------------------------------
+      subroutine gheadd(mapid, key, val, mode, status)
+c
+c  Return/set double header in header.inc
+c
+c  I  mapid  (c)  Map for header to be manipulated
+c  I  key    (c)  Parameter in header
+c I/O val    (d)  Value to be set or retrieved
+c  I  mode   (i)  0=retrieve 1=set
+c  O  status (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine gheadi(mapid, key, val, mode, status)
+c
+c  Return/set integer header in header.inc
+c
+c  I  mapid  (c)  Map for header to be manipulated
+c  I  key    (c)  Parameter in header
+c I/O val    (i)  Value to be set or retrieved
+c  I  mode   (i)  0=retrieve 1=set
+c  I  status (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine gheads(mapid, key, val, mode, status)
+c
+c  Return/set string header in header.inc
+c
+c  I  mapid  (c)  Map for header to be manipulated
+c  I  key    (c)  Parameter in header
+c I/O val    (c)  Value to be set or retrieved
+c  I  mode   (i)  0=retrieve 1=set
+c  I  status (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine gheadtype(keyname, type, status)
+      implicit none
+c
+c  Get type for keyname
+c
+c  I  keyname   (s)  Keyname to search for
+c  O  type      (s)  Key type (i, s, or d)
+c  O  status    (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      subroutine i2alloc(mode, szx, szy, p_i2map, status)
+c
+c  Allocates memory for a temporary two-dimensional integer*2 map
+c
+c  I  mode    (i)  1=Allocate, 0=Deallocate
+c  I  szx     (i)  Size in the x direction
+c  I  szy     (i)  Size in the y direction
+c  O  p_i2map (i)  Pointer for integer*2 map
+c  O  status  (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      subroutine inithdrs
+c
+c  Initialize all headers defined in header.inc
+c
+--------------------------------------------------------------------
+      function isloaded (mapid)
+c
+c  Returns whether the specified map has been loaded
+c
+c  I  mapid  (c)  Map identifier
+c
+--------------------------------------------------------------------
+      subroutine lsmapid
+c
+c  List available values for MAPID
+c
+--------------------------------------------------------------------
+      subroutine mapsalloc(mode, szx, szy, p_map, p_exmap, p_rmap, 
+     &                     status)
+      implicit none
+c
+c  Allocates memory for XIMAGE maps
+c
+c  I  mode      (i)  1=Allocate, 0=Deallocate
+c  I  szx       (i)  Map size in the x direction
+c  I  szy       (i)  Map size in the y direction
+c  O  p_map     (i)  Pointer for Map
+c  O  p_exmap   (i)  Pointer for Exmap (exposure map)
+c  O  p_rmap    (i)  Pointer for Rmap  (real map)
+c  O  status    (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      SUBROUTINE POLYBOX (Map, Szx, Szy, Boxsize, 
+     &                    MAXPT, NPT, X, Y, SYMBOL)
+c
+c  I  Map     (i)  Image map
+c  I  Szx/y   (i)  Size of map
+c  I  Boxsize (i)  Size of box to print (n=n pixels around selection)
+c  I  MAXPT   (i)  Maximum number of points
+c  O  NPT     (i)  Number of points clicked
+c  O  X/Y     (r)  Points clicked
+c  I  SYMBOL  (i)  Symbol code
+c
+c Feb. 12, 1999 - Micah Johnson - Adapted from PGOLIN
+c   This version prints a box of values to command screen for selected 
+c   pixels, as they are selected.
+c
+--------------------------------------------------------------------
+      SUBROUTINE POLYGON(Map, Szx, Szy, Equinox, Status)
+c
+c  POLYGON command probes map values
+c
+c  I  Map       (i)  Image map
+c  I  Szx/y     (i)  Size of map
+c  I  Equinox   (i)  XIMAGE equinox
+c  O  Status    (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      SUBROUTINE POLYLBL (Map, Szx, Szy, Boxsize, MAXPT, NPT, X, Y)
+c
+c  I  Map     (i)  Image map
+c  I  Szx/y   (i)  Size of map
+c  I  Boxsize (i)  Size of box to be printed
+c  I  MAXPT   (i)  Maximum number of points
+c  O  NPT     (i)  Number of points clicked
+c  O  X/Y     (r)  Points clicked
+c
+C 10/27/97 - Micah Johnson - Adapted from PGOLIN
+C   This version plots the data value for the selected image pixels,
+C   centered on the selection point, as they are selected This couldn't
+C   have been accomplished with PGOLIN itself, because the values
+C   need to be placed on the screen as they are clicked
+--------------------------------------------------------------------
+      SUBROUTINE PRBOX (Mapid, Map, Szx, Szy, Boxsize, Xpix, Ypix)
+c
+c  I  Map     (i)  Image map
+c  I  Szx/y   (i)  Size of map
+c  I  Mapid   (s)  Map id
+c  I  Boxsize (i)  Size of box to print (n=n pixels around selection)
+c  I  X/Ypix  (r)  Selected pixel
+c
+c   Prints a box of values to command screen for selected 
+c   pixel
+c
+--------------------------------------------------------------------
+      subroutine prhead
+c
+c print header based on template file
+c
+--------------------------------------------------------------------
+      subroutine ralloc(mode, szx, szy, p_rmap, status)
+c
+c  Allocates memory for a temporary two-dimensional real*4 map
+c
+c  I  mode    (i)  1=Allocate, 0=Deallocate
+c  I  szx     (i)  Size in the x direction
+c  I  szy     (i)  Size in the y direction
+c  O  p_i2map (i)  Pointer for integer*2 map
+c  O  status  (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      subroutine rdtxtcol(filename, icol, undef, rary, rdim, rnum,
+     &                    status)
+      implicit none
+c
+c  Reads icol-th column in text file and saves column values in rary
+c
+c  I  filename  (s)  Text file location
+c  I  icol      (i)  Column number
+c  I  undef     (s)  If value in column matches this, set to 0.
+c  O  rary      (r)  Real array
+c  I  rdim      (i)  Dimension of real array
+c  O  rnum      (i)  Number of values saves to rary
+c  O  status    (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine rebin(P_map,P_exmap,P_rmap,Szx,Szy,Status)
+c
+c  Rebin image
+c
+c I/O P_map   (i)  Pointer to image map
+c I/O P_exmap (i)  Pointer to exposure map
+c I/O P_rmap  (i)  Pointer to real map
+c I/O Szx/Szy (i)  Size of image map
+c  O  Status  (i)  Error return
+c
+--------------------------------------------------------------------
+      subroutine rebinwork (Mode, Rebinfac, Map, Exmap, Szx, Szy,
+     &                      Imin, Imax)
+c
+c  Rebin image (core routine)
+c
+c  I  Mode     (i)  Rebin mode
+c               0 - smooth the image for the specified rebin
+c                   (the image will end with the same size, same pixels 
+c                   size too) the count rate in each pixels is obtained 
+c                   averaging the counts found in the pixels involved 
+c                   in the rebinning (es rebin=2 4pixels ..)
+c               1 - this is a "normal" rebin. the pixels and the image 
+c                   size change by the rebinning factor
+c               2 - the pixels size change but the image size stay the 
+c                   original (the image shrink in the frame). use for mosaic
+c  I  Rebinfac (i)  Rebin factor
+c I/O Map      (i)  Image map
+c I/O Exmap    (i)  Exposure map
+c  I  Szx/Szy  (i)  Size of maps
+c  O  Imin/max (i)  New min/max
+c
+--------------------------------------------------------------------
+      SUBROUTINE RESCALE(Map, Szx, Szy, Status)
+c
+c  Rescale image
+c
+c multiplication and addition (division and subtraction are done
+c inserting number less then 1 and negative number respectivaly)
+c
+c  I  map    (i)  Image map
+c  I  szx/y  (i)  Size of map
+c  O  status (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      SUBROUTINE RESCALEWORK(Map,Szx,Szy,Vector,Vecsz,Factor,Mult,
+     &                       Filevec,Column,Undef,X_dir,Y_dir,
+     &                       Min_frac,Status)
+c
+c  Perform rescaling
+c
+c  I  map         (i)  Image map
+c  I  szx/y       (i)  Size of map
+c  I  vector      (r)  Vector buffer
+c  I  vecsz       (i)  Size of buffer
+c  I  factor      (r)  Scalar factor to mult or add
+c  I  mult        (l)  Mult if true, add/div if false
+c  I  filevec     (c)  File containing vector data
+c  I  x/y_dir     (l)  Direction for vector operation
+c  I  min_frac    (r)  Min exposure fraction to rescale image 
+c                      (used when the vector is an exposure fraction vector)
+c  O  status      (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      SUBROUTINE RESIZE(P_map,P_exmap,P_rmap,Szx,Szy,Status)
+c
+c  Resize images, i.e. change image pixel size
+c
+c I/O P_map   (i)  Pointer to image map
+c I/O P_exmap (i)  Pointer to exposure map
+c I/O P_rmap  (i)  Pointer to real map
+c I/O Szx/Szy (i)  Size of image map
+c  O  Status  (i)  Error return
+c
+--------------------------------------------------------------------
+      subroutine resizework(Pixratio,Map,Work,Ibuf,Szx,Szy,Status)
+c
+c  Resize image (core routine)
+c
+c  I  Pixratio (r)  Pixel ratio (new/old)
+c I/O Map      (i)  Image map
+c I/O Work     (i)  Work map
+c I/O Ibuf     (i)  Row buffer
+c I/O Szx/Szy  (i)  Size of maps
+c  O  Status   (i)  Error return
+c
+--------------------------------------------------------------------
+      subroutine rotate(Map, Szx, Szy, Status)
+c
+c  Rotates image
+c
+c  adapted to run from ximage by p.g. march 1990
+c  adapted to dynamic memory and new header by m.j. feb 1999
+c
+c I/O Map     (i)  Image map
+c  I  Szx,Szy (i)  Size of image
+c  O  Status  (i)  Error flag (0 = OK)
+c
+
+--------------------------------------------------------------------
+      subroutine rotatework(Roll1, Outrol, Map, Work, Ibuf, Szx, Szy)
+c
+c  Core rotate image routine
+c
+c  I  Roll1  (d)  Original roll angle
+c  I  Outrol (d)  New roll angle
+c I/O Map    (i)  Image map
+c I/O Work   (i)  Temporary work map
+c I/O Ibuf   (i)  Temporary row buffer
+c  I  Szx/y  (i)  Size of maps
+c
+--------------------------------------------------------------------
+      subroutine slice(Rmap, Szx, Szy, Status)
+c
+c  Slice an image or plot over an image a file
+c
+c  I  rmap    (r)  Display map
+c  I  szx/y   (i)  Size of image map
+c  O  status  (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      subroutine slicework(Rmap, Szx, Szy, X_slice, Istart, Iend, 
+     &                     Log, Sdim, Sum, Sumtot, Npix, Xy,
+     &                     Summin, Summax, Status)
+c
+c  Do slice calculation
+c
+c  I  rmap        (r)  Display map
+c  I  szx/y       (i)  Size of image map
+c  I  x_slice     (l)  Direction of slice
+c  I  istart      (i)  Start pixel to sum (image coords)
+c  I  iend        (i)  End pixel to sum (image coords)
+c  I  log         (l)  Whether to consider log of Sum
+c  I  sdim        (i)  Dimension of slice arrays
+c  O  sum         (r)  Average (nonzero) pixel value across image
+c  O  sumtot      (r)  Sum total across image
+c  O  npix        (i)  Number of nonzero pixels across image
+c  O  xy          (r)  Location of summed row or column
+c  O  summin      (r)  Minimum sum
+c  O  summax      (r)  Maximum sum
+c  O  status      (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------
+      subroutine sum_images(Map, Exmap, Rmap, Szx, Szy, Mapsv, Exmapsv, 
+     &                      Svszx, Svszy, Equinox, Status)
+c
+c  Sum current and saved images together
+c  summed image is stored in map
+c  to run this command two images are needed the current image
+c  store in map and header and the previous image stored as saved map.
+c  the summed image will be stored in current map.
+c  the assumption are that the pixel size in the two images are the same
+c  and the summed image will have the north up and the east left side.
+c
+c  vax/vms version  26/03/90  gth
+c  adapted to ron wihin ximage by p.g. may 1990
+c  adapted to dynamic memory and new header by m.j. feb 1999
+c
+c I/O Map      (i)  Image map
+c I/O Exmap    (r)  Exposure map
+c I/O Rmap     (r)  Display map (used as buffer for Exmap)
+c  I  Szx,Szy  (i)  Size of current maps
+c  I  Mapsv    (i)  Saved image map
+c  I  Exmapsv  (r)  Saved exposure map
+c  I  Svszx/y  (i)  Size of saved maps
+c  I  Equinox  (i)  XIMAGE Equinox
+c  O  Status   (i)  Error flag (0 = OK)
+c
+--------------------------------------------------------------------
+      subroutine sumwork (Ra1,Dec1,Roll1,Ra2,Dec2,Roll2,Raout,Decout,
+     &                    Outrol,Pixsize,Map,Work,Exmap,Rmap,Szx,Szy,
+     &                    Mapsv,Exmapsv,Svszx,Svszy)
+c
+c  Core summing images routine
+c
+c  I  Ra1     (d)  RA of current image's center
+c  I  Dec1    (d)  Dec of current image's center
+c  I  Roll1   (d)  Roll of current image
+c  I  Ra2     (d)  RA of saved image's center
+c  I  Dec2    (d)  Dec of saved image's center
+c  I  Roll2   (d)  Roll of saved image
+c  I  Raout   (d)  RA of output image's center
+c  I  Decout  (d)  Dec of output image's center
+c  I  Outrol  (d)  Roll of output image
+c  I  Pixsize (d)  Pixels size of images
+c I/O Map     (i)  Image map
+c I/O Work    (i)  Work map
+c I/O Exmap   (r)  Exposure map
+c I/O Rmap    (r)  Display map (used as buffer for Exmap)
+c  I  Szx,Szy (i)  Size of maps
+c  I  Mapsv   (i)  Saved image map
+c  I  Exmapsv (r)  Saved exposure map
+c  I  Svszx/y (i)  Size of saved maps
+c
+--------------------------------------------------------------------
+      subroutine workalloc(mode, szx, szy, p_work, status)
+c
+c  Allocates memory for a temporary two-dimensional integer map
+c
+c  I  mode   (i)  1=Allocate, 0=Deallocate
+c  I  szx    (i)  Size in the x direction
+c  I  szy    (i)  Size in the y direction
+c  O  p_work (i)  Pointer for work map
+c  O  status (i)  Error flag (0=OK)
+c
+--------------------------------------------------------------------

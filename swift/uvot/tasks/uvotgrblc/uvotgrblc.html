@@ -1,0 +1,505 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+    body { margin-left: 5%; margin-right: 5%; }
+    h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+
+<body>
+<h2>NAME</h2>
+    
+<p>
+uvotgrblc - extracts magnitude and flux light curves from aspect corrected UVOT sky images
+
+<h2>SYNOPSIS</h2>
+
+<p>
+<code>uvotgrblc @skyimgs.txt @expmaps.txt @sumimgs.txt @sumexps.txt
+    &lt;outdir&gt; &lt;outstem&gt; &lt;RA&gt; &lt;Dec&gt; &lt;sigma&gt;
+
+<h2>DESCRIPTION</h2>
+
+<p>
+This task extracts calibrated magnitude, flux density and integrated flux light
+curves from a set of level II input sky images. For each filter, a FITS light
+curve is generated which contains magnitudes, fluxes and all correction factors
+that have been applied. By default, plots of the magnitude light curves, the
+integrated flux light curves, and an image of the GRB FOV obtained from the sky
+image with the highest S/N, are generated. If coordinates are given for the BAT
+and/or XRT also, then a finding chart image will be plotted also.
+
+<p>
+The light curve extraction for each filter consists of several steps:
+<p>
+<ul>
+    <li> Field sources are detected in each input sum image with
+    <code>uvotdetect</code></li>
+    <p>
+
+    <li> The background region for each OBSID is chosen among three annulli
+    centered on the GRB position, excluding any detected field sources that
+    intersect with these annuli. The region with the lowest count rate is
+    chosen for that OBSID. The annulli inner and outer radii are as follows:
+    <ul>
+        <li>Inner: 15"<br>Outer: 27"</li>
+        <li>Inner: 27"<br>Outer: 35"</li>
+        <li>Inner: 35"<br>Outer: 42"</li>
+    </ul>
+    <p>
+    <li> A preliminary source rate is extracted from a 3" aperture in 
+    each exposure of each input sky image. If there is no preliminary 
+    detection at the specified sigma threshold (see <code>sigmacust</code>
+    parameter) in two or more consecutive images, then these images are
+    summed to increase signal to noise.</li>
+    <p>
+    <li> The non-aperture corrected light curves are extracted using an
+    aperture sized according to the source intensity, and distance and
+    intensity of closest neighbors. The aperture is chosen to be either 3", 4"
+    or 5". The extraction of the source data is done using the task
+    <code>uvotsource</code>.</li>
+    <p>
+    <li> If the GRB aperture is &lt;5", and <code>apermeth='FIELDSTARS'</code>,
+    then the aperture correction is calculated using the median aperture
+    correction for the three "best" field stars. For each star, the rate in a
+    standard 5" aperture is compared to that in an aperture the same size as
+    for the GRB. If there are no stars that meet the "best" criteria, or
+    <code>apermeth='CURVEOFGROWTH'</code>, then the aperture correction is
+    calculated using the <code>CURVEOFGROWTH</code> option to
+    <code>uvotsource</code>.</li> 
+    <p>
+    <li> Flux densities are converted to integrated flux using conversion
+    factors estimated by integrating a power-law spectrum (alpha = 1, where
+    alpha is defined as S_nu = nu^-alpha), convolved with the filter instrument
+    response.</li>
+</ul>
+
+<p>The "best" field stars, mentioned above, used for FIELDSTARS aperture
+correction are selected using the following criteria:
+<ul>
+    <li>The magnitude must be &gt; 23 for the filter in question in order to
+    reject bad sources sometimes "detected" with sextractor</li>
+    <p>
+    <li>The raw count rate must be between 0.5 and 5.0 count/s</li>
+    <p>
+    <li>The distance from the GRB must be &gt; 20" and &lt; 200"</li>
+    <p>
+    <li>The size of the largest axis as reported by uvotdetect, must be less than 7"</li>
+    <p>
+    <li>The ratio of the major to minor axes as reported by uvotdetect must
+    be less than 1.5 (i.e. the source must be roughly circular)</li>
+    <p>
+    <li>The closest neighbor to the source must be &gt; 5" + source radius,
+    where source radius is proportional to count rate</li>
+    <p>
+    <li>The mean exposure in the 5" around the source must be &gt;
+    <code>fldexpthresh</code>*nominal exposure</li>
+</ul>
+
+<p>The last requirement removes sources at the chip edges, which suffer from
+false detections, and poor source characterization.
+
+<p>If the option <code>skysummed = 'yes'</code>, then the input list of sky images
+is treated a list of summed images, and the photometry is only performed on each
+the first extension of each image (assumed to be summed).
+
+<p>The flux density to flux conversion factors are as follows 
+(units = erg cm^-2 s^-1 mJy^-1):
+<ul>
+    <li>V     =&gt; 8.240 × 10-13</li>
+    <li>B     =&gt; 1.405 × 10-12</li>
+    <li>U     =&gt; 2.286 × 10-12</li>
+    <li>UVW1  =&gt; 3.587 × 10-12</li>
+    <li>UVM2  =&gt; 3.355 × 10-12</li>
+    <li>UVW2  =&gt; 5.030 × 10-12</li>
+    <li>WHITE =&gt; 1.085 × 10-11</li>
+</ul>
+<p>If <code>dogrbsearch='yes'</code> (EXPERIMENTAL), then the above steps are
+not performed.  Instead, sources are detected in each snapshot of each filter,
+and a master list of sources for each filter is generated. This list is then
+compared to a simple USNO-B1 catalog search (LWP perl module and www access
+required). Any sources which are not cataloged have aperture photometry
+performed on them in the earliest snapshot of each filter. A finding chart
+image is produced with the GRB candidates circled. In this case, the only
+output is a single FITS table containing the photometry of each source from
+<code>uvotsource</code> and a single plotted image.
+
+
+<h2>PARAMETERS</h2>
+
+<dl>
+    <dt>skyimg [filename]
+    <dd>Input list of aspect corrected UVOT sky images. This can be either a
+    comma separated list of files, or an @file containing a list of files (one
+    per line). Only one sky image per OBSID/FILTER combination is supported.
+    <p>
+
+    <dt>expimg [filename]
+    <dd>Input list of exposure maps, one for each sky image. This can be either a
+    comma separated list of files, or an @file containing a list of files (one
+    per line).
+    <p>
+    
+    <dt>sumsky [filename]
+    <dd>Input list of summed images - these should be created with
+    <code>uvotimsum</code> using the images in the <code>skyimg</code>
+    parameter. This can be either a comma separated list of files, or an @file
+    containing a list of files (one per line).
+    <p>NOTE: If <code>skysummed='yes'</code> then this parameter is ignored!
+    <p>
+    
+    <dt>sumexp [filename]
+    <dd>Input list of exposure maps, one for each summed image. This can be either a
+    comma separated list of files, or an @file containing a list of files (one
+    per line).
+    <p>NOTE: If <code>skysummed='yes'</code> then this parameter is ignored!
+    <p>
+    
+    <dt>outdir [string]
+    <dd>Output directory. This should not already exist, unless the
+    <code>clobber</code> parameter is set to 'yes'.
+    <p>
+    
+    <dt>outstem [string]
+    <dd>Stem for output filenames
+    <p>
+    
+    <dt>srcra [HH:MM:SS.SS, HH MM SS.SS or DDD.DD]
+    <dd>RA of the GRB. The more accurate this is, the better.
+    <p>
+    
+    <dt>srcdec [DD:MM:SS.SS, DD MM SS.SS or DDD.DD]
+    <dd>Dec of the GRB.
+    <p>
+    
+    <dt>sigmacust [float]
+    <dd>Detection threshold (sigma).
+    <p>
+
+    <dt>(skysummed) [bool]
+    <dd>Are the sky images summed? If 'yes', then the list in the
+    <code>skyimg</code> parameter is copied into the <code>sumimg</code>
+    parameter, and similarly for the <code>expimg</code> and
+    <code>sumexp</code> parameters. This is useful if, say, you are working
+    with AGN, and do not care about variation from snapshot to snapshot.
+    <p>
+
+    <dt>(apermethod) [FIELDSTARS|CURVEOFGROWTH]
+    <dd>If set to 'FIELDSTARS', then the method described in DESCRIPTION is
+    used to get the aperture correction for each. If set to 'CURVEOFGROWTH',
+    then the curve of growth method is used (see fhelp for
+    <code>uvotsource</code>).
+    <p>
+
+    <dt>(fixedaper) [bool]
+    <dd>If set to 'yes', value of <code>aperture</code> parameter is used for
+    the aperture radius.
+    <p>
+
+    <dt>(aperture) [int (3|4|5)]
+    <dd>If <code>fixedaper</code> is set to 'yes', then the value of this
+    parameter (in arcsec) is used for the aperture size for all source
+    photometry.
+    <p>
+
+    <dt>(appendcurves) [bool]
+    <dd>If set to 'yes' (default), then all light curves will be merged into a
+    multi-extension fits table, with one extension per filter.
+    <p>
+
+    <dt>(object) [string]
+    <dd>Used as object name in plotting, and OBJECT keyword in output FITS files.
+    If set to 'DEFAULT', then the first OBJECT keyword found in the input list
+    of sky images will be used.
+    <p>
+    
+    <dt>(centroid) [bool]
+    <dd>If set to 'yes', then uvotcentroid will be called on each input 
+    summed image. If at least one good centroid is found, then the average
+    centroided position will be used (after two rounds of 1.5-sigma rejection).
+    <p>
+
+    <dt>(dogrbsearch) [bool]
+    <dd>If set to 'yes' (EXPERIMENTAL), then instead of extracting a light curve for a single
+    source, detected sources are compared with the USNO-B1 catalog, and
+    aperture photometry is performed for each un-cataloged source in the
+    earliest snapshots of each filter (see DESCRIPTION above).
+    <p><strong>NOTE:</strong> Requires LWP perl module to be in your perl library path
+    <p>
+    
+    <dt>(autobkg) [bool]
+    <dd>Determine background region automatically (see DESCRIPTION section).
+    Otherwise, use region file specified in <code>bkgreg</code> parameter. The
+    default is 'yes'. Ignored if <code>dogrbsearch='yes'</code>.
+    <p>
+    
+    <dt>(bkgreg) [filename]
+    <dd>Custom background region file. Any region file format that is supported
+    by <code>uvotsource</code> and XImage can be used. Ignored if
+    <code>autobkg='yes'</code>. Ignored if <code>dogrbsearch='yes'</code>.
+    <p>
+
+    <dt>(bkgfield) [bool]
+    <dd>If set to 'yes', then detected field sources in each filter will be 
+    excluded from the background region defined by the <code>bkgreg</code> 
+    parameter. Ignored if <code>autobkg='yes'</code> or <code>dogrbsearch='yes'</code>.
+    <p>
+    
+    <dt>(extinct) [bool]
+    <dd>Do extinction correction? If set to 'yes', NED is queried for the
+    E(B-V) value corresponding to the GRB coordinates. The extinction is
+    calculated using the extinction law from Cardelli et al (1998), with
+    R_V=3.1 and coefficients from Roming et al (2008, in preparation).
+    Ignored if <code>dogrbsearch='yes'</code>.
+    <p><strong>NOTE:</strong> No correction factor will be applied to the white
+    filter.
+    <p><strong>NOTE:</strong> Requires LWP perl module to be in your perl
+    library path
+    <p>
+
+    <dt>(fldexpthresh) [real]
+    <dd>Minimum fraction of exposure time required for field sources. That is,
+    if a field source has a mean exposure &lt;
+    <code>fldexpthresh</code>*total_exposure, it will not be considered a good
+    source for the aperture correction calculation. Ignored if
+    <code>apermeth='CURVEOFGROWTH'</code> or <code>dogrbsearch='yes'</code>.
+    <p>
+
+    <dt>(doplots) [bool]
+    <dd>Produce light curve and image plots? Default is 'yes'
+    <p>
+    
+    <dt>(plotftype) [string]
+    <dd>PGPLOT device to use for plotting. Only file type devices are currently
+    supported, e.g. /gif. Default is '/gif'.
+    <p>
+    
+    <dt>(logxplot) [bool]
+    <dd>Log scale time axis for light curve plots?  Ignored if
+    <code>dogrbsearch='yes'</code>.
+    <p>
+    
+    <dt>(usetargid) [bool]
+    <dd>If set to 'yes', then plots will be labelled with the value of the 
+    first TARGID keyword found in the input FITS images. The TARGID keyword
+    will also be written to the output FITS light curves.
+    <p>
+    
+    <dt>(usetrigtime) [bool]
+    <dd>If set to 'yes', then plots and light curves will be offset by either 
+    the value of the <code>trigtime</code> parameter (if &gt; 0.0), or the 
+    first found value of the TRIGTIME keyword in the input FITS images.
+    <p>
+    
+    <dt>(trigtime) [float]
+    <dd>GRB BAT trigger time, in MET [s]. If &lt;=0.0, then the output light
+    curve time axes will be in MET [s].  Ignored if
+    <code>dogrbsearch='yes'</code>.
+    <p>
+
+    <dt>(trigfrombat) [bool]
+
+    <dd>Is the trigger time (either the <code>trigtime</code> parameter or the
+    value of the TRIGTIME keywords) from a BAT trigger? This parameter affects
+    plotting only.
+    <p>
+
+    <dt>(xrtsrcra) [HH:MM:SS.SS, HH MM SS.SS or DDD.DD]
+    <dd>XRT source RA. If provided, then a finding chart image will be
+    displayed adjacent to the FOV image, in the output image file.
+    If set to 'NONE' (default), then it will be ignored
+    <p>
+    
+    <dt>(xrtsrcdec) [DD:MM:SS.SS, DD MM SS.SS or DDD.DD]
+    <dd>XRT source RA. If provided, then a finding chart image will be
+    displayed adjacent to the FOV image, in the output image file.
+    If set to 'NONE' (default), then it will be ignored
+    <p>
+
+    <dt>(xrterrrad) [real]
+    <dd>XRT error radius in arcminutes. Used to plot XRT error circle in
+    finding chart, and as a constraint on GRB candidate searching if
+    <code>dogrbsearch='yes'</code>.
+    <p>
+
+    <dt>(batsrcra) [HH:MM:SS.SS, HH MM SS.SS or DDD.DD]
+    <dd>BAT source RA. If provided, then a finding chart image will be
+    displayed adjacent to the FOV image, in the output image file.
+    If set to 'NONE' (default), then it will be ignored
+    <p>
+    
+    <dt>(batsrcdec) [DD:MM:SS.SS, DD MM SS.SS or DDD.DD]
+    <dd>BAT source RA. If provided, then a finding chart image will be
+    displayed adjacent to the FOV image, in the output image file.
+    If set to 'NONE' (default), then it will be ignored
+    <p>
+
+    <dt>(baterrrad) [real]
+    <dd>BAT error radius in arcminutes. Used to plot BAT error circle in
+    finding chart, and as a constraint on GRB candidate searching if
+    <code>dogrbsearch='yes'</code>.
+    <p>
+
+    <dt>(cleanup) [bool]
+    <dd>Clean up temporary files and intermediate files?
+    <p>
+    
+    <dt>(chatter) [int] [0,5]
+    <dd>Chattiness level. 0 means essentially nothing will be printed. 5 is 
+    debugging mode with tons of output. Default is 2.
+    <p>
+    
+    <dt>(clobber) [bool]
+    <dd>Clobber output files. If <code>outdir</code> directory exists, and
+    <code>clobber</code> is set to 'no', then this task will exit with an
+    error.
+    <p>
+</dl>
+<h2>OUTPUT</h2>
+
+<p>The number of output files depends on the number of filters represented in
+the input sky image list, the choice of the <code>doplots</code> parameter, and
+the value of the <code>appendcurves</code> parameter.  The maximum set of
+output files, for <code>outdir=./test</code>, <code>appendcurves='no'</code>,
+and <code>outstem=GRBTEST</code> would be:
+<dl>
+    <dt><code>./test/GRBTEST_uvvsrab.lc</code>
+    <dd>light curve for V filter
+    
+    <dt><code>./test/GRBTEST_ubbsrab.lc</code>
+    <dd>light curve for B filter
+    
+    <dt><code>./test/GRBTEST_uuusrab.lc</code>
+    <dd>light curve for U filter
+    
+    <dt><code>./test/GRBTEST_uw1srab.lc</code>
+    <dd>light curve for UVW1 filter
+    
+    <dt><code>./test/GRBTEST_um2srab.lc</code>
+    <dd>light curve for UVM2 filter
+    
+    <dt><code>./test/GRBTEST_uw2srab.lc</code>
+    <dd>light curve for UVW2 filter
+    
+    <dt><code>./test/GRBTEST_uwhsrab.lc</code>
+    <dd>light curve for WHITE filter
+     
+    <dt><code>./test/GRBTEST_uuve7srab.qdp</code>
+    <dd>QDP/PLT file containing magnitude and integrated flux light text light
+    curves for all filters
+
+    <dt><code>./test/GRBTEST_pco1.pco</code>
+    <dd>PCO file containing QDP/PLT commands for plotting magnitude light
+    curves
+
+    <dt><code>./test/GRBTEST_pco2.pco</code>
+    <dd>PCO file containing QDP/PLT commands for plotting integrated flux light
+    curves
+
+    <dt><code>./test/GRBTEST_uuve7srfb.gif</code>
+    <dd>gif plot of all integrated flux light curves on a single Time-Flux plot
+
+    <dt><code>./test/GRBTEST_uuve7srmb.gif</code>
+    <dd>gif mosaic plot of magnitude light curves
+
+    <dt><code>./test/GRBTEST_uuvsri1.gif</code>
+    <dd>gif plot of GRB FOV.
+</dl>
+
+<p>If coordinates for the BAT or XRT are entered (see parameters <code>batsrcra</code>,
+<code>batsrcdec</code>, <code>xrtsrcra</code>, <code>xrtsrcdec</code>), then there will
+be a single extra plot of the earliest, most sensitive image named:
+
+<dl>
+    <dt><code>./test/GRBTEST_uuvsri2.gif</code>
+    <dd>gif plot of earliest/most sensitive FOV
+</dl>
+
+<p>If <code>appendcurves='yes'</code>, then instead of the seven '.lc' files above,
+there would be a single light curve FITS file:
+
+<dl>
+    <dt><code>./test/GRBTEST_uuvetsrab.lc</code>
+    <dd>light curve for all filters, one per extension
+</dl>
+
+<p>
+The FITS light curves have numerous columns, nearly all of which are documented
+in the <code>uvotsource</code> fhelp file. The main differences are in how
+upper limits are indicated. In the output light curves from this task, an upper
+limit is indicated by an INDEF or NULL in the MAG_ERR, FLUX_AA_ERR,
+FLUX_HZ_ERR, and INT_FLUX_ERR columns. In this case, the upper limit in each
+unit system is the corresponding intensity column.
+
+<p>
+There are additional columns in the output light curves as well. They are as follows:
+<dl>
+    <dt>TIME
+    <dd>Center of time bin, measured from BAT trigger time, if available. If
+    BAT trigger time is not specified, or not found, then this is the MET [s]
+    time of the bin center
+    
+    <dt>XAX_E
+    <dd>Half-width of time bin
+    
+    <dt>TIMEDEL
+    <dd>Full-width of time bin
+    
+    <dt>FRACEXP
+    <dd>Fraction exposure of time bin. This is simply
+    <code>EXPOSURE/TIMEDEL</code>.
+    
+    <dt>SIGMA
+    <dd>Significance of detection, or non-detection
+    
+    <dt>BKG_INNER_RADIUS
+    <dd>Inner radius of background annulus (NULL if <code>autobkg</code> set to
+    'no')
+    
+    <dt>BKG_OUTER_RADIUS
+    <dd>Outer radius of background annulus (NULL if <code>autobkg</code> set to
+    'no')
+    
+    <dt>APERTURE
+    <dd>Size of GRB extraction aperture in arcsec
+    
+    <dt>OBS_ID
+    <dd>OBS_ID that this data point came from
+    
+    <dt>EXPID
+    <dd>Exposure ID (or range of exposure IDs) that this data point came from
+    
+    <dt>AP_SRC_RA
+    <dd>RA of field star used for aperture correction (-999 if CURVEOFGROWTH)
+    
+    <dt>AP_SRC_DEC
+    <dd>Dec of field star used for aperture correction (-999 if CURVEOFGROWTH)
+    
+    <dt>AP_SRC_RATE5
+    <dd>Raw count rate of field star (count/s) used for aperture correction in
+    5" aperture. AP_FACTOR = AP_SRC_RATE5 / AP_SRC_RATE
+
+    <dt>AP_SRC_RATE
+    <dd>Raw count rate of field star (count/s) used for aperture correction in
+    same aperture as GRB extraction. AP_FACTOR = AP_SRC_RATE5 / AP_SRC_RATE
+    
+    <dt>AP_SRC_DIST
+    <dd>Distance of field star used for aperture correction from GRB in arcsec
+
+</dl>
+
+<h2>NOTES</h2>
+<p>
+Currently a working CALDB must be setup in order to run this task.
+
+<h2>LAST MODIFIED</h2>
+<p>Feb. 2009
+
+</body>
+
+</html>

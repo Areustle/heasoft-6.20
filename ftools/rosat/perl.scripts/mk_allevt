@@ -1,0 +1,369 @@
+#!/usr/local/bin/perl
+# version 1.1.1  Lawrence E. Brown 11/94 Hughes STX for NASA/GSFC
+# uses MAKETIME to create a new gti table (expression: "A1_AL>10" for PSPC 
+# or "SECONDARY> 0" for HRI) from the input _anc files fifth extension 
+# (the event rate extension).
+# uses FMERGE to combine the second and third extensions (the Accepted
+# and Rejected events extensions) of the input _bas file.
+# uses FEXTRACT to create a new file and copy the primary extension
+# of the _bas file into it.
+# uses FAPPEND to stick them all together
+# uses various utility routines to do sanity checks and new keyword writes 
+# along the way 
+# version 1.0.0 first official release 9/94
+# version 1.1.0 added sorting capability 10/94
+# version 1.1.1 fixed VMS bug 11/94
+# version 1.1.2 invoke fstruct with parameter set to suppress new output
+#               format 05/99
+$task = "mk_allevt 1.1.2";
+$bailroutine = "bailout";
+
+
+
+require "utils.pl";
+
+if (@ARGV == 0) 
+     {print $task.":  Type 'mk_allevt -h' for instructions.\n";}
+@flags = grep (/-/,@ARGV);      # get flags
+@arguments = grep (!/-/,@ARGV); # lose flags
+if (grep(/v/,@flags)) {$verbose = 1;}
+if (grep(/sort/,@flags)) {$sort_evts = 1;}
+if (grep(/nosort/,@flags)) {$sort_evts = 0;}
+if (grep(/h/,@flags)) {
+    print <<"EOH";
+MK_ALLEVT                  ftools.rosat                        MK_ALLEVT 
+
+
+
+NAME
+    mk_allevt -- combines the standard and rejected events tables of  an
+    RDF file
+    
+    
+    
+USAGE
+    mk_allevt
+    
+    
+DESCRIPTION
+    
+    
+    This  script will combine the accepted and rejected events tables in
+    an RDF basic file (*_bas.fits) to  make  an  all  events  table  and
+    figure  out  a corresponding  GTI table using the RDF ancillary file
+    (*_anc.fits). You may want to name your output  with  the  extension
+    _abas.fits.
+    
+    You may specify the input and output files on the command line:
+    
+    >mk_allevt xxx_bas.fits xxx_anc.fits xxx_abas.fits
+    
+    
+    You can also say:
+    
+    >mk_allevt xxx_bas%
+    
+    to  specify  the default extensions (i.e. xxx_bas.fits, xxx_anc.fits
+    and xxx_abas.fits). A ! preceeding the output  filename  will  force
+    overwriting  as  usual.   (Remember to use  \\!  if you are typing on
+    the command line). The program will prompt you for filenames if  any
+    are missing or confusing. So you can also just type:
+    
+    >mk_allevt
+    
+    and  answer the questions.  This is actually the preferred method of
+    running the script.
+    
+    
+    
+FLAGS
+    
+    -v   Verbose mode.  Prints informative messages and the output  from
+    some ftools calls.
+    
+    -(no)sort    Requires  (supresses)  sorting  of  the  output  events 
+    extension by photon arrival time.
+    
+    -h  Prints help message.
+    
+    
+WARNINGS ON USAGE
+    
+    Note: This is a perl script which runs the FTOOLS: MAKETIME, FMERGE,
+    FEXTRACT,  FAPPEND  and  various FUTIL routines.  You must have perl
+    installed at your site to run this.
+    
+BUGS
+
+    Please  report  any  comments/problems  or bugs to 
+    (ftoolshelp\@athena.gsfc.nasa.gov).
+    
+    
+    
+EXAMPLES
+    
+    See the description for several.  It should also be noted that:
+    
+    >mk_allevt \\!xxx_bas%
+    
+    will give you the same results as
+    
+    >mk_allevt xxx_bas.fits xxx_ans.fits \\!xxx_abas.fits
+    
+    
+    
+    
+LOG OF SIGNIFICANT CHANGES
+    
+    
+    v1.1.0 
+        Added sorting capability.
+    
+    v1.0.0 
+        First release version.
+    
+    
+    
+PRIMARY AUTHOR
+    
+    Lawrence E. Brown
+    Hughes STX for
+    NASA/GFSC
+    elwin\@redshift.gsfc.nasa.gov
+    (301) 286-4996
+
+
+MK_ALLEVT (Oct94)             ftools.rosat             MK_ALLEVT (Oct94)
+
+EOH
+exit;}
+
+#process file names
+if ($arguments[0] =~ s/%$//){
+    &parse_percent_syntax($arguments[0]);}
+else{
+     $infile = $arguments[0];
+     $ancfile = $arguments[1];
+     $outfile = $arguments[2];}
+
+#check out files -----------------------------------------------------------
+
+
+#get legal output filename
+until ( length($outfile) != 0 && $outfile ne $infile && 
+       (!($out_exist = -e $outfile) || $outfile =~ /^!/)){
+    print "***\n";
+    if(length($outfile) != 0) 
+          {print "File: \"$outfile\" is illegal for output\n";}
+    print "Use \"!$outfile\" to overwrite.\n" if $out_exist;
+    &print_likely_fileset;
+    print "Output (abas) Filename: "; 
+    chop($outfile = <STDIN>); 
+    if(($outfile =~ /^\s*(\d*)\s*$/)&&($outfile <= @likely_files)){
+	$outfile="!".$likely_files[$1-1]."%";}
+    if ($outfile =~ s/%$//){
+	&parse_percent_syntax($outfile);}
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}
+$outfile_ok=1;
+
+
+
+
+#get legal BAS file
+until (-r $infile && length($infile) != 0 ){
+    print "***\n";
+    if(length($infile) != 0) 
+	{print "I can't read input 'bas' file: \"$infile\"\n";}
+    &print_likely_fileset;
+    print "Basic (bas) Filename: "; 
+    chop($infile = <STDIN>); 
+    if(($infile =~ /^\s*(\d*)\s*$/)&&($infile <= @likely_files)){
+	$infile=$likely_files[$1-1]."%";} 
+    if ($infile =~ s/%$//){
+	&parse_percent_syntax($infile);}
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}		
+
+unless (defined($sort_evts)) {
+    print "Do you want the ALLEVTS extension sorted by arrival time? ";
+    $sortq =<STDIN>;
+    $sort_evts = ($sortq =~  /^\s*y/);
+}
+
+
+
+#get legal ANC file
+until (-r $ancfile && length($ancfile) != 0 ){
+    print "***\n";
+    if(length($ancfile) != 0)
+        {print "I can't read input 'anc' file: \"$ancfile\"\n";}   
+    &print_likely_fileset;
+    print "Ancillary (anc) Filename: "; 
+    chop($ancfile = <STDIN>); 
+    if(($ancfile =~ /^\s*(\d*)\s*$/)&&($ancfile <= @likely_files)){
+	$ancfile=$likely_files[$1-1]."%";}
+    if ($ancfile =~ s/%$//){
+	&parse_percent_syntax($ancfile);}
+    die "Can't seem to find a file. Exiting.\n" if $i > 5;
+    $i++;
+}		
+
+if ($ancfile =~ s/%$//){
+    &parse_percent_syntax($ancfile);}
+
+
+#scan BAS file
+chop(@hduclassout = &runcom("fkeyprint $infile+2 \"HDUCLAS\"",$bailroutine));
+die "$infile extension 2 is not the Accepted events extension, I can't cope.\n"
+    if(join(' ',@hduclassout) !~ /EVENTS.*ACCEPTED/);
+chop(@hduclassout = &runcom("fkeyprint $infile+3 \"HDUCLAS\"",$bailroutine));
+die "$infile extension 3 is not the Rejected events extension, I can't cope.\n"
+    if(join(' ',@hduclassout) !~ /EVENTS.*REJECTED/);
+
+#check out instrument
+grep(do{/(HRI|PSPC)/;$instrument = $1},&runcom("fkeyprint $infile+2 INSTRUME",$bailroutine))
+    || die "$infile is not an HRI or PSPC file as far as I can tell.";
+
+
+#scan ANC file
+chop(@hduclassout = &runcom("fkeyprint $ancfile+5 \"HDUCLAS\"",$bailroutine));
+die "$ancfile extension 5 is not the event rate extension, I can't cope.\n"
+    if(join(' ',@hduclassout) !~ /TEMPORALDATA.*EVRATE/);
+
+
+#end file checkout -------------------------------------------------------
+
+#Make new GTI file with maketime
+$gtifile = 'mk_allevt_gti'.$$.".fits";
+if($instrument eq "PSPC") {$expression="A1_AL > 10";}
+else {$expression="SECONDARY > 0";}
+$maketime_command = "maketime $ancfile+5 $gtifile \"$expression\" wibble wibble TIME no";
+&yakker($maketime_command, $verbose,$bailroutine);
+
+#Make new ALLEvents file with fmerge
+$allpref = 'mk_allevt_all'.$$;
+$allfile = $allpref.'.fits';
+
+#get keywords to copy across (nearly all of them)
+$lastkeyfile = 'mk_allevt_last'.$$.".ascii";
+open(LASTKEYFILE,">$lastkeyfile");
+@keyrecords = &runcom("fdump $infile+2 STDOUT - - page=no prdata=no",$bailroutine);
+foreach  (@keyrecords ){
+   $keyword = substr($_,0,8);
+   $bad_kwords = "SIMPLE|BITPIX|NAXIS|EXTEND|XTENSION|EXTNAME|HISTORY|COMMENT|END";
+   unless($keyword =~ /($bad_kwords)/){
+       print LASTKEYFILE $keyword."\n";
+   }
+}
+close(LASTKEYFILE);
+
+#combine STDEVT and REJEVT extensions with FMERGE
+
+$merge_command = "fmerge \"$infile+3 $infile+2\" $allfile \"-\" mextname=\"STDEVT\" lastkey=".'"@'."$lastkeyfile\" copyprime=yes history=yes clobber=yes";
+&yakker($merge_command,$verbose,$bailroutine);
+
+#To avoid breaking xselect we call this the STDEVT extension (even though
+#it should probably be the ALLEVT extension) we'll set the HDUCLAS keywords
+#PROPERLY since the current xselect DOESN'T use them and the next one WILL.
+
+
+if($sort_evts) {
+     $unsorted_allfile = "$allpref".'_uns.fits';
+     rename($allfile,$unsorted_allfile);
+     &yakker("fmemsort $unsorted_allfile+1 $allfile TIME heap",$verbose,
+	     $bailroutine,"Couldn't sort events");
+ }
+#Combine files with FAPPEND
+
+#first find length of infile
+@struct = &runcom("fstruct colinfo=no $infile",$bailroutine);
+until($a = pop(@struct)){};
+if ($a =~ /(\b\d\b)/){
+    $last_extension_number = $1;} 
+else{
+    die "Program had fatal difficulty parsing fstruct output\n".
+        "and was put in a pie by Mrs. McGregor.\n";}
+
+#copy primary  extension
+&yakker("fextract $infile+0 \"$outfile+0\" ",$verbose,$bailroutine);
+
+
+#make file list for fappend
+
+#strip the ! from outfile
+$outfile =~ s/^!//;
+
+$append_list_file = "mk_allevt_applist".$$.".ascii";
+open(APPEND_LIST_FILE,">$append_list_file");
+print APPEND_LIST_FILE "$gtifile+1\n";
+print APPEND_LIST_FILE "$allfile+1\n";
+foreach $extension (4..$last_extension_number) {
+     print APPEND_LIST_FILE "$infile+$extension\n";}
+close APPEND_LIST_FILE;
+$fappend_command = "fappend ".'"@'."$append_list_file\" $outfile";
+&yakker($fappend_command,$verbose,$bailroutine);
+
+
+
+chop($date = &runcom("date",$bailroutine));
+&yakker("fparkey \"Created by $task on $date\" $outfile+0 HISTORY add=yes",$verbose,$bailroutine);
+&yakker("fparkey \"Using files $infile and $ancfile.\" $outfile+0 HISTORY add=yes",$verbose,$bailroutine);
+&yakker("fparkey \"ALL\" $outfile+2 HDUCLAS2",$verbose,$bailroutine);
+&yakker("fparkey \"ALL\" $outfile+1 HDUCLAS2",$verbose,$bailroutine);
+
+#system("fparkey \"ALLGTI\" $outfile+1 EXTNAME"); #don't do this for 
+#compatibility with the current xselect
+#do more keyword sh*t here? (TLMIN, etc....)
+
+&$bailroutine;
+
+sub bailout{
+    unlink($gtifile,$allfile,$append_list_file,$unsorted_allfile);
+    die("$_[0]\n");
+}
+
+
+sub parse_percent_syntax{
+    local($bang,$rootname);
+    $rootname=$_[0];
+    $bang= ($rootname =~ s/^!//);
+    $infile = $rootname."_bas.fits";
+    $ancfile = $rootname."_anc.fits";
+    unless($outfile_ok){
+	$outfile = $rootname."_abas.fits";
+	$outfile = '!'.$outfile if $bang;
+    }
+}
+
+
+sub print_likely_fileset{
+local(%MARK,$file,$i,@file_st);
+unless ($likely_glob){
+    foreach (<*_bas.fits>){
+	s/_bas.fits//;
+	$MARK{$_}++;
+    }
+    foreach (<*_anc.fits>){
+	s/_anc.fits//;
+	push( @likely_files,$_)  if $MARK{$_};
+    }
+    $likely_glob=1;
+}
+if(@likely_files >1) {@file_st = ("groups","a set of files");}
+else {@file_st = ("group","it");}				
+if(@likely_files) {
+    print "You have the following likely looking file $file_st[0]:\n";
+    foreach $file (@likely_files) {
+	$i++;
+	print "$i\t$file\n";
+    }
+    print "Type corresponding number to select $file_st[1],\n";
+    print "or type a specific file or pathname.\n";
+}
+}
+
+
+

@@ -1,0 +1,191 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/batfftimage/ut_batfftimage_pcodemap,v $
+# $Revision: 1.20 $
+# $Date: 2007/08/10 07:44:32 $
+#
+#	ut_batfftimage_pcodemap
+#		validate batfftimage operation of partial coding map
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "batfftimage";
+$ut_taskname   = "ut_batfftimage_pcodemap";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance reltol fudgemap
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+	my $reltol = $self->args->{reltol};
+	my $fudgemap = $self->args->{fudgemap};
+	$fudgemap =~ s/\@INPUT\@/$input/;
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	my %task = (
+		    infile        => "$input/batfftimage_fore.dpi.in",
+		    outfile       => "$output/batfftimage.pcodemap.output",
+		    attitude      => "$input/batfftimage.att.in",
+		    aperture      => "$input/batfftimage.aperture",
+		    detmask       => "$input/batfftimage.detmask.in",
+		    teldef        => "CALDB",
+		    bat_z         => 0,
+		    keepbits      => 7,
+		    pcodemap      => "Yes",
+		    pcodethresh   => 0.01,
+		    corrections   => "default",
+		    handedness    => "left",
+		    countscol     => "INDEF",
+		    rows          => "-",
+		    clobber       => "Yes",
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("infile", "detmask", "attitude");
+	
+	my %template = (
+			outfile     => "$input/batfftimage.pcodemap.template",
+			);
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	print "\n\n  Verifying FITS output files\n";
+	$command = qq(ftverify infile=$task{outfile} outfile=STDOUT heasarc=yes);
+	$self->doCommand($command);
+
+	# Check template files are present
+	foreach my $key (keys %template) {
+		if (not -f $template{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid template $key file: $template{$key}");
+			return -1;
+		}
+	}
+
+	if (not -f "$fudgemap") {
+	    $self->fatal(BAD_INPUT,
+			 "input 'fudge map' $fudgemap was not found");
+	    return -1;
+	}
+
+	# First multiply by the "fudge" mask so that the outer
+	# pixels are ignored.  We are at the mercy of the math
+	# library here, so ignore the crap data...
+
+	$outfile_fudged = $task{outfile}.".fudge";
+	$template_fudged = $task{outfile}.".fudge_template";
+
+	$command = "ftimgcalc $outfile_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B)' a='$task{outfile}"."[0]' b='$fudgemap' clobber=YES otherext=:A replicate=YES";
+	$self->doCommand($command);
+
+	$command = "ftimgcalc $template_fudged '(ISNULL(A)||ISNULL(B))?0:(A*B)' a='$template{outfile}"."[0]' b='$fudgemap' clobber=YES otherext=:A replicate=YES";
+	$self->doCommand($command);
+
+	$command = "ftdiff $template_fudged $outfile_fudged tolerance=$tolerance reltol=$reltol exclude=CREATOR,APERTURE,BTELDEF";
+	$result = $self->doCommand($command);
+	if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	    $ndiffs = $1;
+	    print "   -->  FTDIFF reports $ndiffs differences\n";
+	    if ($ndiffs ne 0) {
+		$lines = $result->{output};
+		print "$lines\n" if $self->chatter(5);
+		$self->error(BAD_OUTPUT, "error because of bad compare");
+	    }
+
+	}
+	
+	
+}
+

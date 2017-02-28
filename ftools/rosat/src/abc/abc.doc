@@ -1,0 +1,157 @@
+
+
+c
+      program abc
+
+c Apply Barycentric Corrections to event data.
+
+c For ROSAT only.
+
+c This program corrects the times in a file -- both the entries in the
+c TIME column of an event list and the Good Time intervals in a
+c separate extension, as well as their header timing keywords -- for
+c the ROSAT spacecraft clock and for the time delay given in a
+c specified correction table.  The original file is NOT overwritten.  It
+c is copied to a new file and the relevant entries are corrected in place.
+
+c See subroutine abcmake for a detailed description of the algorithm.
+
+----------------------
+
+      subroutine abcinit(in_fil,bc_fil,ou_fil,rastr,decstr
+     &                   ,tchat,lchat,scc_fil,ierr)
+
+c get parmater values for program ABC.
+
+c  O  in_fil    (c)  Name of input file
+c  O  bc_fil    (c)  Name of barycenter correction file
+c  O  ou_fil    (c)  name of output file
+c  O  rastr     (c)  R.A. string
+c  O  decstr    (c)  Declination string
+c  O  tchat     (i)  Terminal chattiness
+c  O  lchat     (i)  Log chattiness
+c  O  scc_fil   (c)  Name of SCC correction file
+c  O  ierr      (i)  error status
+
+-------------------------
+
+      subroutine abcmake(in_fil,bc_fil,ou_fil,rastr,decstr,scc_fil,ierr)
+
+c MAKE timing corrections for program ABC.
+
+c This routine opens 4 FITS files:
+c    an input data file (lui);
+c    a barycenter correction table (lub);
+c    an output file (luo);
+c    and a spacecraft clock correction file (luc)
+c The output file is a straight copy of the input file, with all TIME
+c values -- EVENT data, GTI's and timing keywords -- corrected to the solar
+c system barycenter (or actually to whatever correction is given by the
+c corretion table).
+
+c Several preliminary checks are made in this routine:
+
+c    the input file should have the keyword TIMEREF = 'LOCAL';
+
+c    the RA and  DEC in the correction file should agree with values
+c    input by the user;
+
+c    Times in the data file should be contained within start and stop of
+c    the correction table;
+
+c    The correction table should be contained in extensions that have the
+c    keyword EXTAME = 'TIMEREF'.
+
+c    The routine looks for the MJDREF keyword based on US ROSAT old and
+c    new-type formats (either the pair XS-MJDRD, XS-MJDRF or MJDREFI,
+c    MJDREFF respectively).  If this is not found the program exits.
+c    The MJD reference value is used to convert times internally to
+c    compare with the correction table, which is listed in JD.  The
+c    corrected times are written to the output file in the original time
+c    system.
+
+c Several keywords are modified in the output file:
+
+c    TIMEREF = 'SOLARSYSTEM'
+c    CLOCKAPP = T
+c    TIMESYS is constructed by concatenating the ZEROTIME and ZERODATE
+c       keywords from input file.  If the ZEROTIME and ZERODATE
+c       keywords are not found TIMESYS is deleted.
+c    TASSIGN is deleted.
+c    TSTART, TSTOP, TIMEZERO and TIMEUNIT are updated.
+
+c The routine then gathers information about the structure of event list
+c and enters a loop for the correction.  It reads each time from the file,
+c correct for spacecraft clock (subroutine scc2utc), subtracts off the
+c MJD reference value and gets the corrected time from subroutine abcgcor.
+c It keeps track of any photons that arrived in gaps of greater than
+c 2 minutes in the barycenter correction table and records them in the
+c extension header.  At the end of the loop the number of gap photons
+c is recorded in the priamry header and a warning is issued if there were
+c any.
+
+c    The routine assumes the input times are listed in their spacecraft
+c    clock values (in seconds).  They
+c    are written to the new file in seconds from the MJD reference value.
+
+c The routine then does the same for the GTI extension, keeping track of
+c the earliest corrected GTI start and the latest corrected GTI stop.
+c These are then used as the TSTART and TSTOP keyword values in both
+c extension headers.
+
+c  I  in_fil    (c)  Name of input file
+c  I  bc_fil    (c)  Name of barycenter correction file
+c  I  ou_fil    (c)  name of output file
+c  I  rastr     (c)  R.A. string
+c  I  decstr    (c)  Declination string
+c  I  scc_fil   (c)  Name of SCC correction file
+c  I  ierr      (i)  Error status
+
+----------------------
+
+      subroutine abcgcor(lub,extmax,bcext,timuncor,dtoffset,outside
+     &                  ,timcor,ierr)
+
+c Get a barycentrically CORrect time for program ABC.
+
+c This routine makes an interpolation on the barycenter correction table
+c that closely parallels the algorithm used in IRAF/PROS.
+
+c On the first call the routine loads all rows from all extensions in the
+c table into memory.  The current limit to the number of rows is 10000.
+
+c >>> This routine should be rewritten to have a location in dynamic memory
+c     passed to it, with the vectors hcor and huncor passed as dummy
+c     arguments.  <<<
+
+c On all calls, the routine makes a linear interpolation on the barycenter
+c table.  Normally, ROSAT orbit files have their rows spaced 1 minute
+c apart.  If an input time falls in a space between successive rows
+c in the table that are more than 2 miniues apart, or if the time falls
+c completely outside the range of the table, the logical variable outside is
+c returned .true.
+
+c The routine assumes the table is written in four column format, with
+c the uncorrected time in JD -- Integer part in column 1 and
+c fractional part in column 2; and the full corrected time in columns 3 and 4.
+
+c  I  lub      (i)  Lu of correction table file.
+c  I  extmax   (i)  Dimension of bcext
+c  I  bcext    (i)  Array of FITS extension numbers for TIMEREF extensions
+c  I  timuncor (d)  Input uncorrected time in JD - dtoffset
+c  I  dtoffset (d)  Internal offset to retain maximum accuracy
+c  O  outside  (l)  = .true. of input time fell in a gap in the table.
+c  O  timcor   (d)  Output corrected time in JD - dtoffset
+c  O  ierr     (i)  error status
+
+-------------------------------
+
+      subroutine scc2utc(luc,ichat,SCC,UTCI,UTCR,IERR)
+
+C @(#)sccut2.for        1.1 (MPE-Garching) 3/16/94 16:46:26
+c Originally:
+c#        SUBROUTINE SCCUT2(SCC,UTCI,UTCR,SCCTAB,IERR)
+C
+CC  ROSAT Conversion from Spacecraft Clock to UTC
+C
+c  Adapted to XANADU timing analysis

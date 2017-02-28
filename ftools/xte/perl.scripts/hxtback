@@ -1,0 +1,531 @@
+#! /usr1/local/bin/perl5
+#
+# This script is designed to select HEXTE data from a FITS file
+# by cluster position. 
+#
+# Richard Bentley, UCSD/CASS, rbentley@mamacass.ucsd.edu
+
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('i:k:bsh');
+			
+if (defined $opt_h) {  # help flag
+    print <<EOHELP1;
+
+NAME
+     hxtback - a script that reads a HEXTE science or  housekeep-
+     ing  FITS  file  and creates new FITS files based on cluster
+     position.
+
+USAGE
+     hxtback [-i "infile"] [-bh]
+ 
+DESCRIPTION
+     If the infile parameter is not present, the  hxtback  script
+     queries  the  user for a HEXTE science event or housekeeping
+     input file.  FSELECT is then run to generate an output  file
+     for  each cluster position which had data in the input file.
+     The output files are created in the  default  directory  and
+     have  names which are derived by appending to the input file
+     name a suffix indicating the cluster position.  The possible
+     suffixes are:
+         _src     all on-source ( 0(1.5), 0(3.0) )
+         _p       +1.5 deg or +3.0 deg (background)
+         _m       -1.5 deg or -3.0 deg  (background)
+         _bkg     all background (+-1.5, +-3.0 )
+ 
+     Each output file will also have a goodtime extension listing
+     the  goodtime  ranges  covered  by the file.
+ 
+PARAMETERS (SWITCHES/FLAGS)
+     -i infile
+        The name of the input HEXTE science or housekeeping  FITS
+        file that is to  be operated upon.
+ 
+     -b Group all background data (+-1.5, +-3.0)  in  one  output
+        file.
+ 
+EXAMPLES
+     1. hxtback -h
+         Help text will be displayed.
+
+     2. hxtback
+         User will be prompted for filename.  A seperate  ouptput
+         file will be created for each cluster position.
+
+     3. hxtback -i FS50_3f3ad0b-3f3b040 -b
+         Script will run without prompting,  using  FS50_3f3ad0b-
+         3f3b040 as input file.  All background data will go in a
+         single output file named FS50_3f3ad0b-3f3b040_bkg.
+
+BUGS
+     Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+     FSELECT and FKEYPAR for more information.
+
+EOHELP1
+exit;
+    }
+# 10Feb97 rdb Added a test for output FITS files with zero rows (NAXIS2 keyword).
+#             These files are then deleted.  This can happen, for example, when
+#             the instrument is staring.
+#
+# 16Apr2010 MJT Added logic to handle 2009/2010 Cluster B position telemetry 
+#               anomaly during two specific intervals when ClstrPosition 
+#               indicated 'on-source' when in fact it was 'off-source'.
+#
+# now on to the program ...
+
+require "utils.pl";
+
+#
+# flag for debug output
+#
+$DEBUG = 0 ;
+
+#
+# subscript values for accessing arrays by cluster position:
+#
+  $z15 = 0 ;
+  $p15 = 1 ;
+  $m15 = 2 ;
+  $z30 = 3 ;
+  $p30 = 4 ;
+  $m30 = 5 ;
+
+#
+# Constant codes for keeping track of inout file type:
+#
+$ARCHIVE = 1 ;
+$EVENTLIST = 2 ;
+$BURSTLIST = 3 ;
+$BIN = 4 ;
+
+#
+# 2009/2010 Cluster B anomalies (ClstrPosition telemetry
+# indicates on-source when actual position was off-source)
+#
+# 2009-12-14 @ 16:12 to 2010-01-22 @ 18:16
+# 2010-01-23 @ 05:45 to 2010-03-29 @ 17:42
+#
+@MET_ANOM1 = ( 503424752 , 506801792 );
+@MET_ANOM2 = ( 506843120 , 512502160 );
+@CLB_APPID = ( 86 , 88 ); # Relevant Cluster B AppIds
+
+#############################################
+#
+# Check for valid input file:
+#
+#############################################
+
+  if (defined $opt_i)
+ {
+    print "Input file provided was: $opt_i\n" ;
+    $infile = $opt_i ;
+  }
+  else                     #otherwise get whatever was used last by fselect
+  {
+    @infile2=&runcom('pget fselect infile');
+    chop($infile2[0]);
+    print "Enter HEXTE FITS file:[$infile2[0]]";
+    ($infile = <STDIN>);
+    if($infile =~ /^./){   # if file name starts with any character . . .
+      chop($infile);}      # get rid of newline
+    else{    # user didn't enter a name, so use the one from fselect
+      $infile = $infile2[0];
+    }
+  }
+
+#############################################
+#
+# What kind of file do we have here?  Use fkeypar to get the DATAMODE
+# and put in in ~/pfiles/develop/fkeypar.par
+#
+#############################################
+  $keyword = "DATAMODE" ;
+  @resultf=&runcom('fkeypar fitsfile="'.$infile.'" keyword="'.$keyword.'"');
+
+#
+# Then use pget to read the value of DATAMODE from ~/pfiles/develop/fkeypar.par
+#
+  @datamode=&runcom('pget fkeypar.par value');
+  print "DATAMODE: $datamode[0]" ;
+
+#
+# Use datamode to set clusterPos strings to correct values:
+#
+  if ($datamode[0] =~ /.*Archive.*/)
+  {
+    $filetype = $ARCHIVE ;
+    @indClusPos = ( "ClstrPosition ==  0" ,     # 0(1.5)
+                    "ClstrPosition ==  1" ,     # +1.5
+                    "ClstrPosition ==  5" ,     # -1.5
+                    "ClstrPosition ==  3" ,     # 0(3.0)
+                    "ClstrPosition ==  2" ,     # +3.0
+                    "ClstrPosition ==  4" ) ;   # -3.0
+  }
+  elsif($datamode[0] =~ /^\'E/)    # Event list mode
+  {
+    $filetype = $EVENTLIST ;
+  }
+  elsif($datamode[0] =~ /^\'CE/)   # Burst list mode
+  {
+    $filetype = $BURSTLIST ;
+  }
+  elsif($datamode[0] =~ /^\'B/)    # Bin mode
+  {
+    $filetype = $BIN ;
+  }
+  else
+  {
+    print "DATAMODE for this file is $datamode[0]" ;
+    print "This mode does not have cluster position.\n" ;
+    exit ;
+  }
+
+  $ClB_Anom = 0;
+  @appid = &runcom('fkeypar fitsfile="'.$infile.'" keyword=APPID ; pget fkeypar value');
+  @tstart = &runcom('fkeypar fitsfile="'.$infile.'" keyword=TSTART ; pget fkeypar value');
+  if (( (@tstart[0] > @MET_ANOM1[0]) && (@tstart[0] < @MET_ANOM1[1]) ) ||
+      ( (@tstart[0] > @MET_ANOM2[0]) && (@tstart[0] < @MET_ANOM2[1]) ))
+  {
+    foreach $appid (@CLB_APPID){
+      if ( @appid[0] == $appid ){$ClB_Anom = 1}
+    }
+  }
+  if ($ClB_Anom) {print "Data is affected by 2009/2010 Cluster B position telemetry anomaly\n";}
+
+  if ( $filetype == $EVENTLIST || $filetype == $BURSTLIST || $filetype == $BIN )
+  {
+    @indClusPos = ( "ClstrPosition ==  1 || ClstrPosition == 65" ,     # 0(1.5)
+                    "ClstrPosition ==  2 || ClstrPosition == 66" ,     # +1.5
+                    "ClstrPosition == 32 || ClstrPosition == 96" ,     # -1.5
+                    "ClstrPosition ==  8 || ClstrPosition == 72" ,     # 0(3.0)
+                    "ClstrPosition ==  4 || ClstrPosition == 68" ,     # +3.0
+                    "ClstrPosition == 16 || ClstrPosition == 80" ) ;   # -3.0
+  }  # end if ( $filetype == $EVENTLIST || $filetype == $BURSTLIST || $filetype == $BIN)
+
+  if ( $filetype == $EVENTLIST || $filetype == $BURSTLIST )
+  {
+#      $tform4 = &getParm($infile, "TFORM4") ;
+#      print "TFORM4: $tform4\n" ;
+#      if (index( $tform4,"X") >= 0)
+#      {
+#	  print "TFORM4 is expressed in bits instead of bytes.\n" ;
+#          print "Please use fparkey to fix it.\n" ;
+#          exit ;
+#      }
+      $eventByteMask = $datamode[0] ;   # save for later
+      $len = length($eventByteMask) ;
+      chop($eventByteMask) ;   # chop '
+      $len = length($eventByteMask) ;
+      $eventByteMask = substr($eventByteMask, length($eventByteMask) - 3, 2) ;
+      $len = length($eventByteMask) ;
+      $eventByteMask = hex($eventByteMask) ;
+      print "eventByteMask: $eventByteMask\n" ;
+      for ($i=0; $i<=6; $i++)   # for each eventByteMask bit
+      {
+        if (($eventByteMask>>$i) && 1)
+        {
+	    push(@hasByte, 1) ;
+            $highEventByte = $i ;
+        }
+        else
+        {
+	    push(@hasByte, 0) ;
+        }
+        if ($hasByte[$i])
+        {
+           print "hasByte[$i]: true\n" ;
+        }
+        else
+        {
+           print "hasByte[$i]: false\n" ;
+        }   # end if / else ($hasByte[$i])
+      }   # end for ($i=0; $i<=6; $i++)   (for each eventByteMask bit)
+
+      $hasByte[3] || die "Can't process Event list file with no detector ID byte (byte 3)\n" ;
+  }  # end if ( $filetype == $EVENTLIST || $filetype == $BURSTLIST)
+
+#
+# Check on the housekeeping file:
+#
+#  if (defined $opt_k)
+#  {
+#    print "housekeeping file provided was: $opt_k\n" ;
+#    $hkfile = $opt_k ;
+#  }
+#  else
+#  {
+#    print "Enter HEXTE FITS housekeeping file:[]";
+#    ($hkfile = <STDIN>);
+#    if($hkfile =~ /^./){
+#      chop($hkfile);}
+#    else{
+#      print "Can't process without housekeeping file." ;
+#      exit ;
+#    }
+#  }
+
+#
+# Get cmdPosApMod (commanded rocking pattern) and cmdDwellApMod (commanded
+# dwell time).
+#
+#  $column = "cmdPosApMod" ;
+#  print "running ftabpar\n" ;
+#  @resultf = &runcom('ftabpar fitsfile="'.$hkfile.'" column="'.$column.'" row=1"') ;
+#  print "running pget\n" ;
+#  $cmdPosApMod =&runcom('pget ftabpar.par value') ;
+#  print "cmdPosApMod = $cmdPosApMod" ;
+
+#  $column = "cmdDwellApMod" ;
+#  print "running ftabpar\n" ;
+#  @resultf = &runcom('ftabpar fitsfile="'.$hkfile.'" column="'.$column.'" row=1"') ;
+#  print "running pget\n" ;
+#  $cmdDwellApMod =&runcom('pget ftabpar.par value') ;
+#  print "cmdDwellApMod = $cmdDwellApMod" ;
+
+#############################################
+#
+# Use fdump to get the GTI Extension header from the infile ...
+#
+print "running fdump to get the GTI Extension header . . .\n" ;
+# '+2' means extension 2 only
+  $oldGTIfile="GTI_${$}" ;
+  $resultf = &runcom('fdump infile="'.$infile.'"+2 columns=-  rows=- prhead=yes prdata=no clobber=yes outfile="'.$oldGTIfile.'"') ;
+# print "back from fdump, resultf = $resultf\n" ;
+
+# ... and save the lines we want:
+
+open(GTIOLDHDR, $oldGTIfile) || die "can't open GTI header file $oldGTIfile\n" ;
+
+$gtifile = "GTIfile_${$}" ;
+$headfile = $gtifile . ".hdr" ;
+open (GTIHDR, ">" .  $headfile) || die "can't open new GTI Extension header file $headfile\n" ;
+
+while ($gtiline = <GTIOLDHDR>)
+{
+  if (
+      index($gtiline, "EXTNAME")  == 0 ||    # (==0 means found in first column, column 0)
+      index($gtiline, "CREATOR")  == 0 ||
+      index($gtiline, "HDUCLASS") == 0 ||
+      index($gtiline, "HDUCLAS1") == 0 ||
+      index($gtiline, "HDUCLAS2") == 0 ||
+      index($gtiline, "TIMESYS")  == 0 ||
+      index($gtiline, "MJDREFI")  == 0 ||
+      index($gtiline, "MJDREFF")  == 0 ||
+      index($gtiline, "TIMEZERO") == 0 ||
+      index($gtiline, "TIMEUNIT") == 0 ||
+      index($gtiline, "TIMEREF")  == 0 ||
+      index($gtiline, "TASSIGN")  == 0 ||
+      index($gtiline, "CLOCKAPP") == 0 ||
+      index($gtiline, "TIMVERSN") == 0 ||
+      index($gtiline, "TSTART")   == 0 ||
+      index($gtiline, "TSTOP")    == 0
+     )
+  {
+      print GTIHDR "$gtiline" ;
+  }
+}
+close (GTIOLDHDR) ;
+close (GTIHDR) ;
+
+#############################################
+# Create column description file for fcreate:
+    $GTIcoldesc = "GTIext_${$}.coldesc" ;
+    open (GTICOLDESC, ">" . $GTIcoldesc) || die "can't open new Extension file $GTIcoldesc\n" ;
+    print GTICOLDESC "Start D s\n" ;
+    print GTICOLDESC "Stop D s\n" ;
+    close (GTICOLDESC) ;
+#
+##############################################
+# Set up loop variables for creating final files:
+  $maxCount = 0 ;
+
+  push(@clusterPos, $indClusPos[$z15] . " || " . $indClusPos[$z30] ) ;
+  push(@nametag, "_src" ) ;
+  push(@clPos, "all source" ) ;
+  $maxCount++ ;
+
+  if (defined $opt_b)   # bkg into a single file
+  {
+    push(@clusterPos, $indClusPos[$p15] .
+                      " || " .
+                      $indClusPos[$m15] .
+                      " || " .
+                      $indClusPos[$p30] .
+                      " || " .
+                      $indClusPos[$m30] ) ;
+    push(@nametag, "_bkg" ) ;
+    push(@clPos, "all bkg" ) ;
+    $maxCount++ ;
+  }
+  else                  # keep bkg seperate
+  {
+      push(@clusterPos, $indClusPos[$p15] .
+                        " || " .
+                        $indClusPos[$p30] ) ;
+      push(@nametag, "_p" ) ;
+      push(@clPos, "+1.5 or +3.0" ) ;
+      $maxCount++ ;
+
+      push(@clusterPos, $indClusPos[$m15] .
+                        " || " .
+                        $indClusPos[$m30] ) ;
+      push(@nametag, "_m" ) ;
+      push(@clPos, "-1.5 or -3.0" ) ;
+      $maxCount++ ;
+  }
+#############################################################################
+#
+# loop through the available cluster positions creating a file for each one,
+#
+for($pos=0; $pos < $maxCount; $pos++)
+{
+  if ($DEBUG)
+  {
+    print "top of final loop; i = $pos; nametag = $nametag[$pos]\n" ;
+  }
+  ($selectfile = $infile) =~ s#.*/## ;  #get file name w/o directory
+  ($selectfile = $selectfile) =~ s/\.gz// ;  # strip off any gzip extension
+  $selectfile = $selectfile . $nametag[$pos] ;
+
+# Unfortunately due to XPI limitations we CANNOT pass in the filter expression
+# as a string. We will have to write it to a file, close the file, and then
+# input that file. Then we will delete the temporary file.
+  open(OUTPUT_FILE,">outfile_${$}") || die "Sorry can't open outfile_${$}\n"; # Open a unique output file
+  print "cluster string: $clusterPos[$pos]\n";
+  print OUTPUT_FILE "$clusterPos[$pos]\n";
+  close(OUTPUT_FILE);	# Close the output file.
+
+  #$tmp_file='@'."outfile_${$}";
+  $tmp_file="outfile_${$}";
+
+  print "fselect for cluster position $clPos[$pos]...\n";
+
+#
+# Use fselect to get data for the appropriate cluster positions:
+#
+  @resultf=&runcom('fselect infile="'.$infile.'" outfile="'.$selectfile.'" expr="@'.$tmp_file.'" mode=h clobber=yes copyall=no');
+  print "outfile: $selectfile\n" ;
+
+  unlink($tmp_file) || print "Having trouble deleting tmp_file $tmp_file\n";
+
+  $rows = &getRows($selectfile) ;
+  if ($rows == 0) {
+    print "$selectfile has zero rows, so will delete it.\n" ;
+    unlink($selectfile) || print "Having trouble deleting tmp_file $selectfile \n";
+  }
+  else {
+    print "$rows rows in $selectfile\n" ;
+
+#############################################
+#
+# Create GTI extension file:
+#
+    $datafile = $gtifile . ".data" ;
+
+    @resultf=&runcom('mkgtif infile="'.$selectfile.'" outfile="'.$datafile.'"');
+    &initGTI ;   # create the GTI extension and append it to the file
+
+    if (-e $gtifitsfile)
+    {
+      @resultf=&runcom('fappend infile="'.$gtifitsfile.'"+1 outfile="'.$selectfile.'"');
+      unlink($gtifitsfile) || print "Having trouble deleting gtifile $gtifitsfile\n";
+    }
+#
+# update checksums (MJT 11Dec96)
+#
+    if (-e $selectfile)
+    {
+      print "updating checksums...\n";
+      @resultf=&runcom('fchecksum infile="'.$selectfile.'" update=yes datasum=yes');
+    }
+  }
+}
+#
+# delete temporary files:
+#
+if (-e $oldGTIfile)
+{
+  unlink($oldGTIfile) || print "Having trouble deleting oldGTIfile $oldGTIfile\n";
+}
+if (-e $GTIcoldesc)
+{
+  unlink($GTIcoldesc) || print "Having trouble deleting GTIcoldesc file $GTIcoldesc\n";
+}
+
+if (-e $headfile)
+{
+  unlink($headfile) || print "Having trouble deleting headfile $headfile\n";
+}
+# leave outfile set to STDOUT in param file:
+  &runcom('pset fdump.par outfile=STDOUT') ;
+
+# during 2009/2010 cluster B position telemetry anomaly the only possible output
+# file will have been labeled _src but is actually background, so rename it:
+if ($ClB_Anom){
+  ($selectfile = $infile) =~ s#.*/## ;  #get file name w/o directory
+  ($selectfile = $selectfile) =~ s/\.gz// ;  # strip off any gzip extension
+  $selectfile .= "_src" ;
+  if (defined $opt_b){
+    ($newfile = $selectfile) =~ s/_src/_bkg/;
+  }else{
+    ($newfile = $selectfile) =~ s/_src/_p/;
+  }
+  print "Cluster B position anomaly: Renaming $selectfile to $newfile\n";
+  rename($selectfile,$newfile);
+}
+
+exit ;  
+#-------------------------------------------------------------------
+#
+# subroutine to initialize gti extension files
+#
+sub initGTI
+{
+# args:
+    local($i) ;
+
+    $datafile = $gtifile . ".data" ;
+    $gtifitsfile = $gtifile . ".fits" ;
+    $headfile = $gtifile . ".hdr" ;
+    $resultf = &runcom('fcreate cdfile="'.$GTIcoldesc.'" datafile="'.$datafile.'" outfile="'.$gtifitsfile.'" headfile="'.$headfile.'" clobber=yes') ;
+    unlink($datafile) || print "initGTI> Having trouble deleting datafile $datafile\n";
+}
+#---------------------------------------------------------------------
+##############################################
+#
+# use fkeypar and pget to find out how many rows of data in this file:
+#
+sub getRows
+{
+  # argument:
+  local($filename) = @_ ;
+  $keyword = "NAXIS2" ;
+  @resultf=&runcom('fkeypar fitsfile="'.$filename.'" keyword="'.$keyword.'"');
+  @wibble =  &runcom('pget fkeypar.par value') ;  # return value of this runcom is return value of getRows
+  $rows =  $wibble[0];
+  chop $rows;
+  return $rows;
+}
+##############################################
+#
+# use fkeypar and pget to get a parameter value:
+# arguments: filename, parameter keyword
+sub getParm
+{
+  # argument:
+  local($filename) = $_[0] ;
+  local($keyword) = $_[1] ;
+
+  @resultf=&runcom('fkeypar fitsfile="'.$filename.'" keyword="'.$keyword.'"');
+  &runcom('pget fkeypar.par value') ;  # return vakue of this runcom is return value of getParm
+}
+hexteArchLiteCrv.cc

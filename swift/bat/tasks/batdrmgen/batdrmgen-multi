@@ -1,0 +1,224 @@
+#!/usr/bin/perl
+#
+# File: batdrmgen-multi
+#
+# Description:  Create many response matrices for rows of a "type II" spectrum
+#
+# Author: Craig Markwardt
+# Date:   2009-01-31
+#
+#
+#  Algorithm:
+#
+#  Call batdrmgen multiple times, once for each row.
+#
+#
+use HEACORE::HEAINIT;
+
+my $taskname = "batdrmgen-multi";
+my $taskvers = "1.1";
+
+# ==================================================================
+
+# Call the main task subroutine with an exception handler
+$status = 0;
+eval {
+    $status = headas_main(\&batdrmgen_multi);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub batdrmgen_multi {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &batdrmgen_work();
+    };
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Main subroutine
+sub batdrmgen_work {
+    # Makes all environment variables available
+    use Env;
+    use Cwd;
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants );
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my $chatter;
+    $status = PILGetInt("chatter",$chatter);
+    my $verbose = ($chatter >= 5)?(1):(0);
+    # Ordered parameters, usually ask parameters which must come first
+    my @parmlist = ("infile", "outroot");
+    my %parms = (
+		 infile    => \&PILGetString,
+		 outroot   => \&PILGetString,
+		 hkfile    => \&PILGetString,
+		 rows      => \&PILGetString,
+		 clobber   => \&PILGetBool,
+		 chatter   => \&PILGetString,
+		 history   => \&PILGetString,
+		);
+
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+    print "$taskname v$taskvers\n" if ($chatter >= 1);
+    print "==========================================================\n" 
+      if ($chatter >= 2);
+
+    # Find parameter values (listed above)
+    my ($parm, $func, $val);
+    # ... first read ordered parameters, then anything else
+    foreach $parm ( @parmlist, keys(%parms) ) {
+      my $func = $parms{$parm};
+      next if (ref($func) ne "CODE");  # Skip if we already did this parm
+      undef($val);
+      $status = &$func("$parm", $val);
+      die "ERROR: could not retrieve parameter '$parm'" if ($status);
+      $parms{$parm} = $val;
+      print "$parm=$val\n" if ($verbose);
+    }
+
+    # Print environment
+    if ($verbose) {
+      print "      DATE = ".localtime()." (local)\n";
+      print "      DATE = ".gmtime()." UTC\n";
+      print "  HOSTNAME = $ENV{HOSTNAME}\n";
+      print "       CWD = $ENV{PWD}\n";
+      print "      USER = $ENV{USER}\n";
+      print "    FTOOLS = $ENV{FTOOLS}\n";
+      print "     CALDB = $ENV{CALDB}\n";
+    }
+
+    # ================
+    my $infile = $parms{infile};
+    my $outroot = $parms{outroot};
+    my $opts = $parms{opts};
+    if ($opts =~ m/^NONE/i) { $opts = ""; }
+
+    # ================
+    # Create default command string that will apply to all rows
+    my $cmdsuff = "hkfile='$parms{hkfile}' history=$parms{history} $opts";
+
+    # Open file as read-only first to be sure it exists
+    my $fits = SimpleFITS->open("$infile", type=>"data", access=>"read");
+    die "ERROR: could not open $infile" if (! $fits);
+    my $nrows = $fits->nrows();
+    $fits->close();
+
+    $fits = SimpleFITS->open("$infile", type=>"data", access=>"readwrite");
+    if (! $fits ) {
+      warn "WARNING: could not open spectrum read-write, will not be able to create/modify the RESPFILE column";
+    } else {
+      # Remove any existing RESPFILE keyword
+      $fits->delkey("RESPFILE")->setstatus(0);
+      my $colnum = $fits->colnum("RESPFILE");
+      print " .. respfile column $colnum\n" if ($verbose);
+
+      if ($colnum < 0) {
+	print " .. adding RESPFILE column ..\n" if ($verbose);
+	# ... because we will be using a column 
+	$fits->insertcol({TTYPE => ["RESPFILE", "Response matrix file name"],
+			  TFORM => "160A"});
+	if ($fits->status()) {
+	  die "ERROR: could not create RESPFILE column in $infile";
+	}
+      }
+      $fits->close();
+    }
+
+    # Parse the row range
+    my $status = 0;
+    my $numranges = 0;
+    my @rstarts=(1..$nrows);  # Pre-allocate memory
+    my @rstops =(1..$nrows);
+    Astro::FITS::CFITSIO::fits_parse_range($parms{rows},$nrows,$nrows,
+				      $numranges, \@rstarts, \@rstops,
+				      $status);
+    die "ERROR: could not parse '$rows'" if ($status);
+    die "ERROR: no requested rows (numranges=0)" if ($numranges == 0);
+    print " .. numranges=$numranges\n" if ($verbose);
+    print " .. starts=@rstarts\n" if ($verbose);
+    print " .. stops =@rstops\n" if ($verbose);
+    
+    my ($i,$row);
+    foreach $i (0 .. $numranges-1) {
+      foreach $row ($rstarts[$i] .. $rstops[$i]) {
+	print "Row $row...\n" if ($chatter >= 2);
+	my $outfile = $outroot."_$row.rsp";
+	print " to $outfile\n" if ($chatter >= 2);
+
+	unlink("$outfile") if ($parms{clobber});
+	my $cmd = "batdrmgen infile='$infile' outfile='$outfile' row=$row ".
+	  "$cmdsuff";
+
+	print "  $cmd\n" if ($verbose);
+	# Redirect standard output to resultstr
+	my $resultstr = `$cmd 2>&1`;
+	if ($verbose) {
+	  print "  ===>\n";
+	  print "$resultstr";
+	}
+
+	if (! -f $outfile && $resultstr =~ m/source position is outside range/i) {
+	  print 
+	    "  NOTE: source position at row $row is outside field of view\n".
+	    "        RESPFILE will contain NULL for that row.\n";
+	} elsif (! -f $outfile) {
+	  warn "WARNING: expected output file $outfile was not found";
+	} else {
+	  print " done\n";
+	}
+      }
+    }
+
+    
+    print "--------------------------------------------------------\n" if ($chatter >= 2);
+    print "DONE\n" if ($chatter >= 1);
+
+    return 0;
+}
+
+
+

@@ -1,0 +1,543 @@
+#! /usr1/local/bin/perl5
+#
+# v1.1 (08 Aug 2005) ascii2pha calls now use qerror=y pois=n
+#                    for both source and background pha files
+#
+# v1.2 (23 Jan 2006) made check for FILTER keyword more general
+#                    to avoid capturing trailing quote
+#
+# v1.3 (22 Jun 2006) fixed handling of DATE-OBS,-END TIME-OBS,-END
+#                    and of which extension has been specified
+#
+# v1.4 (29 Aug 2008) call uvotsource to access rates corrected for
+#                    coincidence-loss, aperture, and LSS. No need
+#                    to call ximage any more.
+#
+# v1.5 (20 Oct 2008) uvotsource doesn't call ximage anymore; parse
+#                    uvotinteg output to find src/bkg areas in pixels
+#                    Also added 'logfile' parameter for uvotsource log
+#
+# v1.6 (10 Sep 2009) change fwhmsig arg in uvotsource call to "-1".
+#                    added explict "extprec=0" and "expfile=NONE" too.
+
+use HEACORE::HEAINIT;
+exit headas_main(\&uvot2pha);
+
+sub uvot2pha{
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Astro::FITS::CFITSIO qw( :shortnames :constants );
+  use Task qw(:codes);
+
+  $sign = '[-+]?';
+  $digits = '\d+';
+  $decimal = '\.?';
+  $more_digits = '\d*';
+  $exponent = '(?:[eE][-+]\d+)?';
+  $number = "$sign$digits$decimal$more_digits$exponent";
+
+  my $tool = bless({
+		    tool => 'uvot2pha',
+		    code => 0,
+		    }, "Task");
+
+  my $tname = "uvot2pha";
+  my $tvers = "1.6";
+
+  my $status = 0;
+  my $fptr;
+
+  unless (defined $ENV{HEADAS}) {die "HEADAS environment not present"}
+
+  ($status = PILGetFname('infile', $infile)) == 0 ||
+    die "error getting infile parameter";
+  ($status = PILGetFname('srcreg', $srcreg)) == 0 ||
+    die "error getting srcreg parameter";
+  ($status = PILGetFname('bkgreg', $bkgreg)) == 0 ||
+    die "error getting bkgreg parameter";
+  ($status = PILGetFname('srcpha', $srcpha)) == 0 ||
+    die "error getting srcpha parameter";
+  ($status = PILGetFname('bkgpha', $bkgpha)) == 0 ||
+    die "error getting bkgpha parameter";
+  ($status = PILGetFname('respfile', $respfile)) == 0 ||
+    die "error getting respfile parameter";
+  ($status = PILGetFname('logfile', $logfile)) == 0 ||
+    die "error getting logfile parameter";
+  ($status = PILGetString('phatype', $phatype)) == 0 ||
+    die "error getting phatype parameter";
+  ($status = PILGetString('ra', $ra)) == 0 ||
+    die "error getting ra parameter";
+  ($status = PILGetString('dec', $dec)) == 0 ||
+    die "error getting dec parameter";
+  ($status = PILGetString('date_obs', $dateobs)) == 0 ||
+    die "error getting date_obs parameter";
+  ($status = PILGetString('time_obs', $timeobs)) == 0 ||
+    die "error getting time_obs parameter";
+  ($status = PILGetString('date_end', $dateend)) == 0 ||
+    die "error getting date_end parameter";
+  ($status = PILGetString('time_end', $timeend)) == 0 ||
+    die "error getting time_end parameter";
+  ($status = PILGetFname('tmpdir', $tmpdir)) == 0 ||
+    die "error getting tmpdir parameter";
+  ($status = PILGetInt('chatter', $chatter)) == 0 ||
+    die "error getting chatter parameter";
+  ($status = PILGetBool('clobber', $clobber)) == 0 ||
+    die "error getting clobber parameter";
+
+  if ($chatter > 4){
+    print "got parameters:\n";
+    print "\tinfile = $infile\n";
+    print "\tsrcreg = $srcreg\n";
+    print "\tbkgreg = $bkgreg\n";
+    print "\tsrcpha = $srcpha\n";
+    print "\tbkgpha = $bkgpha\n";
+    print "\trespfile = $respfile\n";
+    print "\tlogfile = $logfile\n";
+    print "\tphatype = $phatype\n";
+    print "\tra = $ra\n";
+    print "\tdec = $dec\n";
+    print "\tdate_obs = $dateobs\n";
+    print "\ttime_obs = $timeobs\n";
+    print "\tdate_end = $dateend\n";
+    print "\ttime_end = $timeend\n";
+    print "\ttmpdir = $tmpdir\n";
+    print "\tchatter = $chatter\n";
+    print "\tclobber = $clobber\n";
+  }
+
+  set_toolname($tname);
+  set_toolversion($tvers);
+
+  #Check PHA type and translate to ascii2pha parameter dtype
+  if ($phatype =~ /rate/i) { $dtype = 2 }
+  elsif ($phatype =~ /count/i or $phatype =~ /counts/i) { $dtype =1 }
+  unless (defined $dtype) {
+    die "phatype \"$phatype\" not recognized: must be \"counts\" or \"rate\"";
+  }
+
+  # Check for file existence and whether user specified an extension
+  if (-e $infile or -e "${infile}.gz"){$existsfile="yes"}else{$existsfile="no"}
+  $status=ffopen($fptr,$infile,READONLY,$status);
+  if ($status){die "Error: $infile not a valid FITS file.\nDied"}
+  else{ffclos($fptr,$status)}
+  # Given a valid FITS file then $existsfile="no" means user specified ext.
+  # Otherwise we'll internally force it to use the first extension
+  if ($existsfile eq "yes"){
+    $infile .= "+1";
+    if ($chatter >3){print "Using infile = $infile\n"}
+  }
+
+  # Check on existence of tmpdir
+  if (! -d $tmpdir){die "Error: Temporary directory \"$tmpdir\" does not exist.\nDied"}
+
+  # Check EXTNAME (to write in o/p pha file)
+  my $command =
+    qq(fkeyprint infile=$infile keynam=EXTNAME outfile=STDOUT exact=yes);
+  my $result = $tool->doCommand($command);
+  foreach my $line (@{ $result->{lines} }){
+    if ($line =~ /^EXTNAME\s*=\s*\'?(\S*)\s*\'/){
+      if (not $extname) { $extname=$1 } #grab first occurrance only
+    }
+  }
+  if ($chatter > 3 and defined($extname)){print "found EXTNAME = $extname\n"}
+
+  #Check image size
+  my $command =
+    qq(fkeyprint infile=$infile keynam=NAXIS1 outfile=STDOUT exact=yes);
+  my $result = $tool->doCommand($command);
+  foreach my $line (@{ $result->{lines} }){
+    if ($line =~ /^NAXIS1\s*=\s*($number)\s*/){
+      if (not $naxis1) { $naxis1=a0+$1 } #grab first occurrance only
+    }
+  }
+  unless ($naxis1){ die "Invalid FITS image (NAXIS1 keyword not found): $!" }
+  if ($chatter > 3){ print "found NAXIS1 = $naxis1\n" }
+
+  # run uvotsource to get corrected quantities
+  $command = "uvotsource image=$infile srcreg=$srcreg bkgreg=$bkgreg"
+    ." sigma=1 zerofile=CALDB coinfile=CALDB psffile=CALDB"
+      . " lssfile=CALDB expfile=NONE syserr=no frametime=DEFAULT"
+	. " apercorr=CURVEOFGROWTH fwhmsig=-1"
+	  . " deadtimecorr=yes output=ALL"
+	    . " outfile=$tmpdir/uvsrc_tmp.fits centroid=no"
+	      . " extprec=0 cleanup=yes clobber=yes chatter=5 mode=ql";
+  if ($chatter > 3){ print "Executing:\n$command\n" }
+  $result = $tool->doCommand($command);
+  if (! -e "$tmpdir/uvsrc_tmp.fits"){
+    die "\nERROR: Failure running uvotsource - check above for explanation.\n";
+  }
+
+  # capture verbose output into logfile if requested
+  if (uc($logfile) !~ /^NONE$/){
+    open(LOGFH,">>$logfile") ||
+      die "error opening $logfile: $!";
+    print LOGFH join("\n",(@{ $result->{lines} })),"\n";
+    close LOGFH;
+  }
+
+  # uvotsource runs uvotinteg; capture reported areas in pixels
+  my $uvint = 0;
+  foreach my $line (@{ $result->{lines} }) {
+    if ($line =~ /^\s*monitor:\s+area:\s+(\S+)\s+\[pixel\]\s*$/){
+      ++$uvint;
+      if ($uvint == 1) {
+	$src_pix_area = $1;
+      }
+      elsif ($uvint == 2) {
+	$bkg_pix_area = $1;
+	last;
+      }
+    }
+  }
+
+  $command = "ftlist $tmpdir/uvsrc_tmp.fits T"
+    . " columns=\"EXPOSURE,CORR_RATE,COI_BKG_RATE,SRC_AREA,BKG_AREA"
+      . ",CORR_RATE_ERR,COI_BKG_RATE_ERR,PLATE_SCALE\""
+	. " rows=1 rownum=no colheader=no";
+  $result = $tool->doCommand($command);
+  ($uexpo,$ucorr_rate,$ucoi_bkg_rate,$usrc_area,
+   $ubkg_area,$ucorr_rate_err,$ucoi_bkg_rate_err,$uscale)
+    = split " ",$result->{lines}[0];
+  unlink "$tmpdir/uvsrc_tmp.fits";
+
+  $src_cnts = $uexpo * ($ucorr_rate + ($ucoi_bkg_rate * $usrc_area));
+  $bkg_cnts = $uexpo * ($ucoi_bkg_rate * $ubkg_area);
+  if ($chatter > 2){
+    print "Corrected counts from uvotsource: src = $src_cnts, bkg = $bkg_cnts\n";
+  }
+
+  #$src_pix_area = $usrc_area / ($uscale*$uscale);
+  #$bkg_pix_area = $ubkg_area / ($uscale*$uscale);
+  # Areas in pixels - do it this way once uvotsource handles
+  #  fractional pixels? Reconstructing these from areas in
+  #  arcsec^2 and plate scale is good to ~10^-6 accuracy.
+  #Sticking with areas from uvotinteg output (above)
+
+  if ($chatter > 2){print "SRC area: $src_pix_area pixels, BKG area: $bkg_pix_area pixels\n"}
+
+  $isrc_cnts = round_to_int($src_cnts); # Count-type pha requires integer
+  $ibkg_cnts = round_to_int($bkg_cnts);
+
+  #find quantities from image file keywords:
+  #EQUINOX (optional)
+  my $command =
+    qq(fkeyprint infile=$infile keynam=EQUINOX outfile=STDOUT exact=yes);
+  my $result = $tool->doCommand($command);
+  foreach my $line (@{ $result->{lines} }){
+    if ($line =~ /^EQUINOX\s*=\s*($number)\s*/){
+      if (not $equinox) { $equinox=0+$1 } #grab first occurrance only
+    }
+  }
+  if ($chatter > 3){
+    if ($equinox){ print "found EQUINOX = $equinox\n" } else {
+      print "EQUINOX not found, will not be written in output pha\n"}
+  }
+
+  #EXPOSURE (required)
+  my $command = 
+    qq(fkeyprint infile=$infile keynam=EXPOSURE outfile=STDOUT exact=yes);
+  my $result = $tool->doCommand($command);
+  foreach my $line (@{ $result->{lines} }){
+    if ($line =~ /^EXPOSURE\s*=\s*($number)\s*/){
+      if (not $exposure) { $exposure=a0+$1 } #grab first occurrance only
+    }
+  }
+  unless ($exposure){ die "EXPOSURE keyword not found: $!" }
+  if ($chatter > 3){ print "found EXPOSURE = $exposure\n" }
+  #use EXPOSURE to compute rates
+  $src_rate = $src_cnts/$exposure;
+  $bkg_rate = $bkg_cnts/$exposure;
+  #compute STAT_ERR
+  if ($dtype == 1) {
+    $srcerr = $src_cnts < 1 ? 1.0 :
+      sqrt($ucorr_rate_err**2 + ($ucoi_bkg_rate_err * $usrc_area)**2) * $exposure;
+    $bkgerr = $bkg_cnts < 1 ? 1.0 :
+      $ucoi_bkg_rate_err * $ubkg_area * $exposure;
+  }else{
+    $srcerr = $src_cnts < 1 ? 1.0/$exposure :
+      sqrt($ucorr_rate_err**2 + ($ucoi_bkg_rate_err * $usrc_area)**2);
+    $bkgerr = $bkg_cnts < 1 ? 1.0/$exposure :
+      $ucoi_bkg_rate_err * $ubkg_area;
+  }
+
+  #INSTRUME (required)
+  my $command = 
+    qq(fkeyprint infile=$infile keynam=INSTRUME outfile=STDOUT exact=yes);
+  my $result = $tool->doCommand($command);
+  foreach my $line (@{ $result->{lines} }){
+    if ($line =~ /^INSTRUME\s*=\s*\'?(\S*)\s*/){
+      if (not $instrume) { $instrume=$1 } #grab first occurrance only
+    }
+  }
+  unless ($instrume){ die "INSTRUME keyword not found: $!" }
+  unless ($instrume eq "UVOTA" or $instrume eq "UVOTB") {
+    die "Unknown instrument ($instrume): $!";
+  }
+  if ($chatter > 3){ print "found INSTRUME = $instrume\n" }
+
+  #FILTER (required)
+  my $command = 
+    qq(fkeyprint infile=$infile keynam=FILTER outfile=STDOUT exact=yes);
+  my $result = $tool->doCommand($command);
+  foreach my $line (@{ $result->{lines} }){
+    if ($line =~ /^FILTER\s*=\s*\'?(\S*)\s*\'/){
+      if (not $filter) { $filter=$1 } #grab first occurrance only
+    }
+  }
+  unless ($filter){ die "FILTER keyword not found: $!" }
+  if ($chatter > 3){ print "found FILTER = $filter\n" }
+
+  # Determine proper RESPFILE keyword value
+  if ($respfile =~ /caldb/i){
+    unless (defined $ENV{CALDB}){die "Error: CALDB environment not set.\nBailing out"}
+    my $command =
+      qq(quzcif SWIFT UVOTA - $filter MATRIX now now -);
+    if ($chatter > 4){print "running $command\n"}
+    my $result = $tool->doCommand($command);
+    foreach my $line (@{ $result->{lines} }){
+      if ($line =~ /^(.*\.r(mf|sp))\s*($digits)/){
+#	if (not $calfile) { $calfile="$1+$3" } # skip the extension for now...
+	if (not $calfile) { $calfile=$1 }
+	if ($chatter > 4){print "found $calfile\n"}
+	HDpar_note(respfile => $calfile);
+      }
+    }
+    unless (defined $calfile){die "Error: Could not find response matrix\nBailing out"}
+  }else{
+    $calfile = $respfile;
+  }
+#  ($respfile = $filter) =~ tr/A-Z/a-z/;
+
+  #DATE/TIME (optional) But don't bother checking if these were supplied as parameters
+  unless ($dateobs ne '-'){
+    my $command =
+      qq(fkeyprint infile=$infile keynam=DATE-OBS outfile=STDOUT exact=yes);
+    my $result = $tool->doCommand($command);
+    foreach my $line (@{ $result->{lines} }){
+      if ($line =~ /^DATE-OBS\s*=\s*\'?(\S+)\s*\'/){
+	if ($dateobs eq '-') { $dateobs=$1 } #grab first occurrance only
+      }
+    }
+    if ($chatter > 3){
+      if ($dateobs ne '-'){ print "found DATE-OBS = $dateobs\n" } else {
+	print "DATE-OBS not found, trying DATE_OBS\n";
+	my $command =
+	  qq(fkeyprint infile=$infile keynam=DATE_OBS outfile=STDOUT exact=yes);
+	my $result = $tool->doCommand($command);
+	foreach my $line (@{ $result->{lines} }){
+	  if ($line =~ /^DATE_OBS\s*=\s*\'?(\S+)\s*\'/){
+	    if ($dateobs eq '-') { $dateobs=$1 } #grab first occurrance only
+	  }
+	}
+	if ($chatter > 3){
+	  if ($dateobs ne '-'){ print "found DATE_OBS = $dateobs\n" } else {
+	    print "DATE_OBS not found; skipping for output pha\n"}
+	}
+      }
+    }
+  }
+  unless ($timeobs ne '-'){
+    my $command =
+      qq(fkeyprint infile=$infile keynam=TIME-OBS outfile=STDOUT exact=yes);
+    my $result = $tool->doCommand($command);
+    foreach my $line (@{ $result->{lines} }){
+      if ($line =~ /^TIME-OBS\s*=\s*\'?(\S+)\s*\'/){
+	if ($timeobs eq '-') { $timeobs=$1 } #grab first occurrance only
+      }
+    }
+    if ($chatter > 3){
+      if ($timeobs ne '-'){ print "found TIME-OBS = $timeobs\n" } else {
+	print "TIME-OBS not found, trying TIME_OBS\n";
+	my $command =
+	  qq(fkeyprint infile=$infile keynam=TIME_OBS outfile=STDOUT exact=yes);
+	my $result = $tool->doCommand($command);
+	foreach my $line (@{ $result->{lines} }){
+	  if ($line =~ /^TIME_OBS\s*=\s*\'?(\S+)\s*\'/){
+	    if ($timeobs eq '-') { $timeobs=$1 } #grab first occurrance only
+	  }
+	}
+	if ($chatter > 3){
+	  if ($timeobs ne '-'){ print "found TIME_OBS = $timeobs\n" } else {
+	    print "TIME_OBS not found; skipping for output pha\n"}
+	}
+      }
+    }
+  }
+  unless ($dateend ne '-'){
+    my $command =
+      qq(fkeyprint infile=$infile keynam=DATE-END outfile=STDOUT exact=yes);
+    my $result = $tool->doCommand($command);
+    foreach my $line (@{ $result->{lines} }){
+      if ($line =~ /^DATE-END\s*=\s*\'?(\S+)\s*\'/){
+	if ($dateend eq '-') { $dateend=$1 } #grab first occurrance only
+      }
+    }
+    if ($chatter > 3){
+      if ($dateend ne '-'){ print "found DATE-END = $dateend\n" } else {
+	print "DATE-END not found, trying DATE_END\n";
+	my $command =
+	  qq(fkeyprint infile=$infile keynam=DATE_END outfile=STDOUT exact=yes);
+	my $result = $tool->doCommand($command);
+	foreach my $line (@{ $result->{lines} }){
+	  if ($line =~ /^DATE_END\s*=\s*\'?(\S+)\s*\'/){
+	    if ($dateend eq '-') { $dateend=$1 } #grab first occurrance only
+	  }
+	}
+	if ($chatter > 3){
+	  if ($dateend ne '-'){ print "found DATE_END = $dateend\n" } else {
+	    print "DATE_END not found; skipping for output pha\n"}
+	}
+      }
+    }
+  }
+  unless ($timeend ne '-'){
+    my $command =
+      qq(fkeyprint infile=$infile keynam=TIME-END outfile=STDOUT exact=yes);
+    my $result = $tool->doCommand($command);
+    foreach my $line (@{ $result->{lines} }){
+      if ($line =~ /^TIME-END\s*=\s*\'?(\S+)\s*\'/){
+	if ($timeend eq '-') { $timeend=$1 } #grab first occurrance only
+      }
+    }
+    if ($chatter > 3){
+      if ($timeend ne '-'){ print "found TIME-END = $timeend\n" } else {
+	print "TIME-END not found, trying TIME_END\n";
+	my $command =
+	  qq(fkeyprint infile=$infile keynam=TIME_END outfile=STDOUT exact=yes);
+	my $result = $tool->doCommand($command);
+	foreach my $line (@{ $result->{lines} }){
+	  if ($line =~ /^TIME_END\s*=\s*\'?(\S+)\s*\'/){
+	    if ($timeend eq '-') { $timeend=$1 } #grab first occurrance only
+	  }
+	}
+	if ($chatter > 3){
+	  if ($timeend ne '-'){ print "found TIME_END = $timeend\n" } else {
+	    print "TIME_END not found; skipping for output pha\n"}
+	}
+      }
+    }
+  }
+
+
+  # write temporary input files to be used by ascii2pha
+  $status = headas_clobberfile("$tmpdir/source.dat");
+  if (-e "$tmpdir/source.dat"){
+    die "Sorry, can't clobber existing file \"$tmpdir/source.dat\"";
+  }
+  $status = headas_clobberfile("$tmpdir/background.dat");
+  if (-e "$tmpdir/background.dat"){
+    die "Sorry, can't clobber existing file \"$tmpdir/background.dat\"";
+  }
+  $status = headas_clobberfile("$srcpha");
+  if (-e "$srcpha"){ die "Sorry, can't clobber existing file \"$srcpha\"" }
+  $status = headas_clobberfile("$bkgpha");
+  if (-e "$bkgpha"){ die "Sorry, can't clobber existing file \"$bkgpha\"" }
+  open(SRCFH,">$tmpdir/source.dat") ||
+    die "error opening $tmpdir/source.dat: $!";
+  open(BKGFH,">$tmpdir/background.dat") ||
+    die "error opening $tmpdir/background.dat: $!";
+  if ($dtype == 1) {print SRCFH "0 $isrc_cnts $srcerr\n"}
+  else{print SRCFH "0 $src_rate $srcerr\n"}
+  if ($dtype == 1) {print BKGFH "0 $ibkg_cnts $bkgerr\n"}
+  else{print BKGFH "0 $bkg_rate $bkgerr\n"}
+  close SRCFH;
+  close BKGFH;
+
+  #construct ascii2pha command string
+  my $command = "ascii2pha"
+    . " infile=$tmpdir/source.dat"
+      . " outfile=$srcpha"
+	. ' chanpres=y qerror=y rows=- tlmin=0'
+	  . ' detchans=1 pois=n telescope=SWIFT'
+	    . " dtype=$dtype"
+	      . " instrume=$instrume detnam=NONE"
+		. " filter=$filter"
+		  . " exposure=$exposure"
+		    . " backscal=$src_pix_area"
+		      . " backfile=$bkgpha"
+			. " respfile=$calfile"
+			  ;
+  if ($dateobs ne '-'){ $command .= " date_obs=\'$dateobs\'" }
+  if ($timeobs ne '-'){ $command .= " time_obs=\'$timeobs\'" }
+  if ($dateend ne '-'){ $command .= " date_end=\'$dateend\'" }
+  if ($timeend ne '-'){ $command .= " time_end=\'$timeend\'" }
+  if ($ra ne '-'){ $command .= " ra_obj=\'$ra\'" }
+  if ($dec ne '-'){ $command .= " dec_obj=\'$dec\'" }
+  if ($equinox){ $command .= " equinox=$equinox" }
+  if ($clobber) {$command .= ' clobber=y'}else{$command .= ' clobber=n'}
+  if ($chatter > 4) {print "command is\n$command\n"}
+
+  my $result = $tool->doCommand($command);
+
+  #write parameter values into header of pha extension
+  ($status=ffopen($fptr,$srcpha,READWRITE,$status)) == 0 ||
+    die "error opening $srcpha: $!";
+  HDpar_stamp($fptr, 2, $status);
+  if ($status) {
+    print "Error running HDpar_stamp!\n";
+    $status = 0;
+  }
+  if ($extname){
+    ffphis($fptr, "PHA derived from extension: $extname", $status);
+    if ($status) {
+      print "Error writing extension HISTORY kwd!\n";
+      $status = 0;
+    }
+  }
+  ffclos($fptr, $status);
+
+  #construct ascii2pha command string
+  my $command = "ascii2pha"
+    . " infile=$tmpdir/background.dat"
+      . " outfile=$bkgpha"
+	. ' chanpres=y qerror=y rows=- tlmin=0'
+	  . ' detchans=1 pois=n telescope=SWIFT'
+	    ." dtype=$dtype"
+	      . " instrume=$instrume detnam=NONE"
+		. " filter=$filter"
+		  . " exposure=$exposure"
+		    . " backscal=$bkg_pix_area"
+		      . ' backfile=NONE'
+			. " respfile=$calfile"
+			  ;
+  if ($dateobs ne '-'){ $command .= " date_obs=\'$dateobs\'" }
+  if ($timeobs ne '-'){ $command .= " time_obs=\'$timeobs\'" }
+  if ($dateend ne '-'){ $command .= " date_end=\'$dateend\'" }
+  if ($timeend ne '-'){ $command .= " time_end=\'$timeend\'" }
+  if ($ra ne '-'){ $command .= " ra_obj=\'$ra\'" }
+  if ($dec ne '-'){ $command .= " dec_obj=\'$dec\'" }
+  if ($equinox && ($ra ne '-' || $dec ne '-')){
+    $command .= " equinox=$equinox";
+  }
+  if ($clobber) {$command .= ' clobber=y'}else{$command .= ' clobber=n'}
+  if ($chatter > 4) {print "command is\n$command\n"}
+
+  my $result = $tool->doCommand($command);
+
+  #write parameter values into header of pha extension
+  ($status=ffopen($fptr,$bkgpha,READWRITE,$status)) == 0 ||
+    die "error opening $bkgpha: $!";
+  HDpar_stamp($fptr, 2, $status);
+  if ($status) {
+    print "Error running HDpar_stamp!\n";
+    $status = 0;
+  }
+  if ($extname){
+    ffphis($fptr, "PHA derived from extension: $extname", $status);
+    if ($status) {
+      print "Error writing extension HISTORY kwd!\n";
+      $status = 0;
+    }
+  }
+  ffclos($fptr, $status);
+
+  #remove temporary files
+  $count = unlink "$tmpdir/background.dat", "$tmpdir/source.dat";
+  if ($count != 2) { die "error removing temporary ascii files: $!" }
+
+  return $status;
+}
+
+sub round_to_int {
+    return int(abs($_[0]) + 0.5) * ($_[0] < 0 ? -1 : 1);
+}

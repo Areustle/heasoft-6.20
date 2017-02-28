@@ -1,0 +1,127 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/aspcorr/ut-aspcorr,v $
+# $Revision: 1.1 $
+# $Date: 2005/09/19 13:44:22 $
+#
+#		aspcorr unit test
+#
+#
+# $Log: ut-aspcorr,v $
+# Revision 1.1  2005/09/19 13:44:22  rwiegand
+# Added unit test.
+#
+
+use strict;
+
+package Test::Aspcorr;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+
+# main
+{
+	my $tool = Test::Aspcorr->new;
+
+	$tool->unitTest;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validateEnvironment
+		if $self->isValid;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->runAspcorr
+		if $self->isValid;
+
+	$self->checkResults
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(input=file output=file chatter=int) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		if (not -d $args->{$key}) {
+			$self->error(BAD_INPUT,
+				"invalid $key directory: $args->{$key}");
+		}
+	}
+}
+
+
+sub runAspcorr
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $input = $args->{input};
+	my $output = $args->{output};
+
+	$self->{infile} = './sky.fits';
+	$self->shell("cp $input/sky.fits .; chmod +w $self->{infile}");
+
+	$self->{template} = "$input/template.fits";
+
+	my @task = (
+		infile	=> $self->{infile},
+		outhdu	=> 1,
+		method	=> 'QUAT',
+		quat	=> join(' ', (
+					9.3437687086277569e-05,
+        			7.2001074573282357e-04,
+        			-3.8581451972210151e-04,
+        			9.9999966200048351e-01,
+				)),
+		record	=> 'UNIT TEST',
+		chatter	=> $args->{chatter},
+	);
+
+	my %task = @task;
+
+	# build command line
+	my $command = $self->buildCommand('aspcorr', @task);
+	$self->shell($command);
+}
+
+
+sub checkResults
+{
+	my ($self) = @_;
+
+	if (not -f $self->{infile}) {
+		$self->error(BAD_OUTPUT, "missing result file");
+	}
+
+	{
+		my $command = $self->buildCommand('ftdiff',
+				infile1 => $self->{template},
+				infile2 => $self->{infile},
+				tolerance => 1e-12,
+				exclude => 'DATASUM',
+				);
+
+		$self->shell($command);
+	}
+
+}
+

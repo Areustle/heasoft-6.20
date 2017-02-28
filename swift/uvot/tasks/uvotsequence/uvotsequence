@@ -1,0 +1,435 @@
+#! /usr/bin/perl
+
+# code:   uvotsequence
+# author: Martin Still (NASA/GSFC)
+# date:   2005-04-11
+
+use HEACORE::HEAINIT;
+exit headas_main(\&uvotsequence);
+
+sub uvotsequence{
+
+  use HEACORE::HEAUTILS;
+  use HEACORE::PIL;
+  use Astro::FITS::CFITSIO qw( :shortnames :constants );
+  use PGPLOT;
+  use Task qw(:codes);
+  use Fcntl qw(:flock);
+
+  $sign = '[-+]?';
+  $digits = '\d+';
+  $decimal = '\.?';
+  $more_digits = '\d*';
+  $exponent = '(?:[eE][-+]\d+)?';
+  $number = "$sign$digits$decimal$more_digits$exponent";
+
+  my $tool = bless({tool => 'uvotsequence',code => 0,}, "Task");
+
+  my $tname = "uvotsequence";
+  my $tvers = "1.00";
+
+  my $fptr;
+
+  unless (defined $ENV{LHEASOFT}) {die "LHEASOFT environment not present"}
+
+  ($status = PILGetFname('imglist', $imglis)) == 0 ||
+    die "error getting imglist parameter";
+  ($status = PILGetFname('attfile', $attfile)) == 0 ||
+    die "error getting attfile parameter";
+  ($status = PILGetString('trigtime', $trigtime)) == 0 ||
+    die "error getting trigtime parameter";
+  ($status = PILGetBool('plotseq', $plotseq)) == 0 ||
+    die "error getting plotseq parameter";
+  ($status = PILGetInt('chatter', $chatter)) == 0 ||
+    die "error getting chatter parameter";
+
+  if ($chatter > 4){
+    print "Got parameters:\n";
+    print "\timglist = $imglis\n";
+    print "\tattfile = $attfile\n";
+    print "\ttrigtime = $trigtime\n";
+    print "\tplotseq = $plotseq\n";
+    print "\tchatter = $chatter\n";
+  }
+
+  set_toolname($tname);
+  set_toolversion($tvers);
+
+# integer trigger time
+
+  $trigtime = int($trigtime + 0.5);
+
+# open image list and read keywords for each image
+
+  &uvotsequence_exposures($imglis,$trigtime);
+
+# open attitude file
+
+  &uvotsequence_attitude($attfile);
+
+# find snapshots and slews
+
+  &uvotsequence_snapshots;
+
+# results to STDOUT
+
+  &uvotsequence_stdout;
+
+# plot exposures
+
+  &uvotsequence_plot if ($plotseq);
+
+  return $status;
+
+}
+
+
+# --------------------------------
+
+
+sub uvotsequence_exposures {
+
+# read file list 
+
+    my $fptr;
+
+    $tmin = 1e30;
+    $tmax = 1e-30;
+
+    open IMGLIS, "<$_[0]";
+    foreach (<IMGLIS>) {
+	chomp;
+
+# open image file and get filter
+
+	($status = ffopen($fptr,$_."+1",READONLY,$status)) == 0 or die;
+	($status = ffgky($fptr,TSTRING,'FILTER',$filt,$comm,$status)) == 0 
+	    or die;
+	ffgky($fptr,TSTRING,'OBS_ID',$obsid,$comm,$status);
+	$status == 0 or die "cannot find OBS_ID keyword in $_\n";
+	ffgky($fptr,TSTRING,'OBJECT',$object,$comm,$status);
+	$status == 0 or die "cannot find OBJECT keyword in $_\n";
+	($status = ffthdu($fptr,$hdunum,$status)) == 0 or die;
+	$hdunum--;
+	print "Found $hdunum $filt images in $_\n" if ($chatter > 1);
+
+# timing keywords
+
+	$hdunum = 1;
+ 	while ($status == 0) {
+	    ffgky($fptr,TDOUBLE,'TSTART',$t1,$comm,$status); 
+	    $status == 0 or die "Cannot find TSTART keyword in $_\n";
+	    ffgky($fptr,TDOUBLE,'TSTOP',$t2,$comm,$status);
+	    $status == 0 or die "cannot find TSTOP keyword in $_\n";
+	    ffgky($fptr,TSTRING,'DATAMODE',$datamode,$comm,$status);
+	    $status == 0 or die "cannot find TSTOP keyword in $_\n";
+
+# store times and coordinates
+
+	    @filter[$records] = $filt;
+	    @hdu[$records] = $_."+$hdunum";
+	    @hdu[$records] =~ s/.+\///;
+	    @hdu[$records] =~ s/\///;
+	    @mode[$records] = $datamode;
+	    @mode[$records] = 'IMEVT' if ($datamode =~ /IMAGEEVENT/);
+	    @tstart[$records] = int($t1 + 0.5);
+	    @tstop[$records] = int($t2 + 0.5);
+	    @exp[$records] = int($t2 - $t1 + 0.5);
+	    @tmid[$records] = int(($t2 - $t1) / 2 + $t1 + 0.5);
+	    @trel1[$records] = @tstart[$records] - $_[1];
+	    @trel2[$records] = @tstop[$records] - $_[1];
+	    print "\tTSTART = @tstart[$records] TSTOP = @tstop[$records]\n"
+		if ($chatter > 4);
+		if ($t1 <= $trigtime) {
+			die "image $hdunum TSTART $t1 is not after trigger $trigtime\n";
+		}
+		if ($t2 <= $t1) {
+			die "image $hdunum TSTOP $t2 is not after TSTART $t1\n";
+		}
+	    $tmin = &uvotsequence_min(@trel1[$records],$tmin);
+	    $tmax = &uvotsequence_max(@trel2[$records],$tmax);
+	    $records++;
+	    $hdunum++;
+	    ffmrhd($fptr,1,IMAGE_HDU,$status);
+	}
+
+# close image file
+
+	$status = 0;
+	($status = ffclos($fptr,$status)) == 0 or &die;
+    }
+
+# close file list
+
+    close IMGLIS;
+
+}
+
+
+# --------------------------------
+
+
+sub uvotsequence_attitude {
+
+
+    my $fptr, $m;
+
+    ffopen($fptr,$_[0]."+2",READONLY,$status); 
+    $status == 0 or die "Cannot open $_[0]\n";
+    ffgnrw($fptr,$nrows,$status);
+    $status == 0 or die "Cannot determine number of rows in table in $_[0]\n";
+    ffgcvd($fptr,1,1,1,$nrows,-999,\@ftime,$anynull,$status);
+    $status == 0 or die "Cannot read TIME column in $_[0]\n";
+    ffgcvs($fptr,3,1,1,$nrows,-999,\@flags,$anynull,$status);
+    $status == 0 or die "Cannot read FLAGS array in $_[0]\n $status\n";
+    while ($row < $nrows) {
+	if (@flags[$row] =~ /^(\S).......$/) {
+	    @tenarc[$row] = $1;
+	}
+	$row++;
+    }
+    ffclos($fptr,$status);
+    $status == 0 or die "Cannot close $_[0]\n";
+    print "Found attitude flags in $_[0]\n" if ($chatter > 1);
+
+}
+
+
+# --------------------------------
+
+
+sub uvotsequence_snapshots {
+
+    my $row;
+
+    while ($row <= $nrows) {
+	if (@tenarc[$row] =~ /^1$/) {
+	    @taway[$naway] = log10(@ftime[$row] - $trigtime);
+	    $naway++;
+	}
+	$row++;
+    }
+
+
+}
+
+
+# --------------------------------
+
+
+sub uvotsequence_stdout {
+
+    my @snaps, @slewtime, $n, $m;
+
+    @snaps[0] = 0;
+    @slewtime[0] = 0;
+    @taway[$naway+1] = log10(999999999 - $trigtime);
+    while ($n <= $naway) {
+	if (10**@taway[$n+1] - 10**@taway[$n] > 50) {
+	    $m++;
+	    @snaps[$m] = $m;
+	    @slewtime[$m] = 10**@taway[$n+1] + $trigtime;
+	    printf "Snapshot %2.0f: slew-away \@ MET %.0f\n", 
+	    @snaps[$m], @slewtime[$m];
+	    $i = 0;
+	    foreach (@filter) {
+		if (@tmid[$i] < @slewtime[$m] && @tmid[$i] > @slewtime[$m-1]) {
+		    printf "\t%s mode=%s dwell=%.0f\n", 
+		    @hdu[$i], @mode[$i], @exp[$i];
+		}
+		$i++;
+	    }
+	}
+	$n++;
+   }
+
+}
+
+
+# --------------------------------
+
+
+sub uvotsequence_plot {
+
+
+    use PGPLOT;
+    use POSIX qw(log10);
+
+    my $n;
+    my $m;
+
+# style
+
+    pgbeg(0,"?",1,1);
+    pgslw(4);
+    pgscf(1);
+    pgsch(1.7);
+    pgsvp(0.15,0.95,0.2,0.85);
+    pgwindow(log10($tmin/1.05),log10($tmax*1.01),0.5,10.5);
+    $xlab = "Time since trigger (MET - $trigtime)";
+    $ylab = " ";
+    $tlab = "SWIFT-UVOT $object $obsid";
+
+# horzontal lines
+
+    pgslw(1);
+    pgsci(1);
+    pgsls(4);
+    pgmove(1,9.5);
+    pgdraw(1e6,9.5);
+    pgmove(1,8.5);
+    pgdraw(1e6,8.5);
+    pgmove(1,7.5);
+    pgdraw(1e6,7.5);
+    pgmove(1,6.5);
+    pgdraw(1e6,6.5);
+    pgmove(1,5.5);
+    pgdraw(1e6,5.5);
+    pgmove(1,4.5);
+    pgdraw(1e6,4.5);
+    pgmove(1,3.5);
+    pgdraw(1e6,3.5);
+    pgmove(1,2.5);
+    pgdraw(1e6,2.5);
+    pgmove(1,1.5);
+    pgdraw(1e6,1.5);
+
+# exposures
+
+    foreach (@filter) {
+	if ($_ =~ '^WHITE$') {
+	    pgsci(1);
+	    $yval = 9.5;
+	} elsif ($_ =~ '^MAGNIFIER$') {
+	    pgsci(1);
+	    $yval = 8.5;
+	} elsif ($_ =~ '^V$') {
+	    pgsci(2);
+	    $yval = 7.5;
+	} elsif ($_ =~ '^B$') {
+	    pgsci(3);
+	    $yval = 6.5;
+	} elsif ($_ =~ '^U$') {
+	    pgsci(4);
+	    $yval = 5.5;
+	} elsif ($_ =~ '^UVW1$') {
+	    pgsci(5);
+	    $yval = 4.5;
+	} elsif ($_ =~ '^UVM2$') {
+	    pgsci(6);
+	    $yval = 3.5;
+	} elsif ($_ =~ '^UVW2$') {
+	    pgsci(12);
+	    $yval = 2.5;
+	} elsif ($_ =~ '^UGRISM$') {
+	    pgsci(12);
+	    $yval = 1.5;
+	} elsif ($_ =~ '^VGRISM$') {
+	    pgsci(12);
+	    $yval = 0.5;
+	}
+	@x[0] = log10(@trel1[$m]);
+	@x[1] = log10(@trel2[$m]);
+	@x[2] = @x[1];
+	@x[3] = @x[0];
+	@y[0] = $yval;
+	@y[1] = @y[0];
+	@y[2] = $yval + 1;
+	@y[3] = @y[2];
+	pgpoly(4,\@x,\@y);
+	$m++;
+    }
+
+# plot slew durations
+
+    pgsls(1);
+    pgsci(15);
+    pgsfs(3);
+    while ($n < $naway) {
+	@x[0] = @taway[$n];
+	@x[1] = @taway[$n+1];
+	@x[2] = @x[1];
+	@x[3] = @x[0];
+	@y[0] = -1000.0;
+	@y[1] = @y[0];
+	@y[2] = 1000.0;
+	@y[3] = @y[2];
+	if (@x[0] > 1 && 10**@x[1] - 10**@x[0] > 50) {
+	    pgpoly(4,\@x,\@y);
+	}
+	$n++;
+    }
+
+# labels
+
+    pgsci(1);
+    pgsls(1);
+    pgslw(4);
+    pgbox('bcnlst',0.0,0,'bc',0.0,0);
+    pgsch(1.2);
+    pgptxt(log10($tmin/1.07),9.8,0.0,1.0,"WHITE");
+    pgptxt(log10($tmin/1.07),8.8,0.0,1.0,"MAGN");
+    pgptxt(log10($tmin/1.07),7.8,0.0,1.0,"V");
+    pgptxt(log10($tmin/1.07),6.8,0.0,1.0,"B");
+    pgptxt(log10($tmin/1.07),5.8,0.0,1.0,"U");
+    pgptxt(log10($tmin/1.07),4.8,0.0,1.0,"UVW1");
+    pgptxt(log10($tmin/1.07),3.8,0.0,1.0,"UVM2");
+    pgptxt(log10($tmin/1.07),2.8,0.0,1.0,"UVW2");
+    pgptxt(log10($tmin/1.07),1.8,0.0,1.0,"UGRISM");
+    pgptxt(log10($tmin/1.07),0.8,0.0,1.0,"VGRISM");
+    pgsch(1.7);
+    pglabel($xlab,$ylab,$tlab);
+    pgend;
+
+}
+
+
+# ------------------------------
+
+
+sub uvotsequence_max {
+
+# find maximum in distribution
+
+  my ($max_so_far) = shift @_;
+  foreach (@_) {
+    if ($_ > $max_so_far) {
+      $max_so_far = $_;
+    }
+  }
+  $max_so_far;
+
+}
+
+
+# ------------------------------
+
+
+sub uvotsequence_min {
+
+# find minimum in distribution
+
+  my ($min_so_far) = shift @_;
+  foreach (@_) {
+    if ($_ < $min_so_far) {
+      $min_so_far = $_;
+    }
+  }
+  $min_so_far;
+
+}
+
+
+#sub AUTOLOAD
+#{
+#	my $function = our($AUTOLOAD);
+#	foreach my $x (@_) {
+#		if (ref($x) eq 'ARRAY') {
+#			$x = '[ ' . join(', ', @$x) . ' ]';
+#		}
+#	}
+#	print "AUTOLOAD: $function(" . join(', ', @_) . ")\n";
+#}
+
+
+return 1;

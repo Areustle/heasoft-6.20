@@ -1,0 +1,554 @@
+#! /usr/bin/perl
+#
+# Mike Tripicco (EIT)
+# 09 Jan 2001
+#
+# faxbary: wrapper for axBary standalone
+#
+# v2.1: now checks for 2nd extension before trying to fparkey it...
+#       and removes outfile on bailout (unless outfile == infile)
+#
+# v2.2: relaxed requirement that orbit file be perfect (via tolerance parameter)
+#       added more diagnostic output
+#       fixed sorting bug for multiple orbit files
+#
+# (02 March 2005 - MT)
+# v2.3: changed handling of ra/dec defaults to accomodate the strict type checking
+#       done by PIL (since we get the PIL pquery2 in some setups now)
+#
+# 10Feb2009
+# v2.4: case insensitivity for barytime and clobber parameters
+#       allow for gzipped input file
+#
+# 18Mar2010
+# v2.5: changed fparkey/fkeypar (and other) cmds to use par=value form, including
+#       protecting filename-related parameters with single-quotes
+#
+$SIG{INT} = \&sigtrap;
+$SIG{TERM} = \&sigtrap;
+$SIG{KILL} = \&sigtrap;
+
+$VERS = 2.5;
+
+use Cwd;
+use File::Path;
+use File::Copy;
+use File::stat;
+require "utils.pl";
+
+$invokedir = cwd();
+$tmpdir = "${invokedir}/barytmp$$";
+$cmd = "axBary";
+$bailroutine = "bailout";
+
+if (grep {$_ eq "-h"} @ARGV) {
+  print <<EOF;
+faxbary (Feb01)             ftools.xte             faxbary (Feb01)
+NAME
+  faxbary  -- Barycenter correction routine for XTE light-curve, science array/event data files.
+
+INPUT PARAMETERS
+
+infile           - Input file (must contain a (case-insensitive) "TIME" column )
+
+outfile          - Name of the output file (if same as infile
+                   the original file will be modified)
+
+orbitfiles       - Orbit ephemeris file(s) (or \@filename). If a
+                   list of orbit files is input any files outside
+                   the time range of the input file will be ignored
+                   and any gaps in orbit file coverage within the time 
+                   range of the input file will result in an error.
+
+(ra = -360.9)    - Right Ascension (epoch 2000). If not specified
+                   (ie, when set to the default value of -360.9) the
+                   RA keyword value will be read from input file. Must
+                   be expressed in decimal degrees.
+
+(dec = -99.9)    - Declination (epoch 2000). If not specified
+                   (ie, when set to the default value of -99.9) the
+                   DEC keyword value will be read from input file. Must
+                   be expressed in decimal degrees.
+
+(refframe = FK5) - Coordinate reference frame. Allowed values are
+                   "FK5" (default; DE200) or "ICRS" (DE405)
+
+(barytime = yes) - Create/overwrite BARYTIME column in output file? (default: yes)
+
+(tolerance = 3)  - Tolerance (in seconds) for orbit file glitches
+
+(clobber = yes)  - Overwrite existing output file? (default: yes)
+
+DESCRIPTION
+
+faxbary is a simple Perl wrapper to a (non-FTOOLS) standalone program
+(axBary) which is a multi-mission function that applies barycenter
+corrections to HFWG-compliant FITS files.  axBary currently recognizes
+missions "XTE", "AXAF", and "Geocenter" and applies barycenter
+corrections to all times, using orbit ephemeris file orbitFile, ra,
+dec, and refFrame "FK5" (DE200) or "ICRS" (DE405).  When RA and Dec
+are not provided, an effort is made to retrieve the information from
+the FITS file.
+
+The behavior of faxbary has been designed to match fxbary (the original
+RXTE barycenter correcting ftool) though some parameter names have changed
+slightly. As with fxbary, the value of the TIMEZERO keyword applies to
+the BARYTIME column; thus the barycentric correction can be derived by
+simply taking the difference between the TIME and BARYTIME columns. Note
+also that because axBary applies the fine clock corrections (derived
+from the file tdc.dat located in the \$LHEASOFT/refdata directory)
+and also accounts for instrumental delay (both of these effects are
+ignored by fxbary) the more precise barycentric corrections computed by
+faxbary/axBary may differ from fxbary by as much as +/- 50 microseconds.
+
+If the tdc.dat file is not up-to-date enough to be applied to the input
+data a warning message which begins as follows will result:
+
+ ===>  Please note that phaseHist could not locate an applicable
+       entry in the XTE fine clock correction file.
+
+In such cases the fine clock correction will not be applied to the
+final barytimes; the instrumental delay correction (16 microsecs for
+the PCA) will still be included however. The RXTE-GOF maintains the
+most current version of the file at
+
+  ftp://legacy.gsfc.nasa.gov/xte/calib_data/clock/tdc.dat
+
+
+EXAMPLES
+
+NOTES
+
+The "barytime = no" option will replace the values in the original
+TIME (case-insensitive) column from the input file with the
+barycenter-corrected times and update all time-related keywords
+and GTI values appropriately. Use of this option on binned (ie,
+XTE science array) data files is discouraged as it will preclude
+subsequent application of saextrct to the modified datafile.
+
+Warning: this script allows one to specify identical input and output
+filenames. In this case the original file will be modified. If, and
+only if one has also specified the "barytime=no" option and an error
+occurs in the external axBary program the input file may be deleted!
+If this is a concern then do not use faxbary in this mode or else
+make sure a copy of the original data file is available.
+
+Do not ever use DE405 on a FITS file that has:
+    TIMESYS="TDB"
+  but not:
+    RADECSYS="ICRS" or PLEPHEM="JPL-DE405"
+
+TIMESYS="TDB" _with_    RADECSYS="ICRS" and/or PLEPHEM="JPL-DE405"
+                           should use denum=405.
+TIMESYS="TDB" _without_ RADECSYS="ICRS" or     PLEPHEM="JPL-DE405"
+                           should use denum=200.
+
+DE405 may be used in conjunction with FK5 spacecraft orbit ephemeris.
+The maximum error is 2 ns for each earth radius that the spacecraft is
+removed from the geocenter.  All positions provided by Tempo are on
+the DE200 reference frame, however - closer to FK5.  This could
+introduce errors of up to 0.02 ms.  A function, c200to405, is provided
+to convert DE200 positions to ICRS.  Even so, it is recommended that
+DE200 is used for Tempo solutions that are based on DE200; apparently,
+efforts are underway to make Tempo support DE405.
+
+A single, merged mission-long orbit file has been generated and is now
+available alongside the individual orbit files in the RXTE data archive.
+(The file is named FPorbit_NNNN_MMMM.fits, where NNNN and MMMM indicate
+the first and last mission day covered). This file will be updated
+periodically. In cases where a large number of orbit files is needed
+to span the data, using the merged orbit file will allow faxbary to run
+considerably faster than waiting for it to do the merging on-the-fly.
+
+EOF
+  exit(0);
+}
+
+# get the invoking string, if it exists, to pass to pquery for parsing
+
+# We quote each element since existing quotes have been stripped and we
+# need to pass this on to pquery with quotes intact
+
+if(@ARGV) {
+  foreach $i (0 .. $#ARGV) {
+    $ARGV[$i] = "\"".$ARGV[$i]."\"";
+  }
+  $invokestring = join(' ',@ARGV);
+}
+
+# remove any FTOOLSOUTPUT settings to enable default use of /dev/tty for pquery 
+# if we do not do this, the user will not see prompts from pquery
+delete $ENV{FTOOLSOUTPUT};
+
+# using pquery2 because we do not want hidden parameters
+# to be learned (and apparently passing the whole set
+# of parameters as we do below does *change* them all
+# even though only the specified parameter is *returned*
+chop($infile = `pquery2 faxbary infile $invokestring`);
+$infile =~ s/\s+$//;
+chop($outfile = `pquery2 faxbary outfile $invokestring`);
+$outfile =~ s/\s+$//;
+chop($orbitfiles = `pquery2 faxbary orbitfiles $invokestring`);
+$orbitfiles =~ s/\s+$//;
+chop($ra = `pquery2 faxbary ra $invokestring`);
+$ra =~ s/\s+$//;
+chop($dec = `pquery2 faxbary dec $invokestring`);
+$dec =~ s/\s+$//;
+chop($barytime = `pquery2 faxbary barytime $invokestring`);
+$barytime =~ s/\s+$//;
+$barytime=lc($barytime); #case insensitivity please...
+chop($frame = `pquery2 faxbary refframe $invokestring`);
+$frame =~ s/\s+$//;
+chop($tolerance = `pquery2 faxbary tolerance $invokestring`);
+$tolerance =~ s/\s+$//;
+chop($clobber = `pquery2 faxbary clobber $invokestring`);
+$clobber =~ s/\s+$//;
+$clobber=lc($clobber); #case insensitivity please...
+
+print "**** faxbary v$VERS ****\n";
+
+# deal with input ascii orbitlist
+if (grep(/^@/,$orbitfiles)){
+  open(OFH,substr($orbitfiles,1)) || die "Couldn't open \"".substr($orbitfiles,1)."\"";
+  while (<OFH>) {
+    chop;
+    push(@spud,$_);
+  }
+  close(OFH);
+  $orbitfiles=join(' ',@spud);
+}
+@orbitlist = split(' ',$orbitfiles);
+
+# make sure axBary (standalone) is available
+$result=`$cmd -h 2>&1`;
+if (!grep/Usage:/,$result){die "\nError: program \"$cmd\" not found\n$0 died"}
+
+# check whether infile is gzipped
+if ($infile =~ /gz$/ || (! -e $infile && -e "${infile}.gz")){
+  $gzipped = 1;
+  if ($infile =~ /(.*).gz$/){$infile=$1}
+  print "unzipping ${infile}.gz\n";
+  `gunzip ${infile}.gz`;
+}
+if (! -e $infile){&bailout("\nError: file \"$infile\" not found.")}
+
+
+foreach $orbfile (@orbitlist){
+  if (! -e $orbfile){&bailout("\nError: orbit file \"$orbfile\" not found.")}
+}
+
+if (-e $outfile and $clobber ne 'yes'){
+  &bailout("\nError: output file \"$outfile\" already exists and cannot be clobbered.");
+}
+
+# check for files, the lack of which will get you wrong answers...
+$refdata = $ENV{"LHEA_DATA"};
+if (! -e "$refdata/tdc.dat"){
+  print "\nError: required file: $refdata/tdc.dat not found\n";
+  print "Download the latest version from:\n";
+  print "ftp://legacy.gsfc.nasa.gov/xte/calib_data/clock/tdc.dat\n";
+  print "and place it in $refdata/\n";
+  &bailout("bailing out");
+}
+if (! -e "$refdata/tai-utc.dat"){
+  print "\nError: required file: $refdata/tai-utc.dat not found\n";
+  print "Download the latest version from:\n";
+  print "ftp://legacy.gsfc.nasa.gov/xte/calib_data/clock/tai-utc.dat\n";
+  print "and place it in $refdata/\n";
+  &bailout("bailing out");
+}
+if ($frame eq "FK5"){$jpleph="JPLEPH.200"}else{$jpleph="JPLEPH.405"}
+if (! -e "$refdata/$jpleph"){
+  &bailout("\nError: required file: $refdata/$jpleph not found.");
+}
+
+# are input and output files in fact the same file?
+$insitu = "no";
+$in_stat = stat($infile);
+$out_stat = stat($outfile);
+if (-e $outfile and ($in_stat->ino == $out_stat->ino)){$insitu = "yes"}
+
+# Does the 2nd extension (usually GTI) exist?
+$have_ext2="yes";
+@result=`fstruct \'$infile+2\' 2>&1`;
+if (!grep /EXTNAME\s+BITPIX/, @result){$have_ext2="no"}
+
+# get TIMEZERO (need to subtract it during copy of corrected TIME column 
+# since axBary absorbs it and sets TIMEZERO to 0 while faxbary requires 
+# that TIMEZERO by applied to both TIME and BARYTIME columns)
+#
+# I assume that either TIMEZERO or TIMEZERI/F will be present in 1st ext.
+chop($have_timez=`fkeypar \'fitsfile=$infile+1\' keyword=TIMEZERO;pget fkeypar exist`);
+if ($have_timez eq "no"){
+  chop($timezi=`fkeypar \'fitsfile=$infile+1\' keyword=TIMEZERI;pget fkeypar value`);
+  chop($timezf=`fkeypar \'fitsfile=$infile+1\' keyword=TIMEZERF;pget fkeypar value`);
+} else { chop($timezero=`pget fkeypar value`) }
+
+# axBary insists on TSTART/TSTOP and cannot cope with TSTARTI/TSTARTF/TSTOPI/TSTOPF
+# so we will generate them based on I/F pairs.
+#
+# ASSUMPTIONS: *TSTOP will behave as TSTART
+#              *Only 1 GTI extension will need fake TSTART/TSTOP (XTE data files have 2
+#                 GTI extensions, but they have TSTART/TSTOP anyway. Only .lc files need
+#                 this kludge and they have only one GTI extension...
+#              *2nd GTI extension can use same TSTART TSTOP as 1st
+#
+chop($have_tstart=`fkeypar \'fitsfile=$infile+1\' keyword=TSTART;pget fkeypar exist`);
+if ($have_tstart eq "no"){
+  chop($tstarti=`fkeypar \'fitsfile=$infile+1\' keyword=TSTARTI;pget fkeypar value`);
+  chop($tstartf=`fkeypar \'fitsfile=$infile+1\' keyword=TSTARTF;pget fkeypar value`);
+  chop($tstopi=`fkeypar \'fitsfile=$infile+1\' keyword=TSTOPI;pget fkeypar value`);
+  chop($tstopf=`fkeypar \'fitsfile=$infile+1\' keyword=TSTOPF;pget fkeypar value`);
+  $tstart=$tstarti+$tstartf;
+  $tstop=$tstopi+$tstopf;
+} else {
+  chop($tstart = `pget fkeypar value`);
+  chop($tstop = `fkeypar \'fitsfile=$infile+1\' keyword=TSTOP;pget fkeypar value`);
+}
+
+# make temporary directory (from here on any exit should include
+# deleting this directory, usually via &bailout routine).
+mkdir($tmpdir,0755);
+
+# deal with multiple orbit files
+if ($#orbitlist > 0){
+  print "Inspecting list of orbit files:\n";
+  %orb_times_hash=();
+  foreach $orbfile (@orbitlist){
+    &runcom("fkeypar \'fitsfile=$orbfile\' keyword=TSTART",$bailroutine);
+    chop($exist = `pget fkeypar exist`);
+    if ($exist eq 'no'){$orb_tstart=0.0}else{
+      chop($orb_tstart = `pget fkeypar value`);
+      chop($orb_tstop = `fkeypar \'fitsfile=$orbfile\' keyword=TSTOP;pget fkeypar value`);
+    }
+    if ($orb_tstart != 0.0){
+      # this oddly-formed hash facilitates sorting by tstart
+      $orb_times_hash{$orb_tstart}= [ $orb_tstop, $orbfile ];
+      # and this one is for simple lookup of TSTOP by filename
+      $orb_names_hash{$orbfile} = $orb_tstop;
+    }
+  }
+  @ok_orbfiles=();
+  foreach $orb_tstart (sort { $a <=> $b } keys %orb_times_hash){
+    $orb_tstop = $orb_times_hash{$orb_tstart}[0];
+    $orbfile = $orb_times_hash{$orb_tstart}[1];
+    # do some checking
+    if (($orb_tstop < $tstart) || ($orb_tstart > $tstop)){
+      print "  $orbfile doesn\'t overlap with $infile...skipping\n";
+      next;
+    }
+    chop($orb_nrows=`fkeypar \'fitsfile=$orbfile+1\' keyword=NAXIS2;pget fkeypar value`);
+    chop($orb_deltat=`fkeypar \'fitsfile=$orbfile+1\' keyword=DELTAT;pget fkeypar value`);
+    if (($orb_tstop-$orb_tstart)/$orb_deltat != ($orb_nrows-1)){
+      print "  $orbfile : glitch detected\n";
+      print "    TSTART is $orb_tstart\n";
+      print "    TSTOP  is $orb_tstop\n";
+      print "    NAXIS2 is $orb_nrows\n";
+      print "    DELTAT is $orb_deltat\n";
+    } else {
+      print "  $orbfile : OK\n";
+    }
+    push @ok_orbfiles,$orbfile;
+    # see if the current orbit file is sufficient by itself
+    if(($orb_tstart < $tstart) && ($orb_tstop > $tstop)){
+      print "    and fully covers relevant timerange\n";
+      print "    Orbit file processing terminating\n";
+      @ok_orbfiles=($orbfile);
+      last;
+    }
+  }
+  if ($#ok_orbfiles > 0){ #more than one --> merge them
+    print "Merging ".($#ok_orbfiles+1)." orbit files, skipping duplicate times...\n";
+    open(OFH,">$tmpdir/orbfiles$$") || print "Couldn't open \"$tmpdir/orbfiles$$\"\n" && &bailout;
+    # careful: shifting 1st name off OK list...
+    $current_tstop = $orb_names_hash{$ok_orbfiles[0]};
+    print OFH shift(@ok_orbfiles)."\n";
+    foreach $orbfile (@ok_orbfiles){
+      #use CFITSIO row-filtering to avoid duplicate timestamps
+      #as well as occasional small time offsets between successive files
+      print OFH "$orbfile+1[Time > $current_tstop+$orb_deltat-$tolerance]\n";
+      $current_tstop = $orb_names_hash{$orbfile};
+    }
+    close(OFH);
+    $cmdstr="fmerge \'infiles=\@$tmpdir/orbfiles$$\' \'outfile=$tmpdir/mergedorb$$\'";
+    $cmdstr.=" columns=- lastkey=TSTOP copyprime=no";
+    &runcom($cmdstr,$bailroutine);
+    $axorb="$tmpdir/mergedorb$$";
+  } elsif ($#ok_orbfiles == 0) { #only one useful file --> use it
+    $axorb=$ok_orbfiles[0];
+  } else{
+    print "Error with orbit files..bailing out\n";
+    &bailout;
+  }
+}else{$axorb=$orbitlist[0]} #only one file was input --> use it
+
+# check for gaps in orbit file (an axBary no-no!)...
+chop($orb_tstop=`fkeypar \'fitsfile=$axorb+1\' keyword=TSTOP;pget fkeypar value`);
+chop($orb_tstart=`fkeypar \'fitsfile=$axorb+1\' keyword=TSTART;pget fkeypar value`);
+chop($orb_nrows=`fkeypar \'fitsfile=$axorb+1\' keyword=NAXIS2;pget fkeypar value`);
+chop($orb_deltat=`fkeypar \'fitsfile=$axorb+1\' keyword=DELTAT;pget fkeypar value`);
+$orb_glitch = abs($orb_deltat * ($orb_nrows-1) - ($orb_tstop-$orb_tstart));
+if ($orb_glitch != 0.0) {
+  print "Glitch detected in merged orbit file!\n";
+#  print "Merged Orbit TSTART is $orb_tstart\n";
+#  print "Merged Orbit TSTOP is $orb_tstop\n";
+#  print "Merged Orbit NAXIS2 is $orb_nrows\n";
+#  print "Merged Orbit DELTAT is $orb_deltat\n";
+  print "Glitch size is $orb_glitch s\n";
+  if ($orb_glitch > $tolerance) {
+    print "Beyond specified tolerance ($tolerance s) -- bailing out\n";
+    &bailout;
+  } else {
+    print "Within specified tolerance ($tolerance s) -- OK\n";
+  }
+}
+
+# weird...setting ra or dec to "-" on input is changed (by pquery?) to "no"
+#  This is undocumented XPI behavior (+ --> yes, - --> no)
+@axopts=();
+if ($ra ne "no" and lc($ra) ne "indef" and $ra ne " " and $ra ne "" and $ra ne "-360.9"){
+  push(@axopts,"-ra $ra");
+}else{
+  # axBary insists on RA_PNT or RA_NOM; XTE .lc files have plain RA :-(
+  #  and XTE ASM .lc files have RA_OBJ
+  chop($have_rapnt=`fkeypar \'fitsfile=$infile+1\' keyword=RA_PNT;pget fkeypar exist`);
+  chop($have_ranom=`fkeypar \'fitsfile=$infile+1\' keyword=RA_NOM;pget fkeypar exist`);
+  if ($have_rapnt eq "no" and $have_ranom eq "no"){
+    chop($have_ra=`fkeypar \'fitsfile=$infile+1\' keyword=RA;pget fkeypar exist`);
+    if ($have_ra eq "yes"){
+      chop($ra=`pget fkeypar value`);
+      push(@axopts,"-ra $ra");
+    } else {
+      chop($have_raobj=`fkeypar \'fitsfile=$infile+1\' keyword=RA_OBJ;pget fkeypar exist`);
+      if ($have_raobj eq "yes"){
+	chop($ra=`pget fkeypar value`);
+	push(@axopts,"-ra $ra");
+      }
+    }
+  }
+}
+if ($dec ne "no" and lc($dec) ne "indef" and $dec ne " " and $dec ne "" and $dec ne "-99.9"){
+  push(@axopts,"-dec $dec");
+}else{
+  # axBary insists on DEC_PNT or DEC_NOM; XTE .lc files have plain DEC :-(
+  #  and XTE ASM .lc files have DEC_OBJ
+  chop($have_decpnt=`fkeypar \'fitsfile=$infile+1\' keyword=DEC_PNT;pget fkeypar exist`);
+  chop($have_decnom=`fkeypar \'fitsfile=$infile+1\' keyword=DEC_NOM;pget fkeypar exist`);
+  if ($have_decpnt eq "no" and $have_decnom eq "no"){
+    chop($have_dec=`fkeypar \'fitsfile=$infile+1\' keyword=DEC;pget fkeypar exist`);
+    if ($have_dec eq "yes"){
+      chop($dec=`pget fkeypar value`);
+      push(@axopts,"-dec $dec");
+    } else {
+      chop($have_decobj=`fkeypar \'fitsfile=$infile+1\' keyword=DEC_OBJ;pget fkeypar exist`);
+      if ($have_decobj eq "yes"){
+	chop($dec=`pget fkeypar value`);
+	push(@axopts,"-dec $dec");
+      }
+    }
+  }
+}
+push(@axopts,"-ref $frame");
+
+if ($insitu eq 'no'){copy("$infile","$outfile")}
+
+if ($barytime eq 'yes'){
+  copy("$infile","$tmpdir/axin$$");
+# delete any existing BARYTIME column in extension 1
+  $cmdstr="flcol infile=$outfile+1 nlist=1";
+  @result=&runcom($cmdstr,$bailroutine);
+  if (grep /^barytime/i, @result){
+    print "$0: Existing BARYTIME column will be replaced\n";
+    $cmdstr="fdelcol \'infile=$outfile+1\' colname=barytime confirm=no proceed=yes";
+    &runcom($cmdstr, $bailroutine);
+  }
+  if ($have_tstart eq "no"){
+    &runcom("fparkey value=$tstart \'fitsfile=$tmpdir/axin$$+1\' keyword=TSTART add=yes",$bailroutine);
+    &runcom("fparkey value=$tstop \'fitsfile=$tmpdir/axin$$+1\' keyword=TSTOP add=yes",$bailroutine);
+    if ($have_ext2 eq "yes"){
+      &runcom("fparkey value=$tstart \'fitsfile=$tmpdir/axin$$+2\' keyword=TSTART add=yes",$bailroutine);
+      &runcom("fparkey value=$tstop \'fitsfile=$tmpdir/axin$$+2\' keyword=TSTOP add=yes",$bailroutine);
+      # no need to delete these bogus kwds since they only go into a temp file
+    }
+  }
+# run axBary
+  $cmdstr="$cmd -i \'$axorb\' -f \'$tmpdir/axin$$\' @axopts";
+  print "running: $cmdstr\n";
+  @result=`$cmdstr 2>&1`;
+  print "@result\n";
+# take advantage of the fact that axBary deletes the output file on exit(!?)
+  if (! -e "$tmpdir/axin$$"){&bailout}
+# transfer selected keywords written by axBary in temporary file
+  @comments=();
+  @result=&runcom("punlearn fkeyprint;fkeyprint \'infile=$tmpdir/axin$$+1\' keynam=HISTORY",$bailroutine);
+  @spud = grep /TOOL :/, @result;
+  push(@comments,@spud);
+  @result=&runcom("punlearn fkeyprint;fkeyprint \'infile=$tmpdir/axin$$+1\' keynam=RA_NOM",$bailroutine);
+  @spud = grep /RA_NOM  =/, @result;
+  push(@comments,@spud);
+  @result=&runcom("punlearn fkeyprint;fkeyprint \'infile=$tmpdir/axin$$+1\' keynam=DEC_NOM",$bailroutine);
+  @spud = grep /DEC_NOM =/, @result;
+  push(@comments,@spud);
+  @result=&runcom("punlearn fkeyprint;fkeyprint \'infile=$tmpdir/axin$$+1\' keynam=RADECSYS",$bailroutine);
+  @spud = grep /RADECSYS=/, @result;
+  push(@comments,@spud);
+  @result=&runcom("punlearn fkeyprint;fkeyprint \'infile=$tmpdir/axin$$+1\' keynam=PLEPHEM",$bailroutine);
+  @spud = grep /PLEPHEM =/, @result;
+  push(@comments,@spud);
+  $cmdstr="punlearn faddcol;faddcol \'infile=$outfile\' ";
+  if ($have_timez eq "yes"){ # still assuming that either TIMEZERO or TIMEZERI/F exist
+    $cmdstr.="colfile=\'$tmpdir/axin$$+1[col BARYTIME=time-$timezero]\' ";
+  }else{
+    $cmdstr.="colfile=\'$tmpdir/axin$$+1[col BARYTIME=time-$timezi-$timezf]\' ";
+  }
+  $cmdstr.="colname=BARYTIME history=no";
+  &runcom($cmdstr,$bailroutine);
+  open(MODFH,">$tmpdir/modf_template");
+  print MODFH join "\n",@comments;
+  close(MODFH);
+  $cmdstr="fmodhead \'infile=$outfile\' \'tmpfil=$tmpdir/modf_template\'";
+  &runcom($cmdstr,$bailroutine);
+}else{ # barytime=no so operate directly on output file
+  if ($have_tstart eq "no"){
+    &runcom("fparkey value=$tstart \'fitsfile=$outfile+1\' keyword=TSTART add=yes",$bailroutine);
+    &runcom("fparkey value=$tstop \'fitsfile=$outfile+1\' keyword=TSTOP add=yes",$bailroutine);
+    if ($have_ext2 eq "yes"){
+      &runcom("fparkey value=$tstart \'fitsfile=$outfile+2\' keyword=TSTART add=yes",$bailroutine);
+      &runcom("fparkey value=$tstop \'fitsfile=$outfile+2\' keyword=TSTOP add=yes",$bailroutine);
+    }
+  }
+  $cmdstr="$cmd -i \'$axorb\' -f \'$outfile\' @axopts";
+  print "running: $cmdstr\n";
+  @result=`$cmdstr 2>&1`;
+  print "@result\n";
+  if ($have_tstart eq "no"){
+    # delete the bogus TSTART/TSTOP keywords (I/F pairs are still there)
+    &runcom("fparkey value=0.0 \'fitsfile=$outfile+1\' keyword=-TSTART",$bailroutine);
+    &runcom("fparkey value=0.0 \'fitsfile=$outfile+1\' keyword=-TSTOP",$bailroutine);
+    if ($have_ext2 eq "yes"){
+      &runcom("fparkey value=0.0 \'fitsfile=$outfile+2\' keyword=-TSTART",$bailroutine);
+      &runcom("fparkey value=0.0 \'fitsfile=$outfile+2\' keyword=-TSTOP",$bailroutine);
+    }
+  }
+}
+
+&runcom("fchecksum \'infile=$outfile\' update=yes",$bailroutine);
+
+if ($gzipped){print "re-zipping $infile\n";`gzip $infile`}
+rmtree($tmpdir);
+exit 0;
+
+sub sigtrap{
+  my $signame = shift;
+  print "\n!Trapped a $signame signal!\n";
+  &bailout;
+}
+
+sub bailout{
+  my $errmsg = @_[0];
+  rmtree($tmpdir);
+  if ($gzipped){print "re-zipping $infile\n";`gzip $infile`}
+  if ($insitu eq "no"){unlink($outfile)}
+  die "$0: $errmsg\nBailing out";
+}
+

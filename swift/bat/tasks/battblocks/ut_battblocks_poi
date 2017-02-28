@@ -1,0 +1,170 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/bat/tasks/battblocks/ut_battblocks_poi,v $
+# $Revision: 1.7 $
+# $Date: 2007/10/31 03:15:03 $
+#
+#	ut_battblocks
+#		validate battblocks operation for Poisson binned data
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "battblocks";
+$ut_taskname   = "ut_battblocks_poi";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter tolerance
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS )) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif ($ENV{$var} !~ m/^(http|ftp):/ && not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $tolerance = $self->args->{tolerance};
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	my %task = (
+		    infile        => "$input/battblocks_u.lc.in",
+		    outfile       => "$output/battblocks_poi.gti.output",
+		    durfile       => "$output/battblocks_poi.durgti.output",
+		    nspill        => 128,
+		    timedel       => 100.0e-6,
+		    tlookback     => 20.0,
+		    tpeak         => 1.0,
+		    ncp_prior     => 6.0,
+		    durerrmeth    => "TOTVAR",
+		    bkgsub        => "Yes",
+		    clobber       => "Yes",
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("infile");
+	
+	my %template = (
+			outfile     => "$input/battblocks_poi.gti.template",
+			durfile     => "$input/battblocks_poi.durgti.template",
+			);
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	# Check template files are present
+	foreach my $key (keys %template) {
+		if (not -f $template{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid template $key file: $template{$key}");
+			return -1;
+		}
+	}
+
+
+	print "\n\n  Verifying FITS output files\n";
+	foreach $outparm (keys %template) {
+	    $command = qq(ftverify infile=$task{$outparm} outfile=STDOUT heasarc=yes);
+	    $self->doCommand($command);
+
+
+	    $command = "ftdiff $template{$outparm} $task{$outparm} tolerance=$tolerance";
+	    $result = $self->doCommand($command);
+	    if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+		$ndiffs = $1;
+		print "   -->  FTDIFF reports $ndiffs differences\n";
+		if ($ndiffs ne 0) {
+		    $lines = $result->{output};
+		    print "$lines\n" if $self->chatter(5);
+		    $self->error(BAD_OUTPUT, "error because of bad compare");
+		}
+		
+	    }
+
+	}	
+	
+}
+

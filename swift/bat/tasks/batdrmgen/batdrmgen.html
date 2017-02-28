@@ -1,0 +1,259 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+  <style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+  </style>
+  <title>batdrmgen HEADAS help file</title>
+</head>
+<body>
+<h2>NAME</h2>
+batdrmgen - computes BAT detector response matrix (RSP) for a known
+source position
+<h2>USAGE</h2>
+<tt>batdrmgen infile outfile hkfile
+</tt>
+<h2>DESCRIPTION</h2>
+
+<p>batdrmgen is the BAT Detector Response Matrix (DRM) generator tool
+that computes the full BAT instrument response to incident photons,
+given the source position information read from an input PHA spectral
+file.  The output FITS file contains a matrix that represents the mean
+response of a detector using mask-weighted analysis.  Because BAT is
+very wide-field, it is not practical to separate the response into
+"ARF" and "RMF" components, and for this reason batdrmgen creates a
+single response with these components combined (so-called "RSP").
+This file should be used in spectral analysis with software like
+XSPEC.
+</p>
+
+<p>The batdrmgen tool accepts as input a pulse height spectrum file
+produced by the BAT binning tool 'batbinevt'.  BAT spectra are
+required to have both a SPECTRUM extension and an EBOUNDS extension,
+which describes the energy bin edges used to produce it.
+</p>
+
+<p>
+BAT spectra are required to have specific keywords which describe the
+position of the source in the field of view.  <b>Please note</b> that,
+as documented in the BAT software manual, users must run the tasks
+'batupdatephakw' and 'batphasyserr' on their spectra before running
+batdrmgen.  These other tasks apply several instrument-related
+corrections which must be in place before the response matrix is
+computed.
+</p>
+
+<p>The batdrmgen tool accepts both "Type I" and "Type II" spectral
+files.  The most common type of file, Type I files contain a single
+spectrum (and are produced using the outtype=PHA1 option of
+batbinevt).  Type II files contain multiple spectra in a single
+extension (and are produced using the outtype=PHA2 option of
+batbinevt).  The 'row' option of batdrmgen allows the user to select
+which Type II spectrum to process.
+</p>
+
+<p>
+Upon finishing, batdrmgen attempts to modify the input spectrum to
+record the file name of the newly created response matrix.  By
+default, it uses the standard RESPFILE keyword for this purpose, but
+if a column named RESPFILE is present, it will use the column (and
+specified row) instead.  This column behavior is useful for Type II
+spectra, but note that such a column must exist <i>before</i> calling
+batdrmgen, otherwise it falls back to using the keyword approach.  The
+spectral fitting package XSPEC will use either the RESPFILE column or
+keyword to automatically load the response matrix.
+</p>
+
+<h2>THEORY of OPERATION</h2>
+
+<p>For each incident photon energy bin, batdrmgen computes the BAT
+counts spectrum that would be measured if a mono-energetic stream of
+photons of unit photon flux with an energy at the bin midpoint were
+incident on the array.  Repeating this calculation for each incident
+energy bin produces an N &times; M matrix, where N is the number of
+incident photon bins and M is the number of PHA counts bins. While the
+incident photon energy bin edges can be defined by the user, the
+output PHA counts spectrum bin edges are read from the EBOUNDS
+extension in the input PHA file.</p>
+
+<p>The BAT DRM is calculated using the set of quasi-physical
+calibration parameters that are appropriate for the particular
+position of the photon source. These parameters were determined from
+least squares fits of the spectral model to actual ground calibration
+data measured using radioactive gamma-ray sources that were mounted in
+a variety of positions within the BAT field of view (FOV). The
+calculation also makes use of the detector charge trapping parameters
+measured during ground calibration tests.  The angle dependent
+calibration parameters and the detector charge trapping parameters are
+stored in a calibration file managed by the CALDB utility.
+</p>
+
+<p>Since batdrmgen models the signal loss due to charge trapping at
+different absorption depths within the CZT detectors, it requires a
+knowledge of the interaction depth probability distributions for
+10-500 keV photons coming from anywhere within the BAT FOV. Simple
+Monte Carlo simulations of the absorption of 10-500 keV photons in a 2
+mm thick CZT detector were used to create 1000-element tables of the
+probabilities of a photon interacting in each of the 2 mm/1000 = 2
+micron thick CZT detector "slices."  These 1000-element depth
+distribution vectors were determined over a moderately dense grid of
+energies and incident angles within the BAT FOV. The depth
+distribution used for a particular source position and energy is
+determined by interpolating within this table. This depth distribution
+information is highly compressed and stored in a second calibration
+file also managed using CALDB.
+</p>
+
+<p>Users have the choice of 2 methods for DRM generation: The default
+method, "MEAN", accesses calibration parameters that are averaged over
+the entire BAT FOV.  The alternative method is "TABLE", in which
+batdrmgen accesses a table of calibration parameters for different
+source positions and sorts the table with respect to the angular
+separation between the source direction vector and the position vector
+for each ground calibration measurement. batdrmgen then calculates the
+weighted average of the parameter values from the three closest
+calibration measurements.  Thus, the ground calibration parameters
+from measurements closer to the source position will be weighted more
+heavily.</p>
+
+<h2>PARAMETERS</h2>
+<dl>
+  <dt>infile [filename] </dt>
+  <dd>Name of the PHA FITS input file containing the binned and
+mask-weighted
+BAT data as well as header keywords containing the source position and
+other
+information relevant to the response calculation.</dd>
+  <dt>outfile [filename] </dt>
+  <dd>Name of the output FITS response file (*.rsp) that will contain
+the N &times; M OGIP-compatible response matrix, usable with XSPEC.</dd>
+  <dt>hkfile [filename] </dt>
+  <dd>Name of the DAP Housekeeping file that contains detector bias voltage
+(column: BHVMon_Level) and electronic threshold (column: DM_HK_Vthr) 
+values for the time interval of interest.  If
+"NONE" is specified, batdrmgen uses the values specified by the hv_def and 
+vthr_def parameters.
+<p>At present, batdrmgen uses this file simply to check the hv values,
+make certain they are nominally 200V, and warn the user if they are
+not.  Therefore, the default value of "NONE" is perfectly
+acceptable.</dd>
+  <dt>(row = 1) [integer] </dt>
+  <dd>If the input PHA file is a "Type II" spectrum (one spectrum per row of the PHA file), the row parameter specifies which row of the file contains the spectrum for which a response matrix is computed.  For a "Type I" spectrum (single spectrum extension) the row parameter is ignored, but should be set to 1.</dd>
+  <dt>(calfile = CALDB) [filename] </dt>
+  <dd>Name of the FITS file that contains the spectral parameters
+for the response function. The default value is "CALDB" thus allowing
+the file to be managed by the CALDB utility.</dd>
+  <dt>(depthfile = CALDB) [filename] </dt>
+  <dd>Name of the FITS file that contains the compressed
+photon interaction depth distribution generated by Monte Carlo
+simulations. The default value is "CALDB" thus allowing the file to be
+managed by the CALDB utility.</dd>
+  <dt>(escale = CALDB) [string] </dt>
+  <dd>Desired form of the incident photon energy bin edges.
+Possible responses include:
+<dl>
+<dt>"FILE"<dd>the program reads in a FITS
+file containing the bin edges (see description of the efile parameter
+below);
+<dt>"LIN"<dd>linear binning
+<dt>"LOG"<dd>logarithmic binning. 
+</dl>
+<p>Both LIN
+and LOG allow the user to specify the number of bins (see nphoton_bins
+below)
+and the energy range (see elimit_lo and elimit_hi listed below. )</dd>
+  <dt>(detmask = NONE) [string]</dt>
+  <dd>Name of a "mask weight" map
+(with dimensions of 286x173) which indicates which detectors
+were used to accumulate the spectrum.  At present, this parameter is 
+not used.</dd>
+  <dt>(method = MEAN) [string]</dt>
+  <dd>Computation method for DRM.
+The default method ("MEAN") accesses calibration parameters that are
+averaged over the entire BAT FOV.  The alternative method is "TABLE",
+in which batdrmgen accesses a table of calibration parameters for
+different source positions and sorts the table with respect to the
+angular separation between the source direction vector and the
+position vector for each ground calibration measurement. batdrmgen
+then calculates the weighted average of the parameter values from the
+three closest calibration measurements.  Thus, the ground calibration
+parameters from measurements closer to the source position will be
+weighted more heavily.
+</dd>
+  <dt>(flight_data = YES) [boolean]</dt>
+  <dd>Flag indicating whether the
+PHA file contains flight data as opposed to ground calibration
+data.</dd>
+  <dt>(nphoton_bins = 200) [integer]</dt>
+  <dd>The number of bins desired
+in the incident photon energy scale (used for escale = LIN or LOG as
+discussed
+above). </dd>
+  <dt>(elimit_lo = 10.0) [real]</dt>
+  <dd>The desired lower
+energy limit for the incident photon energy scale (used for escale = LIN
+or LOG as discussed above). </dd>
+  <dt>(elimit_hi = 500.0) [real]</dt>
+  <dd>The desired upper
+energy limit for the incident photon energy scale (used for escale = LIN
+or LOG as discussed above). </dd>
+  <dt>(efile = CALDB) [string]</dt>
+  <dd>File name
+for the user-specified FITS file containing the user's custom incident
+energy bin edges (used for escale = FILE as discussed above). The
+default value, "CALDB" indicates that the default incident bin edges
+will be used. This default bin edges have the energy range of 10 keV to
+1000 keV divided into 200 logarithmically-spaced bins with bin edge
+adjustment made for the absorption edges of CdZnTe (26.711 keV for the
+Cd K edge and 31.814 for the Te K edge). As indicated, the file
+containing the default input bin edges is managed by the CALDB
+utility. </dd>
+  <dt>(hv_def = 200.0) [real]</dt>
+  <dd>The default detector bias voltage setting, in volts.  
+This value is used if no hkfile is
+specified.  If an hkfile is specified and some of the values contained in it 
+are NULL, this value
+is substituted in place of the null values.</dd>
+  <dt>(vthr_def = 12.0) [real]</dt>
+  <dd>The default XA1 threshold setting, in millivolts.  
+This value is used if no hkfile is
+specified.  If an hkfile is specified and some of the values contained in it 
+are NULL, this value
+is substituted in place of the null values.</dd>
+  <dt>(fudge = INDEF) [string]</dt>
+  <dd>A string
+specifying which correction should be applied to the response matrix
+calculation.  Possible values are:
+<dl>
+<dt>INDEF</dt><dd>Apply default correction (equivalent to CRAB)</dd>
+<dt>CRAB</dt><dd>Apply correction derived by fitting the residuals of
+the uncorrected matrix to an on-axis crab spectrum</dd>
+<dt>NONE</dt><dd>Do not apply a correction</dd>
+</dl>
+</dd>
+  <dt>(clobber = NO) [boolean] </dt>
+  <dd>If the output file already exists, then setting "clobber = yes"
+will cause it to be overwritten. </dd>
+  <dt>(chatter = 2) [integer, 0 - 5] </dt>
+  <dd>Controls the amount of informative text written to standard
+output. Setting chatter = 1 produces a basic summary of the task
+actions; chatter = 2 (default) additionally prints a summary of input
+parameters; chatter = 5 prints detailed debugging information. </dd>
+  <dt>(history = YES) [boolean] </dt>
+  <dd>If history = YES, then a set of HISTORY keywords will be written
+to the header
+of the specified HDU in the output file to record the value of all the
+task parameters that were used to produce the output file. </dd>
+</dl>
+<h2>EXAMPLES</h2>
+batdrmgen sw00050100004bsvo01f0g01f0.pha sw00050100004bsvo01f0g01f0.rsp NONE<br>
+<h2>SEE ALSO</h2>
+<p><a href="batbinevt.html">batbinevt</a></p>
+<h2>LAST MODIFIED </h2>
+<p>Nov 2007</p>
+</body>
+</html>

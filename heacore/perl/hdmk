@@ -1,0 +1,335 @@
+#! /usr1/local/bin/perl5
+#
+
+package main;
+
+use Getopt::Std;
+
+getopt();
+
+if (defined $opt_h) { print<<EOHELP;
+
+                           ****** HDMK ******
+
+Makefile generator for HEADAS tasks and libraries.  The hdmk script is
+intended only to provide a "first attempt" at a HEADAS Makefile, and
+developers are expected to review the output 'Makefile.new' carefully to
+make any necessary edits before using or committing it as a working Makefile.
+
+hdmk will prompt you for the type of Makefile you wish to create if none
+is specified on the command line.  Choices are: library, ctask, cxxtask,
+perltask (note that a task containing fortran code will still be known in
+HEADAS as a "ctask").
+
+If creating a library Makefile, hdmk will also ask whether or not you plan
+to link with any local (i.e. non-heacore) libraries.  If you aren't, it
+will leave the HD_CLIBS macro at its default value, HD_STD_CLIBS.  If you
+are, it will expand the HD_STD_CLIBS macro into its component parts and will
+show you where to insert your local library flags.
+
+hdmk searches "up" from the current directory for a BUILD_DIR in order to
+determine which HEADAS component this tool will be part of, and it generally
+assumes that the root name of your task or library is given by the name of
+the current directory.
+
+Note that a distinction is not made between source files destined for
+multiple tasks (e.g. TEST tasks or scripts) in a given directory.  The
+developer is expected to make such edits by hand.
+
+USAGE:
+
+  hdmk [ library | ctask | cxxtask | perltask ]
+
+EOHELP
+exit 0;
+}
+
+if ( !defined $ARGV[0] ) {
+    print "Make what? (library, ctask, cxxtask, perltask): ";
+    $make_type = <STDIN>;
+    chop $make_type;
+} else {
+    $make_type = $ARGV[0];
+}
+if ($make_type =~ task) {
+    print "Will you be linking with any local/non-heacore libraries? [y/n]): ";
+    $local_libs = <STDIN>;
+    chomp $local_libs;
+}
+
+# location:
+# current directory: $pwd
+
+$pwd = `pwd`;
+chop $pwd;
+$h_taskname = $pwd;
+$h_taskname =~ s:.*/::;
+
+# top of LHEA source tree: $h_src
+# determine this by going "up" from pwd, looking for a signature directory
+
+my $signature = 'BUILD_DIR';
+$h_src = $pwd;
+while(! -d "$h_src/$signature") {
+    die ("Unable to find directory $signature to determine component name" 
+    ) unless($h_src =~ /^\//);
+    $h_src =~ s:(.*)/.*:\1:;
+}
+$h_component = $h_src;
+$h_component =~ s:.*/::;
+
+if (-f 'Makefile.new') {
+  print "Clobber existing 'Makefile.new'? [y/n]: ";
+  $clobber = <STDIN>;
+  chomp $clobber;
+}
+if ($clobber eq n or $clobber eq "no") {
+  print "hdmk aborted - Makefile.new was not clobbered\n";
+  exit;
+} else {
+  open OUTFILE, ">Makefile.new" or die "Unable to open Makefile.new for output";
+}
+
+print OUTFILE "HD_COMPONENT_NAME	= $h_component\n\n";
+print OUTFILE "HD_COMPONENT_VERS	= $h_component_vers\n\n";
+
+# source files:
+@h_src_def = (<*.def>);
+@h_src_c = (<*.c>);
+@h_src_f = (<*.f>);
+@h_src_f90 = (<*.f90>);
+@h_src_C = (<*.C>);
+@h_src_cc = (<*.cc>);
+@h_src_cpp = (<*.cpp>);
+@h_src_cxx = (<*.cxx>);
+@h_perl_libs = (<*.pl>, <*.pm>);
+@all_files = (<*>);
+
+foreach $file (@all_files) {
+    $perl_query = `file $file`;
+    if ($perl_query =~ perl) {
+        $src_perl_target .= " $file";
+    }
+}
+
+foreach $file (@h_src_f) { $src_f_target .= " $file"; }
+foreach $file (@h_src_f90) { $src_f90_target .= " $file"; }
+foreach $file (@h_src_c) { $src_c_target .= " $file"; }
+foreach $file (@h_src_C) { $src_C_target .= " $file"; }
+foreach $file (@h_src_cc) { $src_cc_target .= " $file"; }
+foreach $file (@h_src_cpp) { $src_cpp_target .= " $file"; }
+foreach $file (@h_src_cxx) { $src_cxx_target .= " $file"; }
+foreach $file (@h_perl_libs) { $perl_libs_target .= " $file"; }
+
+if ($make_type eq ctask) {
+
+    print OUTFILE "HD_CTASK		= $h_taskname\n\n";
+
+    if ($local_libs eq "y") {
+      $hd_clibs_target = '${HD_LFLAGS} <INSERT YOUR LIBS HERE: -lmylib> ${HD_STD_LIBS} ${SYSLIBS}';
+    } else {
+      $hd_clibs_target = '${HD_STD_CLIBS}';
+    }
+    if ($src_c_target) {
+      $src_c_target = &format($src_c_target);
+      print OUTFILE "HD_CTASK_SRC_c		=$src_c_target\n\n";
+    }
+    if ($src_f_target) {
+      $src_f_target = &format($src_f_target);
+      print OUTFILE "HD_CTASK_SRC_f		=$src_f_target\n\n";
+      $hd_clibs_target .=' ${F77LIBS4C}';
+    }
+    if ($src_f90_target) {
+      $src_f90_target = &format($src_f90_target);
+      print OUTFILE "HD_CTASK_SRC_f90		=$src_f90_target\n\n";
+      $hd_clibs_target .=' ${F77LIBS4C}';
+    }
+
+    if ($src_c_target) {
+      print OUTFILE 'HD_CFLAGS		= ${HD_STD_CFLAGS}',"\n\n";
+    }
+    if ($src_f_target or $src_f90_target) {
+      print OUTFILE 'HD_FFLAGS		= ${HD_STD_FFLAGS}',"\n\n";
+    }
+
+    print OUTFILE "HD_CLIBS		= $hd_clibs_target","\n\n";
+    print OUTFILE 'HD_INSTALL_TASKS	= ${HD_CTASK}',"\n\n";
+
+} elsif ($make_type eq cxxtask) {
+
+    print OUTFILE "HD_CXXTASK		= $h_taskname\n\n";
+
+    if ($local_libs eq "y") {
+      $hd_cxxlibs_target = '${HD_LFLAGS} <INSERT YOUR LIBS HERE: -lmylib> ${HD_STD_LIBS} ${SYSLIBS}';
+    } else {
+      $hd_cxxlibs_target = '${HD_STD_CLIBS}';
+    }
+    if ($src_C_target) {
+      $src_C_target = &format($src_C_target);
+      print OUTFILE "HD_CXXTASK_SRC_C	=$src_C_target\n\n";
+    }
+    if ($src_c_target) {
+      $src_c_target = &format($src_c_target);
+      print OUTFILE "HD_CXXTASK_SRC_c	=$src_c_target\n\n";
+      $hd_cxxlibs_target = '${HD_STD_CXXLIBS}';
+    }
+    if ($src_cc_target) {
+      $src_cc_target = &format($src_cc_target);
+      print OUTFILE "HD_CXXTASK_SRC_cc	=$src_cc_target\n\n";
+    }
+    if ($src_cpp_target) {
+      $src_cpp_target = &format($src_cpp_target);
+      print OUTFILE "HD_CXXTASK_SRC_cpp	=$src_cpp_target\n\n";
+    }
+    if ($src_cxx_target) {
+      $src_cxx_target = &format($src_cxx_target);
+      print OUTFILE "HD_CXXTASK_SRC_cxx	=$src_cxx_target\n\n";
+    }
+    if ($src_f_target) {
+      $src_f_target = &format($src_f_target);
+      print OUTFILE "HD_CXXTASK_SRC_f	=$src_f_target\n\n";
+      $hd_cxxlibs_target .=' ${F77LIBS4C}';
+    }
+    if ($src_f90_target) {
+      $src_f90_target = &format($src_f90_target);
+      print OUTFILE "HD_CXXTASK_SRC_f90	=$src_f90_target\n\n";
+      $hd_cxxlibs_target .=' ${F77LIBS4C}';
+    }
+
+    if ($src_c_target) {
+      print OUTFILE 'HD_CFLAGS		= ${HD_STD_CFLAGS}',"\n\n";
+    }
+    if ($src_C_target or $src_cc_target or $src_cpp_target or $src_cxx_target) {
+      print OUTFILE 'HD_CXXFLAGS		= ${HD_STD_CXXFLAGS}',"\n\n";
+    }
+    if ($src_f_target or $src_f90_target) {
+      print OUTFILE 'HD_FFLAGS		= ${HD_STD_FFLAGS}',"\n\n";
+    }
+
+    print OUTFILE "HD_CXXLIBS		= $hd_cxxlibs_target","\n\n";
+    print OUTFILE 'HD_INSTALL_TASKS	= ${HD_CXXTASK}',"\n\n";
+
+#} elsif ($make_type eq perltask) {
+#
+#    if ($perl_libs_target) {
+#      print OUTFILE "HD_INSTALL_PERL_LIBS	=$perl_libs_target\n\n";
+#    }
+
+} elsif ($make_type eq library) {
+
+    print OUTFILE "HD_LIBRARY_ROOT		= $h_taskname\n\n";
+
+    if ($src_C_target) {
+      $src_C_target = &format($src_C_target);
+      print OUTFILE "HD_LIBRARY_SRC_C	=$src_C_target\n\n";
+    }
+    if ($src_c_target) {
+      $src_c_target = &format($src_c_target);
+      print OUTFILE "HD_LIBRARY_SRC_c	=$src_c_target\n\n";
+    }
+    if ($src_cc_target) {
+      $src_cc_target = &format($src_cc_target);
+      print OUTFILE "HD_LIBRARY_SRC_cc	=$src_cc_target\n\n";
+    }
+    if ($src_cpp_target) {
+      $src_cpp_target = &format($src_cpp_target);
+      print OUTFILE "HD_LIBRARY_SRC_cpp	=$src_cpp_target\n\n";
+    }
+    if ($src_cxx_target) {
+      $src_cxx_target = &format($src_cxx_target);
+      print OUTFILE "HD_LIBRARY_SRC_cxx	=$src_cxx_target\n\n";
+    }
+    if ($src_f_target) {
+      $src_f_target = &format($src_f_target);
+      print OUTFILE "HD_LIBRARY_SRC_f	=$src_f_target\n\n";
+    }
+    if ($src_f90_target) {
+      $src_f90_target = &format($src_f90_target);
+      print OUTFILE "HD_LIBRARY_SRC_f90	=$src_f90_target\n\n";
+    }
+
+    if ($src_c_target) {
+      print OUTFILE 'HD_CFLAGS		= ${HD_STD_CFLAGS}',"\n\n";
+    }
+    if ($src_C_target or $src_cc_target or $src_cpp_target or $src_cxx_target) {
+      print OUTFILE 'HD_CXXFLAGS		= ${HD_STD_CXXFLAGS}',"\n\n";
+    }
+    if ($src_f_target or $src_f90_target) {
+      print OUTFILE 'HD_FFLAGS		= ${HD_STD_FFLAGS}',"\n\n";
+    }
+
+    print OUTFILE 'HD_INSTALL_LIBRARIES	= ${HD_LIBRARY_ROOT}',"\n\n";
+
+    # Add target for header files in the current directory:
+    @h_headers = (<*.h>);
+    foreach $file (@h_headers) { $headers_target .= " $file"; }
+        if ($headers_target) {
+        $headers_target = &format($headers_target);
+        print OUTFILE "HD_INSTALL_HEADERS	=$headers_target\n\n";
+    }
+}
+
+# Add targets for any perl scripts or libraries in the current directory:
+if ($src_perl_target) {
+    $src_perl_target = &format($src_perl_target);
+    print OUTFILE "HD_INSTALL_PERL_SCRIPTS	=$src_perl_target\n\n";
+}
+if ($perl_libs_target) {
+    print OUTFILE "HD_INSTALL_PERL_LIBS	=$perl_libs_target\n\n";
+}
+
+# Add target for par files in the current directory:
+if ($make_type eq ctask or $make_type eq cxxtask or $make_type eq perltask) {
+    @h_parfiles = (<*.par>);
+    foreach $file (@h_parfiles) { $par_target .= " $file"; }
+    if ($par_target) {
+      $par_target = &format($par_target);
+      print OUTFILE "HD_INSTALL_PFILES	=$par_target\n\n";
+    }
+}
+
+# Add target for help files in the current directory:
+@h_helpfiles = (<*.html>, <*.hlp>, <*.txt>);
+foreach $file (@h_helpfiles) { $help_target .= " $file"; }
+if ($help_target) {
+    $help_target = &format($help_target);
+    print OUTFILE "HD_INSTALL_HELP		=$help_target\n\n";
+}
+
+print OUTFILE 'include ${HD_STD_MAKEFILE}',"\n";
+close OUTFILE;
+print "'Makefile.new' was successfully created.\n";
+print "The hdmk script is intended only to provide a 'first pass' Makefile for\n";
+print "your task or library.  Please review the output 'Makefile.new' carefully\n";
+print "and make any necessary edits before using it as a 'Makefile'.\n";
+
+exit;
+
+sub format {
+    my $string = shift @_;
+
+    $pos = -1;
+    $lastpos = 0;
+    $formatted = "";
+    while (($pos = index($string, " ", $pos)) > -1) {
+      if ($pos > 50) {
+        $first = substr($string, 0, $lastpos);
+        $string = substr($string, $lastpos);
+        if (!$formatted) {
+          $formatted = $first;
+        } else {
+          $formatted = join " \\\n\t\t\t ", $formatted, $first;
+        }
+        $pos = -1;
+      } else {
+        $lastpos = $pos;
+        $pos++;
+      }
+    }
+    if (!$formatted) {
+       $formatted = $string;
+    } else {
+       $formatted = join " \\\n\t\t\t ", $formatted, $string;
+    }
+    return $formatted;
+}

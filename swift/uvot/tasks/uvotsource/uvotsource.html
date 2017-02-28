@@ -1,0 +1,758 @@
+<!--=======================================-->
+<!--  HEADAS HTML HELP FILE TEMPLATE, v1.1 -->
+<!--=======================================-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<style type="text/css">
+  body { margin-left: 5%; margin-right: 5%; }
+  h1,h2,h3,h4 { margin-left: -5%;}
+</style>
+<title>HEADAS help file</title>
+</head>
+<body>
+
+<h2>NAME</h2>
+
+<p>
+uvotsource - instrumental source magnitude derived from image
+</p>
+
+<h2>USAGE</h2>
+
+<p>
+<tt>uvotsource image=&lt;filename&gt; srcreg=&lt;filename&gt;
+bkgreg=&lt;filename&gt; sigma=&lt;float&gt; zerofile=&lt;filename&gt;
+coinfile=&lt;filename&gt; psffile=&lt;filename&gt; lssfile=&lt;filename&gt;
+syserr=&lt;boolean&gt; frametime=&lt;float&gt; apercorr=&lt;string&gt;
+output=&lt;string&gt; outfile=&lt;filename&gt;
+cleanup=&lt;boolean&gt; clobber=&lt;boolean&gt;
+chatter=&lt;integer&gt;</tt>
+</p>
+
+<h2>DESCRIPTION</h2>
+
+<p>
+     This tool performs aperture photometry on a single source in a
+UVOT SKY exposure (sw*.img+extension).  It returns information about
+the count rate from the source, the source's magnitude, and flux
+density information.
+</p>
+
+<p>
+     The user specifies the source extraction region and background
+region using region files that are in the standard ftool or ds9
+format.  Region files must use the fk5 coordinate system.  The RA
+and Dec coordinates can be specified in either decimal degrees or
+in sexagisemal format.  Examples of a valid source region file and
+a valid background region file are give below.
+</p>
+
+<dl>
+  <dt>Example Source Region File</dt>
+  <dd>fk5;circle(12:34:56.78,76:54:32.1,2.5&quot;)</dd>
+
+  <dt>Example Background Region File</dt>
+  <dd>fk5;circle(123.456,-78.987,12&quot;)</dd>
+</dl>
+
+<p>
+     If &quot;srcreg&quot; is set to NONE then the tool will return
+the &quot;sigma&quot;-sigma limiting magnitude for the exposure
+instead of a source magnitude.  The &quot;sigma&quot; parameter tells
+the tool what level of significance to use to compute the background
+limit.  Photometric and coincidence loss calibration data are read
+from the files specified by &quot;zerofile&quot; and
+&quot;coinfile&quot; respectively.  If a large-scale sensitivity map
+is available it can be specified using &quot;lssfile&quot;.  The
+special value CALDB tells the tool to obtain calibration data from the
+Swift/UVOT calibration database.  The user must have the $CALDB
+environment variable correctly set to use this option.  If
+&quot;apercorr&quot; is set to CURVEOFGROWTH the PSF data is read from
+&quot;psffile&quot;.  The &quot;psffile&quot; is not used if
+&quot;apercorr=NONE&quot;.  If &quot;frametime&quot; is set to DEFAULT
+the frame time is read from the image header.  In some cases this
+keyword may not be present in the FITS file, so a value can be
+specified by the user.
+</p>
+
+<p>
+     There is currently one option for doing photometry.  The tool does
+simple aperture photometry.  All of the counts in the &quot;srcreg&quot;
+region are summed and divided by the exposure time to produce a count
+rate.  The background count rate is subtracted and the magnitude is
+computed from the coincidence-corrected net count rate.  Photometry is
+done as follows.
+</p>
+
+<ol>
+  <li>Extract the raw counts in three apertures.
+    <ol>
+      <li>The user-supplied source region, &quot;srcreg&quot;.
+
+      <p>
+           The source aperture may be any size or shape that can be
+      described in a valid region file.  The source region should be
+      selected to maximize the science return.  In general faint point
+      sources should use circular apertures with a radius that
+      maximizes the signal-to-noise ratio in the aperture.  This is
+      typically about 3 arcsec.  For bright sources the standard
+      photometric aperture (defined in &quot;zerofile&quot;) is
+      usually preferred.  The source aperture should be chosen to
+      minimize contamination from other sources.
+      </p></li>
+
+      <li>The user-supplied background region, &quot;bkgreg&quot;.
+
+      <p>
+           The background region may be any size or shape that can be
+      described in a valid region file.  It should be chosen to have
+      the same background properties as the source region.  It should
+      be free of contaminating sources and large enough so that the
+      mean pixel value is not biased by Poisson statistics.  The
+      background value is computed by taking the mean of the pixel
+      values in the background region.
+      </p></li>
+
+      <li>A coincidence-loss correction aperture, defined in
+          &quot;coinfile&quot;
+
+      <p>
+           This region is a circular aperture with an radius defined
+      by the COIAPT column in the COINCIDENCE extension of the
+      &quot;coinfile&quot; file.  It is centred on the centre of the
+      &quot;srcreg&quot; region.  This is the region that is used to
+      compute the coincidence loss correction factor.
+      </p></li>
+    </ol>
+
+      <p>
+           Counts are extracted from the input exposure by the XImage
+      &quot;counts&quot; command.  See the XImage User's Guide for
+      details on how counts are extracted.
+      </p></li>
+
+  <li>Calculate the coincidence loss correction factor from the count
+      rate in the coincidence-loss correction aperture.  See the fhelp
+      for uvotcoincidence for details about coincidence-loss
+      corrections.</li>
+
+  <li>Apply the coincidence-loss factor to the raw count rate in the
+      source aperture.</li>
+
+  <li>Scale the background count rate to the area of the
+      coincidence-loss aperture and then apply the coincidence loss
+      factor.</li>
+
+  <li>Scale the coincidence-corrected background rate to the area of
+      the user-supplied source aperture and subtract this from the
+      coincidence-corrected rate in the source aperture to get the
+      coincidence-corrected net count rate from the source.</li>
+
+  <li><p>
+      If &quot;apercorr=NONE&quot; then no aperture corrections are
+      performed.  In order to perform aperture corrections to convert
+      the measured magnitude to the standard UVOT system use
+      &quot;apercorr=CURVEOFGROWTH&quot;.  This option does aperture
+      photometry as described above with one additional step: an
+      estimated aperture correction is applied to the
+      coincidence-corrected net count rate from the source.
+      </p>
+
+      <p>
+      <em>Uvotsource will only return magnitudes and flux densities
+      that are on the standard UVOT photometric
+      system <strong>if</strong> the source region is the same as the
+      standard photometric aperture defined in
+      &quot;zerofile&quot;.</em>  If a different aperture ratius is
+      used then one can bring these magnitudes onto the standard
+      system using &quot;apercorr=CURVEOFGROWTH&quot;, which computes an
+      aperture correction to the coincidence-loss corrected net count
+      rate from the source.  See the fhelp for uvotapercorr for
+      details on aperture corrections and how they are applied.  Be
+      aware that &quot;apercorr=CURVEOFGROWTH&quot; assumes that the
+      source is a point source.
+      </p>
+
+      <p>
+      Uvotsource adds a systematic uncertainty to the error in the
+      aperture-corrected net count rate that accounts for the
+      uncertainty in the shape of the UVOT PSF.  See the discussion of
+      the &quot;fwhmsig&quot; parameter in the fhelp for uvotapercorr
+      for a discussion of this.  The version of uvotsource that was
+      released with HEADAS 6.4 (Swift_Rel2.8(BLD22)_19Nov2007, use the
+      swiftversion command to check which version of uvotsource you
+      are using) does not allow the user to set this number.  A value
+      of 5% is used.  The value of &quot;fwhmsig&quot; does not affect
+      the value of the aperture correction, only the error in the
+      aperture correction.
+      </p>
+
+      <p>
+      Magnitudes derived from a smaller-than-standard aperture will
+      have smaller statistical errors than magnitudes derived using
+      the standard aperture.  This is because the smaller aperture
+      contains less background and is more dominated by light from the
+      source.  However, the trade-off is that the smaller-aperture
+      magnitudes, because of the need for aperture correction, will
+      have an extra systematic component to their errors that is not
+      present in the standard aperture magnitudes.  Users need to
+      weigh the trade-off between these two sources of error when
+      deciding on whether or not to use
+      &quot;apercorr=CURVEOFGROWTH&quot;.
+      </p></li>
+
+  <li>If a large-scale sensitivity map is specified using
+      &quot;lssfile&quot; then a large-scale sensitivity correction is
+      applied to the count rate from the source.  If
+      &quot;lssfile=NONE&quot; then no large-scale sensitivity
+      correction is applied.  See the fhelp page for uvotlss for more
+      details.</li>
+
+  <li>If a detector sensitivity calibration file is specified using
+      &quot;sensfile&quot; then a detector sensitivity correction is
+      applied to the count rate from the source.  If
+      &quot;sensfile=NONE&quot; then no detector sensitivity
+      correction is applied.</li>
+
+  <li>Apply the photometric calibrations from &quot;zerofile&quot; to
+      the net count rate from the source, after all of the corrections
+      have been applied, to obtain the magnitude and flux density
+      information described below.  Note that the photometric
+      calibrations assume that the source region is the same as the
+      standard photometric aperture, so the values returned
+      will <strong>not</strong> be on the standard UVOT photometric
+      system if some other aperture region is used.  See the
+      description of the CURVEOFGROWTH aperture correction for details
+      on how to correct for this.</li>
+</ol>
+
+<p>
+     The aperture correction applied by CURVEOFGROWTH is approximate
+and is intended for preliminary data analysis.  It does not take into
+account changes in the PSF due to temperature or count rate variations
+(see the uvotapercorr fhelp).  For high-precision photometry
+&quot;apercorr=NONE&quot;should be used, and aperture corrections that
+take these factors into account should be performed by the user.
+</p>
+
+<p>
+     Uvotsource returns the following information:
+</p>
+
+<dl>
+<dt>Source Information</dt>
+<dd>The position is the position specified in the &quot;srcreg&quot;
+    region file.  The exposure time is the value of the EXPOSURE
+    keyword.</dt>
+
+<dt>Magnitude Information</dt>
+<dd>The magnitude of the source, its one-sigma statistical error, and
+    the significance of the detection.  Background is the magnitude of
+    the sky.  Background-limit is the &quot;sigma&quot;-sigma limiting
+    magnitude of the exposure.  Coincidence-limit is the magnitude
+    corresponding to a count rate of one count per frame time.</dt>
+
+<dt>Flux Information</dt>
+<dd>The flux density information is given in cgs units of flux per
+    Angstrom unit.  Flux densities are computed from flux conversion
+    factors in &quot;zerofile&quot; assuming a mean GRB spectrum.
+    They do not reflect the actual spectrum of the source.</dd>
+
+<dt>Corrected Rate Information</dt>
+<dd>This is the count rate of the source after all corrections have
+    been applied.  This includes aperture corrections if the
+    &quot;apercorr=CURVEOFGROWTH&quot; was used; large-scale
+    sensitivity corrections if a large-scale sensitivity map was
+    specified; and detector sensitivity corrections if specified.</dd>
+
+<dt>Raw Rate Information</dt>
+<dd>This is the raw count rate from the source after subtracting the
+    background count rate, but before applying coincidence, aperture,
+    or large-scale sensitivity corrections.</dd>
+
+<dt>Flux mJy</dt>
+<dd>The flux density information is given in milliJansky.  Flux
+    densities are computed from flux conversion factors in
+    &quot;zerofile&quot; assuming a mean GRB spectrum.  They do not
+    reflect the actual spectrum of the source.</dd> </dl>
+
+<p>
+     The output FITS file contains the following columns.
+</p>
+
+<dl>
+  <dt>MET</dt>
+  <dd>The mission elapsed time (MET), in seconds since the reference
+      time, of the observation.  The point in the exposure that MET
+      refers to is specified by the TIMEPIXR keyword in the header of
+      &quot;outfile&quot;</dd>
+
+  <dt>EXTNAME</dt>
+  <dd>The name of the FITS extension that this source is in.</dd>
+
+  <dt>TSTART</dt>
+  <dd>The MET start time of the exposure</dd>
+
+  <dt>TSTOP</dt>
+  <dd>The MET stop time of the exposure.</dd>
+
+  <dt>EXPOSURE</dt>
+
+  <dd>Please see
+      &lt;http://swift/gsfc.nasa.gov/docs/swift/analysis/uvot_digest.html&gt;
+      for details about how the UVOT exposure time keywords are used.
+      
+      <p>The EXPOSURE column contains the total exposure time with the
+      following corrections applied.</p>
+
+      <ul>
+        <li>The time that the filter wheel was in BLOCKED is
+            subtracted.</li>
+        <li>The time lost due to the on-board shift-and-add algorithm
+            is subtracted.</li>
+        <li>The time lost because the DPU stalled due to high count
+            rates is subtracted.</li>
+        <li>The dead time is corrected for.</li>
+      </ul>
+
+      <p>EXPOSURE represents the actual time that the detector was was
+         detecting photons.</p>
+</dd>
+
+  <dt>TELAPSE</dt>
+  <dd>TSTOP - START</dd>
+
+  <dt>TIME</dt>
+  <dd>The offset of this row from 'timezero'. uvotsource initializes TIME to 0.
+      uvotmaghist TIME based on its timezero parameter.</dd>
+
+  <dt>SRC_AREA</dt>
+  <dd>The area of the user-supplied source extraction region in square
+      arcseconds.</dd>
+
+  <dt>BKG_AREA</dt>
+  <dd>The area of the user-supplied background region in square
+      arcseconds.</dd>
+
+  <dt>PLATE_SCALE</dt>
+  <dd>The plate scale, in arcsec per pixel, of the image.</dd>
+
+  <dt>RAW_TOT_CNTS</dt>
+  <dd>The total measured counts in the source region.</dd>
+
+  <dt>RAW_TOT_CNTS_ERR</dt>
+  <dd>The one-sigma error in RAW_TOT_CNTS.  This error is calculated
+      using binomial statistics since the number of counts that can be
+      measured is limited by the number of frames in the exposure.
+      The binomial error approaches the Poisson error in the limit of
+      small count rates.  The minimum error is set to 1 count, even
+      if no counts are recorded.</dd>
+
+  <dt>RAW_BKG_CNTS</dt>
+  <dd>The total measured counts in the background region.</dd>
+
+  <dt>RAW_BKG_CNTS_ERR</dt>
+  <dd> The one-sigma error in RAW_BKG_CNTS.  This error is calculated
+      using binomial statistics since the number of counts that can be
+      measured is limited by the number of frames in the exposure.
+      The binomial error approaches the Poisson error in the limit of
+      small count rates.  The minimum error is set to 1 count, even
+      if no counts are recorded.</dd>
+
+  <dt>RAW_STD_CNTS</dt>
+  <dd>The total measured counts in the coincidence loss region.</dd>
+
+  <dt>RAW_STD_CNTS_ERR</dt>
+  <dd> The one-sigma error in RAW_STD_CNTS.  This error is calculated
+      using binomial statistics since the number of counts that can be
+      measured is limited by the number of frames in the exposure.
+      The binomial error approaches the Poisson error in the limit of
+      small count rates.  The minimum error is set to 1 count, even
+      if no counts are recorded.</dd>
+
+  <dt>RAW_TOT_RATE</dt>
+  <dd>The total measured count rate in the source region.</dd>
+
+  <dt>RAW_TOT_RATE_ERR</dt>
+  <dd> The one-sigma error in RAW_TOT_RATE.  RAW_TOT_RATE_ERR =
+       RAW_TOT_CNTS_ERR / EXPOSURE.</dd>
+
+  <dt>RAW_BKG_RATE</dt>
+  <dd>The total measured count rate in the background region.</dd>
+
+  <dt>RAW_BKG_RATE_ERR</dt>
+  <dd> The one-sigma error in RAW_BKG_RATE.  RAW_BKG_RATE_ERR =
+       RAW_BKG_CNTS_ERR / EXPOSURE.</dd>
+
+  <dt>RAW_STD_RATE</dt>
+  <dd>The total measured count rate in the coincidence loss
+      region.</dd>
+
+  <dt>RAW_STD_RATE_ERR</dt>
+  <dd> The one-sigma error in RAW_STD_RATE.  RAW_STD_RATE_ERR =
+       RAW_STD_CNTS_ERR / EXPOSURE.</dd>
+
+  <dt>COI_STD_FACTOR</dt>
+  <dd>The coincidence-loss correction factor for the coincidence-loss
+      region.  This value is the multiplicative correction that is
+      applied to raw count rate (after correcting to the STD_AREA) to
+      get the coincidence-corrected count rate.</dd>
+
+  <dt>COI_STD_FACTOR_ERR</dt>
+  <dd>The COI_STD_FACTOR_ERR = DELTA / RAW_STD_RATE, where
+	  DELTA is the change in the COI_TOT_RATE corresponding to a
+	  1-sigma change in the RAW_STD_RATE.</dd>
+
+  <dt>COI_BKG_FACTOR</dt>
+  <dd>The coincidence-loss correction factor for the background
+      region.  This value is the multiplicative correction that is
+      applied to the background count rate (after correcting to the
+      STD_AREA) to get the coincidence-corrected background count
+      rate.</dd>
+
+  <dt>COI_BKG_FACTOR_ERR</dt>
+  <dd>The COI_BKG_FACTOR_ERR = DELTA / RAW_BKG_RATE, where
+	  DELTA is the change in the COI_BKG_RATE corresponding to a
+	  1-sigma change in the RAW_BKG_RATE.</dd>
+
+  <dt>COI_TOT_RATE</dt>
+  <dd>The coincidence-loss correction count rate in the source
+      region.</dd>
+
+  <dt>COI_TOT_RATE_ERR</dt>
+  <dd>The one-sigma error in COI_TOT_RATE.</dd>
+
+  <dt>COI_BKG_RATE</dt>
+  <dd>The coincidence-loss correction count rate in the background
+      region.</dd>
+
+  <dt>COI_BKG_RATE_ERR</dt>
+  <dd>The one-sigma error in COI_BKG_RATE.</dd>
+
+  <dt>COI_SRC_RATE</dt>
+  <dd>The coincidence-loss correction count rate from just the
+      source.</dd>
+
+  <dt>COI_SRC_RATE_ERR</dt>
+  <dd>The one-sigma error in COI_SRC_RATE.  COI_TOT_RATE_ERR
+      = sqrt(COI_TOT_RATE_ERR**2 + (COI_BKG_RATE_ERR*SRC_AREA)**2 )
+
+  <dt>AP_FACTOR</dt>
+  <dd>The aperture correction factor to be multiplied by COI_SRC_RATE.
+      AP_FACTOR = 1.0 if &quot;apercorr=NONE&quot; was selected.</dd>
+  
+  <dt>AP_FACTOR_ERR</dt>
+  <dd>The one-sigma error in AP_FACTOR.  AP_FACTOR_ERR =
+      AP_COI_SRC_RATE_ERR / COI_SRC_RATE_ERR.</dd>
+
+  <dt>AP_COI_SRC_RATE</dt>
+  <dd>The source count rate with coincidence-loss corrections and
+      aperture corrections applied.</dd>
+
+  <dt>AP_COI_SRC_RATE_ERR</dt>
+  <dd>The one-sigma error in AP_COI_SRC_RATE.  This error is computed
+      as the quadratic sum of COI_SRC_RATE_ERR and the systematic
+      error in the shape of the point-spread function.  The systematic
+      error in the shape of the point-spread function is currently
+      assumed to be 5%.</dd>
+
+  <dt>LSS_FACTOR</dt>
+  <dd>The large-scale sensitivity factor to be applied to AP_COI_SRC_RATE.
+      LSS_FACTOR = 1.0 if no large-scale sensitivity map was specified.</dd>
+
+  <dt>LSS_RATE</td>
+  <dd>The source count rate with coincidence-loss corrections, aperture
+      corrections, and large-scale sensitivity corrections applied.
+      LSS_RATE = AP_COI_SRC_RATE / LSS_FACTOR.</dd>
+
+  <dt>LSS_RATE_ERR</dt>
+  <dd>The one-sigma error in LSS_RATE.  This is computed by dividing
+      AP_COI_SRC_RATE_ERR by LSS_FACTOR.</dd>
+
+  <dt>SENSCORR_FACTOR</dt>
+  <dd>The long-term detector sensitivity correction factor.
+      SENSCORR_FACTOR = 1.0 if no detector sensitivity correction was
+      specified.</dd>
+
+  <dt>SENSCORR_RATE</td>
+  <dd>The source count rate with coincidence-loss corrections, aperture
+      corrections, large-scale sensitivity corrections, and detector sensivity
+      corrections applied.
+      SENSCORR_RATE = LSS_RATE * SENSCORR_FACTOR.</dd>
+
+  <dt>SENSCORR_RATE_ERR</dt>
+  <dd>The one-sigma error in SENSCORR_RATE.
+      SENSCORR_RATE_ERR = LSS_RATE_ERR * SENSCORR_FACTOR.</dd>
+
+  <dt>MAG</dt>
+  <dd>The magnitude of the source in the UVOT system.</dd>
+
+  <dt>MAG_ERR</dt>
+  <dd>The one-sigma error in MAG.</dd>
+
+  <dt>MAG_BKG</dt>
+  <dd>The sky magnitude in the UVOT system.</dd>
+
+  <dt>MAG_BKG_ERR</dt>
+  <dd>The one-sigma error in MAG_BKG</dd>
+
+  <dt>MAG_LIM</dt>
+  <dd>The &quot;sigma&quot;-sigma limiting magnitude in the UVOT
+      system.</dd>
+
+  <dt>MAG_LIM_SIG</dt>
+  <dd>&quot;sigma&quot; for MAG_LIM.</dd>
+
+  <dt>MAG_COI_LIM</dt>
+  <dd>The magnitude where the count rate is the inverse of the frame
+      time.</dd>
+
+  <dt>FLUX_AA</dt>
+  <dd>The flux density in erg/s/cm^2/Angstrom.</dd>
+
+  <dt>FLUX_AA_ERR</dt>
+  <dd>The one-sigma error in FLUX_AA.</dd>
+
+  <dt>FLUX_AA_BKG</dt>
+  <dd>The flux density of the sky in erg/s/cm^2/Angstrom.</dd>
+
+  <dt>FLUX_AA_BKG_ERR</dt>
+  <dd>The one-sigma error in FLUX_AA_BKG.</dd>
+
+  <dt>FLUX_AA_LIM</dt>
+  <dd>The &quot;sigma&quot;-sigma limiting flux density in
+      erg/s/cm^2/Angstrom.</dd>
+
+  <dt>FLUX_AA_COI_LIM</dt>
+  <dd>The flux density where the count rate is the inverse of the
+      frame time.</dd>
+
+  <dt>FLUX_HZ</dt>
+  <dd>The flux density in milliJansky.</dd>
+
+  <dt>FLUX_HZ_ERR</dt>
+  <dd>The one-sigma error in FLUX_HZ.</dd>
+
+  <dt>FLUX_HZ_BKG</dt>
+  <dd>The flux density of the sky in milliJansky.</dd>
+
+  <dt>FLUX_HZ_BKG_ERR</dt>
+  <dd>The one-sigma error in FLUX_HZ_BKG.</dd>
+
+  <dt>FLUX_HZ_LIM</dt>
+  <dd>The &quot;sigma&quot;-sigma limiting flux density in
+      milliJansky.</dd>
+
+  <dt>FLUX_HZ_COI_LIM</dt>
+  <dd>The flux density where the count rate is the inverse of the
+      frame time.</dd>
+
+  <dt>FILTER</dt>
+  <dd>The name of the filter.</dd>
+
+  <dt>RA</dt>
+  <dd>The right ascension of the source.  This is the centre of the
+      region file specified by &quot;srcreg&quot;.</dd>
+
+  <dt>DEC</dt>
+  <dd>The declination of the source.  This is the centre of the
+      region file specified by &quot;srcreg&quot;.</dd>
+
+  <dt>DETX</dt>
+  <dd>The X coordinate of the source in detector coordinates.</dd>
+
+  <dt>DETY</dt>
+  <dd>The Y coordinate of the source in detector coordinates.</dd>
+
+  <dt>SATURATED</dt>
+  <dd>Is the source saturated?</dd>
+
+
+</dl>
+ 
+<p>
+     The errors in the computed quantities are the 1-sigma statistical
+errors based on binomial statistics in the count rates.  The computed
+quantities are appended to the FITS file specified by
+&quot;outfile&quot;  If &quot;syserr=YES&quot; then the systematic
+errors in the calibration are added in quadrature to the statistical
+errors.
+</p>
+
+
+<h2>PARAMETERS</h2>
+<dl>
+
+<dt>image [filename]</dt>
+<dd>Name of a FITS-format UVOT SKY image (filename + extension).
+    Uvotsource acts on a single extension of a multi-extension FITS
+    file.</dd>
+
+<dt>srcreg [filename]</dt>
+<dd>Name of an ASCII source region file.  Set to NONE to compute a
+    limiting magnitude.</dd>
+
+<dt>bkgreg [filename]</dt>
+<dd>Name of an ASCII background region file.</dd>
+
+<dt>sigma [float]</dt>
+<dd>Level of detection significance over the mean background.</dd>
+
+<dt>(zerofile = CALDB) [string]</dt>
+<dd>Zero points file.  The special value CALDB indicates to read from
+    the calibration data base.</dd>
+
+<dt>(coinfile = CALDB) [string]</dt>
+<dd>Coincidence loss correction file.  The special value CALDB
+    indicates to read from the calibration data base.</dd>
+
+<dt>(psffile = CALDB) [string]</dt>
+<dd>Radial encircled energy function (PSF) file.  This is only used if
+    CURVEOFGROWTH is specified.  The special value CALDB indicates to
+    read from the calibration data base.</dd>
+
+<dt>(lssfile = CALDB) [string]</dt>
+<dd>Large-scale sensitivity correction file which can take several forms.
+    FITS file syntax for an HDU having UVOT LSS calibration format.
+    The special value CALDB indicates to read from the calibration data base.
+    The special value NONE indicates to skip this correction.
+    A value SKY:&lt;fitsname&gt; indicates a sky LSS map (as produced by uvotskylss).
+    </dd>
+
+<dt>(sensfile = CALDB) [string]</dt>
+<dd>Detector sensitivity loss correction file.
+	The special value CALDB indicates to read from the calibration data base.
+	The special value NONE indicates to skip this correction.
+	</dd>
+
+<dt>(expfile = NONE) [string]</dt>
+<dd>Exposure map file or NONE.
+    If an exposure map is provided, the tool will ensure that the source
+    and background regions are within the FOV.  Output will only be generated
+    if all pixels in the regions are exposed.  It is not required that every
+    pixel have the same exposure or does not have a NULL value.</dd>
+
+<dt>(syserr = no) [boolean]</dt>
+<dd>Are systematic errors in the photometric calibration to be used in
+    the error calculations.  If set to YES then systematic errors are
+    added in quadrature to the statistical errors.  If set to NO then
+    only statistical errors are returned.</dd>
+
+<dt>(frametime = DEFAULT) [float]</dt>
+<dd>The frame time, in seconds, for the exposure.  If DEFAULT is
+    specified then &quot;frametime&quot; is read from the image
+    header.</dd>
+
+<dt>(apercorr = CURVEOFGROWTH) [string]</dt>
+<dd>Aperture correction calculation algorithm.  NONE or CURVEOFGROWTH.
+    CURVEOFGROWTH assumes a point source.</dd>
+
+<dt>(fwhmsig = -1) [real]</dt>
+<dd>Percentage uncertainty in FWHM of PSF. See uvotapercorr fwhmsig parameter.
+    This parameter is only used if apercorr=CURVEOFGROWTH.</dd>
+
+<dt>(output = ALL) [string]</dt>
+<dd>Output sections specified using a comma separated list.
+	The options are instrumental filter magnitude (MAG),
+    flux density in erg/s/cm^2/Angstrom (FLUX), corrected count rate
+    in counts/s (RATE), raw count rate in counts/s (RAW), flux density
+    in milliJanskys (FLUXJ).  The special value ALL indicates that all
+    sections are to be output.</dd>
+
+<dt>outfile [string]</dt>
+<dd>Output FITS file to append results to.  Uvotsource will create a
+    new file if the specified file does not exist.  The special value
+    NONE indicates to not create an output file.</dd>
+
+<dt>(centroid = no) [boolean]</dt>
+<dd>Centroid source position?  If true, the source position will be centroided
+based on srcreg.  The resulting centroid position will be reported, written to
+the RA and DEC columns, and used as the center of the circular region used for
+coincidence loss correction.
+Only use centroid=yes if srcreg contains a single shape because only the first
+shape (recentered on the centroid) will be used to arrive at SRC_AREA and RAW_TOT_COUNTS.</dd>
+
+<dt>(deadtimecorr = yes) [boolean]</dt>
+<dd>Was the exposure time of the input already dead time corrected?
+</dt>
+
+<dt>(extprec = 0) [integer]</dt>
+<dd>Extra digits of precision to display in terminal output.
+    </dd>
+
+<dt>(subpixel = 8) [integer]</dt>
+<dd>Sub-pixelling level.  Each input pixel is divided along each axis by this factor.  For example, with subpixel=8, each 2-dimensional input pixel is divided into 64=8*8 subpixels).
+    </dd>
+
+<dt>(cleanup = yes) [boolean]</dt>
+<dd>Standard HEAdas cleanup parameter; controls whether temporary
+    files are removed at the end of processing.</dt>
+
+<dt>(clobber = no) [boolean]</dt>
+<dd>Standard HEAdas clobber parameter; controls whether to overwrite
+    pre-existing output files.</dd>
+
+<dt>(chatter = 1) [enumerated integer]</dt>
+<dd>Standard HEAdas chatter parameter (1-5) controlling the verbosity
+    of the task.</dd>
+
+</dl>
+
+
+<h2>EXAMPLES</h2>
+
+<p>
+The following examples illustrate running uvotsource
+</p>
+
+<p>
+1. run uvotsource prompting for all mandatory options:
+</p>
+
+<p>
+<pre>
+      uvotsource
+</pre>
+
+</p>
+
+<p>
+2. run uvotsource specifying many arguments explicitly
+</p>
+
+<p>
+<pre>
+      uvotsource image=sky.img.gz+1 srcreg=src.reg bkgreg=bkg.reg sigma=5 zerofile=CALDB coinfile=CALDB psffile=CALDB lssfile=CALDB syserr=NO frametime=DEFAULT apercorr=NONE output=ALL outfile=sources.fits cleanup=YES clobber=NO chatter=1
+</pre>
+</p>
+
+<p>
+3. run uvotsource with the curve of growth aperture corrections and include
+   systematic errors:
+</p>
+
+<p>
+<pre>
+      uvotsource image=sky.img.gz+1 srcreg=src.reg bkgreg=bkg.reg sigma=5 syserr=YES apercorr=CURVEOFGROWTH outfile=sources.fits
+</pre>
+</p>
+
+
+<h2>SEE ALSO</h2>
+
+<p>
+uvotflux, uvotmaghist, uvotapercorr, uvotcoincidence, uvotlss, uvotdetect,
+ximage, uvotinteg
+</p>
+<p>
+
+
+<h2>LAST MODIFIED</h2>
+
+<p>
+July 2015
+</p>
+
+</body>
+</html>

@@ -1,0 +1,1884 @@
+#!/usr1/local/bin/perl5 -s
+#!/usr/bin/perl -s
+
+$taskname = "bat-burst-advocate";
+$taskver  = "2.46";
+$id = "$taskname v$taskver";
+
+# @BEGIN_DOC
+# ====================================================================
+#
+# bat-burst-advocate - BAT gamma-ray burst event processing pipeline
+#
+# USAGE: bat_grb_evt indir outdir
+#
+# This script implements a working processing pipeline for BAT event
+# data.  It starts from basic files in the level 1 output, and
+# produces calibrated light curves, spectra, images, and duration
+# measures.
+#
+# These processing steps are layed out in the "BAT Pipeline Outline"
+# message.  Also, there is a hand-written flow chart which describes
+# the same steps.
+#
+# Parameters
+#
+#   indir - input directory containing level 1 data
+#           Required subdirectories:
+#               bat, tdrss, auxil, log
+#          
+#   outdir - output directory containing processed results
+#            subdirectories include: aux (quality map),
+#            dpi (detector plane images), gti (good time intervals),
+#            img (sky images), lc (light curves), pha (spectra)
+#
+# Prerequisites:
+#  * level 1 processed pipeline data
+#      including: event data, enable/disable maps, TDRSS position
+#                 message
+#  * BAT ground software build 11 or greater
+#  * BAT CALDB files (build 11 or greater)
+#  * Utility scripts in BAT/ directory
+#  * SimpleFITS.pm for simple processing of FITS files
+#
+# MODIFICATIONS
+#   02 Sep 2004
+#     New, more robust method to determine the obsid;
+#     Normalize the quaternions, since the pipeline produces some
+#       invalid ones;
+#     When estimating Bayesian blocks and durations, attempt several
+#       time bin sizes, instead of just 4 ms.
+#     Wrap more calls in eval { } brackets for safety, to defend
+#       against missing files.  It turns out this is common, for
+#       example, no "slew" or "post-slew" event files.
+#     Debugging changes (more diagnostic output)
+#
+# 2005 Jan 26 Huge changes to accomodate the ever shifting sands of
+#     the SDC pipeline desert.
+#
+# 2005 Apr 18 v2.14.  Trying to document changes again.  Defend
+#     against improper DATE-OBS values which have been showing up
+#     in the pipeline.  The date_obs parameter provides a means of
+#     overriding the pipeline value.
+#
+# 2005 Apr 19 v2.15.  Fix simple Perl syntax errors.  No functional
+#    changes.
+#
+# 2005 Apr 19 v2.16.  Allow users to specify ra/dec without also
+#    being required to give trigtime etc times.  Also prompt for
+#    indir/outdir instead of usage message.
+#
+# 2005 Apr 25 v2.17.  Be more flexible about the lack of background
+#    time interval information (for image triggers).  Also fixes 
+#    reporting of some time intervals.
+#
+# 2005 May 21 v2.18. Error checking when extracting fluence values
+#   using ftlist.
+#
+# 2005 Jul 13 v2.19. Add 'tbkgsub' so that the user can choose whether
+#   to background subtract the light curve or not during the duration
+#   measuring stage.
+#
+# 2005 Jul 14 v2.20. Allow position refinement even when the trigger
+#   is an image trigger.  It may fail though...
+#
+# 2005 Aug 17 v2.21. Change COUNTS spectra to RATE, so that more 
+#   downstream software functions properly (i.e. because CMPPHA
+#   and GRPPHA are not capable of handling fractional counts)
+#
+# 2005 Aug 18 v2.22. Add SNR-based error radius on the refined
+#   position.
+#
+# 2005 Sep 16 v2.23. The event data is no longer restricted to the
+#   pointing containing the trigger.  The GRB can now extend into the
+#   previous slew.
+#
+# 2005 Oct 17 v2.24. Add more error checking for tasks prone to
+#   crashing.
+#
+# 2006 Jan 05 v2.25 Further revisions to address file names changes in
+#                   the SDC pipeline.
+#
+# 2006 Mar 23 v2.26 Add the pcodethresh parameter, to exclude bad
+#                   data when GRB is at the edge of the FOV
+#
+# 2006 Mar 23 v2.27 Keep all Bayesian blocks files used for estimating
+#                   the burst duration, even if they "fail."
+#
+# 2006 Mar 23 v2.28 Some small clean-ups regarding file names and 
+#                   preserving the duration files.
+#
+# 2006 Apr 24 v2.29 Add optional extractor fextract-events (for speed)
+#
+# 2006 May 01 v2.30 Print local time in processing start time.
+#                   Prevent a successful battblocks run which is 
+#                    not accepted from being reported in the final output.
+#                   Convert output to sexigesimal as well.
+#
+# 2006 May 10 v2.31 Add 'aperture' option: ability to select aperture file.
+#
+# 2006 May 10 v2.32 Make 'aperture' option work with images
+#
+# 2006 Sep 8 v2.33 Automatically filter out multi-hits and tagged
+#      source events; print a warning message if the significance is low;
+#      Log every input parameter value.
+#
+# 2006 Oct 25 v2.34 For post-slew spectrum, now include only the time
+#      which intersects the GTI_TOT total duration.  Otherwise we are
+#      just including noise.  The pre-slew spectrum was already OK.
+#      The post-slew image is kept as-is (total post-slew pointing
+#      direction), since it may be interesting to know the faint emission
+#      at late times.
+#
+#      Also, include the call to 'batdetmask' when making a quality map.
+#
+# 2006 Nov 15 v2.35 Fix the 'ftselect' command, which used positional
+#      arguments which confused the new APE parameter parsing library.
+#      Updated all FTOOLS calls to use named parameters everywhere.
+#
+# 2006 Dec 31 v2.36 Fix two small bugs.  Change from pquery2 to pget
+#     to retrieve parameters values frome the sky2xy and fimgpar tasks
+#     in pcode.pm.  Also fix a bug in the declaration of the
+#     variable $skypix in imageutils.pm.  Neither is fatal.
+#
+# 2007 Aug 14 v2.37 Add the 'shortfix' parameter to work around a problem
+#     with short burst trigger time intervals.  A new function sm_time()
+#     was added to BAT::tdrss.pm that queries a BAT scaled map.  The trigger
+#     time intervals are now explicitly displayed on the console.
+#
+# 2007 Aug 14 v2.38 Add a 16 millisecond trial when searching for
+#     burst duration.
+#
+# 2007 Sep 13 v2.39 Make aperture=CALDB:FLUX the default, to avoid
+#     some ambiguities in CALDB selection of the aperture file.
+#
+# 2007 Nov 06 v2.40 Fix to BAT/gti.pm to compensate for new version of
+#     SimpleFITS
+#
+# 2007 Nov 07 v2.41 Avoid using battblocks tlookback when trying light
+#     curves with large bins (1 sec or larger); avoid running battblocks
+#     redundantly on the final pass, and just use the previously
+#     calculated values (also required update to bayes->compute()).
+#
+# 2008 Nov 14 v2.42 Work around a bug in extractor regarding 
+#     how GTI extension names are passed; if extractor fails,
+#     this is considered fatal rather than cautionary.
+#
+# 2009 Mar 05 v2.43 Add 'tnear' and 'tbinmax' parameters, for controlling
+#     time filtering and how many light curve binnings are attempted.
+#     Extensive documentation added regarding how the task operates.
+#
+# 2009 Mar 12 v2.44 Provide better documentation in the process.log file
+#     of what each command is meant to do.  Most commands are now preceded
+#     by a comment of the form:
+#        " ** Descriptive comment"
+#     to identify the purpose.  This should help users who wish to
+#     craft their own calls, to locate the appropriate example.
+#
+# 2009 Jun 02 v2.45 Allow usage with failed triggers which have only an 
+#     'alert' message and no 'position' message.  User will need to supply
+#     position and foreground/background times.
+#
+# 2010 May 05 v2.46 Allow usage with SDC test data sets, that have the
+#     form 'stNNNNNNNNNN' instead of 'swNNNNNNNNNN'
+# 
+#
+# $Id: bat-burst-advocate,v 1.59 2013/01/22 22:27:23 craigm Exp $
+#====================================================================
+# @END_DOC
+
+# Processing log
+@log = ();
+$processing_tstart = `date`;
+chomp($processing_tstart);
+
+# Initial 'use' commands needed for environment check
+use POSIX;
+use BAT::log;
+use BAT::env;
+use HEACORE::HEAINIT;
+
+# ================ Overall eval for error trapping ======
+eval {
+    $mainstatus = headas_main(\&bat_burst_advocate_main);
+};
+
+sub bat_burst_advocate_main {
+
+BAT::log->sep(\@log);
+# ====================================================================
+BAT::log->log(\@log," ============= $id ================= ");
+BAT::log->log(\@log,"# Environment variable check");
+
+eval {
+    BAT::env->check();
+  };
+die $@ if $@;
+BAT::log->log(\@log,"HEADAS=$ENV{HEADAS}",1);
+BAT::log->log(\@log,"LHEASOFT=$ENV{LHEASOFT}",1);
+BAT::log->log(\@log,"CALDB=$ENV{CALDB}",1);
+BAT::log->log(\@log,"LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}",1);
+BAT::log->log(\@log,"PERLLIB=$ENV{PERLLIB}",1);
+
+
+# ====================================================================
+BAT::log->log(\@log,"# Importing external modules");
+# Standard and FITS modules
+use Astro::FITS::CFITSIO qw(:longnames :constants);
+use POSIX;
+use Time::Local;
+
+# Import BAT modules
+use BAT::bayes;    # Bayesian blocks and duration measures
+use BAT::config;   # Task configuration
+use BAT::dpi;      # Detector plane images
+use BAT::env;      # Check task environment
+use BAT::fixup;    # Fix files for pipeline errors
+use BAT::gti;      # Utility module to read/write GTIs
+use BAT::image;    # Sky image computations
+use BAT::image_params;  # Read BAT imaging system parameters
+use BAT::lc;       # Light curve accumulation
+use BAT::maskwt;   # Mask weighting computations
+use BAT::pcode;    # Partial coding utility routine
+use BAT::qmap;     # Quality map determination
+use BAT::spectra;  # Spectra accumulation
+use BAT::tdrss;    # TDRSS information retrieval
+use BAT::posrefine;# Position refinement
+use BAT::log;      # Logging of text
+
+# ====================================================================
+# Default configuration
+BAT::log->log(\@log,"Reading default configuration...");
+eval {
+    $info = BAT::config->set($info);
+  };
+die $@ if ($@);
+
+
+# ====================================================================
+# Read command line parameters
+use HEACORE::HEAUTILS;
+use HEACORE::PIL;
+
+set_toolname($taskname);
+set_toolversion($taskver);
+
+BAT::log->log(\@log, "PARAMETER VALUES");
+if (PILGetString('indir', $root) ||
+    PILGetString('outdir', $outdir)) {
+    print "USAGE: bat-burst-advocate input-dir output-dir\n";
+    exit 0;
+}
+BAT::log->log(\@log, "  indir=$root\n"."  outdir=$outdir");
+
+if (PILGetString('ra',$ra1) || PILGetString('dec',$dec1)) {
+    die "ERROR: could not read ra/dec parameters";
+}
+BAT::log->log(\@log, "  ra=$ra1\n"."  dec=$dec1");
+if ($ra1 != 0.0 && $dec1 != 0.0) {
+    $info->{extern_pos} = [$ra1 + 0.0, $dec1 + 0.0];
+    $desired_pos = "EXTERNAL";
+} elsif ($ra1 eq "BAT") {
+    $desired_pos = "BAT";
+} elsif ($ra1 eq "XRT") {
+    $desired_pos = "XRT";
+} elsif ($ra1 eq "BLIND") {
+    $desired_pos = "BLIND";
+} else {
+    die "ERROR: ra/dec must either be numerical or BAT, XRT or BLIND";
+}
+if (PILGetReal('trigtime', $info->{trigtime0}) ||
+    PILGetReal('trigstop', $info->{trigstop0}) ||
+    PILGetReal('backstrt', $info->{backstrt0}) ||
+    PILGetReal('backstop', $info->{backstop0}) ||
+    PILGetString('date_obs', $userdateobs) ||
+    PILGetString('extractor', $extractor) ||
+    PILGetBool('tbkgsub', $info->{tbkgsub})) {
+    die "ERROR: could not read required task parameters";
+}
+BAT::log->log(\@log, 
+  "  trigtime=$info->{trigtime0}\n".
+  "  trigstop=$info->{trigstop0}\n".
+  "  backstrt=$info->{backstrt0}\n".
+  "  backstop=$info->{backstop0}\n".
+  "  date_obs=$userdateobs\n"."  extractor=$extractor");
+if ($desired_pos eq "BLIND") {
+    if ($info->{trigtime0} == 0.0 || $info->{trigstop0} == 0.0 ||
+	$info->{backstrt0} == 0.0 || $info->{backstop0} == 0.0) {
+	die "ERROR: User must specify trigtime/trigstop/backstrt/backstop \n" .
+	    "       when specifying a 'BLIND' GRB position.";
+    }
+}
+
+if ($userdateobs ne "INDEF") {
+    if ($userdateobs !~ m/^20\d\d-\d\d-\d\d/) {
+	  die "ERROR: date_obs must either be INDEF or the observation date ".
+	      "  in the form of 'YYYY-MM-DD'.";
+    }
+}
+
+if (PILGetString('aperture', $info->{aperture})) {
+    die "ERROR: could not read 'aperture' parameter";
+}
+BAT::log->log(\@log, "  aperture=$info->{aperture}");
+if ($info->{aperture} =~ m/INDEF/i) {
+    undef($info->{aperture});
+}
+
+# This is confusing code because of the renaming going on.
+# Originally 'pcodethresh' was used to control only the partial
+# coding threshold for mask weighting only.  Later, the
+# 'imgpcodethresh' parameter was added to control behavior
+# of batfftimage.
+if (PILGetReal('pcodethresh', $info->{evt_pcodethresh})) {
+    die "ERROR: could not read 'pcodethresh' parameter";
+}
+if (PILGetReal('imgpcodethresh', $info->{pcodethresh})) {
+    die "ERROR: could not read 'imgpcodethresh' parameter";
+}
+BAT::log->log(\@log, "  pcodethresh=$info->{evt_pcodethresh} imgpcodethresh=$info->{pcodethresh}");
+
+if (PILGetString('shortfix', $shortfix)) {
+  die "ERROR: could not read 'shortfix' parameter";
+}
+BAT::log->log(\@log, "  shortfix=$shortfix");
+$shortfix = ",$shortfix,";
+
+if (PILGetReal('tnear', $tnear)) {
+  die "ERROR: could not read 'tnear' parameter";
+}
+BAT::log->log(\@log, "  tnear=$tnear");
+
+
+# Time bin sizes for searching for burst duration.
+@tbinsizes = (0.004, 0.016, 0.064, 1.0, 16.0);
+if (PILGetReal('tbinmax',$tbinmax)) {
+  die "ERROR: could not read 'tbinmax' parameter";
+}
+if ($tbinmax < $tbinsizes[0]) {
+  die "ERROR: 'tbinmax' must not be smaller than $tbinsizes[0]";
+}
+BAT::log->log(\@log, "  tbinmax=$tbinmax");
+
+# ====================================================================
+BAT::log->log(\@log,"# Reading input parameters");
+
+BAT::log->log(\@log, "     root=$root outdir=$outdir");
+
+# XXXXXXXXXXX
+# Computation dials: spend more or less time computing stuff
+$four_chan_maps = 0;    # Compute 4 channel images? 1=yes 0=no
+
+
+# ====================================================================
+#
+# Input directory paths
+#
+#   These change with the flavor of the month SDC
+#
+
+$auxdir = "$root/auxil";
+$tdrssdir = "$root/tdrss";
+$batdir = "$root/bat";
+$evdir  = "$batdir/event";
+$hkdir  = "$batdir/hk";
+
+# Required files:
+#  1. $root/auxil/sw*sat.fits*  *FILENAME MUST CONTAIN TRIGGER NUMBER*
+#  2. $root/tdrss/sw*ce.fits*   *MUST BE IN BAT2FITS6 FORMAT*
+#  3. $root/bat/event/sw*bevsh*.evt*   (event file)
+#  4. $root/hk/sw*bdecb.fits*  (enable/disable map)
+#  5. $root/hk/sw*ben.hk*      (housekeeping file - OPTIONAL)
+
+die "ERROR: Input directory $root does not exist"
+    if (! -d $root );
+
+die "ERROR: Input directory $root does not have the right Swift directory structure"
+    if (! -d $root || ! -d $auxdir || ! -d $batdir || ! -d $evdir || ! -d $hkdir);
+
+
+# ====================================================================
+# Read the Target ID from something that *should* be there, the Swift
+# housekeeping file
+BAT::log->log(\@log,"Reading target ID...");
+@swhkfiles = glob("$auxdir/*sat.fits*");
+die "ERROR: could not find S/C housekeeping file" if ($#swhkfiles == -1);
+if ($swhkfiles[0] =~ m/s[wt]([0-9]+)([0-9]{3})sat/) {
+    $info->{targ_id} = $1;
+    $info->{seg_id}  = $2;
+    $info->{obsid}   = "$1$2";
+} else {
+    die "ERROR: Input directory $root does not have an obvious obsid (was looking for a file named $auxdir/*sat.fits* but found none) ";
+}
+$targ_id = $info->{targ_id};
+$seg_id  = $info->{seg_id};
+$obsid   = $info->{obsid};
+BAT::log->log(\@log,"     TARG_ID='$targ_id'");
+
+# ====================================================================
+# File names
+
+# Event files...  (pre-slew, slew, post-slew)
+$info->{events_all} = join(",",glob("$evdir/s[wt]*bevsh*.evt*"));
+BAT::log->log(\@log, "events=$info->{events_all}");
+
+#   Teldef and aperture files
+$info->{teldef} = "CALDB";
+if (! defined($info->{aperture}) ) { $info->{aperture} = "CALDB:FLUX"; }
+
+# ====================================================================
+# Base output file name
+$basename = "sw${obsid}b_";
+
+# ====================================================================
+BAT::log->log(\@log,"Making output directories");
+# Make output directories
+
+mkdir("$outdir",0777) if (! -d "$outdir");
+mkdir("$outdir/gti",0777) if (! -d "$outdir/gti");
+mkdir("$outdir/auxil",0777) if (! -d "$outdir/auxil");
+mkdir("$outdir/lc",0777) if (! -d "$outdir/lc");
+mkdir("$outdir/pha",0777) if (! -d "$outdir/pha");
+mkdir("$outdir/dpi",0777) if (! -d "$outdir/dpi");
+mkdir("$outdir/img",0777) if (! -d "$outdir/img");
+mkdir("$outdir/events",0777) if (! -d "$outdir/events");
+
+# ====================================================================
+BAT::log->log(\@log,"Finding attitude files");
+# Attitude files
+@attitude_files = glob("$auxdir/*sat.fits*");
+if ($#attitude_files == -1) {
+    die "ERROR: could not find an attitude files!";
+}
+$attitude = $attitude_files[0];
+BAT::log->log(\@log, "     attitude=$attitude");
+
+# Also renormalize the quaternions.  This will not be optimal unless
+# we adjust the largest component, but this is something that will at
+# least work, and the error should be small enough not to worry, I
+# think.
+$attout = "$attitude";
+if ($attout =~ m|^.*/([^/]*)|) { $attout = "$1"; }
+$attout = "$outdir/auxil/$attout";
+$cmd = "ftcopy infile='${attitude}[col *; QPARAM = QPARAM / sqrt(sum(QPARAM*QPARAM))]' ".
+    "outfile='$attout' clobber=yes";
+# print "$cmd\n";
+# system($cmd);
+
+@result = `$cmd`;
+$attitude = "$attout";
+$info->{attitude} = $attitude;
+
+
+# ====================================================================
+# Default image parameters, used for flight
+BAT::log->log(\@log,"Extracting image parameters...");
+eval {
+    $info = BAT::image_params->set($info,"$hkdir/*ben.hk*");
+  };
+die $@ if ($@);
+$bat_z    = $info->{bat_z};
+$origin_z = $info->{origin_z};
+
+BAT::log->log(\@log, "     bat_z=$bat_z origin_z=$origin_z");
+
+BAT::log->sep(\@log);
+# ====================================================================
+# Pull the GRB position and other TDRSS parameters
+
+$trigtime_from = "unknown";
+
+BAT::log->log(\@log,"Reading the GRB parameters...");
+die "ERROR: $tdrssdir directory was not present" if (! -d "$tdrssdir");
+@tdrss_list = glob("$tdrssdir/s[wt]*ms?ce.fits*");
+if ($#tdrss_list >= 0) {
+    eval {
+        # Search both BAT 'Al'ert and 'Ce'ntroid messages
+        #    (also XRT 'Ce'ntroid messages)
+        # Since the 'Al'ert is listed first, its values should be 
+        # overridden by any following 'Ce'ntroid messages.
+	$info = BAT::tdrss->centroid($info,"$tdrssdir/s[wt]*ms?{al,ce}.fits*");
+	$trigtime_from = "TDRSS position message";
+    };
+    # FATAL ERROR if cannot find the TDRSS message
+    die $@ if ($@);
+}
+
+# ====================================================================
+# NOTE:
+# Special case for short trigger criteria
+# The TDRSS position message has an *incorrect* trigger time. There
+# are two ways to resolve this:
+#    1. If available, the scaled map file contains a more accurate 
+#       trigger time.
+#    2. The trigger time window can be expanded to ~320 msec in order
+#       to include the full possible range for when the trigger 
+#       occurred.
+#
+
+# Short triggers have critium numbers 10XXX
+if ($info->{trigsatf} >= 10000 && $info->{trigsatf} <= 10999) {
+  my ($good);
+  $good = 0;
+  
+  BAT::log->log(\@log,"Trying to improve short trigger interval...");
+  if ($shortfix =~ m/,scaledmap,/i) {
+    eval {
+      BAT::log->log(\@log,"   (checking scaled map)");
+      $info = BAT::tdrss->sm_time($info,"$tdrssdir/s[wt]*ms?sm.fits*");
+      $good = 1;  # Only is set if sm_time() succeeds
+      BAT::log->log(\@log,"   (found trigger time interval from scaled map)");
+      $trigtime_from = "(*SHORT BURST*) TDRSS scaled map message";
+    };
+    warn $@ if ($@);
+  }
+
+  # Either the scaled map failed or we can expand the trigger interval
+  if ((not $good) && ($shortfix =~ m/,expand,/i)) {
+    BAT::log->log(\@log,"   (expanding trigger interval to ~320 msec)");
+
+    # According to D. Palmer, the TRIGTIME is the *start* of a 320 msec
+    # interval that contains the *end* of the time bin.
+
+    $foreexpo = $info->{foreexpo}*1000.0;  # Known short trigger time
+
+    $info->{trigstop} = $info->{trigtime} + 0.320 + $foreexpo/1000.0;
+    $info->{trigtime} = $info->{trigtime} - $foreexpo/1000.0;
+
+    # Sanity checks on the background
+    if ($info->{backstop} > $info->{trigtime} ) { $info->{backstop} = $info->{trigtime}; }
+    if ($info->{backstrt} > $info->{backstop} ) { $info->{backstrt} = $info->{backstop} - 8; }
+
+
+    $trigtime_from = "(*SHORT BURST*) Expanded to TRIGTIME - $foreexpo ms to TRIGTIME + 320 ms";
+    $good = 1;
+  }
+
+  if (not $good) {
+    warn "WARNING: the short trigger interval was not adjusted.  ".
+      "The burst may be missed!!!  Warning at ";
+  }
+}
+
+# The command line values override the TDRSS message values
+$info->{trigtime} = $info->{trigtime0} if ( $info->{trigtime0} );
+$info->{trigstop} = $info->{trigstop0} if ( $info->{trigstop0} );
+$info->{backstrt} = $info->{backstrt0} if ( $info->{backstrt0} );
+$info->{backstop} = $info->{backstop0} if ( $info->{backstop0} );
+if ($info->{trigtime0} || $info->{trigstop0} ) {
+  $trigtime_from = "Command line";
+}
+
+# Check for partially sane values - an image trigger will
+# be missing the BACKSTRT/STOP values
+if ($info->{trigtime} != 0.0 && $info->{trigstop} != 0.0 &&
+    $info->{backstrt} == 0.0 && $info->{backstop} == 0.0) {
+    warn "WARNING: This is an image trigger that does not have\n" .
+	"       a background interval.  If needed, the backstrt/backstop\n" .
+	"       values should be specified on the command line.  Warning";
+    $info->{backstrt} = 0.0;
+    $info->{backstop} = $info->{trigstrt};
+}
+
+# Now check that the values are still sane
+if ($info->{trigtime} == 0.0 || $info->{trigstop} == 0.0) {
+    die "ERROR: There was no valid TDRSS position message, and the\n" .
+	  "       command line trigtime/trigstop/backstrt/backstop \n" .
+	  "       parameters were not all specified.  Error";
+}
+
+die "ERROR: TRIGTIME keyword was not found in the TDRSS data" 
+    if (! $info->{trigtime});
+
+BAT::log->log(\@log,"NOTE: Using the following trigger foreground / background intervals");
+BAT::log->log(\@log,sprintf("             %18s %18s", "--START--", "--STOP--"));
+BAT::log->log(\@log,sprintf(" Foreground  %18.3f %18.3f", $info->{trigtime}, $info->{trigstop}));
+BAT::log->log(\@log,sprintf(" Background  %18.3f %18.3f", $info->{backstrt}, $info->{backstop}));
+BAT::log->log(\@log,"Intervals from: $trigtime_from");
+ 
+
+# ====================================================================
+# Write fall-back GTIs based on TDRSS intervals
+BAT::log->log(\@log,"Writing GTIs based on TDRSS time intervals...");
+
+$gtiheader->{MJDREFI} = $info->{mjdrefi}   if ($info->{mjdrefi});
+$gtiheader->{MJDREFF} = $info->{mjdreff}   if ($info->{mjdreff});
+$gtiheader->{TIMEZERO} = $info->{timezero} if ($info->{timezero});
+
+
+$tdrss_gti = "$outdir/gti/${basename}tdrss.gti";
+unlink($tdrss_gti);
+$status = BAT::gti->write("$tdrss_gti","GTI_TOT",
+			  [$info->{trigtime}],[$info->{trigstop}], $gtiheader);
+$status = BAT::gti->write("$tdrss_gti","GTI_BKG1",
+			  [-1.0e307],[$info->{backstop}], $gtiheader);
+$status = BAT::gti->write("$tdrss_gti","GTI_BKG2",
+			  [$info->{trigstop}+60],[+1.0e307], $gtiheader);
+$info->{gti_tdrss} = "$tdrss_gti";
+push @outfiles, "$tdrss_gti";
+push @outdescr, "Good time intervals from TDRSS files";
+
+# ====================================================================
+# Set the best position, based on conditions.  Priority:
+#   1. Externally known position
+#   2. XRT position (unless this is ground test data)
+#   3. BAT TDRSS position
+$info->{best_pos} = $info->{bat_pos};
+$info->{best_src} = "BAT";
+if (defined($info->{xrt_pos}) && $desired_pos eq "XRT") {
+    $info->{best_pos} = $info->{xrt_pos};
+    $info->{best_src} = "XRT";
+}
+if (defined($info->{extern_pos}) && $desired_pos eq "EXTERNAL") {
+    $info->{best_pos} = $info->{extern_pos};
+    $info->{best_src} = "EXTERNAL";
+}
+
+if ($desired_pos ne "BLIND") {
+    $ra  = $info->{best_pos}->[0];
+    $dec = $info->{best_pos}->[1];
+}
+$trigtime = $info->{trigtime};
+BAT::log->log(\@log,"     trigtime=$trigtime");
+BAT::log->log(\@log,"     best position ra=$ra dec=$dec");
+
+
+# ====================================================================
+# Get enable/disable map matching the trigger time
+
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Finding the enable/disable map...");
+$qmap = "$outdir/auxil/${basename}qmap.fits";
+eval {
+    $info = BAT::qmap->qmap($info, \@log, $trigtime, "$hkdir/*bdecb.{hk,fits}*",
+			    $info->{events_all}, $qmap);
+};
+if ($@) {
+    warn $@;
+    $info->{qmap}       = "NONE";
+    $info->{enable_map} = "NONE";
+} else {
+    push @outfiles, "$info->{qmap}";
+    push @outdescr, "BAT quality map derived from event data";
+}
+# Strictly, this is only the "event" quality map
+$info->{qmap_event} = $info->{qmap};
+
+$enamap = $info->{enable_map};
+BAT::log->log(\@log,"     qmap=$qmap");
+BAT::log->log(\@log,"     enamap=$enamap");
+
+# ====================================================================
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Making good time intervals...");
+$gtibase = "$outdir/gti/${basename}";
+$gtisett = "${gtibase}acs_sett.gti";
+$gti10am = "${gtibase}acs_10am.gti";
+$gtislew = "${gtibase}acs_slew.gti";
+$gtipre  = "${gtibase}grb_preslew.gti";
+$gtiin   = "${gtibase}grb_inslew.gti";
+$gtipost = "${gtibase}grb_postslew.gti";
+$gtinear = "${gtibase}grb_near.gti";  # Data near the trigger
+
+
+$cmd = "maketime infile='${attitude}[ACS_DATA]' outfile='$gtisett' " .
+    "expr='FLAGS == bx1xxxxxxx' name=NONE value=NONE time=TIME compact=no " .
+    "prefr=0.5 postfr=0.5 clobber=yes";
+unlink($gtisett);
+$? = BAT::log->callnote(\@log,$cmd,
+			"Locating master settled good time intervals");
+if ($? || ! -f $gtisett ) {
+    die "ERROR: Could not create settled gti $gtisett";
+}
+
+$cmd = "maketime infile='${attitude}[ACS_DATA]' outfile='$gti10am' " .
+    "expr='FLAGS == b1xxxxxxx' name=NONE value=NONE time=TIME compact=no " .
+    "prefr=0.5 postfr=0.5 clobber=yes";
+unlink($gti10am);
+$? = BAT::log->callnote(\@log,$cmd,
+		    "Locating master '10-arcminute' settling good time intervals");
+if ($? || ! -f $gti10am ) {
+    die "ERROR: Could not create settling gti $gti10am";
+}
+
+$cmd = "maketime infile='${attitude}[ACS_DATA]' outfile='$gtislew' " .
+    "expr='FLAGS == b00xxxxxx' name=NONE value=NONE time=TIME compact=no " .
+    "prefr=0.5 postfr=0.5 clobber=yes";
+unlink($gtislew);
+$? = BAT::log->callnote(\@log,$cmd,
+			"Locating master slew good time intervals");
+if ($? || ! -f $gtislew ) {
+    die "ERROR: Could not create slewing gti $gtislew";
+}
+
+# Now extract the specific pre-slew, slew and post-slew GTIs
+$cmd = "ftcopy infile='${gti10am}[STDGTI][(START < $trigtime) && (STOP > $trigtime)]' outfile='$gtipre' clobber=yes";
+unlink($gtipre);
+$? = BAT::log->callnote(\@log,$cmd,
+			"Creating GRB pre-slew GTI from master settling GTI");
+if ($? || ! -f $gtipre ) {
+    die "ERROR: Could not create pre-slew gti $gtipre";
+}
+
+$cmd = "ftcopy infile='${gti10am}[STDGTI][(START > $trigtime)]' outfile=- | ".
+  "ftcopy infile='-[STDGTI][#ROW == 1]' outfile='$gtipost' clobber=yes ";
+unlink($gtipost);
+$? = BAT::log->callnote(\@log,$cmd,
+			"Creating GRB post-slew GTI from master settling GTI", 1);
+if ($? || ! -f $gtipost ) {
+    BAT::log->log(\@log, "NOTE: No post-slew interval found");
+    undef($gtipost);
+}
+
+$cmd = "ftcopy infile='${gtislew}[STDGTI][(START > $trigtime)]' outfile=- | ".
+  "ftcopy infile='-[STDGTI][#ROW == 1]' outfile='$gtiin' clobber=yes ";
+unlink($gtiin);
+$? = BAT::log->callnote(\@log,$cmd,
+		    "Creating GRB slew GTI from master slew GTI", 1);
+if ($? || ! -f $gtiin ) {
+    BAT::log->log(\@log, "NOTE: No slew interval found after the trigger");
+    undef($gtiin);
+}
+BAT::log->log(\@log, "  done");
+
+# GTI for data near the trigger
+$status = BAT::gti->write("$gtinear", "GTI_NEAR",
+			  [$info->{trigtime}-$tnear], [$info->{trigtime}+$tnear],
+			  $gtiheader);
+
+# warn "XXXX: Skipping slew calculation";
+# undef($gtiin);
+
+# ====================================================================
+# Make events files for the pre-slew, slew and post-slew intervals
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Extracting events near the trigger");
+
+if ($extractor eq "fextract-events") {
+    $extopts = "gti=GTI ";
+
+    # See below.  No need for special workarounds by fextract-events
+    $extractor_gtinear = "";
+    $extractor_gtipre  = "";
+    $extractor_gtipost = "";
+    $extractor_gtiin   = "";
+
+} else {
+    $extopts = "imgfile=NONE phafile=NONE fitsbinlc=NONE " .
+	"regionfile=NONE xcolf=DETX ycolf=DETY gti=GTI " .
+	"tcol=TIME ecol=PI xcolh=DETX ycolh=DETY ";
+
+    # XXX
+    # These are to work around issues with how extractor is called;
+    # it needs to know the exact extension name.  Unfortunately that
+    # means that I need to hard-code extension names.
+    $extractor_gtinear = "gtinam=GTI_NEAR";
+    $extractor_gtipre  = "gtinam=STDGTI";
+    $extractor_gtipost = "gtinam=STDGTI";
+    $extractor_gtiin   = "gtinam=STDGTI";
+}
+
+# Make a batch file since extractor is so f-ing stupid that it
+# can't accept multiple files on the command line.
+@eventlist = split(/,/,$info->{events_all});
+$events = "$outdir/auxil/allevents.lis";
+open(EVTFILE,">$events") or die "ERROR: could not open $events for writing";
+foreach $eventfile (@eventlist) {
+    print EVTFILE "$eventfile\n";
+}
+close(EVTFILE);
+
+# Turn the file name into a batch file name
+$events = "@" . "$events";
+
+$outevents = "$outdir/events/${basename}all.evt";
+if ($gtinear) {
+    unlink($outevents);
+    BAT::log->log(\@log, "  All events");
+    $cmd = "$extractor filename='$events' eventsout='$outevents' timefile='$gtinear' $extopts $extractor_gtinear";
+    $? = BAT::log->callnote(\@log,$cmd,
+			    "Extracting all near-GRB events", 1);
+    if ($? || ! -f $outevents ) {
+	BAT::log->log(\@log, "ERROR: Total event file could not be created");
+	undef($gtinear);
+	# NOTE: this used to be a non-fatal note, but an extractor
+	# failure at this early stage is surely a fatal error.
+	die "ERROR: Total event file could not be created";
+    } else {
+ 	$info->{events_all} = $outevents;
+	$events = $outevents;
+    }
+}
+
+
+
+BAT::log->log(\@log,"Setting TRIGTIME (and possibly DATE-OBS) in the event files...");
+# Write TRIGTIME into each event file
+@evfiles = glob("$outdir/events/*.evt");
+foreach $evfile (@evfiles) {
+    $fits = SimpleFITS->open("+<$evfile")->move("EVENTS");
+    die "ERROR: could not open $evfile" if ($fits->status() != 0);
+    
+    $fits->writekey('TRIGTIME', $info->{trigtime}, "[s] MET Trigger Time");
+    die "ERROR: could not write TRIGTIME keyword to $evfile" if ($fits->status());
+    
+    if ($userdateobs ne "INDEF") {
+	$fits->writekey('DATE-OBS', "$userdateobs");
+	$fits->writekey('DATE-END', "$userdateobs");
+	die "ERROR: could not write DATE-OBS='$userdateobs' keyword to $evfile"
+	    if ($fits->status() != 0);
+    }
+    
+    $dateobs = $fits->readkey('DATE-OBS');
+    $fits->close();
+
+    BAT::log->log(\@log,"  $evfile DATE-OBS = '$dateobs'");
+
+    die "ERROR: could not read DATE-OBS keyword from $evfile" if ($fits->status());
+
+    BAT::log->log(\@log, "Cleaning $evfile...");
+    $tmpfile = "$evfile"."-tmp";
+    unlink($tmpfile);
+    $cmd = "ftselect infile='$evfile' outfile='$tmpfile' ".
+      "expression='(EVENT_FLAGS == 0) || (EVENT_FLAGS == 16)' clobber=YES";
+    $? = BAT::log->callnote(\@log,$cmd,
+			    "Extracting clean event file");
+    if ($? || ! -f $tmpfile) {
+      BAT::log->log(\@log, "ERROR");
+      die "ERROR: could not create $tmpfile";
+    }
+    rename("$tmpfile","$evfile");
+    BAT::log->log(\@log, "DONE");
+    
+    if (($dateobs =~ m/2001-01-01/) || ($dateobs =~ m/TBD/)) {
+	die "ERROR: DATE-OBS has an invalid value of '$dateobs' in $evfile. ".
+	    "You can override this with date_obs='YYYY-MM-DD' on the command line. ".
+	    "Error ";
+    }
+    
+}
+
+
+# ====================================================================
+# Compute mask weighting for the burst RA/DEC
+BAT::log->sep(\@log);
+  
+@eventlist = ();
+foreach $events ($info->{events_all}) {
+    push @eventlist, $events if (-f $events);
+}
+die "ERROR: No event files were found" if ($#eventlist == -1);
+  
+if ($desired_pos ne "BLIND") {
+    BAT::log->log(\@log,"Computing mask weight values...");
+      foreach $events (@eventlist) {
+	  $evauxfile = $events;
+	  $evauxfile =~ s|.*/||;
+	  $evauxfile =~ s|\.evt||;
+	  $evauxfile = "$outdir/auxil/$evauxfile" . ".evaux";
+	  
+	  eval {
+	      BAT::maskwt->event($info, \@log, $events, $ra, $dec, $evauxfile);
+	    };
+	  if ($@) {
+	      die $@; # FATAL failure
+	  }
+	  if ($events eq $info->{events_all}) {
+	      $info->{auxfile} = "$evauxfile";
+	  }
+      }
+      
+      push @outfiles, "Event files";
+      push @outdescr, "Mask weighted event files";
+}
+
+# ====================================================================
+# Merge these events into one file
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Extracting pre-slew, slew and post-slew events...");
+
+$events = $info->{events_all};
+
+$outevents = "$outdir/events/${basename}preslew.evt";
+unlink($outevents);
+if ($gtipre) {
+    BAT::log->log(\@log, "  Pre-slew");
+    $cmd = "$extractor filename='$events' eventsout='$outevents' timefile='$gtipre' $extopts $extractor_gtipre";
+    $? = BAT::log->callnote(\@log,$cmd,
+			    "Extracting GRB pre-slew events",1);
+    if ($? || ! -f $outevents ) {
+	BAT::log->log(\@log, "ERROR: No pre-slew events could be created");
+	undef($gtipre);
+	die "ERROR: No pre-slew events could be created";
+    } else {
+ 	$info->{events_preslew} = $outevents;
+    }
+}
+
+$outevents = "$outdir/events/${basename}slew.evt";
+unlink($outevents);
+if ($gtiin) {
+    BAT::log->log(\@log, "  Slew");
+    $cmd = "$extractor filename='$events' eventsout='$outevents' timefile='$gtiin' $extopts $extractor_gtiin";
+    $? = BAT::log->callnote(\@log,$cmd,
+			    "Extracting GRB slew events",1);
+    if ($? || ! -f $outevents ) {
+	BAT::log->log(\@log, "NOTE: No slew events could be created");
+	undef($gtiin);
+	die "ERROR: No slew events could be created";
+    } else {
+ 	$info->{events_slew} = $outevents;
+    }
+}
+
+$outevents = "$outdir/events/${basename}postslew.evt";
+unlink($outevents);
+if ($gtipost) {
+    BAT::log->log(\@log, "  Post-slew");
+    $cmd = "$extractor filename='$events' eventsout='$outevents' timefile='$gtipost' $extopts $extractor_gtipost";
+    $? = BAT::log->callnote(\@log,$cmd,
+			    "Extracting GRB post-slew events",1);
+    if ($? || ! -f $outevents ) {
+	BAT::log->log(\@log, "NOTE: No post-slew events could be created");
+	undef($gtipost);
+	die "ERROR: No post-slew events could be created";
+    } else {
+ 	$info->{events_postslew} = $outevents;
+    }
+}
+
+# ====================================================================
+# Compute the preliminary 4 ms light curve, and the Bayesian blocks
+#   GTIs.  This also gives the duration measures.
+#
+
+# Try a range of bin sizes if the small one fails
+$goodt90dur = 0.0;
+$goodtbinsize = 0.0;
+
+$lcbb  = "$outdir/lc/${basename}bb.lc.tmp";
+$bbgti  = "$outdir/gti/${basename}bb.gti";
+$durgti = "$outdir/gti/${basename}dur.gti";
+$tlookback_default = $info->{tlookback};
+
+if ($desired_pos ne "BLIND") {
+    BAT::log->sep(\@log);
+    BAT::log->log(\@log,"Computing Bayesian blocks and duration measures...");
+
+    foreach $i (0 .. $#tbinsizes) {
+
+	$tbinsize = $tbinsizes[$i];
+	next if ($tbinsize > $tbinmax);  # Skip this if it is beyond the selection
+
+	$accepted = "no";
+	BAT::log->log(\@log, "    trying bin size $tbinsize... (attempt $i)");
+
+	if ($tbinsize < 1.0) {
+	    $tsuffix = sprintf("%dms",$tbinsize*1000);
+	} else {
+	    $tsuffix = sprintf("%ds",$tbinsize);
+	}
+	$lcbb  = "$outdir/lc/${basename}bb_$tsuffix.lc";
+	$bbgti  = "$outdir/gti/${basename}bb_$tsuffix.gti";
+	$durgti = "$outdir/gti/${basename}bbdur_$tsuffix.gti";
+
+	# If bin size is small, then use the "lookback" optimization to 
+	# speed compute time...
+	if ($tbinsize < 0.05*$tlookback_default) {
+	  $info->{tlookback} = $tlookback_default;
+	} else {
+	  # ... but if the bin size is big, then there is no need to
+          # do lookback optimization. */
+	  $info->{tlookback} = 0.0;
+	}
+	
+	eval {
+	    $info = BAT::bayes->compute($info,\@log, $info->{events_all},
+					$bbgti, $durgti, $info->{"1chan"}, 
+					$tbinsize, $lcbb, $info->{peakint});
+	};
+	
+	$t90dur = $info->{t90dur};
+	if ( $@ ) {
+	    BAT::log->log(\@log, "       failed");
+	} elsif ( $t90dur ) {
+	    
+	    # Accept this run if the duration is
+	    #    at least twice the binsize and
+	    #    at least 30% bigger than the previous duration
+	    #  (based on the T90DUR measure)
+	    
+	    $totdur = $info->{totdur};
+	    $t50dur = $info->{t50dur};
+	    $t90dur = $info->{t90dur};
+	    
+	    if (($t90dur > 2.1*$tbinsize) &&
+		($t90dur > 1.3*$goodt90dur)) {
+
+	        # Success! Found a good duration measurement, so we
+	        # save the results.
+		$goodt90dur = $t90dur;
+		$goodtbinsize = $tbinsize;
+
+		# Save the file names
+		$goodlcbb = "$lcbb";
+		$goodbbgti = "$bbgti";
+		$gooddurgti = "$durgti";
+
+		$accepted = "yes";
+	    } else {
+		# Prevent the following script stuff from
+		# recognizing this as a "good" interval
+		# (this can happen if battblocks found an interval
+		# but it was not accepted by the heuristics above).
+		undef $info->{totstart};
+	    }
+
+	    BAT::log->log(\@log, 
+			  "       totdur=$totdur t90=$t90dur accepted=$accepted");
+	}
+	
+    }
+}
+    
+
+# For testing only
+# warn "XXX: Test GTIs in place";
+# $goodt90dur = 0;
+
+if ($goodt90dur == 0) {
+    warn "WARNING: Bayesian block computation failed, using TDRSS intervals"
+	if ($desired_pos ne "BLIND");
+
+    $info->{gti_t90} = "$info->{gti_tdrss}"."[GTI_TOT]";
+    $info->{gti_t50} = "$info->{gti_tdrss}"."[GTI_TOT]";
+    $info->{gti_peak} = "$info->{gti_tdrss}"."[GTI_TOT]";
+    $info->{gti_tot} = "$info->{gti_tdrss}"."[GTI_TOT]";
+
+    $info->{gti_bkg1} = "$info->{gti_tdrss}"."[GTI_BKG1]";
+    $info->{gti_bkg2} = "$info->{gti_tdrss}"."[GTI_BKG2]";
+    $info->{tblocks_failed} = 1;
+    
+    undef($info->{gti_bb});
+} else {
+    BAT::log->log(\@log,"     Burst interval found (time bin size = $goodtbinsize)");
+    BAT::log->log(\@log,"    Best light curve: $goodlcbb");
+    BAT::log->log(\@log,"Best Bayesian blocks: $goodbbgti");
+    BAT::log->log(\@log,"      Best durations: $gooddurgti");
+
+    BAT::log->log(\@log,"  (copying files with the best binning)");
+
+    # Rather than recomputing from scratch, we can just use the
+    # ones we computed above.
+    $lcbb  = "$outdir/lc/${basename}bb.lc.tmp";
+    $bbgti  = "$outdir/gti/${basename}bb.gti";
+    $durgti = "$outdir/gti/${basename}dur.gti";
+
+
+    BAT::log->call(\@log,"cp '$goodlcbb'   '$lcbb'");
+    BAT::log->call(\@log,"cp '$goodbbgti'  '$bbgti'");
+    BAT::log->call(\@log,"cp '$gooddurgti' '$durgti'");
+
+    # NOTE: calling with events = undef, which makes the subroutine
+    # read the existing data files.
+    $info = BAT::bayes->compute($info,\@log, undef,
+    			$bbgti, $durgti, $info->{"1chan"}, 
+    			$goodtbinsize, $lcbb, $info->{peakint});
+
+    BAT::log->log(\@log, "        TOTDUR=$info->{totdur} T90=$info->{t90dur} T50=$info->{t50dur}");
+    push @outfiles, ("$bbgti","$durgti");
+    push @outdescr, ("Bayesian block GTI file","Duration intervals (T50/90/PEAK)");
+}
+
+BAT::gti->read($info->{gti_t90},"+0",$start_t90,$stop_t90);
+if ($start_t90) {
+    $start_t90 = $start_t90->[0] - $trigtime; 
+    $stop_t90 = $stop_t90->[0] - $trigtime;
+    $info->{t90dur} = $stop_t90 - $start_t90;
+} else {
+    $start_t90 = "UNKNOWN"; $stop_t90 = "UNKNOWN";
+    $info->{t90dur} = 0;
+}
+BAT::gti->read($info->{gti_t50},"+0",$start_t50,$stop_t50);
+if ($start_t50) {
+    $start_t50 = $start_t50->[0] - $trigtime; 
+    $stop_t50 = $stop_t50->[0] - $trigtime;
+    $info->{t50dur} = $stop_t50 - $start_t50;
+} else {
+    $start_t50 = "UNKNOWN"; $stop_t50 = "UNKNOWN";
+    $info->{t50dur} = 0;
+}
+
+# Defaults if the Bayesian blocks stuff fails (for the report)
+if (! $info->{totstart}) {
+    $info->{totstart} = $start_t90 + $trigtime;
+    $info->{totstop} = $stop_t90 + $trigtime;
+    $info->{tpeak} = ($info->{totstart} + $info->{totstop}) / 2.0;
+    $info->{peakint} = ($info->{totstop} - $info->{totstart});
+}
+
+    
+
+# ====================================================================
+# Accumulate detector plane images in the various combinations that
+# are needed.
+
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Accumulating detector plane images...");
+$dbase = "$outdir/dpi/$basename";
+$ibase = "$outdir/img/$basename";
+
+# Pre-burst detector images
+$gti = $info->{gti_bkg1};
+
+if ($gtipre) { 
+    eval {
+	BAT::dpi->make(\@log, $info->{events_preslew},
+		       "${dbase}preburst_1chan.dpi",
+		       $info->{"1chan"},$qmap,$gti);
+	  BAT::dpi->make(\@log, $info->{events_preslew},
+			 "${dbase}preburst_4chan.dpi",
+			 $info->{"4chan"},$qmap,$gti);
+      };
+    if (! $@ ) {
+	BAT::log->log(\@log, "     Pre-burst done");
+	push @outfiles, "${dbase}preburst_{1,4}chan.dpi";
+	push @outdescr, "Pre-burst detector images";
+    }
+}
+
+# Pre-slew detector images
+$gti = $info->{gti_tot};
+
+eval {
+    BAT::dpi->make(\@log, $info->{events_preslew},"${dbase}preslew_1chan.dpi",
+		   $info->{"1chan"},$qmap,$gti);
+    BAT::dpi->make(\@log, $info->{events_preslew},"${dbase}preslew_4chan.dpi",
+		     $info->{"4chan"},$qmap,$gti);
+  };
+if (! $@ ) {
+    BAT::log->log(\@log, "     Pre-slew done");
+    push @outfiles, "${dbase}preslew_{1,4}chan.dpi";
+    push @outdescr, "Pre-slew detector images";
+}
+
+
+# Post-slew detector images
+# Note, this is a more lax GTI selection, but it could introduce more noise
+$gti = "NONE";
+
+eval {
+    BAT::dpi->make(\@log,$info->{events_postslew},"${dbase}postslew_1chan.dpi",
+		   $info->{"1chan"},$qmap,"NONE");
+    BAT::dpi->make(\@log,$info->{events_postslew},"${dbase}postslew_4chan.dpi",
+		     $info->{"4chan"},$qmap,"NONE");
+  };
+if (! $@ ) {
+    BAT::log->log(\@log, "     Post-slew done");
+    push @outfiles, "${dbase}postslew_{1,4}chan.dpi";
+    push @outdescr, "Post-slew detector images";
+}
+
+
+# ====================================================================
+# Sky images
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Computing sky images...");
+# One set each for each time interval
+foreach $interval ("preburst","preslew","postslew") {
+
+    # Each set contains a 1-channel map and a 4-channel map
+    @chan_ranges = ("1chan", "4chan");
+    if (! $four_chan_maps ) { @chan_ranges = "1chan"; }
+
+    $done = 0;
+    foreach $chan (@chan_ranges) {
+
+	$dpifile   = "$dbase$interval" . "_$chan.dpi";
+	$imgfile   = "$ibase$interval" . "_$chan.img";
+	$pcodefile = "$ibase$interval" . "_$chan.pcodeimg";
+
+	# Choose the corresponding background interval
+	if ($interval eq "preslew") {
+	    # Pre-slew interval has a background, the others do not.
+	    $bkgfile   = "$dbase" ."preburst_$chan.dpi";
+	    # Error checking
+	    if (! -f $bkgfile ) { $bkgfile = "NONE"; }
+	} else {
+	    $bkgfile   = "NONE";
+	}
+	if ( -f $dpifile ) {
+	    $info = BAT::image->sky($info,\@log,$dpifile,$imgfile,$bkgfile);
+	    $done = 1;
+	}
+
+    }
+    
+    if ( $done ) {
+	BAT::log->log(\@log, "     $interval done");
+	push @outfiles, "${ibase}${interval}_{1,4}chan.img";
+	push @outdescr, "$interval sky images";
+    }
+    
+}
+
+# ====================================================================
+# Partial coding maps
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Computing partial coding maps...");
+# Only the pre-slew and post-slew segments are meaningful for the
+# partial coding map (during the slew doesn't make sense)
+eval {
+foreach $interval ("preslew","postslew") {
+
+    $done = 0;
+    # Only one partial coding map per interval
+    foreach $chan ("1chan") {
+
+	$dpifile   = "$dbase$interval" . "_$chan.dpi";
+	$pcodefile = "$ibase$interval.pcodeimg";
+
+	if ( -f $dpifile ) {
+	    $info = BAT::image->pcodemap($info,\@log,$dpifile,$pcodefile);
+	}
+    }
+
+    if ($done) {
+	BAT::log->log(\@log, "     $interval done");
+	push @outfiles, "$pcodefile";
+	push @outdescr, "$interval partial coding maps";
+    }
+}
+};
+
+
+# ====================================================================
+# Skip all the spectra and light curves if we are going in blind 
+# to the position
+goto FINAL_REPORT if ($desired_pos eq "BLIND");
+
+eval {
+    $pcode = BAT::pcode->fromimage(\@log,$ibase."preslew.pcodeimg",
+				   $info->{best_pos});
+    $info->{pcode} = $pcode;
+};
+
+# ====================================================================
+# Postage stamp images
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Extracting postage stamp images...");
+foreach $interval ("preburst","preslew","postslew") {
+    # Only one partial coding map per interval
+    foreach $chan ("1chan") {
+
+	$imgfile  = "$ibase$interval" . "_$chan.img";
+	$postfile = "$ibase$interval" . "_$chan.postimg";
+	$skypos = $info->{best_pos};
+
+	next unless ( -f $imgfile );
+
+	# Find pixel position
+	eval {
+	    $pixpos = BAT::imageutils->sky2pix(\@log,$imgfile,$skypos);
+	};
+	if ($@) {
+	    warn "$@";
+	    next;
+	}
+
+	$xstart = int($$pixpos[0] - $info->{postage_width}/2);
+	$xstop  = $xstart     + $info->{postage_width};
+	$ystart = int($$pixpos[1] - $info->{postage_width}/2);
+	$ystop  = $ystart     + $info->{postage_width};
+
+	# Bounds checking
+	if ($xstart < 1) { $xstart = 1; }
+	if ($ystart < 1) { $ystart = 1; }
+	# XXX I don't know how to bounds check on the high side
+
+	# Use the CFITSIO syntax to extract a small sub-image from the
+	# large master image
+	unlink($postfile);
+	$cmd = "ftcopy infile='${imgfile}[$xstart:$xstop,$ystart:$ystop]' outfile='$postfile'";
+#	print "$cmd\n";
+	BAT::log->callnote(\@log,$cmd,
+			   "Extracting postage stamp image from $imgfile");
+	push @outfiles, "$postfile";
+	push @outdescr, "$interval postage stamp sky image";
+
+    }
+
+
+}
+
+# ====================================================================
+# If:
+#    * the postage stamp image exists
+#    * only know unrefined BAT position
+#    * a point source was found by the BAT Flight Software
+#    * it was not an image trigger
+#
+# Then try to refine the position
+#
+$imgfile   = "${ibase}preslew_1chan.img";
+$pcodefile = "${ibase}preslew.pcodeimg";
+if ( -f "$imgfile" &&
+     $info->{pos_refinement_enable} &&
+     $info->{best_src} eq "BAT" &&
+     $info->{pointsrc} ) {
+    
+    BAT::log->sep(\@log);
+    BAT::log->log(\@log,"Refining the BAT position...");
+    $incat  = "$outdir/auxil/${basename}input.cat";
+    $outcat = "$outdir/auxil/${basename}output.cat";
+    $region = "$outdir/auxil/${basename}output.reg";
+
+    $info = BAT::posrefine->refine($info,\@log,$incat,$outcat,$imgfile,
+				   $pcodefile,
+				   "best_pos",$targ_id,$region); 
+
+    $ra_new  = $info->{refined_pos}->[0];
+    $dec_new = $info->{refined_pos}->[1];
+    BAT::log->log(\@log,"  Refined ra=$ra_new dec=$dec_new");
+
+# XXX
+#    $info->{best_pos} = $info->{refined_pos};
+#    $info->{best_src} = "Refined BAT position";
+
+}
+
+
+
+# ====================================================================
+# Spectra
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Accumulating spectra...");
+# First the full-burst type intervals, use all the events
+$evall = $info->{events_all};
+$ebins = $info->{"80chan"};
+$base = "$outdir/pha/$basename";
+
+eval {
+    BAT::spectra->make(\@log,$evall,"${base}total.pha",
+		       $ebins,$qmap,$info->{gti_tot},
+		       {outunits=>"RATE", auxfile=>$info->{auxfile}});
+    BAT::spectra->make(\@log,$evall,"${base}t90.pha",  
+		       $ebins,$qmap,$info->{gti_t90},
+		       {outunits=>"RATE", auxfile=>$info->{auxfile}});
+    BAT::spectra->make(\@log,$evall,"${base}t50.pha",  
+		       $ebins,$qmap,$info->{gti_t50},
+		       {outunits=>"RATE", auxfile=>$info->{auxfile}});
+    BAT::spectra->make(\@log,$evall,"${base}peak.pha", 
+		       $ebins,$qmap,$info->{gti_peak},
+		       {outunits=>"RATE", auxfile=>$info->{auxfile}});
+  };
+if (! $@ ) {
+    BAT::log->log(\@log, "     Total spectra done");
+    push @outfiles, ("${base}total.pha","${base}t90.pha",
+		     "${base}t50.pha","${base}peak.pha");
+    push @outdescr, ("Total burst spectrum", "T90 burst spectrum",
+		     "T50 burst spectrum", "Peak 1 sec burst spectrum");
+}
+
+eval {
+    BAT::log->log(\@log, "\n".
+          "     NOTE: expect two warning messages while making total \n".
+          "           counts fluence spectra.");
+    $e4   = $info->{"4chan"};
+    BAT::spectra->make(\@log,$evall,"${base}totflu.pha", 
+		       $e4,$qmap,$info->{gti_tot},
+		       {outunits=>"COUNTS", auxfile=>$info->{auxfile}});
+    BAT::spectra->make(\@log,$evall,"${base}peakflu.pha",
+		       $e4,$qmap,$info->{gti_peak},
+		       {outunits=>"COUNTS", auxfile=>$info->{auxfile}});
+  };
+if (! $@ ) {
+    BAT::log->log(\@log,  "     Total fluence spectra done");
+    push @outfiles, ("${base}totflu.pha","${base}peakflu.pha");
+    push @outdescr, ("Total fluence spectrum (4-chan)",
+		     "Peak 1-sec fluence spectrum (4-chan)");
+
+    $opts = "rownum=NO colheader=NO";
+    if ( -r "${base}totflu.pha" ) {
+	@totflu      = `ftlist infile=${base}totflu.pha  option=T columns=COUNTS $opts < /dev/null`;
+	@totflu_err  = `ftlist infile=${base}totflu.pha  option=T columns=STAT_ERR $opts < /dev/null`;
+    }
+    if ( -r "${base}peakflu.pha" ) {
+	@peakflu     = `ftlist infile=${base}peakflu.pha option=T columns=COUNTS $opts < /dev/null`;
+	@peakflu_err = `ftlist infile=${base}peakflu.pha option=T columns=STAT_ERR $opts < /dev/null`;
+    }
+}
+
+# Second the preslew, slew, and post-slew spectra
+if ($gtipre) {
+    eval {
+	BAT::spectra->make(\@log,$info->{events_preslew},"${base}preslew.pha", 
+			   $ebins,$qmap,$info->{gti_tot},
+			   {outunits=>"RATE", auxfile=>$info->{auxfile}});
+      };
+    if (! $@ ) {
+	BAT::log->log(\@log, "     Pre-slew done");
+	push @outfiles, "${base}preslew.pha";
+	push @outdescr, "Pre-slew spectrum";
+    };
+}
+if ($gtiin) {
+    eval {
+	BAT::spectra->make(\@log,$info->{events_slew},   "${base}slew.pha", 
+			   $ebins,$qmap,"NONE",
+			   {outunits=>"RATE", auxfile=>$info->{auxfile}});
+      };
+    if (! $@ ) {
+        BAT::log->log(\@log, "     During-slew done");
+	push @outfiles, "${base}slew.pha";
+	push @outdescr, "During-slew spectrum";
+    };
+}
+if ($gtipost) {
+    eval {
+	BAT::spectra->make(\@log,$info->{events_postslew},"${base}postslew.pha", 
+			   $ebins,$qmap,$info->{gti_tot},
+			   {outunits=>"RATE", auxfile=>$info->{auxfile}});
+      };
+    if (! $@ ) {
+	BAT::log->log(\@log, "     Post-slew done");
+	push @outfiles, "${base}postslew.pha";
+	push @outdescr, "Post-slew spectrum";
+    };
+}
+
+
+# TODO: GIF 3-panel plot of the spectra
+# XXX
+
+# ====================================================================
+# Response matrices
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Computing response matrices...");
+$base = "$outdir/pha/$basename";
+
+# batdrmgen had an interface change with build 12
+#    hkfile=NONE is now required
+$batdrmgen_plist_test = `plist batdrmgen | grep hkfile`;
+$hkfile = "";
+if ($batdrmgen_plist_test =~ m/hkfile/) { $hkfile = "hkfile=NONE"; }
+
+$outfile = "${base}preslew.rsp";
+unlink "$outfile";
+if (-f "${base}preslew.pha" ) {
+    $cmd = "batdrmgen infile='${base}preslew.pha' outfile='$outfile' chatter=2 clobber=yes '$hkfile'";
+    $? = BAT::log->callnote(\@log, $cmd, 
+			"Creating GRB response matrix for pre-slew interval");
+    if ( -f "$outfile") {
+	BAT::log->log(\@log, "     Pre-slew done");
+	push @outfiles, "$outfile";
+	push @outdescr, "Pre-slew response matrix";
+    } else {
+	warn "WARNING: could not create response matrix $outfile";
+    }
+}
+
+$outfile = "${base}postslew.rsp";
+unlink "$outfile";
+if (-f "${base}postslew.pha" ) {
+    $cmd = "batdrmgen infile='${base}postslew.pha' outfile='$outfile' chatter=2 clobber=yes '$hkfile'";
+    $? = BAT::log->callnote(\@log, $cmd,
+			"Creating GRB response matrix for post-slew interval");
+    if ( -f "$outfile") {
+	BAT::log->log(\@log, "     Post-slew done");
+	push @outfiles, "$outfile";
+	push @outdescr, "Post-slew response matrix";
+    } else {
+	warn "WARNING: could not create response matrix $outfile";
+    }
+}
+
+# ====================================================================
+# 
+# ADVANCED TODO: Fit the spectra with the Band spectral model
+#     * extract spectral parameters, parameter errors
+#     * extract flux in various bands
+
+
+# ====================================================================
+# Light curves
+
+SKIP: $dummy = 1;
+
+BAT::log->sep(\@log);
+BAT::log->log(\@log,"Accumulating light curves...");
+print "     ";
+$base = "$outdir/lc/$basename";
+$evall = $info->{events_all};
+$etot = $info->{"1chan"};
+$e4   = $info->{"4chan"};
+$qmap = $info->{qmap};
+
+# Weighted 4 ms light curve
+eval {
+    BAT::lc->make(\@log,$evall,$base."1chan_4ms.lc",
+		  $etot,$qmap,"NONE",0.004,"YES");
+  };
+if (! $@ ) {
+    print "4 ms, ";
+    push @outfiles, $base."1chan_4ms.lc";
+    push @outdescr, "$etot keV 1-channel 4 ms light curve";
+}
+
+# Weighted 64 ms 1-channel light curve
+eval {
+    BAT::lc->make(\@log,$evall,$base."1chan_64ms.lc",
+		  $etot,$qmap,"NONE",0.064,"YES");
+  };
+if (! $@ ) {
+    print "64 ms, ";
+    push @outfiles, $base."1chan_64ms.lc";
+    push @outdescr, "$etot keV 1-channel 64 ms light curve";
+}
+
+# Weighted 1 s 1-channel light curve
+eval {
+    BAT::lc->make(\@log,$evall,$base."1chan_1s.lc",
+		  $etot,$qmap,"NONE",1.0,"YES");
+  };
+if (! $@ ) {
+    print "1 s, ";
+    push @outfiles, $base."1chan_1s.lc";
+    push @outdescr, "$etot keV 1-channel 1 s light curve";
+}
+
+# Weighted 64 ms 4-channel light curve
+eval {
+    BAT::lc->make(\@log,$evall,$base."4chan_64ms.lc",
+		  $e4,$qmap,"NONE",0.064,"YES");
+  };
+if (! $@ ) {
+    print "64 ms 4-channel, ";
+    push @outfiles, $base."4chan_64ms.lc";
+    push @outdescr, "4-channel 64 ms light curve";
+}
+
+# Weighted 1 s 4-channel light curve
+eval {
+    BAT::lc->make(\@log,$evall,$base."4chan_1s.lc",
+		  $e4,$qmap,"NONE",1.0,"YES");
+  };
+if (! $@ ) {
+    print "1 s 4-channel, ";
+    push @outfiles, $base."4chan_1s.lc";
+    push @outdescr, "4-channel 1 s light curve";
+}
+
+if ($info->{gti_bb}) {
+    # Weighted 4-channel light curve, Bayesian blocks
+    eval {
+	BAT::lc->make(\@log,$evall,$base."4chan_bb.lc",
+		      $e4,$qmap,$info->{gti_bb},"g","YES");
+      };
+    if (! $@ ) {
+	print "BB 4-channel, ";
+	push @outfiles, $base."4chan_bb.lc";
+	push @outdescr, "4-channel Bayesian block light curve";
+    }
+    
+    # Weighted 1-channel light curve, Bayesian blocks
+    eval {
+	BAT::lc->make(\@log,$evall,$base."1chan_bb.lc",
+		      $etot,$qmap,$info->{gti_bb},"g","YES");
+      };
+    if (! $@ ) {
+	print "BB, ";
+	push @outfiles, $base."1chan_bb.lc";
+	push @outdescr, "$etot keV 1-channel Bayesian block light curve";
+    }
+} else {
+    print "*skipping* BB,";
+}
+
+# Unweighted 4 ms light curve
+eval {
+    BAT::lc->make(\@log,$evall,$base."1chan_raw4ms.lc",
+		  $etot,$qmap,"NONE",0.004,"NO");
+  };
+if (! $@ ) {
+    print "4ms raw, ";
+    push @outfiles, $base."1chan_raw4ms.lc";
+    push @outdescr, "$etot keV 1-channel unweighted light curve";
+}
+BAT::log->log(\@log, "done");
+
+# TODO: GIF plot
+#   * plot (1) 64 ms 1-channel light curve
+#   * plot (2) Bayesian block 1-channel light curve
+#       X = TIME - TRIGTIME  (s)
+#       Y = RATE (ct/s)
+#   * overlay plot
+#   * time range should be [$gti_tot[0] - totdur, $gti_tot[1] + totdur]
+#     (but no wider than the time range of the data)
+
+# ====================================================================
+# Output report file
+
+FINAL_REPORT:
+$processing_tstop = `date`;
+chomp($processing_tstop);
+
+$reportfile = "$outdir/report.txt";
+open(REPORT,">$reportfile") or die "ERROR: could not open $reportfile";
+
+# Boolean values
+$cat_yn = $info->{catsrc} ? "YES" : "NO";
+$pnt_yn = $info->{pointsrc} ? "YES" : "NO";
+$grb_yn = $info->{grbdetec} ? "YES" : "NO";
+$img_yn = $info->{imagetrg} ? "YES" : "NO";
+
+# Sanity check on UTCFINIT value
+if (abs($info->{utcfinit}) > 65) {
+    warn "WARNING: UTCFINIT value greater than 65 seconds. Resetting to zero.";
+    $info->{utcfinit} = 0.0;
+} elsif ($info->{utcfinit} == 0) {
+    warn "WARNING: UTCFINIT was zero.  This is suspicious.";
+}
+if ($info->{utcfinit} == 0) {
+    $utcfinit_warn = "\n" . 
+	"       WARNING: UTCFINIT is zero.  This is suspicious.";
+}
+
+# Time conversions from MET to UTC ~~~~~~~~~~~~~~~~~~~~~~~
+
+# Trigger time (UTC)
+$trigutc = timegm(0,0,0,1,0,2001-1900) + $info->{trigtime} + $info->{utcfinit};
+$trigutc += $info->{leap2001};
+
+# Convert to integer and fractional parts
+$trigutc_int = int($trigutc);
+$trigutc_fract = $trigutc - $trigutc_int;
+# Rounded integer
+$trigutc_rint = floor(1000000.0*$trigutc_fract + 0.5);
+if ($trigutc_rint == 0) {
+    $trigutc_int += 1;
+    $trigutc_rint = 0;
+}
+@t1 = gmtime($trigutc_int);
+$trigutc_str = sprintf("%4.4d-%2.2d-%2.2dT%2.2d:%2.2d:%2.2d.%6.6d", 
+		       $t1[5]+1900, $t1[4]+1,$t1[3], $t1[2], $t1[1], $t1[0], 
+		       $trigutc_rint);
+
+# Software diagnostic information
+$hostname = `hostname`; chomp($hostname);
+$cwd      = `pwd`;      chomp($cwd);
+$tblocks_note = "";
+$dur_str = "";
+$fluence_str = "";
+
+if ($desired_pos ne "BLIND") {
+    # Fluence computations ~~~~~~~~~~~~~~~~~~~~~~~~~
+    $e4   = $info->{"4chan"};
+    @e4 = split(/,/,$e4);
+    $bandheader = sprintf("         %10s %10s %10s %10s\n".
+			  "         %10s %10s %10s %10s     keV",
+			  "Band 1", "Band 2", "Band 3", "Band 4",
+			  $e4[0], $e4[1], $e4[2], $e4[3]);
+    
+    if ($#totflu > -1) {
+	$totflu_str = sprintf(" Total   %10.6f %10.6f %10.6f %10.6f\n" .
+			      "         %10.6f %10.6f %10.6f %10.6f [error]",
+			      $totflu[0], $totflu[1], $totflu[2], $totflu[3],
+			      $totflu_err[0], $totflu_err[1], 
+			      $totflu_err[2], $totflu_err[3]);
+    } else {
+	$totflu_str = " Total     WARNING: could not be found";
+    }
+    
+    if ($#peakflu > -1) {
+	$peakflu_str = sprintf(" Peak    %10.6f %10.6f %10.6f %10.6f\n" .
+			       "         %10.6f %10.6f %10.6f %10.6f [error]",
+			       $peakflu[0], $peakflu[1], $peakflu[2], $peakflu[3],
+			       $peakflu_err[0], $peakflu_err[1], 
+			       $peakflu_err[2], $peakflu_err[3]);
+    } else {
+	$peakflu_str = " Peak      WARNING: could not be found";
+    }
+    
+    # Duration measures ~~~~~~~~~~~~~~~~~~~~~~~~~
+    $flustart = $info->{totstart} - $info->{trigtime};
+    $flustop  = $info->{totstop} - $info->{trigtime};
+    $pkstart  = $info->{tpeak} - $info->{trigtime} - $info->{peakint}/2;
+    $pkstop   = $pkstart + $info->{peakint};
+
+    $fluence_str = 
+	"  Fluence\n" .
+	"     Peak Flux  (peak $info->{peakint} second)\n" .
+	"        Measured from: $pkstart     \n" .
+	"                   to: $pkstop     [s; relative to TRIGTIME]\n" .
+	"     Total Fluence        \n" .
+	"        Measured from: $flustart     \n" .
+	"                   to: $flustop     [s; relative to TRIGTIME]\n";
+
+    if ($info->{tblocks_failed}) {
+	$tblocks_note = "    WARNING: battblocks failed.  Used TDRSS fore/background intervals";
+    }
+
+    $dur_str = 
+	"  Duration\n" .
+	"     T90: $info->{t90dur} +/- $info->{t90err}\n" .
+	"        Measured from: $start_t90\n" .
+	"                   to: $stop_t90     [s; relative to TRIGTIME]\n" .
+	"     T50: $info->{t50dur} +/- $info->{t50err}\n" .
+	"        Measured from: $start_t50\n" .
+	"                   to: $stop_t50     [s; relative to TRIGTIME]\n";
+
+    # Refined position ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if ($info->{refined_pos}) {
+	$refined_ra  = $info->{refined_pos}->[0];
+	$refined_dec = $info->{refined_pos}->[1];
+	$err_rad_amin = $info->{refined_err} * 60.0;
+	$err_rad_amin *= sqrt($info->{refined_chi2});
+	$refined_snr = $info->{refined_snr};
+
+	# 90% confidence radius, based on 15 Dec - 15 Jan
+	$refined_poserr = 1.79 * 6.1 * $refined_snr ** (-0.7);
+
+	# Convert to sexigesimal
+	# RA in hours
+	$ra_tot  = $refined_ra / 15.0;
+	$ra_tot  = floor(($ra_tot*3600*10)+0.5);
+	$ra_hr   = floor($ra_tot / (3600*10));   # Hours
+	$ra_tot -= ($ra_hr*3600*10);
+	$ra_mi   = floor($ra_tot / (60*10));     # Minutes
+	$ra_tot -= ($ra_mi*60*10);
+	$ra_se   = floor($ra_tot / (10));        # Seconds
+	$ra_tot -= ($ra_se*10);
+	$ra_te   = $ra_tot;               # Tenths of seconds
+
+	# Dec in degrees
+	$dec_tot = abs($refined_dec);
+	$dec_tot  = floor(($dec_tot*3600*10)+0.5);
+	$dec_de   = floor($dec_tot / (3600*10));   # Degrees
+	$dec_tot -= ($dec_de*3600*10);
+	$dec_mi   = floor($dec_tot / (60*10));     # Arc Minutes
+	$dec_tot -= ($dec_mi*60*10);
+	$dec_se   = floor($dec_tot / (10));        # Arc Seconds
+	$dec_tot -= ($dec_se*10);
+	$dec_te   = $dec_tot;               # Tenths of Arc Seconds
+
+	$dec_sg = ($refined_dec < 0) ? "-" : "+";
+
+	# Final rendering
+	$ra_sex  = sprintf("%02dh %02dm %02d.%01ds", 
+			   $ra_hr, $ra_mi, $ra_se, $ra_te);
+	$dec_sex = sprintf("%s%02dd %02d\' %02d.%01d\"", 
+			   $dec_sg, $dec_de, $dec_mi, $dec_se, $dec_te);
+	
+	$refined_str = "\n  Refined Position:   [ source = BAT pre-slew burst ]\n".
+	    "    RA: $refined_ra   Dec: $refined_dec  [deg; J2000]  \n".
+	    "        { $ra_sex , $dec_sex }\n".
+	    "         +/- $refined_poserr [arcmin] (estimated 90% radius based on SNR)\n".
+	    "         +/- $err_rad_amin [arcmin] (formal 1-sigma fit error)\n".
+	    "    SNR: $refined_snr\n\n";
+	if ($refined_snr < 3.0) {
+	  $refined_str .= 
+	    "    WARNING: the refined image significance was very low.  Treat this \n".
+	    "             detection with extreme caution!\n";
+	}
+	if ($info->{batcelldetect_poserr}) {
+	    $refined_str .=
+		"    BE CAREFUL of a BUG in Swift 1.1 which UNDERESTIMATES THE\n".
+		"    POSITION ERROR by a factor of ~4.\n";
+	}
+    }
+}
+print REPORT <<EOF;
+======================================================================
+                  BAT GRB EVENT DATA PROCESSING REPORT
+    Process Script Ver: $id
+    Process Start Time: $processing_tstart
+             Host Name: $hostname
+   Current Working Dir: $cwd
+======================================================================
+
+  Trigger: $targ_id      Segment: $seg_id
+
+  BAT Trigger Time: $info->{trigtime}   [s; MET]
+      Trigger Stop: $info->{trigstop}   [s; MET]
+               UTC: $trigutc_str    [includes UTCF correction] $utcfinit_warn
+       Where From?: $trigtime_from
+
+  BAT 
+    RA: $info->{bat_pos}->[0]   Dec: $info->{bat_pos}->[1]  [deg; J2000]
+
+     Catalogged Source?: $cat_yn
+     Point Source?:      $pnt_yn
+     GRB Indicated?:     $grb_yn    [ by BAT flight software ]
+     Image S/N Ratio:    $info->{imgsnr}
+     Image Trigger?:     $img_yn
+     Rate S/N Ratio:     $info->{ratesnr}  [ if not an image trigger ]
+     Image S/N Ratio:    $info->{imgsnr}
+
+  Analysis Position:   [ source = $info->{best_src} ]
+    RA: $info->{best_pos}->[0]   Dec: $info->{best_pos}->[1]  [deg; J2000]
+$refined_str
+
+  Partial Coding Fraction: $info->{pcode}    [ including projection effects ]
+
+$dur_str
+$tblocks_note
+
+$fluence_str     
+$bandheader
+$totflu_str
+$peakflu_str
+
+     [ fluence units of on-axis counts / fully illuminated detector ] 
+
+======================================================================
+EOF
+close(REPORT);
+
+push @outfiles, "$reportfile";
+push @outdescr, "Summary report";
+
+BAT::log->sep(\@log);
+BAT::log->log(\@log, "END PROCESSING");
+
+0;
+};
+
+# ====================================================================
+# ====================================================================
+# ====================================================================
+# ================ End of bat_burst_advocate_main ====================
+
+warn "$@" if ($@);
+
+# ====================================================================
+# Write log file
+$logfile = "$outdir/process.log";
+open(LOGFILE,">$logfile") or die "ERROR: could not open log file $logfile";
+foreach $line (@log) {
+    chomp($line);
+    print LOGFILE "$line\n";
+}
+close(LOGFILE);
+
+push @outfiles, "$logfile";
+push @outdescr, "Detailed processing log file";
+
+
+# ====================================================================
+# Output file inventory
+
+BAT::log->log(\@log, "*********************************************");
+BAT::log->log(\@log, "     Output files produced");
+BAT::log->log(\@log, "=============================================");
+foreach $i (0 .. $#outfiles) {
+    $outfile = $outfiles[$i];
+    $outdesc = $outdescr[$i];
+
+    $outfile =~ s|^.*/([^/]*)|\1|;   # Remove pathname components
+    BAT::log->log(\@log, sprintf("%-35s | %s\n",$outfile,$outdesc));
+}
+
+exit 0;
+
+

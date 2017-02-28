@@ -1,0 +1,698 @@
+#!/bin/sh
+# the next line restarts using wish \
+exec wish "$0" "$@"
+
+#***************************************************************
+# EXOsat View and MERGE
+#
+# Leonard Garcia
+# HEASARC
+#
+# 1) This Tcl/Tk script will read the Catalog FITS file for an observation
+# and display all rows in which the FILENAME != "NONE". This is done by calling
+# FDUMP on the given file 
+#
+# 2) The user can then select any of the files listed and by pressing the 
+# "Merge Selected Files" button can have these files merged into one 
+# event file. This is done by calling EXOMERGE for the given files and with an
+# output filename specified.
+#
+#***************************************************************
+wm withdraw .
+
+#*************
+# The Help Files
+#*************
+proc about_exocat {} {
+    toplevel .about
+    wm title .about "About TKEXOMERGE"
+    wm transient .about
+
+    frame .about.tx -relief groove \
+	    -borderwidth 3 \
+    
+    text .about.tx.text \
+	    -height 4 \
+	    -width 60
+    .about.tx.text tag configure title_tag -justify center -font "-*-times-medium-r-normal--*-180-*-*-*-*"    
+    .about.tx.text tag configure center_txt -justify center -font "-*-times-medium-r-normal--*-150-*-*-*-*"
+
+    .about.tx.text insert end\
+	    "EXOSAT View and Merge v1.0 \n" title_tag
+    .about.tx.text insert end \
+	    "August 1, 1998\n" center_txt
+
+    frame .about.button
+    button .about.button.ok \
+	    -text "Ok" \
+	    -command { destroy .about }
+    pack .about.tx.text
+    pack .about.tx -side top
+    pack .about.button.ok
+    pack .about.button
+}
+
+proc tutorial {} {
+    toplevel .tut
+    wm title .tut "Tutorial"
+    wm transient .tut
+    frame .tut.tx -relief groove \
+	    -borderwidth 3 \
+    
+    text .tut.tx.text \
+	    -height 40 \
+	    -width 80 \
+	    -yscrollcommand ".tut.scrl set"
+
+    scrollbar .tut.scrl -command ".tut.tx.text yview"
+
+    .tut.tx.text tag configure title_tag -justify center -font "-*-times-medium-r-normal--*-180-*-*-*-*"
+    .tut.tx.text tag configure ital_tag -justify center -font "-*-times-normal-i-normal--*-150-*-*-*-*"
+    .tut.tx.text tag configure fix_tag -justify center -font "-misc-fixed-medium-i-normal--*-150-*-*-*-*"
+    .tut.tx.text tag configure para -spacing1 0.25i -spacing2 0.1i \
+	    -lmargin1 0.5i -lmargin2 0.1i -rmargin 0.5i -wrap word
+    .tut.tx.text tag configure head_tag -justify left -font "-*-times-bold-i-normal--*-150-*-*-*-*"
+    .tut.tx.text tag configure item -spacing1 0.15i -spacing2 0.1i \
+	    -spacing3 0.1i -lmargin1 0.7i -lmargin2 0.75i -rmargin 0.5i \
+	    -wrap word
+
+
+    .tut.tx.text insert end \
+	    "EXOSAT View and Merge v1.0 \n" title_tag
+    .tut.tx.text insert end \
+	    "Purpose:\n" head_tag
+    .tut.tx.text insert end \
+	    "This Tcl/Tk GUI is intended to aid the user in selecting event files listed in the EXOSAT LE catalog file (.cat extension) and merging them using `exomerge'. This script is intended to work for EXOSAT LE raw data files as stored in the HEASARC archive. Each observation has a catalog file which provides a summary of the observation set-up.\n" para
+    
+    .tut.tx.text insert end \
+	    "\nReading the Catalog file: \n" head_tag
+    .tut.tx.text insert end \
+	    "from the command line - \n The user may invoke tkexomerge with the input catalog file and the name of the merged output file specified on the command line. The format is \n" para
+    .tut.tx.text insert end \
+	    "tkexomerge -i input_filename -o output_filename \n" fix_tag
+    .tut.tx.text insert end \
+	    "from within the Tcl/Tk GUI - \n If the input and/or output filenames are not specified on the command line pop-up windows will appear to allow the user to enter the filenames. \n" para
+    .tut.tx.text insert end \
+	    "\nThe catalog file display: \n" head_tag
+    .tut.tx.text insert end \
+	    "Once the catalog file has been selected, an abridged version of the table of information contained within the catalog FITS file is displayed in the listbox window.  \n" para
+    .tut.tx.text insert end \
+	    "\nSelecting files to merge: \n" head_tag
+    .tut.tx.text insert end \
+	    "Dragging the mouse across the listbox with the left mouse button allows the user to highlight the event files to be merged. To exclude an entry from the highlighted region the user can select that entry with the left mouse button while the Control key is pressed.\n" para
+
+    .tut.tx.text insert end \
+	    "\nRunning exomerge: \n" head_tag
+    .tut.tx.text insert end \
+	    "After the file selection, clicking the `Merge Selected Files' box starts exomerge. This program, by reading the selected event files, creates a merged file (see help on exomerge). \n" para
+    
+    .tut.tx.text insert end \
+	    "\nFlags:\n" head_tag
+    .tut.tx.text insert end \
+	    "--h - provides an example of command-line usage \n" item
+    .tut.tx.text insert end \
+	    "the following flags require arguments \n" para
+    .tut.tx.text insert end \
+	    "-i - the catalog FITS file name \n" item
+    .tut.tx.text insert end \
+	    "-o - the name of the output merged FITS event file \n" item
+    .tut.tx.text insert end \
+	    "\nSee also:\n" head_tag
+    .tut.tx.text insert end \
+	    "exomerge, automerge \n" para
+    frame .tut.button
+    button .tut.button.ok \
+	    -text "Ok" \
+	    -command { destroy .tut }
+    pack .tut.scrl -side right -fill y
+    pack .tut.tx.text
+    pack .tut.tx -side top -fill both -expand true
+    pack .tut.button.ok
+    pack .tut.button
+
+}
+proc help_param {} {
+    toplevel .helpparam
+    wm title .helpparam "Help on Parameters"
+    wm transient .helpparam
+    frame .helpparam.tx -relief groove   -borderwidth 3
+    text .helpparam.tx.text -height 40  -width 60 \
+	    -yscrollcommand ".helpparam.scrl set"
+    scrollbar .helpparam.scrl -command ".helpparam.tx.text yview"
+
+    .helpparam.tx.text tag configure title_tag -justify center -font "-*-times-medium-r-normal--*-180-*-*-*-*"    
+    .helpparam.tx.text tag configure head_tag -justify left -font "-*-times-bold-i-normal--*-150-*-*-*-*"
+    .helpparam.tx.text tag configure center_txt -justify center -font "-*-times-medium-r-normal--*-150-*-*-*-*"
+    .helpparam.tx.text tag configure item -spacing1 0.15i -spacing2 0.1i \
+	    -spacing3 0.1i -lmargin1 0.7i -lmargin2 0.75i -rmargin 0.5i \
+	    -wrap word
+    .helpparam.tx.text tag configure para -spacing1 0.25i -spacing2 0.1i \
+	    -lmargin1 0.5i -lmargin2 0.1i -rmargin 0.5i -wrap word
+
+    .helpparam.tx.text insert end\
+	    "\n Display Parameters \n" title_tag
+
+    .helpparam.tx.text insert end\
+	    "\n Filename \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The file naming convention is as follows. The first set of numbers is the date in the format (YYMMDD) the second and third set is the observation start and end times (HHMM). The detector + telescope name is next (e.g. cma1 for the Channel Multiplier Array on the LE1 instrument). The last part of the filename indicates the filter used. This file naming convention is used by event (.fits) and housekeeping (.hk) files. \n" para
+
+    .helpparam.tx.text insert end\
+	    "\n Submode \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The submode indicates the on board computer program running at the time of observation. Only `active' submodes are displayed. If the submode is `inactive' no event files were created although a housekeeping file may be present. \n" para
+
+    .helpparam.tx.text insert end\
+	    "\n HT \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The high tension (HT) settings indicate the voltage setting on the CMA detector. When the PSD detector is being used the HT value indicates the AGC gain value.  \n" para
+
+    .helpparam.tx.text insert end\
+	    "\n Filter \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The filter abbreviations under the filter column represent the following: \n" para
+    .helpparam.tx.text insert end\
+	    "PPL - polypropilene \n" item
+    .helpparam.tx.text insert end\
+	    "4Lx - 4000 Angstrom Lexan \n" item
+    .helpparam.tx.text insert end\
+	    "Al/P - aluminum-parylene \n" item
+    .helpparam.tx.text insert end\
+	    "3Lx - 3000 Angstrom Lexan \n" item
+    .helpparam.tx.text insert end\
+	    "Bor - Boron \n" item
+    .helpparam.tx.text insert end\
+	    "UV - Magnesium fluoride \n" item
+
+    .helpparam.tx.text insert end\
+	    "\n Grating \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The transmission grating setting is given as either in or out of the path. The dispersed spectrum when the grating is `in' is imaged by the CMA. The gratings were 500 lines/mm on CMA1 and 1000 lines/mm on CMA2. \n" para
+
+    .helpparam.tx.text insert end\
+	    "\n Point \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The pointing describes the stability of the platform. A pointing of 1 is the most stable. The `s' pointing is a slew. \n" para 
+
+    .helpparam.tx.text insert end\
+	    "\n Backg_Filt \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The Background Filter masks part of the detector field of view. The possible shapes are diamond and square. The parameter values are therefore `DIAMOND', `SQUARE' or `OFF'. \n" para
+
+    .helpparam.tx.text insert end\
+	    "\n FOV \n" head_tag
+    .helpparam.tx.text insert end\
+	    "The Field of View gives the coordinates in pixels of the Background Filter. For a `DIAMOND' mask, the first two numbers represent the X and Y coordinates of the origin of the diamond. The last number represents the size of the diamond from the origin to the vertex (1 to 2047). \n For a `SQUARE' mask, the first two numbers represent the X pixel lower and upper limits of the square. The third and fourth numbers are the lower and upper limits of the square for the Y coordinate. The range in both is (-512 to 512).\n" para
+
+    .helpparam.tx.text insert end\
+	    "\n Name \n" head_tag
+    .helpparam.tx.text insert end\
+	    "This value corresponds to the source name as given in the original FOT files. \n" para
+
+    frame .helpparam.button
+    button .helpparam.button.ok -text "Ok"  -command { destroy .helpparam }
+    pack .helpparam.scrl -side right -fill y
+    pack .helpparam.tx.text
+    pack .helpparam.tx -side top -fill both -expand true
+    pack .helpparam.button.ok
+    pack .helpparam.button
+}
+
+
+#*************
+# Obtain the Catalog filename and Merged output filename
+# These are read off of the Command line
+#*************
+#Default
+set infile "NONE"
+set outfile "NONE"
+
+# Input file ?
+set infile_pos [lsearch $argv "--i"]
+if {$infile_pos >= 0} {
+    set infile [lindex $argv [incr infile_pos] ]
+}
+set infile_pos [lsearch $argv "-i"]
+if {$infile_pos >= 0} {
+    set infile [lindex $argv [incr infile_pos] ]
+}
+
+set infile_pos [lsearch $argv "-in"]
+if {$infile_pos >= 0} {
+    set infile [lindex $argv [incr infile_pos] ]
+}
+
+
+# Output file ?
+set outfile_pos [lsearch $argv "--o"]
+if {$outfile_pos >= 0} {
+    set outfile [lindex $argv [incr outfile_pos] ]
+}
+
+set outfile_pos [lsearch $argv "-o"]
+if {$outfile_pos >= 0} {
+    set outfile [lindex $argv [incr outfile_pos] ]
+}
+
+set outfile_pos [lsearch $argv "-out"]
+if {$outfile_pos >= 0} {
+    set outfile [lindex $argv [incr outfile_pos] ]
+}
+
+# Help file ?
+set helpfile_pos [lsearch $argv "--h"]
+if {$helpfile_pos >= 0} {
+    puts "exocatvm -i input_file -o output_file"
+    exit
+}
+set helpfile_pos [lsearch $argv "--help"]
+if {$helpfile_pos >= 0} {
+	puts "exocatvm -i input_file -o output_file"
+    exit
+}
+
+#*************
+# Clean up temporary files before exiting
+#*************
+proc cleanup { } {
+    set pwd [pwd]
+    set out $pwd\/temp_tcl.out
+    set col $pwd\/columns.temp
+    set erm  $pwd\/err_merge
+    set erf  $pwd\/err_fdump
+    set evt  $pwd\/evtlist.temp
+
+    #
+    # Remove files if they exists
+    #
+    if { [file exists $col] } {
+	set remove [file delete $col]
+    }
+    if { [file exists $out] } {
+	file delete $out
+    }
+    if { [file exists $erm] } {
+	file delete $erm
+    }
+    if { [file exists $erf] } {
+	file delete $erf
+    }
+    if { [file exists $evt] } {
+	file delete $evt
+    }
+    exit
+}
+#*************
+# Call fdump
+#*************
+proc read_file { infile out_put } {
+    set pwd [pwd]
+    set column_list $pwd\/columns.temp
+    set out_put $pwd\/temp_tcl.out
+    set col [list FILENAME GRATING POINTING_CODE BACKGND_FILT FIELD_VIEW SUBMODE HIGH_TENSION FILTER SOURCE_NAME ]
+
+    set i 0
+    set list_size [llength $col]
+    set fileid [open "columns.temp" w]
+    while {$i < $list_size} {
+	puts $fileid "[lindex $col $i]"
+	incr i
+    }
+    close $fileid
+    set column_name "\@columns.temp"
+    set rows -
+#    puts " $infile [file exists $infile]"
+#    puts " $column_list $column_name [file exists $column_list]"
+    catch { eval exec fdump $infile $out_put $column_name $rows showcol=no showrow=no showunit=no prhead=no page=no pagewidth=180 fldsep=\| clobber=yes >& err_fdump} ignore_fdump
+    if { [file size err_fdump] } {
+	set fileid [open "err_fdump" r]
+	set msg [read $fileid]
+	switch -regexp -- $msg {
+	    Warning|warning|WARNING { tk_messageBox -icon warning -type ok -title "Fdump" -message "$msg" }
+	    Error|error|ERROR { tk_messageBox -icon error -type ok -title "Fdump" -message "$msg" }
+	    unable { tk_messageBox -icon error -type ok -title "Fdump" -message "$msg" }
+	}
+	close $fileid
+	}
+#    puts "$ignore_fdump [file size err_fdump]"
+#    puts " $out_put [file exists $out_put]"
+    return $out_put
+}
+
+#*************
+# Read the output file from FDUMP and 
+# Fill the listbox but only if evt_file != NONE and sub_mode != inactive
+# and if the event file actually exists
+#************* 
+proc FillList { out_put} {
+#    puts "Running FillList reading $out_put"
+# Delete anything that may already be in the listbox
+    .exocat.l1.evt delete 0 end
+
+#    set title_line \
+#	[format \
+#"           %s            %s     %s    %s  %s   %s   %s     %s            %s" \
+#	    Filename Submode HT Filter Grating Point Bgnd_Filt FOV Source ]
+    set title_line \
+	    [format \
+"%15s %20s %5s %7s %7s %6s %10s %6s %12s" \
+	    Filename Submode HT Filter Grating Point Backg_Filt FOV Name ]
+    .exocat.l1.evt insert end "$title_line"
+#    puts " $out_put [file exists $out_put]"
+    set fileid [open $out_put "r"]
+    while { [gets $fileid newrow] >= 0 } {
+	if {[string length $newrow] > 0} then {
+#	    puts "$newrow "
+	    set new_entry [split $newrow |]
+
+# The columns that will appear are
+#               Columns in original CAT file
+#  Filename         11
+#  Submode           9
+#  High_Tension     14
+#  Filter           10
+#  Grating          12
+#  Pointing         15
+#  Backgnd_filt     16
+#  Field_of_view    17
+#  Source           18
+#	    
+	    set pwd [pwd]
+
+	    set evt_file [lindex $new_entry 0]
+	    string trim $evt_file
+# Build the event filename and possible extensions
+# i.e. .fits, .fits.gz, and .fits.Z
+# Check for existence of any one of them in current working directory
+#
+	    set levt [split $evt_file]
+	    set act_evt [format "%s.fits" [lindex $levt 0] ]
+	    set actgz_evt [format "%s.fits.gz" [lindex $levt 0] ]
+	    set actz_evt [format "%s.fits.Z" [lindex $levt 0] ]
+	    set evt $pwd\/$act_evt
+	    set evtgz $pwd\/$actgz_evt
+	    set evtz $pwd\/$actz_evt
+
+
+
+	    set sub_mode [lindex $new_entry 5]
+	    string trim $sub_mode
+	    set high_ten [lindex $new_entry 6]
+	    string trim $high_ten
+	    set filter [lindex $new_entry 7]
+	    string trim $filter
+	    set grating [lindex $new_entry 1]
+	    string trim $grating
+	    set pointing [lindex $new_entry 2]
+	    string trim $pointing
+	    set bfilter [lindex $new_entry 3]
+	    string trim $bfilter
+	    set fov [lindex $new_entry 4]
+	    string trim $fov
+	    set source [lindex $new_entry 8]
+	    string trim $source
+	    
+
+set disp_entry [format "%-0.29s %-8s %-4s %-8s %-6s %-s %-11s %-10s %-18s" $evt_file $sub_mode $high_ten $filter $grating $pointing $bfilter $fov $source ]
+# Only display if FILENAME is not NONE and SUBMODE is not inactive
+	    if {![string match "NONE*" $evt_file]}  then {
+		#puts "$disp_entry"
+		if {![string match "inact*" $sub_mode]}  then {
+		    if {[file exists $evt]} then {
+			.exocat.l1.evt insert end "$disp_entry"
+		    } elseif {[file exists $evtgz]} then {
+			.exocat.l1.evt insert end "$disp_entry"
+		    } elseif {[file exists $evtz]} then {
+			.exocat.l1.evt insert end "$disp_entry"
+		    }
+		}
+	    }
+	}
+    }
+    close $fileid
+    if { [file exist $out_put] } {
+	file delete $out_put
+    }
+}
+
+#*************
+# Open file dialog box for the Input Catalog File
+#*************
+
+proc getinfilename { infile } {
+    toplevel .fdlg -class Dialog
+    wm title .fdlg "Open Catalog Input File"
+    wm transient .fdlg .
+#
+# Create the Catalog file entry field
+#
+    frame .fdlg.top1
+    label .fdlg.top1.lab1 -text "Enter Input Catalog Filename  "
+    entry .fdlg.top1.ent1 \
+	    -width 30 \
+	    -exportselection true \
+	    -textvariable infile
+    pack .fdlg.top1.lab1 .fdlg.top1.ent1 -side left 
+    pack .fdlg.top1 -side top -fill x -padx 1c -pady 3
+#
+# Create the OK and CANCEL Buttons
+#
+    frame .fdlg.b
+    button .fdlg.b.ok -text "Ok" -command { FillList [read_file $infile $out_put];.exocat.l1.lab config -text "$infile"; .fdlg.top1.ent1 delete 0 end ;destroy .fdlg }
+    button .fdlg.b.can -text "Cancel" -command { .fdlg.top1.ent1 delete 0 end ; destroy .fdlg }
+    pack .fdlg.b.ok .fdlg.b.can -side left -padx 10 -ipadx 10
+    pack .fdlg.b -side bottom
+
+#Bind Return Key
+bind .fdlg.top1.ent1 <Key-Return> {
+FillList [read_file $infile $out_put];.exocat.l1.lab config -text "$infile"; .fdlg.top1.ent1 delete 0 end ;destroy .fdlg
+}
+    return $infile
+}
+
+#*************
+# Open file dialog box for the Output Merged File
+#*************
+
+proc getoutfilename { outfile } {
+    toplevel .odlg -class Dialog
+    wm title .odlg "Merged Output File"
+    wm transient .odlg .
+#
+# Create the Merged output file entry field
+#
+    frame .odlg.top1
+    label .odlg.top1.lab1 -text "Enter Merged Output Filename  "
+    entry .odlg.top1.ent1 \
+	    -width 30 \
+	    -exportselection true \
+	    -textvariable outfile
+    pack .odlg.top1.lab1 .odlg.top1.ent1 -side left 
+    pack .odlg.top1 -side top -fill x -padx 1c -pady 3
+#
+# Create the OK and CANCEL Buttons
+#
+    frame .odlg.b
+    button .odlg.b.ok -text "Ok" -command { .odlg config -cursor watch;update;mergefile $outfile; .odlg config -cursor top_left_arrow;.odlg.top1.ent1 delete 0 end; destroy .odlg }
+    button .odlg.b.can -text "Cancel" -command { set outfile "NONE"; .odlg.top1.ent1 delete 0 end ; destroy .odlg }
+    pack .odlg.b.ok .odlg.b.can -side left -padx 10 -pady 5 -ipadx 10
+    pack .odlg.b -side bottom
+
+#Bind Return Key
+bind .odlg.top1.ent1 <Key-Return> {
+    .odlg config -cursor watch;update;mergefile $outfile; .odlg config -cursor top_left_arrow;.odlg.top1.ent1 delete 0 end; destroy .odlg 
+}
+    return $outfile
+}
+
+#*************
+# Create the event file list for EXOMERGE
+#*************
+proc list_selected { widgetname } {
+    set i [$widgetname curselection]
+#    puts "$i total [llength $i] lines"
+    set sel_rows [llength $i]
+    set j 0
+    set evtfileid [open "evtlist.temp" w]
+    while {$j < $sel_rows } {
+	set row_ind [lindex $i $j]
+#	puts "The row index is $row_ind"
+	set item [$widgetname get $row_ind]
+#	puts "$item"
+	set litem [split $item]
+	set sel_evt [format "%s.fits" [lindex $litem 0] ]
+	puts $evtfileid "$sel_evt"
+	incr j
+    }
+    close $evtfileid
+    return $sel_rows
+}
+
+#*************
+# Call to EXOMERGE
+#*************
+
+proc mergefile { outfile } {
+    if { [string length $outfile] > 0 } then {
+#
+# Invoke exomerge if an output filename has been selected
+#
+	.exocat config -cursor watch
+	update
+	catch { eval exec exomerge @evtlist.temp $outfile tchat=5 clobber=yes >& err_merge } ignore_merge
+	.exocat config -cursor top_left_arrow 
+
+#
+# Check for Error or Warning messages
+#
+	if { [file size err_merge] } {
+	    set fileid [open "err_merge" r]
+	    set msg [read $fileid]
+	    switch -regexp -- $msg {
+		Warning|warning|WARNING { tk_messageBox -icon warning -type ok -title "Warning from Exomerge" -message "$msg" }
+		Error|error|ERROR { tk_messageBox -icon error -type ok -title "Error from Exomerge" -message "$msg" }
+		default { tk_messageBox -icon error -type ok -title "Error" -message "$msg" }
+	    }
+#	    puts "$ignore_merge $msg"
+	    close $fileid
+	}
+    } else {
+	getoutfilename $outfile
+    }
+}
+
+
+# ************************************************
+# *                                              *
+# *                MAIN                          *
+# *                                              *
+# ************************************************
+#*************
+# Create the menubar, menu items and merge buttons
+#*************
+toplevel .exocat -class toplevel
+wm title .exocat "EXOSAT View and Merge"
+#Turn off window resizing
+wm resizable .exocat 0 0
+# define cursor initially
+.exocat config -cursor top_left_arrow
+#
+# Menubar
+#
+frame .exocat.menubar \
+	-relief raised \
+	-bd 2
+menubutton .exocat.menubar.file \
+	-text "File" \
+	-menu .exocat.menubar.file.menu \
+	-underline 0
+menu .exocat.menubar.file.menu
+
+.exocat.menubar.file.menu add command \
+	-label "Open ..." \
+	-command { \
+	getinfilename $infile; .exocat.l1.lab config -text "$infile" }
+
+.exocat.menubar.file.menu add command \
+	-label "Exit" \
+	-underline 1 \
+	-command { cleanup }
+pack .exocat.menubar.file -side left
+
+
+menubutton .exocat.menubar.help \
+	-text "Help" \
+	-menu .exocat.menubar.help.menu \
+	-underline 0
+menu .exocat.menubar.help.menu
+
+.exocat.menubar.help.menu add command \
+	-label "About" \
+	-underline 0 \
+	-command { \
+	    about_exocat }
+
+.exocat.menubar.help.menu add command \
+	-label "Tutorial" \
+	-underline 0 \
+	-command { \
+		tutorial }
+.exocat.menubar.help.menu add command \
+	-label "Parameters" \
+	-underline 0 \
+	-command { help_param }
+
+pack .exocat.menubar.help -side right
+
+#
+# Mergebar
+#
+frame .exocat.mergebar -relief groove \
+	-borderwidth 3
+
+button .exocat.mergebar.merge \
+	-text "Merge Selected Files" \
+	-pady 10\
+	-padx 10 \
+	-command { \
+#*****************Command for Merge button*****************
+# The mergebutton should invoke an Open... dialog box prompting the user
+#   for an output file if none has been given on the command line
+#
+# The mergebutton should then read the selection (invoke proc list_selected)
+# If there have been files selected then invoke exomerge
+#**********************************************************
+# Build event file listing from selection
+# and return whether rows have been selected
+	set rows_selected [list_selected .exocat.l1.evt] ;
+if {$rows_selected} {
+    # Call exomerge 
+    if {$outfile != "NONE"} then {
+	#
+	# A filename has already been provided
+	mergefile $outfile
+    } else { 
+	#
+	# No filename has been provided
+	getoutfilename $outfile;
+    }
+} else {
+    tk_messageBox -icon info -type ok -title "Sorry"  -message \
+	    "You must make a selection first."
+}
+}
+pack .exocat.mergebar.merge 
+
+
+#
+# Listbox
+#
+frame .exocat.l1
+# Put the name of the file being read above the listbox
+label .exocat.l1.lab -text "Catalog Filename"
+listbox .exocat.l1.evt \
+	-height 20 \
+	-width 120 \
+	-font "-misc-fixed-medium-r-normal--*-130-*-m-*-*" \
+	-exportselection true \
+	-selectmode extended \
+	-yscrollcommand ".exocat.l1.scrb set"
+set out_put " "
+#
+# Scrollbar
+#
+scrollbar .exocat.l1.scrb \
+	-command ".exocat.l1.evt yview"
+
+#************* 
+# Pack the Scrollbar, Menubar, Listbox, Mergebar
+#************* 
+pack .exocat.l1.scrb -side right -fill y
+pack .exocat.l1.lab -side top
+pack .exocat.l1.evt -side left
+pack .exocat.mergebar -side bottom
+pack .exocat.l1 -side bottom
+pack .exocat.menubar -side top -fill x -expand true
+if {$infile !="NONE"} then {
+    FillList [read_file $infile $out_put]; .exocat.l1.lab config -text "$infile" } else { getinfilename $infile; .exocat.l1.lab config -text "$infile" ; raise .exocat; raise .fdlg }
+

@@ -1,0 +1,475 @@
+#!/usr/bin/perl
+#
+# File: pcadeadspect2
+#
+# Description:  Apply PCA deadtime correction to Standard2 spectrum
+#
+# Author: C. B. Markwardt
+#
+#
+
+use Getopt::Std;
+
+getopts(':h');
+if (defined $opt_h) {
+    print <<EOHELP;
+
+NAME
+    pcadeadspect2 - Apply PCA dead-time correction to Standard2 spectra
+
+USAGE
+    pcadeadspect infile phafile outfile gtiorfile gtiandfile 
+      timecol timemin timemax timeint
+
+DESCRIPTION
+
+    pcadeadspect2 applies a dead-time correction to a PCA Standard2
+    spectrum file.
+
+    It is assumed that the user has already run pcadeadcalc2 in order
+    to compute the dead-time related quantities for the observation,
+    and it is also assumed that the user has already extracted a spectrum
+    for the times and detectors they are interested in.
+
+    pcadeadspect2 is used to adjust the exposure time of the extracted
+    spectrum so that it reflects the true live time of the instrument.
+    pcadeadspect2 operates on both the "ONE" and "MANY" products
+    of saextrct (i.e. Type I and Type II PHA files).
+
+    IMPORTANT NOTE: The user must supply to pcadeadspect2 the
+    *identical* time filtering GTI files which were used to make the
+    spectrum.  If this is not done, then the calculated exposures will
+    be less accurate than the original values!
+
+    Other selections like which PCUs were extracted, and
+    the type of spectrum file, are determined automatically.
+    It is not necessary to supply energy selection settings because
+    dead-time does not depend on pulse-height.
+
+
+PARAMETERS
+
+    infile [string - file name or \@filename]
+        Name of a FITS file or \@filename.txt file name list, which
+        is identical to the infile passed to 'saextrct' to produce
+        the input spectrum
+
+    phafile [string - file name]
+        Name of Standard2 spectrum produced by 'saextrct' using the
+        above 'infile' setting.
+
+    outfile [string - output file name]
+        Name of revised Standard2 spectrum file, whose exposure has
+        been corrected for dead time.
+
+    gtiorfile = "APPLY" [string]
+        Name of GTI "OR" time filtering, which is identical to the
+        gtiorfile passed to 'saextrct' to produce the input spectrum.
+
+    gtiandfile = "-" [string]
+        Name of GTI "AND" time filtering, which is identical to the
+        gtiandfile passed to 'saextrct' to produce the input spectrum.
+
+    (gticols = "START STOP") [string]
+        Name of GTI start/stop column names, which is identical to the
+        gticols passed to 'saextrct' to produce the input spectrum.
+
+    timecol = "TIME" [string]
+        Name of TIME column used for extraction, which is identical to
+        the timecol passed to 'saextrct' to produce the input spectrum.
+
+    timemin = INDEF [double precision real]
+        Minimum start time (MET) used for accumulation, which is
+        identical to the timemin passed to 'saextrct' to produce the
+        input spectrum.
+
+    timemax = INDEF [double precision real]
+        Maximum start time (MET) used for accumulation, which is
+        identical to the timemax passed to 'saextrct' to produce the
+        input spectrum.
+
+    timeint = INDEF [double precision real]
+        Comma-separated list of time intervals (MET), which is
+        identical to the timeint passed to 'saextrct' to produce the
+        input spectrum.
+
+    (deadcorrtype = "LIVE") [string]
+        Name of live-time correction type to use.  Use "LIVE" for the true
+        live-time correction, which results in a true dead-time corrected
+        spectrum.  Use "ON" for the on-time column, which results in a
+        standard non-dead-time corrected spectrum (the basic detector
+        on-time exposure is calculated).
+
+    (lcbinarray = INDEF) [string]
+        Setting passed to 'saextrct'.  The default value is 400000.  Set
+        to a larger value for better performance on larger data sets.
+
+    (gtiarray = INDEF) [string]
+        Setting passed to 'saextrct'.  The default value is 30000.  Set to
+        a larger value if you exceed the limit.
+
+    (maxmiss = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (mfracexp = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 2) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+
+    1. saextrct infile=FS4a_DT outroot=spect gtiandfile=myfile.gti
+
+        Sample 'saextrct' call which creates spect.pha spectrum with
+        a user-generated GTI file (myfile.gti).  Note: not all parameters
+        are shown!
+
+    2. pcadeadspect2 infile=FS4a_DT phafile=spect.pha outfile=spect_DT.pha \
+          gtiandfile=myfile.gti
+
+        Result of step 1 is dead-time corrected using the identical
+        time filtering criteria as used in step 1.  Note: not all parameters
+        are shown!
+    
+CAVEATS
+
+    You must use identical time filtering selections for both
+    your run to saextrct and pcadeadspect2.
+
+BUGS
+    Please report problems to xtehelp\@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    saextrct, pcadeadcalc2
+
+EOHELP
+exit;
+    }
+
+use HEACORE::HEAINIT;
+
+
+
+# ==================================================================
+# Call the main task subroutine with an exception handler
+$status = 0;
+$cleanup = 1;
+@scratchfiles = ();
+eval {
+    $status = headas_main(\&pcadeadspect2);
+};
+
+# ===================================
+# Check for errors and report them to the console
+if ($@) {
+    if ($status == 0) { $status = -1; }
+    warn $@;
+    exit $status;
+}
+exit 0;
+
+
+# ===================================
+# Main subroutine
+sub pcadeadspect2 {
+
+    $taskname = "pcadeadspect2";
+    $taskvers = "2.1";
+
+    # Use the standard HEAdas methods for registering the toolname and version number to be
+    # used in error reporting and in the record of parameter values written by HDpar_stamp
+    set_toolname($taskname);
+    set_toolversion($taskvers);
+
+    eval {
+	$status = &pcadeadspect2_work();
+    };
+
+    # Special effort to remove scratch files
+    if ($cleanup) {
+	foreach $scratchfile (@scratchfiles) {
+	    unlink "$scratchfile";
+	}
+    }
+
+    if ($@) {
+	if ($status == 0) { $status = -1; }
+	warn $@;
+	return $status;
+    }
+
+
+    return $status;
+}
+
+# ==================================================================
+# Working subroutine
+sub pcadeadspect2_work {
+
+    # The HEAUTILS module provides access to HDpar_stamp()
+    # set_toolname(), set_toolversion(), and headas_clobberfile()
+    use HEACORE::HEAUTILS;
+    use HEACORE::PIL;
+    # include the file specification functions
+    use Astro::FITS::CFITSIO qw( :shortnames :constants :longnames);
+    # User defined module which contains the Perl-CFITSIO interface functions 
+    use SimpleFITS;
+
+    my ($infile, $outfile, $chatter);
+    my ($fits1, $fits2, $handle1, $handle2);
+    my ($mode, $tddes5);
+
+    ($status = PILGetFname('infile', $infile)) == 0 || die "error getting infile parameter";
+    ($status = PILGetFname('phafile', $phafile)) == 0 || die "error getting phafile parameter";
+    ($status = PILGetFname('outfile', $outfile)) == 0 || die "error getting outfile parameter";
+    ($status = PILGetString('gtiorfile', $gtiorfile)) == 0 || die "error getting gtiorfile parameter";
+
+    ($status = PILGetString('gtiandfile', $gtiandfile)) == 0 || die "error getting gtiandfile parameter";
+
+    ($status = PILGetString('timemin', $timemin)) == 0 || die "error getting timemin parameter";
+    ($status = PILGetString('timemax', $timemax)) == 0 || die "error getting timemax parameter";
+    ($status = PILGetString('timeint', $timeint)) == 0 || die "error getting timeint parameter";
+    ($status = PILGetString('gticols', $gticols)) == 0 || die "error getting gticols parameter";
+    ($status = PILGetString('timecol', $timecol)) == 0 || die "error getting timecol parameter";
+    ($status = PILGetString('deadcorrtype', $deadcorrtype)) == 0 || die "error getting deadcorrtype parameter";
+    ($status = PILGetString('lcbinarray',$lcbinarray)) == 0 || die "error getting lcbinarray parameter";
+    ($status = PILGetString('gtiarray',$gtiarray)) == 0 || die "error getting gtiarray parameter";
+    ($status = PILGetString('maxmiss',$maxmiss)) == 0 || die "error getting maxmiss parameter";
+    ($status = PILGetString('mfracexp',$mfracexp)) == 0 || die "error getting mfracexp parameter";
+    ($status = PILGetBool('clobber', $clobber)) == 0 || die "error getting clobber parameter";
+    ($status = PILGetBool('cleanup', $cleanup)) == 0 || die "error getting cleanup parameter";
+    ($status = PILGetInt('chatter', $chatter)) == 0 || die "error getting chatter parameter";
+
+    print "Running $taskname v$taskvers\n" if ($chatter >= 1);
+    print "----------------------------------------\n" if ($chatter >= 2);
+
+    if ($std2file =~ m/^infile$/i) { 
+      $std2file = "$infile";
+    }
+    $clobstr = $clobber ? "YES" : "NO";
+
+    if ($deadcorrtype =~ m/^LIVE$/i) { 
+      $deadcorrtype = "LIVE";
+      print "  Using LIVE-time correction\n" if ($chatter >= 5);
+    } elsif ($deadcorrtype =~ m/^ON$/i) {
+      $deadcorrtype = "ON";
+      print "  Using ON-time correction\n" if ($chatter >= 5);
+    } else {
+      die "ERROR: $deadcorrtype must be either 'LIVE' or 'ON'"
+    }
+
+    # ===================================================
+    if ($outfile =~ m/^INFILE$/i) {
+      $outfile = "$phafile";
+    } else {
+      # Create new output file by copying input file
+      &headas_clobberfile($outfile);
+      $cmd = "ftcopy infile='$phafile' outfile='$outfile' clobber='$clobstr'";
+      print "COMMAND: $cmd\n" if ($chatter >= 5);
+      system($cmd);
+      if ($? || ! -f "$outfile") {
+	die "ERROR: could not create '$outfile'";
+      }
+      # Add output file to the scratch list... UNTIL the end of this
+      # procedure where it is removed from the list.  
+      # IMPORTANT NOTE: this procedure expects "$outfile" to be the
+      # first element of the @scratchfile list.
+      push @scratchfiles, "$outfile";
+    }
+
+
+    $outroot = "$outfile";     # ".expo" with extenpha parameter
+    $outexpo = "$outroot".".expo";
+    $accumulate = "ONE";       # Accumulate a single live-time vector
+    if ($deadcorrtype eq "LIVE") {
+      $columns = "LiveTimeVect"; 
+    } else {
+      $columns = "OnTimeVect";
+    }
+    print "  Accumulating columns $columns\n" if ($chatter >= 5);
+    
+    $cmd = "saextrct ".
+	"infile='$infile' ".
+	"printmode='SPECTRUM' spmode='SUM' ".
+	"outroot='$outroot' extenpha='.expo' ".
+	"accumulate='$accumulate' columns='$columns' ".
+	"gtiorfile='$gtiorfile' gtiandfile='$gtiandfile' ".
+	"timemin='$timemin' timemax='$timemax' timeint='$timeint' ".
+	"clobber='$clobstr' ".
+	"lcbinarray='$lcbinarray' gtiarray='$gtiarray' maxmiss='$maxmiss' ".
+	"multiple='no' binsz=INDEF mfracexp='$mfracexp' ".
+	"tnull=0.0 timezero=INDEF ".
+	"mlcinten=INDEF mspinten=INDEF writesum='-' writemean='-' ".
+	"gticols='$gticols' timecol='$timecol' extenlc='.lc' lcmode='SUM' ".
+	"chmin=INDEF chmax=INDEF chint=INDEF chbin=INDEF ".
+	"phasefile='-' ephem=INDEF period=INDEF phaseint=INDEF ".
+	"obsdate='MJDREF' obstime='TSTART TSTOP' sensecase='no' ".
+	"chkit='no' negative='IGNORE' dryrun='no' bailout='no'";
+
+    
+    print "COMMAND: $cmd\n" if ($chatter >= 5);
+    unlink("$outexpo");
+    @results = `$cmd`;
+    if ($? || ! -f "$outexpo") {
+      die "ERROR: could not create exposure file '$outexpo'";
+    }
+    push @scratchfiles, "$outexpo";
+
+
+    # ===================================================
+    # Open and read the exposure values
+    $fits = SimpleFITS->open("<$outexpo");
+    die "ERROR: could not open '$outexpo' exposure file for reading" if (! $outexpo );
+    $fits->move('SPECTRUM');
+    @livevect = $fits->readcol('COUNTS');
+    die "ERROR: could not read exposure values from '$outexpo'" if ($fits->status());
+    $fits->setstatus(0)->close();
+
+    if ($#livevect != 5-1) {
+      die "ERROR: Live-time vector is expected to have 5 elements but did not";
+    }
+
+
+    # ===================================================
+    # Check to make sure we can open PHA file
+    $outfits = SimpleFITS->open("+<$outfile");
+    die "ERROR: could not open '$outfile' for writing" if (! $outfits );
+    $outfits->move('SPECTRUM');
+    $hduclas3 = $outfits->readkey('HDUCLAS3');
+    die "ERROR: could not read HDUCLAS3 keyword " if ($outfits->status());
+    $hduclas4 = $outfits->readkey('HDUCLAS4');
+    $outfits->setstatus(0);
+    print "HDUCLAS3 = '$hduclas3'\n" if ($chatter >= 5);
+    print "HDUCLAS4 = '$hduclas4'\n" if ($chatter >= 5);
+
+    $deadcorr = $outfits->readkey('DEADAPP');
+    if ($outfits->status() == 0 && $deadcorr) {
+      die "ERROR: output file '$outfile' is already dead-time corrected";
+    }
+    $outfits->setstatus(0);
+
+    $ontime = $outfits->readkey("EXPOSURE");
+    die "ERROR: could not read 'EXPOSURE' keyword " if ($outfits->status());
+    print "  SAEXTRCT-reported on-time: $ontime [s]\n\n" if ($chatter >= 2);
+
+    # ===================================================
+    # This is a "Type:II" spectrum with one spectrum per row
+    if ($hduclas3 =~ m/type:ii/i || $hduclas4 =~ m/type:ii/i) {
+      @rowid = $outfits->readcol('ROWID');
+      die "ERROR: could not read ROWID column of spectrum" if ($outfits->status());
+
+      # Remove the EXPOSURE keyword because it will be a column
+      $outfits->delkey("EXPOSURE");
+      die "ERROR: could not delete 'EXPOSURE' keyword " if ($outfits->status());
+
+      # Remove any existing columns (there shouldn't be these columns anyway!)
+      $outfits->delcol("ONTIME")   if ($outfits->colnum("ONTIME") >= 0);
+      $outfits->delcol("EXPOSURE") if ($outfits->colnum("EXPOSURE") >= 0);
+
+      # ... and create new columns for per spectrum exposure/on-time
+      $outfits->insertcol({TTYPE => ["ONTIME", "Detector on-time"],
+			   TFORM => "1D",
+			   TUNIT => "s"})
+	      ->insertcol({TTYPE => ["EXPOSURE", "Dead-time corrected exposure"],
+			   TFORM => "1D",
+			   TUNIT => "s"});
+      die "ERROR: could not create EXPOSURE/ONTIME columns" 
+	if ($outfits->status());
+      
+      print "  Row  Column        Live-Time\n" if ($chatter >= 2);
+      print "---------------------------------\n" if ($chatter >= 2);
+      for $i (0 .. $#rowid) {
+	$rownum = $i+1;
+	$expo = $ontime;
+	if ("$rowid[$i]" =~ m/^X.*Pcu([0-4])$/) {
+	  $pcu = $1;
+	  $expo = $livevect[$pcu];
+	}
+	print "   $rownum   $rowid[$i]   $expo\n" if ($chatter >= 2);
+	$outfits->writecol("EXPOSURE", {rows=>$rownum}, $expo);
+	$outfits->writecol("ONTIME",   {rows=>$rownum}, $ontime);
+      }
+      die "ERROR: could not write EXPOSURE column" if ($outfits->status());
+      
+    # ===================================================
+    # This is a "Type:I" spectrum with one spectrum per extension
+    } else {
+      @pcu_used = (0,0,0,0,0);
+
+      # Scan through the header and find keywords of the form ROWID*.
+      # Determine how many PCUs were included.
+      $outfits->readheader($header, clean => 1);
+      for $i (0 .. 999) {
+	$key = "ROWID$i";
+	$val = $header->{$key};
+	if (defined($val)) {
+	  if ("$val" =~ m/^X.*Pcu([0-4]) *$/) {
+	    $pcu = $1;
+	    $pcu_used[$pcu] = 1;
+	    print "$key = '$val' (PCU=$pcu)\n" if ($chatter >=5);
+	  }
+	}
+      }
+
+      # Calculate the cumulative exposure over all five PCUs
+      $npcu = 0;
+      $expo = 0.0;
+      print "  PCU   Used?  Live-Time\n" if ($chatter >= 2);
+      print "-----------------------------\n" if ($chatter >= 2);
+      foreach $pcu (0 .. 4) {
+	$used = $pcu_used[$pcu] ? 'Y' : 'N';
+	$pcu_wt[$pcu] = 0.0;
+	print "   $pcu     $used   $livevect[$pcu]\n" if ($chatter >= 2);
+	if ($used eq 'Y') {
+	  if ($livevect[$pcu] <= 0) {
+	    print "NOTE: PCU $pcu was included by SAEXTRCT with zero ONTIME\n";
+	  } else {
+	    $npcu = $npcu + 1;
+	    $expo = $expo + $livevect[$pcu];
+	    $pcu_wt[$pcu] = 1.0;  # XXX placeholder
+	  }
+	}
+      }
+      
+      # Compute weights for each PCU, which are:
+      #   Weight[i] = (PCUi live time) / (Total live time)
+      # When the responses are added by 'addrmf' the sum of 
+      # the weights will produce a weighted sum of exposure.
+      if ($expo <= 0 || $npcu <= 0) {
+	warn "WARNING: no valid ONTIME was found ";
+      }
+      foreach $pcu (0 .. 4) {
+	if ($pcu_wt[$pcu] == 1.0) {
+	  $pcu_wt[$pcu] = $livevect[$pcu] / $expo;
+	}
+	$outfits->writekey("PCU_WT$pcu",$pcu_wt[$pcu],
+			   "PCU $pcu response weight factor");
+      }
+      $outfits->writekey("ONTIME",$ontime,"Detector on-time");
+      $outfits->writekey("EXPOSURE",$expo,"Deadtime-corrected exposure");
+      die "ERROR: could not write ONTIME/EXPOSURE keywords" 
+	if ($outfits->status());
+    }
+
+    if ($deadcorrtype eq 'LIVE') {
+      $outfits->writekey("DEADAPP", 1, 
+			 'Spectrum is dead-time corrected', TLOGICAL);
+    }
+    $outfits->close();
+
+    # Remove the final output file from the scratch list
+    # because it is in good shape
+    shift(@scratchfiles) if ($scratchfiles[0] eq "$outfile");
+
+    return 0;
+}

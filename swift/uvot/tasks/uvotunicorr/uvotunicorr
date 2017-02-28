@@ -1,0 +1,523 @@
+#!perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotunicorr/uvotunicorr,v $
+# $Revision: 1.5 $
+# $Date: 2008/04/23 20:52:06 $
+#
+# $Log: uvotunicorr,v $
+# Revision 1.5  2008/04/23 20:52:06  rwiegand
+# Handle system specifier on same line as shape and parameters.
+#
+# Revision 1.4  2008/04/08 21:51:16  rwiegand
+# Renamed parameters.
+#
+# Revision 1.3  2008/03/28 15:06:02  rwiegand
+# Allow sky positions to be specified without regions in fromfile/tofile.
+# Implemented maxresid and rotate parameters.
+#
+# Revision 1.2  2008/03/26 21:44:13  rwiegand
+# Allow regions in physical system.
+#
+# Revision 1.1  2008/03/26 20:28:14  rwiegand
+# Tool for performing user guided aspect corrections.
+#
+
+use strict;
+
+package UVOT::Correct;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Math;
+use Math::Eigen;
+use SimpleFITS;
+
+
+{
+	my $task = __PACKAGE__->new;
+	$task->run;
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			loadRegions
+			matchRegions
+			determineInitialSeparations
+			qMethod
+			applyCorrection
+			determineCorrectedSeparations
+			checkResidual
+			runAspcorr
+			finalize
+			)) {
+		$self->$step;
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				obsfile=file reffile=file
+				obsreg=file refreg=file maxresid=real rotate=boolean
+				history=boolean cleanup=boolean chatter=int
+			) ],
+			get => 1,
+			);
+
+}
+
+
+sub loadRegions
+{
+	my ($self, $which) = @_;
+
+	my $args = $self->args;
+
+	if (not $which) {
+		$self->loadRegions('obs');
+		$self->loadRegions('ref');
+		return;
+	}
+
+	my $system = 'image';
+	my @regions;
+	my $path = $args->{$which . 'reg'};
+	my $fh = FileHandle->new($path);
+	while (<$fh>) {
+		chomp;
+		if (/^\s*#/) {
+			# ignore comment
+		}
+		elsif (/^\s*(physical|image|fk5|j2000)\s*$/) {
+			$system = $1;
+		}
+		elsif (/^radec:\s*(\d+\.\d+),\s*([-+]?\d+\.\d+)/) {
+			push(@regions, { RA_deg => $1, DEC_deg => $2 });
+		}
+		elsif (/^(\w+\s*\(.+?\))/) {
+			push(@regions, { REGION_TEXT => "$system; $1" });
+		}
+		elsif (/^(\w+)\s*;\s*(\w+\(.+?\))/) {
+			$system = $1;
+			push(@regions, { REGION_TEXT => "$system; $2" });
+		}
+		elsif (/^\s*global/) {
+			# ignore global
+		}
+		else {
+			$self->error(BAD_INPUT,
+					"loadRegions($path): unable to handle |$_|");
+		}
+	}
+	undef($fh);
+
+	$self->{uc($which)} = \@regions;
+}
+
+
+sub matchRegions
+{
+	my ($self) = @_;
+
+	my $nobs = @{ $self->{OBS} };
+
+	if ($nobs < 1) {
+		$self->error(BAD_INPUT, "not enough regions [$nobs]");
+		return;
+	}
+
+	my $nref = @{ $self->{REF} };
+	if ($nobs != $nref) {
+		$self->error(BAD_INPUT,
+				"mismatch in region count [obs=$nobs, ref=$nref]");
+		return;
+	}
+
+	my $args = $self->args;
+
+	$self->centroidRegions($self->{OBS}, $args->{obsfile});
+	return if not $self->isValid;
+
+	$self->centroidRegions($self->{REF}, $args->{reffile});
+	return if not $self->isValid;
+
+	# can conceive of other matching approaches
+	$self->matchClosest;
+
+}
+
+
+sub matchClosest
+{
+	my ($self) = @_;
+
+	my @matches;
+
+	foreach my $i (@{ $self->{OBS} }) {
+		my $closest = undef;
+		foreach my $j (@{ $self->{REF} }) {
+			my $angle = Math::u3angle($i->{UNIT}, $j->{UNIT});
+			if (not $closest or $angle < $closest->{CLOSEST_ANGLE}) {
+				$closest = $j;
+				$closest->{CLOSEST_ANGLE} = $angle;
+			}
+		}
+		if ($closest->{CLOSEST}) {
+			$self->error(BAD_INPUT, "$closest->{REGION_TEXT} was already paired with $i->{REGION_TEXT}");
+		}
+		else {
+			$i->{CLOSEST} = $closest;
+			$closest->{CLOSEST} = $i;
+		}
+
+		last if not $self->isValid;
+
+		push(@matches, {
+				OBSERVATION => $i->{UNIT},
+				REFERENCE => $closest->{UNIT},
+				});
+	}
+
+	$self->{MATCHES} = \@matches;
+}
+
+
+sub determineInitialSeparations
+{
+	my ($self) = @_;
+	$self->determineSeparations('initial separations', 'OBSERVATION');
+}
+
+
+sub determineCorrectedSeparations
+{
+	my ($self) = @_;
+	$self->determineSeparations('corrected separations', 'CORRECTED');
+}
+
+
+sub centroidRegions
+{
+	my ($self, $regions, $path) = @_;
+
+	my $tmpfile = $self->temporary('uuc', ext => '.reg');
+
+	foreach my $x (@$regions) {
+
+		next if not $x->{REGION_TEXT};
+
+		my $fh = FileHandle->new($tmpfile, 'w');
+		$fh->print($x->{REGION_TEXT} . "\n");
+		$fh->close;
+		my $command = $self->buildCommand('uvotinteg',
+				infile => $path,
+				regfile => $tmpfile,
+				operation => 'CENTROID',
+				format => 'centroid: %.6f,%.6f',
+				sysname => 'WORLD',
+				chatter => 1,
+				);
+		my $result = $self->shell($command);
+		if ($result->{output} =~
+				/centroid: (\d+\.\d+),\s*(-?\d+\.\d+)\s*\[deg/) {
+			$x->{RA_deg} = $1;
+			$x->{DEC_deg} = $2;
+		}
+		else {
+			$self->error(BAD_TASK, 'centroiding failed');
+		}
+		return if not $self->isValid;
+	}
+
+	foreach my $x (@$regions) {
+		if (not defined($x->{RA_deg}) or not defined($x->{DEC_deg})) {
+			$self->error(BAD_TASK, 'region missing RA/DEC');
+		}
+		$x->{UNIT} = Math::rd2unit(Math::toRadians($x->{RA_deg}),
+								Math::toRadians($x->{DEC_deg}));
+	}
+}
+
+
+
+sub determineSeparations
+{
+	my ($self, $intro, $key) = @_;
+
+	my $sepStr = "$intro [arcsec]";
+	my $sum = 0;
+	my $sum2 = 0;
+	my $count = 0;
+	my $max = 0;
+	foreach my $m (@{ $self->{MATCHES} }) {
+		my $angle = Math::u3angle($m->{REFERENCE}, $m->{$key});
+		my $arcsec = 3600 * Math::toDegrees($angle);
+		$sepStr .= sprintf(' %.2f', $arcsec);
+		++$count;
+		$sum += $arcsec;
+		$sum2 += $arcsec * $arcsec;
+		if ($arcsec > $max) {
+			$max = $arcsec;
+		}
+	}
+
+	my $mean = $sum / $count;
+	my $sigma = sqrt($sum2 / $count - $mean * $mean);
+	my $rms = sqrt($sum2 / $count);
+
+	my %info = (
+		COUNT => $count,
+		MEAN => $mean,
+		SIGMA => $sigma,
+		RMS => $rms,
+		MAX => $max,
+	);
+
+	$self->{$key} = \%info;
+
+	if ($self->chatter) {
+		$self->report($sepStr);
+		$self->report(
+			sprintf("count=%d mean=%.2f max=%.2f sigma=%.2f rms=%.2f",
+					$count, $mean, $max, $sigma, $rms));
+	}
+}
+
+
+sub qMethod
+{
+	my ($self) = @_;
+
+	my $matches = $self->{MATCHES};
+
+	# returns either a reference to a quaternion (array of 4 elements),
+	# or a string indicating what went wrong
+
+	# see ADS/quest.m for combining observations/reference
+	# see Jama source for finding eigenvalues/eigenvectors
+#	$self->report('qMethod:' . $self->stringify($matches));
+
+	my $problem = undef;
+
+#	if (not ref($matches) or (@{ $matches } < 2)) {
+#		$problem = 'need list of at least 2 matched observations';
+#		$self->error(BAD_EXECUTE, "qMethod: $problem");
+#		return $problem;
+#	}
+
+	my @B = (
+		[ 0, 0, 0 ],
+		[ 0, 0, 0 ],
+		[ 0, 0, 0 ],
+	);
+
+	# we arrange to normalize weights so B, S, sigma, Z, K will match quest.m
+	my $totalWeight = 0;
+	foreach my $i (@{ $matches }) {
+		if (not $i->{WEIGHT}) {
+			$i->{WEIGHT} = 1;
+		}
+		$totalWeight += $i->{WEIGHT};
+	}
+
+	# temporaries for loop
+	my $wi = [ 0, 0, 0 ];
+	my $vi = [ 0, 0, 0 ];
+
+	my $outer = [
+		[ 0, 0, 0 ],
+		[ 0, 0, 0 ],
+		[ 0, 0, 0 ],
+	];
+
+	# calculate B = WVt
+	foreach my $i (@{ $matches }) {
+
+		my $weight = sqrt($i->{WEIGHT} / $totalWeight);
+
+		my $ub = $i->{OBSERVATION};
+		my $ur = $i->{REFERENCE};
+
+		Math::v3scalex($ub, $weight, $wi);
+		Math::v3scalex($ur, $weight, $vi);
+
+		Math::v3outerx($wi, $vi, $outer);
+
+		Math::madd(3, 3, \@B, $outer, \@B);
+	}
+
+	$self->report("qMethod: B " . $self->stringify(\@B))
+		if $self->chatter(5);
+
+	# @Zt is transpose(Z)
+	my @Zt = (
+		$B[1][2] - $B[2][1],
+		$B[2][0] - $B[0][2],
+		$B[0][1] - $B[1][0],
+	);
+	$self->report("qMethod: Zt " . $self->stringify(\@Zt))
+		if $self->chatter(5);
+
+	# sigma = trace(B)
+	my $sigma = $B[0][0] + $B[1][1] + $B[2][2];
+	$self->report("qMethod: sigma $sigma")
+		if $self->chatter(5);
+
+	# S = B + Bt,
+	# where Bt = transpose(B)
+	my @S = (
+		[ $B[0][0] + $B[0][0], $B[0][1] + $B[1][0], $B[0][2] + $B[2][0] ],
+		[ $B[1][0] + $B[0][1], $B[1][1] + $B[1][1], $B[1][2] + $B[2][1] ],
+		[ $B[2][0] + $B[0][2], $B[2][1] + $B[1][2], $B[2][2] + $B[2][2] ],
+	);
+	$self->report("qMethod: S " . $self->stringify(\@S))
+		if $self->chatter(5);
+
+	# K = [ S - Io  Z ]
+	#     [ Zt      o ]
+	# where o=sigma, Zt=transpose(Z)
+
+	my @K = (
+		[ $S[0][0] - $sigma, $S[0][1], $S[0][2], $Zt[0] ],
+		[ $S[1][0], $S[1][1] - $sigma, $S[1][2], $Zt[1] ],
+		[ $S[2][0], $S[2][1], $S[2][2] - $sigma, $Zt[2] ],
+		[ @Zt, $sigma ],
+	);
+	$self->report("qMethod: K " . $self->stringify(\@K))
+		if $self->chatter(5);
+
+require Math::Eigen;
+	my $decomp = Math::Eigen->new(matrix => \@K);
+
+# optimal q corresponds to maximum eigenvalue of K
+	my $eigreal = $decomp->getRealEigenvalues;
+	my $eigimag = $decomp->getImagEigenvalues;
+
+	my $selindex = undef;
+	for (my $i = 0; $i < @{ $eigreal }; ++$i) {
+		if ($eigimag->[$i] == 0) {
+			if (not defined($selindex)
+				or ($eigreal->[$i] > $eigreal->[$selindex])) {
+				$selindex = $i;
+			}
+		}
+	}
+
+	if (defined($selindex)) {
+		my $quaternion = [ 0, 0, 0, 0 ];
+		my $eigvect = $decomp->getEigenvectorMatrix;
+
+		for (my $i = 0; $i < @{ $eigvect }; ++$i) {
+			$quaternion->[$i] = $eigvect->[$i][$selindex];
+		}
+		$self->report("found optimal quaternion "
+				. $self->stringify($quaternion))
+				if $self->chatter(3);
+		$self->{QUATERNION} = $quaternion;
+		return $quaternion;
+	}
+	else {
+		$problem = 'no real eigenvalue found';
+		$self->error(BAD_EXECUTE, "qMethod: $problem");
+	}
+
+	return $problem;
+}
+
+
+sub applyCorrection
+{
+	my ($self) = @_;
+
+	return if not $self->{QUATERNION};
+
+	my $q = $self->{QUATERNION};
+	$self->{QHAT} = [ -$q->[0], -$q->[1], -$q->[2], $q->[3] ];
+	my $rm = Math::q2rm($self->{QHAT});
+
+	foreach my $m (@{ $self->{MATCHES} }) {
+		$m->{CORRECTED} = Math::v3rm($m->{OBSERVATION}, $rm);
+	}
+}
+
+
+sub checkResidual
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $info = $self->{CORRECTED};
+	if ($info->{MAX} > $args->{maxresid}) {
+		$self->error(BAD_OUTPUT,
+			sprintf("maximum residual %.2f exceeds limit $args->{maxresid}",
+					$info->{MAX}));
+	}
+}
+
+
+sub runAspcorr
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $nmatches = scalar(@{ $self->{MATCHES} });
+	my @record = ('UNICORR', "MATCHES=$nmatches");
+
+	my $inspec = $self->parseInputURL($self->args->{obsfile});
+
+	my $command;
+
+	if ($nmatches > 1) {
+		$command = $self->buildCommand('aspcorr',
+				infile => $inspec->{filebase},
+				outhdu => $inspec->{extspec},
+				method => 'QUAT',
+				quat => join(' ', @{ $self->{QHAT} }),
+				rotate => $args->{rotate},
+				record => join(',', @record),
+				checksum => 'no',
+				);
+	}
+	else {
+		my $header;
+		my $status = SimpleFITS->readonly($args->{obsfile})
+				->readheader($header)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to load $args->{obsfile} header [$status]");
+			return;
+		}
+		my $obs = $self->{OBS}[0];
+		my $ref = $self->{REF}[0];
+		my $ra = $header->{CRVAL1} + $ref->{RA_deg} - $obs->{RA_deg};
+		my $dec = $header->{CRVAL2} + $ref->{DEC_deg} - $obs->{DEC_deg};
+		$command = $self->buildCommand('aspcorr',
+				infile => $inspec->{filebase},
+				outhdu => $inspec->{extspec},
+				method => 'RADEC',
+				ra => $ra,
+				dec => $dec,
+				rotate => $args->{rotate},
+				record => join(',', @record),
+				checksum => 'no',
+				);
+	}
+
+	$self->shell($command);
+}
+

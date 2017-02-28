@@ -1,0 +1,678 @@
+#! perl
+
+#######################################################################
+# $Source: /headas/headas/swift/gen/tasks/swacsreq/swacsreq,v $
+# $Revision: 1.2 $
+# $Date: 2012/09/10 16:06:11 $
+#
+#
+# $Log: swacsreq,v $
+# Revision 1.2  2012/09/10 16:06:11  rwiegand
+# Do not generate an error if unable to find solution.
+#
+# Revision 1.1  2012/08/06 20:58:43  rwiegand
+# Adding tool for determining the Swift requested pointing from engineering
+# housekeeping.  This tool is intended for use at the SDC to validate the
+# answers produced by the aspect tool.
+#
+#######################################################################
+
+use strict;
+
+package Swift::ACSREQ;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use POSIX;
+
+use Math;
+use SimpleFITS;
+use Astro::FITS::CFITSIO qw(:constants);
+
+
+
+# main
+{
+	my $task = __PACKAGE__->new(version => '1.0');
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	foreach my $step (qw(
+			initialize
+			analyze
+			writeOutput
+			finalize
+			)) {
+
+		$self->$step;
+
+		last if not $self->isValid;
+	}
+
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file outfile=file
+				cleanup=boolean history=boolean
+				clobber=boolean chatter=integer
+			) ],
+			get => 1,
+			);
+
+	my $args = $self->args;
+
+	my $path = $args->{outfile};
+	if (-e $path) {
+		if (not $args->{clobberFlag}) {
+			$self->error(BAD_OUTPUT,
+					"outfile[$path] exists and clobber not set");
+		}
+		else {
+			if (not unlink($path)) {
+				$self->error(BAD_OUTPUT,
+						"outfile[$path] exists and unable to clobber [$!]");
+			}
+		}
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if (not $self->{outfile} or not -f $self->{outfile}) {
+		return;
+	}
+
+	if ($self->isValid) {
+		$self->putParameterHistory($self->{outfile});
+	}
+
+	if ($self->isValid) {
+
+		my $output = $args->{outfile};
+
+		if (rename($self->{outfile}, $output)) {
+			$self->report("saved output to $output");
+		}
+		else {
+			$self->error(BAD_OUTPUT,
+					"unable to rename $self->{outfile} to $output [$!]");
+		}
+	}
+
+	$self->addTemporary($self->{outfile})
+		if $self->{outfile};
+
+}
+
+
+sub d2r
+{
+	my ($deg) = @_;
+	return Math::toRadians($deg);
+}
+
+
+sub update
+{
+	my ($self, $special, $e) = @_;
+
+	my $ra = $e->{SACSREQRA};
+	my $dec = $e->{SACSREQDEC};
+	my $roll = $e->{SACSREQROLL};
+	my $p;
+
+# print sprintf("update RA=%.1f Dec=%.1f roll=%.1f\n", $ra, $dec, $roll);
+
+	foreach my $x ($ra, $dec, $roll) {
+		if (not defined($x) or $x =~ /nan/i) {
+			my $xhat = $x || 'undef';
+			print "invalid value $xhat\n";
+			return;
+		}
+	}
+
+	my $unit = Math::rd2unit(d2r($ra), d2r($dec));
+
+	my $roll_rad = d2r($roll);
+	my $roll_u = [ cos($roll_rad), sin($roll_rad) ];
+
+	if (not $special->{POS}) {
+# print "adding first position\n";
+		$p = { UNIT => $unit };
+		$special->{POS} = [ $p ];
+	}
+	else {
+		foreach my $p0 (@{ $special->{POS} }) {
+			if (Math::u3angle($unit, $p0->{UNIT}) < d2r(1/60)) {
+				my $roll_avg = meanRoll_u($p0);
+				if (Math::u2angle($roll_avg, $roll_u) < d2r(1)) {
+# print "incrementing position\n";
+					$p = $p0;
+				}
+			}
+		}
+		if (not $p) {
+# print "adding new position\n";
+			$p = { UNIT => $unit };
+			push(@{ $special->{POS} }, $p);
+		}
+	}
+
+	$special->{END} = $e->{TIME};
+	++$p->{COUNT};
+
+	foreach my $key (qw(SACSREQRA SACSREQDEC)) {
+		$p->{$key} = $e->{$key};
+	}
+
+	if (my $v = $p->{ROLL_v}) {
+		$v->[0] += $roll_u->[0];
+		$v->[1] += $roll_u->[1];
+	}
+	else {
+		$p->{ROLL_v} = $roll_u;
+	}
+
+	foreach my $key (qw(SACSOBSNUM SACSREQOBSNUM)) {
+		my $key1 = "$key:$e->{$key}";
+		++$special->{$key1};
+	}
+}
+
+
+sub reportHashScalars
+{
+	my ($self, $href) = @_;
+	foreach my $k (sort(keys(%$href))) {
+		my $v = $href->{$k};
+		if (not ref($v)) {
+			$self->report("\t$k\t$v");
+		}
+	}
+}
+
+
+sub analyze
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $senhk = $args->{infile};
+
+	my $header;
+	my $status = SimpleFITS->readonly($senhk)
+			->readheader($header, clean => 1)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to read $senhk header [$status]");
+		return;
+	}
+
+	my $filtered = $self->perlFilter($senhk);
+	if (not ref($filtered)) {
+		$self->warning($filtered);
+		return;
+	}
+
+	my $answer = $self->studyHK($header, $filtered);
+}
+
+
+sub meanRoll_u
+{
+	my ($p) = @_;
+	my $n = $p->{COUNT};
+	my $v = $p->{ROLL_v};
+	my $mean = [ $v->[0] / $n, $v->[1] / $n ];
+	return $mean;
+}
+
+
+sub deltaRoll
+{
+	my ($p1, $p2) = @_;
+
+	my $u1 = meanRoll_u($p1);
+	my $u2 = meanRoll_u($p2);
+
+	my $rad = Math::u2angle($u1, $u2);
+	return $rad;
+}
+
+
+sub meanRoll_d
+{
+	my ($p) = @_;
+	my $u = meanRoll_u($p);
+	my $d = u2roll_d($u);
+	return $d;
+}
+
+
+sub u2roll_d
+{
+	my ($u) = @_;
+	my $rad = atan2($u->[1], $u->[0]);
+	my $deg = Math::toDegrees($rad);
+	while ($deg < 0) {
+		$deg += 360;
+	}
+	return $deg;
+}
+
+
+sub updateHash
+{
+	my ($hout, $hin) = @_;
+	foreach my $key (keys(%$hin)) {
+		$hout->{$key} = $hin->{$key};
+	}
+}
+
+
+sub perlFilter
+{
+	my ($self, $senhk, %args) = @_;
+
+	my $hk1 = '[hk013x001][col TIME;SACSOBSNUM;SACSREQOBSNUM;SACSREQDEC]';
+	my @hk1;
+	my $status = SimpleFITS->readonly($senhk . $hk1)
+			->loadtable(\@hk1)
+			->close
+			->status;
+	if ($status) {
+		return "unable to load $senhk $hk1 table";
+	}
+
+	my $hk2 = '[hk014x001][col TIME;SACSOBSNUM;SACSREQRA;SACSREQROLL]';
+	my @hk2;
+	$status = SimpleFITS->readonly($senhk . $hk2)
+			->loadtable(\@hk2)
+			->close
+			->status;
+	if ($status) {
+		return "unable to load $senhk $hk2 table";
+	}
+
+	my $count1 = @hk1;
+	my $count2 = @hk2;
+	$self->verbose("loaded $count1 from $hk1 and $count2 from $hk2");
+
+	my @filter;
+	$self->combineHK(\@filter, \@hk1, \@hk2);
+
+	return \@filter;
+}
+
+
+sub combineHK
+{
+	my ($self, $out, $a1, $a2) = @_;
+
+	my ($e1, $e2);
+	if (@$a1) {
+		$e1 = shift(@$a1);
+	}
+	if (@$a2) {
+		$e2 = shift(@$a2);
+	}
+
+	my %e;
+
+	while ($e1 or $e2) {
+		if (not $e1) {
+			updateHash(\%e, $e2);
+			$e2 = shift(@$a2);
+		}
+		elsif (not $e2) {
+			updateHash(\%e, $e1);
+			$e1 = shift(@$a1);
+		}
+		elsif ($e1->{TIME} == $e2->{TIME}) {
+			updateHash(\%e, $e1);
+			updateHash(\%e, $e2);
+			$e1 = shift(@$a1);
+			$e2 = shift(@$a2);
+		}
+		elsif ($e1->{TIME} > $e2->{TIME}) {
+			updateHash(\%e, $e2);
+			$e2 = shift(@$a2);
+		}
+		else {
+			updateHash(\%e, $e1);
+			$e1 = shift(@$a1);
+		}
+
+		my %tmp = %e;
+		push(@$out, \%tmp);
+	}
+}
+
+
+sub studyHK
+{
+	my ($self, $header, $aref, %args) = @_;
+
+	my $name = $self->args->{infile};
+
+	my $obsid = $header->{OBS_ID};
+	my $obsTarget = substr($obsid, 0, 8);
+	my $obsSegment = substr($obsid, -3);
+
+	my $baseObsnum = $obsTarget + $obsSegment * (2**24);
+	my $wantObsnum = $baseObsnum;
+
+	my $special = undef;
+	my $last_t = $aref->[0]{TIME};
+	my @special;
+
+	my %obsnum;
+
+	foreach my $e (@$aref) {
+		my $delta_t = $e->{TIME} - $last_t;
+		if ($delta_t > 80) {
+			if ($special and $last_t > $special->{START}) {
+				push(@special, $special);
+			}
+			$special = undef;
+		}
+		if (defined($e->{SACSOBSNUM}) and defined($e->{SACSREQOBSNUM})) {
+
+			++$obsnum{$e->{SACSOBSNUM}};
+
+			if ($e->{SACSOBSNUM} == $wantObsnum and $e->{SACSREQOBSNUM} == $wantObsnum) {
+				if (not defined($special)) {
+					$special = { START => $e->{TIME} };
+				}
+				$self->update($special, $e);
+			}
+			elsif ($special) {
+				push(@special, $special);
+				$special = undef;
+			}
+		}
+		elsif ($special) {
+			push(@special, $special);
+			$special = undef;
+		}
+
+		$last_t = $e->{TIME};
+	}
+
+	if (defined($special)) {
+		push(@special, $special);
+		$special = undef;
+	}
+
+	{
+		my $record = "SACOBSNUM: target=$obsTarget segment=$obsSegment";
+		my $count = $obsnum{$baseObsnum} || 0;
+		$record .= " { O=$baseObsnum, N=$count }";
+		$self->report($record);
+	}
+
+	if (not @special) {
+		$self->warning("OBS_ID=$obsid: uncertain of requested position");
+		return;
+	}
+
+
+	# my $count = @special;
+	# $self->verbose("identified $count special areas");
+	my @winners;
+	$self->logSpecial('initial', @special);
+	foreach my $s (@special) {
+		next if not $s->{POS};
+		my @sort = sort { $b->{COUNT} <=> $a->{COUNT} } @{ $s->{POS} };
+		if (@sort == 1) {
+			if ($sort[0]{COUNT} > 2) {
+				push(@winners, $sort[0]);
+			}
+			else {
+				$self->warning("no dominant position for $name/$s->{START} single COUNT=$sort[0]{COUNT}");
+			}
+		}
+		elsif ($sort[1]{COUNT} <= 1) {
+			if ($sort[0]{COUNT} > 5) {
+				push(@winners, $sort[0]);
+			}
+			else {
+				$self->warning("no dominant position for $name/$s->{START} multi COUNT=$sort[0]{COUNT}");
+			}
+		}
+		elsif ($sort[1]{COUNT} == 2) {
+			if ($sort[0]{COUNT} > 9) {
+				push(@winners, $sort[0]);
+			}
+			else {
+				$self->warning("no dominant position for $name/$s->{START} multi:2 COUNT=$sort[0]{COUNT}");
+			}
+		}
+	}
+
+	if (not @winners) {
+		$self->warning("no dominant position for $name");
+		return;
+	}
+
+	@winners = $self->consolidate(@winners);
+
+	my $count = 0;
+	my $ra = -999;
+	my $dec = -999;
+	my $roll = -999;
+	my $known = 0;
+
+	my @roll;
+	my $selected = $winners[0];
+
+	foreach my $s (@winners) {
+		if (Math::u3angle($s->{UNIT}, $selected->{UNIT}) > d2r(3/60)) {
+			$self->warning("$name has inconsistent positions [>3 arcmin]");
+		}
+
+		my $s_roll = meanRoll_u($s);
+		foreach my $r (@roll) {
+			if (Math::u2angle($s_roll, $r) < d2r(1)) {
+				undef($s_roll);
+				last;
+			}
+		}
+
+		if (defined($s_roll)) {
+			push(@roll, $s_roll);
+		}
+	}
+
+	$count = @$aref;
+	$ra = $selected->{SACSREQRA};
+	$dec = $selected->{SACSREQDEC};
+	$known = (defined($ra) and defined($dec)) ? 1 : 0;
+
+	my @records;
+	push(@records,
+		{ KEY => 'SACSREQ', VALUE => 'T', COMMENT => 'Have SWACSREQ?' },
+
+		{ KEY => 'SWRA', VALUE => $ra, COMMENT => '[deg] R.A.' },
+		{ KEY => 'SWDEC', VALUE => $dec, COMMENT => '[deg] Dec' },
+	);
+
+	my $i = 0;
+	my $rolls = '';
+	foreach my $roll (@roll) {
+		if ($i) { $rolls .= ',' }
+		++$i;
+		my $value = sprintf('%.3f', u2roll_d($roll));
+		push(@records,
+			{ KEY => 'SWROLL' . $i, VALUE => $value, UNITS => "[deg] Roll $i" },
+		);
+		$rolls .= "ROLL$i=$value";
+	}
+
+	$self->report("KNOWN=$known,N=$count,RA=$ra,DEC=$dec,$rolls");
+
+	$self->{RECORDS} = \@records;
+}
+
+
+sub consistent
+{
+	my ($p1, $p2) = @_;
+
+	# allow 10 arcsec of separation
+	if (Math::u3angle($p1->{UNIT}, $p2->{UNIT}) > d2r(10/3600)) {
+		return undef;
+	}
+
+	# allow 1 degree of roll difference
+	if (deltaRoll($p1, $p2) > d2r(10)) {
+		return undef;
+	}
+
+	return 1;
+}
+
+
+sub consolidate
+{
+	my ($self, @in) = @_;
+
+	my @out;
+
+	foreach my $p1 (@in) {
+		my $matched = undef;
+		foreach my $p2 (@out) {
+			next if ($p1 == $p2);
+			if (consistent($p1, $p2)) {
+				$matched = 1;
+				my @v3 = (0, 0, 0);
+				for (my $i = 0; $i < 3; ++$i) {
+					$v3[$i] = $p1->{UNIT}[$i] * $p1->{COUNT}
+							+ $p2->{UNIT}[$i] * $p2->{COUNT};
+				}
+				Math::v3normalize(\@v3);
+
+				my @roll_v = (0, 0);
+				for (my $i = 0; $i < 2; ++$i) {
+					$roll_v[$i] = $p1->{ROLL_v}[$i] * $p1->{COUNT}
+							+ $p2->{ROLL_v}[$i] * $p2->{COUNT};
+				}
+
+				# merge p1 into p2
+				$p2->{UNIT} = \@v3;
+				$p2->{COUNT} += $p1->{COUNT};
+				$p2->{ROLL_v} = \@roll_v;
+			}
+		}
+		if (not $matched) {
+			push(@out, $p1);
+		}
+	}
+
+	$self->logSpecial('consolidated', @out);
+
+	my @sort = sort { $b->{COUNT} <=> $a->{COUNT} } @out;
+
+	if (@sort < 2) {
+	}
+	else {
+		my $primary = $sort[0]{COUNT};
+		my $secondary = $sort[1]{COUNT};
+		if ($primary > $secondary * 10 and $secondary < 30) {
+			@out = ($sort[0]);
+			$self->report("consolidated primary=$primary dominates secondary $secondary");
+		}
+		else {
+			$self->warning("no dominant position after consolidating $primary versus $secondary");
+		}
+	}
+
+	return @out;
+}
+
+
+sub logSpecial
+{
+	my ($self, $tag, @special) = @_;
+
+	return if not $self->{LOG_SPECIAL};
+
+my $sep0 = "=== $tag " . '=' x 32 . "\n";
+my $sep1 = '-' x 16 . "\n";
+
+	foreach my $s (@special) {
+print $sep0;
+		$self->reportHashScalars($s);
+		foreach my $p (@{ $s->{POS} }) {
+print $sep1;
+			$p->{ROLL_d} = meanRoll_d($p);
+			$self->reportHashScalars($p);
+		}
+	}
+}
+
+
+sub writeOutput
+{
+	my ($self) = @_;
+
+	if (not $self->{RECORDS}) {
+		$self->warning('writeOutput: no result');
+		return;
+	}
+
+	my $path = $self->temporary('sacsreq', ext => '.fits');
+
+	my $fits = SimpleFITS->create($path);
+	my $status = -1;
+	if (not $fits or ($status = $fits->status)) {
+		$self->error(BAD_OUTPUT, "unable to create $path [$status]");
+	}
+
+	$status = $fits->handle->create_img(BYTE_IMG, 0, [ ], $status);
+	if ($status = $fits->status) {
+		$self->error(BAD_OUTPUT, "unable to create HDU [$status]");
+		return;
+	}
+
+	$self->verbose("created temporary $path");
+
+	foreach my $r (@{ $self->{RECORDS} }) {
+		$status = $fits->writekey($r->{KEY}, $r->{VALUE}, $r->{COMMENT})->status;
+		if ($status) {
+			$self->error(BAD_OUTPUT, "unable to write $r->{KEY} [$status]");
+		}
+	}
+
+	if ($status = $fits->close->status) {
+		$self->error(BAD_OUTPUT, "unable to close $path [$status]");
+	}
+
+	$self->{outfile} = $path;
+}
+
+
+1;
+

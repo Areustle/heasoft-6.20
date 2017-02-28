@@ -1,0 +1,428 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/swift/uvot/tasks/uvotcoincidence/uvotcoincidence,v $
+# $Revision: 1.3 $
+# $Date: 2007/05/30 15:17:36 $
+#
+#	uvotcoincidence
+#		Update UVOT source table with coincidence loss corrected rates
+#
+#		The input source table has an extension with columns RATE,
+#		RATE_ERR by default.  The user can override the column
+#		names using the ratecol and errcol parameters.
+#
+#
+# $Log: uvotcoincidence,v $
+# Revision 1.3  2007/05/30 15:17:36  rwiegand
+# Allow user to specify a prefix for output columns.  Use FRAMTIME from
+# header if frametime parameter is DEFAULT.
+#
+# Revision 1.2  2007/05/25 14:58:01  rwiegand
+# Update calibration frametime and related parameters.
+#
+# Revision 1.1  2007/05/21 17:57:31  rwiegand
+# Separated coincidence loss correction out of uvotmag.
+#
+# Revision 1.1  2007/04/19 20:25:50  wiegand
+# Initial revision
+#
+
+use strict;
+
+package UVOT::CoincidenceLoss;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use Astro::FITS::CFITSIO qw(:constants);
+use SimpleFITS;
+use StarID::SourceTable;
+use UVOT::Calibration;
+use UVOT::Source;
+
+use constant EXTNAME => 'SOURCES';
+
+
+my @COLUMNS = (
+	{ name => 'COI_FACTOR',
+		form => 'E',
+        comment => 'CoI factor',
+        display => 'F10.6',
+    },
+	{ name => 'COI_FACTOR_ERR',
+		form => 'E',
+        comment => 'Error in CoI factor',
+        display => 'F10.6',
+    },
+	{ name => 'COI_RATE',
+		form => 'E',
+        comment => 'CoI corrected rate',
+		units => 'count/s',
+        display => 'F10.6',
+    },
+	{ name => 'COI_RATE_ERR',
+		form => 'E',
+        comment => 'Error in CoI corrected rate',
+		units => 'count/s',
+        display => 'F10.6',
+    },
+	{ name => 'SATURATED',
+		form => 'L',
+        comment => 'Saturated?',
+    },
+);
+
+my %COLUMNS = map { ($_->{name} => $_) } @COLUMNS;
+
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->loadCalibration
+		if $self->isValid;
+
+	$self->loadRates
+		if $self->isValid;
+
+	$self->correctSources
+		if $self->isValid;
+
+	$self->writeResults
+		if $self->isValid;
+
+	$self->finalize
+		if $self->isValid;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			options => [ qw(
+				infile=file coinfile=file
+				ratecol=string errcol=string
+				frametime=string deadtimecorr=boolean prefix=string
+				chatter=int
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	if (uc($args->{infile}) eq 'NONE') {
+		$self->{SCALAR_MODE} = 1;
+		$self->{HEADER} = {
+			TELESCOP => 'SWIFT',
+			INSTRUME => 'UVOTA',
+			TSTOP => 1e20,
+		};
+	}
+	else {
+		$self->setupPath($args->{infile});
+	}
+
+	if ($args->{prefix} eq '-') {
+		$self->{prefix} = '';
+	}
+	else {
+		$self->{prefix} = $args->{prefix};
+	}
+}
+
+
+sub setupPath
+{
+	my ($self, $path) = @_;
+
+	my $inspec = $self->parseInputURL($path);
+	if (not $inspec) {
+		$self->error(BAD_INPUT,
+				"unable to parse input name $path");
+	}
+
+	$self->{inspec} = $inspec;
+
+	my $status = 0;
+	my $fits = Astro::FITS::CFITSIO::open_file($path, READWRITE, $status);
+	if ($status) {
+		$self->error(BAD_OUTPUT,
+				"unable to open $path [$status]");
+	}
+	else {
+		$self->{sourcefits} = $fits;
+	}
+
+	my $numhdus = 0;
+	if ($self->isValid and $fits->get_num_hdus($numhdus, $status)) {
+		$self->error(BAD_OUTPUT,
+				"unable to get HDU info for $path [$status]");
+	}
+	else {
+		$inspec->{numhdus} = $numhdus;
+	}
+
+	if (length($inspec->{extspec}) > 0) {
+		# user specified extension, ensure a table
+		my $hdutype = 0;
+		my $tmp = '';
+		$self->{hdu1} = $fits->get_hdu_num($tmp);
+		if ($fits->get_hdu_type($hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"unable to get $path HDU type");
+		}
+		elsif ($hdutype != BINARY_TBL and $hdutype != ASCII_TBL) {
+			$self->error(BAD_INPUT,
+					"specified HDU is not a table");
+		}
+	}
+	else {
+		# try to determine correct extension by finding table
+		my $chosen = undef;
+		my @tables;
+		my $hdutype = 0;
+
+		for (my $hdu = 2; $hdu <= $inspec->{numhdus}; ++$hdu) {
+			if ($fits->movabs_hdu($hdu, $hdutype, $status)) {
+				$self->error(BAD_INPUT,
+						"unable to move to $path HDU $hdu [$status]");
+			}
+			elsif ($hdutype == BINARY_TBL || $hdutype == ASCII_TBL) {
+				push(@tables, $hdu);
+			}
+		}
+
+		if (@tables > 1) {
+			my $tlist = join(', ', @tables);
+			$self->error(BAD_INPUT,
+					"multiple table extensions in $path [$tlist]");
+		}
+		elsif (@tables == 0) {
+			$self->error(BAD_INPUT,
+					"no table extensions in $path");
+		}
+		else {
+			$chosen = $tables[0];
+			$self->{hdu1} = $chosen;
+			$self->report("found single table extension $chosen")
+				if $self->chatter(3);
+		}
+
+		if ($self->isValid and $fits->movabs_hdu($chosen, $hdutype, $status)) {
+			$self->error(BAD_INPUT,
+					"trouble positioning at input HDU [$status]");
+		}
+	}
+
+	if ($self->isValid) {
+		my $header = $fits->read_header;
+		$self->{HEADER} = $header;
+
+		my %tmp;
+		$self->storeHeaderKeywords($header,
+				keys => [ qw(EXTNAME HDUNAME) ],
+				optional => 1,
+				hash => \%tmp,
+				);
+		$self->{extname} = $tmp{EXTNAME} || $tmp{HDUNAME};
+
+		if (not exists($header->{TSTOP})) {
+			$header->{TSTOP} = 1e20;
+			$self->warning("header missing TSTOP keyword; using $header->{TSTOP}");
+		}
+		else {
+			$self->report("TSTOP => $header->{TSTOP}")
+				if $self->chatter;
+		}
+
+	}
+}
+
+
+
+sub loadCalibration
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my %coincidence;
+	UVOT::Calibration::loadCoincidenceLoss($self, \%coincidence,
+			PAR => $args->{coinfile}, PAR_NOTE => 'coinfile',
+			HEADER => $self->{HEADER},
+			FRAMETIME_s => $args->{frametime},
+			DEADTIME_CORRECTED => $args->{deadtimecorrFlag},
+			);
+	my %opt = (
+		FRAMTIME => $self->{HEADER}{FRAMTIME},
+	);
+	UVOT::Source::updateFrametimeParameters(\%coincidence, \%opt);
+
+	$self->{CAL_COINCIDENCE} = \%coincidence;
+
+}
+
+
+sub loadRates
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->{SCALAR_MODE}) {
+		$self->{sources} = [
+			{ RATE => $args->{ratecol},
+				RATE_ERR => $args->{errcol},
+			},
+		];
+	}
+	else {
+		$self->loadRateTable;
+	}
+}
+
+
+sub loadRateTable
+{
+	my ($self) = @_;
+
+	my $path = $self->{inspec}{filebase};
+
+	my @sources;
+	my $status = SimpleFITS->readonly($path)
+			->move($self->{hdu1})
+			->loadtable(\@sources)
+			->close
+			->status;
+
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to load rates from $path [$status]");
+		return;
+	}
+
+	my $args = $self->args;
+	foreach my $o (@sources) {
+		$o->{RATE} = $o->{$args->{ratecol}};
+		$o->{RATE_ERR} = $o->{$args->{errcol}};
+	}
+
+	$self->{sources} = \@sources;
+}
+
+
+sub correctSources
+{
+	my ($self) = @_;
+
+	foreach my $source (@{ $self->{sources} }) {
+		UVOT::Source::findCoincidenceLossFactors(
+				$self->{CAL_COINCIDENCE}, $self->{HEADER}, $source);
+
+		$source->{COI_FACTOR} = $source->{COI_f};
+		$source->{COI_FACTOR_ERR} = $source->{COI_ERR_f};
+		$source->{COI_RATE} = $source->{RATE} * $source->{COI_FACTOR};
+		$source->{COI_RATE_ERR} = $source->{RATE} * $source->{COI_FACTOR_ERR};
+	}
+
+}
+
+
+
+sub writeResults
+{
+	my ($self) = @_;
+
+	if ($self->{SCALAR_MODE}) {
+
+		my $o = $self->{sources}[0];
+
+		$self->report(sprintf('              CoI factor : %f', $o->{COI_FACTOR}));
+		$self->report(sprintf('        CoI error factor : %f', $o->{COI_FACTOR_ERR}));
+
+		$self->report(sprintf('      CoI corrected rate : %f', $o->{COI_RATE}));
+		$self->report(sprintf('CoI corrected rate error : %f', $o->{COI_RATE_ERR}));
+		$self->report(sprintf('               Saturated : %s', $o->{SATURATED} ? 'TRUE' : 'FALSE'));
+	}
+	else {
+		$self->updateTable;
+	}
+}
+
+
+sub updateTable
+{
+	my ($self) = @_;
+
+	my $fits = $self->{sourcefits};
+
+	my @columns;
+	foreach my $colname (qw(COI_FACTOR COI_FACTOR_ERR COI_RATE COI_RATE_ERR SATURATED)) {
+
+		my $spec = $COLUMNS{$colname};
+
+		if (not $spec) {
+			$spec = StarID::SourceTable::getSpec($self, $colname);
+		}
+
+		if ($spec) {
+			push(@columns, $spec);
+		}
+		else {
+			$self->error(BAD_EXECUTE,
+					"unable to initialize $colname column");
+		}
+	}
+
+	foreach my $c (@columns) {
+		my $realname = $c->{name};
+		my @data = map { $_->{$realname} } @{ $self->{sources} };
+		$c->{name} = $self->{prefix} . $realname;
+		$self->writeColumn($fits, $c, \@data);
+		$self->report("updated $c->{name}")
+			if $self->isValid;
+		$c->{name} = $realname;
+	}
+
+}
+
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	# close output
+	{
+		my $fits = $self->{sourcefits};
+		my $status = 0;
+		if ($fits and $self->isValid) {
+			$self->putParameterHistory($fits);
+			$self->updateChecksums($fits, 1, $self->{hdu1});
+			$fits->close_file($status);
+		}
+		else {
+			# do not save changes
+		}
+	}
+}
+
+
+
+# main
+{
+	my $task = __PACKAGE__->new(version => '1.1');
+
+	$task->run;
+
+	exit($task->{code});
+}
+

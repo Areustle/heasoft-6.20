@@ -1,0 +1,170 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/heatools/ftjoin/ut_ftjoin,v $
+# $Revision: 1.3 $
+# $Date: 2007/11/20 22:30:05 $
+#
+#	ut_ftjoin
+#		validate ftjoin operation
+#
+#
+#
+
+# ******************* FILL IN NAME OF TASK HERE ********
+$taskname      = "ftjoin";
+$ut_taskname   = "ut_ftjoin";
+
+print "\n\n\n======================== TEST OF $taskname ==============\n";
+
+# use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => $ut_taskname, 
+		code => 0,
+		});
+
+	$tool->parseOptions(
+		argv => [ @ARGV ],
+		options => [ qw(
+			input output chatter jointype
+			) ],
+		);
+
+	$tool->execute;
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runtask
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub runtask
+{
+	my ($self) = @_;
+
+        my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+	my $jointype = $self->args->{jointype};
+	$joinlow = "$jointype";
+	if ($jointype =~ m/^INTERSECT/i) { $joinlow = "INNER"; }
+	if ($jointype eq "UNION")        { $joinlow = "FULLOUTER"; }
+	$joinlow =~ tr/A-Z/a-z/;
+	$joinlow =~ s/ //g;
+
+	# ******************* FILL IN PARAMETERS HERE ********
+	my %task = (
+		    leftfile      => "$input/ftjoin1.fits",
+		    rightfile     => "$input/ftjoin2.fits",
+		    outfile       => "$output/ftjoin_$joinlow.fits",
+		    expr          => "'ANGSEP(L_RA,L_DEC,R_RA,R_DEC) < MAX(L_MINOR_DIAMETER,L_MAJOR_DIAMETER)/60.0'",
+		    jointype      => "$jointype",
+		    outcolumns    => "'*'",
+		    leftnameprefix=> "L_",
+		    leftnamesuffix=> "NONE",
+		    rightnameprefix=> "R_",
+		    rightnamesuffix=> "NONE",
+		    dupcolnames   => "NO",
+		    debugfile     => "NONE",
+		    clobber       => "YES",
+		    cleanup       => "YES"
+		    );
+
+	# ******************* FILL IN INPUT FILES HERE ********
+	@infiles = ("leftfile","rightfile");
+	
+	my %template = (
+			outfile => "$input/ftjoin_$joinlow.template",
+			);
+
+	# validate required files
+	foreach my $key (@infiles) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = "$taskname";
+
+	foreach my $p (keys %task) {
+	    $command .= " $p=$task{$p}";
+	}
+
+	my $result = $self->doCommand($command);
+
+	# ***************** VERIFY OUTPUT OF TASK HERE ***********
+	$command = qq(ftverify infile=$task{outfile} outfile=STDOUT heasarc=yes);
+	$self->doCommand($command);
+
+	foreach my $key (keys %template) {
+		if (not -f $template{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid template $key file: $template{$key}");
+			return -1;
+		}
+	}
+
+	$command = "ftdiff $template{outfile} $task{outfile}";
+	$result = $self->doCommand($command);
+	if ($result->{output} =~ m/End of file comparison: *([0-9]+) *differences/ ) {
+	    $ndiffs = $1;
+	    print "   -->  FTDIFF reports $ndiffs differences\n";
+	    if ($ndiffs ne 0) {
+		$lines = $result->{output};
+		print "$lines\n" if $self->chatter(5);
+		$self->error(BAD_OUTPUT, "error because of bad compare");
+	    }
+
+	}
+
+}
+

@@ -1,0 +1,147 @@
+#!/usr/bin/perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotgcn/fetchsky,v $
+# $Revision: 1.3 $
+# $Date: 2011/08/29 17:44:25 $
+#
+# $Log: fetchsky,v $
+# Revision 1.3  2011/08/29 17:44:25  rwiegand
+# Error out if unable to store parameter history since that indicates an
+# invalid FITS file.
+#
+# Revision 1.2  2004/07/09 16:17:43  rwiegand
+# No longer necessary to catch ALRM signal since the signal is now sent to
+# the correct children instead of the process group.
+#
+# Revision 1.1  2004/06/17 21:44:48  rwiegand
+# UVOT GRB Coordinates Network (GCN) tools.
+#
+
+use strict;
+
+package FetchSky;
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use WebQuery;
+
+
+
+# main
+{
+	my $tool = FetchSky->new;
+
+	$tool->run;
+
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->pilOptions(
+			argv => [ @ARGV ],
+			options => [ qw(outfile=file
+					ra=real dec=real arcmin=real pixels=int
+					skyserver=string skysurvey=string
+					clobber=bool history=bool chatter=int) ],
+			get => 1,
+			);
+
+	$self->initialize
+		if $self->isValid;
+
+	$self->fetchSkyImage
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($args->{clobber} ne 'yes') {
+		if (-e $args->{outfile}) {
+			$self->error(BAD_OUTPUT,
+					"$args->{outfile} exists and clobber not set");
+		}
+	}
+}
+
+
+sub fetchSkyImage
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $pos = sprintf('%.3f %+.3f', $args->{ra}, $args->{dec});
+	my $degrees = $args->{arcmin} / 60;
+
+	my $survey = $args->{skysurvey};
+
+	$self->{skyfile} = $self->temporary('fetchsky');
+
+	# see
+	#	http://skyview/docs/batchpage.html
+	# for the format of the Skyview POST
+
+	my $fetch = WebQuery->new(
+		host => $args->{skyserver},
+		url => '/cgi-bin/pskcall',
+		method => 'POST',
+		file => $self->{skyfile},
+		input => [
+			"VCOORD=$pos",
+			"SURVEY=$survey",
+			"SFACTR=$degrees",
+			"PIXELX=$args->{pixels}",
+			"PIXELY=$args->{pixels}",
+		],
+		);
+
+	$fetch->execute;
+
+	if (not $fetch->isValid) {
+		$self->error(BAD_EXECUTE,
+			"attempt to retrieve SKY image from $args->{skyserver} failed");
+	}
+	else {
+		$self->report("grabbed SKY image $self->{skyfile}")
+			if $self->chatter(3);
+	}
+
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+		my $status = $self->putParameterHistory($self->{skyfile});
+		if ($status) {
+			$self->error(BAD_OUTPUT, "bad output");
+		}
+	}
+
+	if ($self->isValid) {
+		my $path = $args->{outfile};
+		if (rename($self->{skyfile}, $path)) {
+			$self->report("output saved to $path");
+		}
+		else {
+			$self->error(BAD_OUTPUT,
+					"unable to save sky image to $path [$!]");
+		}
+	}
+}
+
+

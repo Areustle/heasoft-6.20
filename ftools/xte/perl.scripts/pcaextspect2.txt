@@ -1,0 +1,363 @@
+
+NAME
+    pcaextspect2 - Extract PCA Standard2 spectrum and background, and 
+          optional deadtime correction
+
+USAGE
+    pcaextspect2 src_infile bkg_infile src_phafile bkg_phafile 
+       gtiandfile pculist layerlist respfile
+
+DESCRIPTION
+
+    pcaextspect2 extracts a spectrum from PCA data stored in the
+    Standard2 format.  This task performs spectrum extraction for both
+    source and background, dead-time correction, and optionally
+    calculates a PCA response matrix which corresponds to the
+    observation.
+
+    pcaextspect2 is a "convenience" script which makes it easier and
+    less error-prone to extract a spectrum for most users.
+
+    A key benefit is that users do not need special knowledge of when
+    detectors become "dead" for various reasons.  Instead, the user
+    can request *all* of the detectors they are interested in, and
+    'pcaextspect2' will produce a spectrum which contains the subset
+    of those detectors which have good live time.  For example, users
+    can request all of the detectors all of the time
+    (pculist="0,1,2,3,4"), and pcaextspect2 will automatically
+    de-select the detectors which are disabled, or having a breakdown,
+    etc.  This functionality relies on the "zero_bad" capabilities of
+    the "pcadeadcalc2" task.
+
+    Advanced users can still use the more basic tools for fine-grained
+    control instead of this task.  Because extraction and dead-time
+    correction require the user to perform several careful operations,
+    the use of this tool is recommended to make sure that the
+    operations are done consistently.  Generally, the PCA team and the
+    RXTE GOF recomend to not change the default for the advance
+    parameters of this tool without specific need.
+
+    The input to this tool is a set of PCA Standard2 files.  To gain
+    full benefit of this tool, the user *MUST* provide dead-time
+    calculated version of the Standard2 file.  For beginning users,
+    the output files of the 'pcaprepfile2' or 'pcaprepobsid' tasks are
+    sufficient.  For advanced users, the equivalent output of
+    'pcadeadcalc2' is acceptable.
+
+    The user must provide *both* the source *and* background Standard2
+    files.  Beginning users can use the output of 'pcaprepfile2' /
+    'pcaprepobsid'; advanced users may use the output of 'pcabackest'
+    if desired.
+
+    The output of the task is a source spectrum file (.pha file) and a
+    background spectrum file for the same time interval.  These files
+    are dead-time corrected, and contain only counts and exposure from
+    live detectors, as described in the help file for the task
+    'pcadeadcalc2'.
+
+    The output will be the total counts spectrum of all live
+    detectors, with an exposure that is the sum of the exposures for
+    the individual PCU detectors.  Thus, the rate spectrum appearing
+    in software like XSPEC will have units of "counts per detector"
+    ("counts per PCU").
+
+    The task can also optionally calculate a response matrix.  This
+    matrix is tailored for the specific observation and weighted
+    appropriately.  In this case, users must specify the filter file
+    using the 'filtfile' parameter.
+
+
+CALCULATING A RESPONSE MATRIX
+
+    If users wish to calculate their own response matrix at a later
+    time, they can use 'pcarsp' task.  Because of the complexity of
+    selecting the proper detectors and layers, the RXTE GOF and PCA
+    teams recommend to allow this task to compute the response matrix,
+    but it can be done "by hand."
+
+    The important parameters for calling pcarsp are,
+        -l (choose same layer list as used to extract spectrum)
+        -p (choose same detector list as used to extract spectrum)
+        -w INFILE (applies appropriate PCU weights for observation)
+
+    The output spectrum produced by this task contains PCU weighting
+    keywords than can be used automatically by selecting the "-w"
+    parameter.
+
+COMBINING SPECTRA
+
+    If the user wishes to combine spectra produced by pcaextspect2 in
+    some form of downstream processing, then these instructions may be
+    of help.
+
+    Users should combine the spectra with the following general settings:
+       * sum the counts
+       * sum the exposure
+       * sum the responses weighted by relative exposure
+
+    For the task 'mathpha' the settings should be
+       * expr="spectrum1.pha + spectrum2.pha + spectrum3.pha + ..."
+       * units='C' (output in counts)
+       * exposure='CALC'
+
+    Of course, this operation needs to be performed separately for
+    both the source and background files.
+
+    To combine the responses, the user should use the 'addrmf' task
+    and an input file with weights.  The weights should be calculated
+    according to the relative exposure.  For example, if spectrum1.pha
+    has 1000 seconds of exposure and spectrum2.pha has 500 seconds of
+    exposure then the weighting file should look like this:
+
+       spectrum1.rsp   0.6667
+       spectrum2.rsp   0.3333
+
+    Note how 0.6667 equals (1000/1500) and 0.3333 equals (500/1500),
+    where 1500 seconds is the total exposure of both.  By definition,
+    the weights in the file must sum to 1.0.
+
+PARAMETERS
+
+    src_infile [string - file name or @filename]
+        Name of an input "source" PCA Standard2 file or @filename.txt
+        file name list.  These files should have been processed by
+        'pcadeadcalc2', 'pcaprepfile2' or 'pcaprepobs2'.
+
+    bkg_infile [string - file name or @filename]
+        Name of an input "background" PCA Standard2 file or
+        @filename.txt file name list.  Note that this file list
+        should match one-for-one with the input files specified by the
+        'src_infile' parameter.  These files should have been
+        processed by 'pcadeadcalc2', 'pcaprepfile2' or 'pcaprepobs2'.
+
+    src_phafile [string - file name]
+        Name of output "source" spectrum, which will be corrected for
+        dead-time.  The BACKFILE and RESPFILE keywords will be updated
+        to point to the correct background and response files, if
+        appropriate.
+
+    bkg_phafile [string - file name]
+        Name of output "background" spectrum, which will be corrected
+        for dead-time.
+
+    gtiandfile = "-" [string]
+        Name of GTI "AND" time filtering, which is identical to the
+        gtiandfile passed to 'saextrct' to produce the input spectrum.
+        See 'saextrct' for more information.
+
+    pculist = "ALL" [string]
+        A comma-separated list of PCU detector numbers, or "ALL".  The
+        list of detectors should be in the range 0-4.  The value of
+        "ALL" means use all detectors, i.e. ("0,1,2,3,4").
+
+    layerlist = "ALL" [string]
+        A comma-separated list of PCU anode layer numbers, or "ALL".
+        The list of layers should be in the range 1-3.  The value of
+        "ALL" means use all layers, i.e. ("1,2,3").  It is also
+        possible to specify an explicit list of anode symbols, for
+        example "X1L,X2L,X3L" for all left anodes or "X1R,X2R,X3R" for
+        all right anodes.
+
+    respfile = "NONE" [string]
+        Name of output response matrix file, or "NONE".  The response
+        matrix will be tailored for the specific observation.  The
+        'filtfile' parameter must also be supplied when a response
+        matrix is desired.  A value of "NONE" means to not calculate a
+        response matrix.
+
+    filtfile = "NONE" [string - file name]
+        Name of RXTE filter file which covers the complete requested
+        observation duration, and is used for calcalating a response
+        matrix.  This parameter is not required if respfile=NONE.  You
+        may give an .lis type file, but the filtfile.lis file
+        must list only a single filter file (not multiple files).
+
+    (deadcorrtype = "LIVE") [string]
+        Name of live-time correction type to use.  Use "LIVE" for the true
+        live-time correction, which results in a true dead-time corrected
+        spectrum.  Use "ON" for the on-time column, which results in a
+        standard non-dead-time corrected spectrum (the basic detector
+        on-time exposure is calculated).
+
+    (ra = "INDEF") [string]
+        Right ascension of target in J2000 degrees.  The value
+        overrides the RA_OBJ keyword value set in the PHA header.  If
+        a value of "INDEF" is provided, then the source position in
+        the PHA file is left unmodified.
+
+    (dec = "INDEF") [string]
+        Declination of target in J2000 degrees.  The value
+        overrides the DEC_OBJ keyword value set in the PHA header.  If
+        a value of "INDEF" is provided, then the source position in
+        the PHA file is left unmodified.
+
+    (gtiorfile = "APPLY") [string]
+        Name of GTI "OR" time filtering, which is identical to the
+        gtiorfile passed to 'saextrct' to produce the input spectrum.
+
+    (gticols = "START STOP") [string]
+        Name of GTI start/stop column names, which is identical to the
+        gticols passed to 'saextrct' to produce the input spectrum.
+
+    (timecol = "TIME") [string]
+        Name of TIME column used for extraction, which is identical to
+        the timecol passed to 'saextrct' to produce the input spectrum.
+
+    (timemin = INDEF) [double precision real]
+        Minimum start time (MET) used for accumulation, which is
+        identical to the timemin passed to 'saextrct' to produce the
+        input spectrum.
+
+    (timemax = INDEF) [double precision real]
+        Maximum start time (MET) used for accumulation, which is
+        identical to the timemax passed to 'saextrct' to produce the
+        input spectrum.
+
+    (timeint = INDEF) [double precision real]
+        Comma-separated list of time intervals (MET), which is
+        identical to the timeint passed to 'saextrct' to produce the
+        input spectrum.
+
+    (accumulate = "ONE") [string]
+        Setting passed to 'saextrct'.  Use "ONE" to extract one summed
+        spectrum (RECOMMENDED), or "MANY" to extract a "Type II"
+        spectrum for each Standard2 column (NOT RECOMMENDED).
+        WARNING: setting accumulate=MANY is not compatible with
+        requesting a response matrix.
+
+    (phazeroexp = YES) [boolean]
+        If set to YES, then a spectrum is produced even if zero
+        exposure is detected.  This occurs if the combination of GTIs
+        and PCU on-time produces a valid spectrum but it has no live
+        time.  If phazeroexp=NO, then no spectrum is produced if zero
+        exposure is detected.
+
+    (respzeroexp = NO) [boolean]
+        If set to YES, then a dummy response matrix is calculated even
+        if zero exposure is detected (all PCUs assigned equal weight).
+        If respzeroexp=NO, then no response is calculated if zero
+        exposure is detected.  You must use special care when setting
+        respzeroexp=YES.  In particular, when combining spectra, the
+        responses must be weighted according to exposure, otherwise
+        the PCUs will be weighted incorrectly.
+
+    (lcbinarray = INDEF) [string]
+        Setting passed to 'saextrct'.  The default value is 400000.  Set
+        to a larger value for better performance on larger data sets.
+
+    (gtiarray = INDEF) [string]
+        Setting passed to 'saextrct'.  The default value is 30000.  Set to
+        a larger value if you exceed the limit.
+
+    (maxmiss = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (phasefile = INDEF) [string]
+        Setting passed to 'saextrct'.
+
+    (timezero = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chmin = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chmax = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chint = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (chbin = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (ephem = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (period = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (phaseint = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (obsdate = "MJDREF") [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (obstime = "TSTART TSTOP") [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (sensecase = NO) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (negative = IGNORE) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (mfracexp = INDEF) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (tnull = 0.0) [string]
+        Setting passed to 'saextrct'.  Not recommended to change unless needed.
+
+    (cleanup = yes) [boolean]
+        Clean up scratch files?
+
+    (chatter = 2) [int] range 0-5
+        Verbosity level of output
+
+    (clobber = no) [boolean]
+        Overwrite output file?
+
+    (history = yes) [boolean]
+        Write standard HEADAS parameter history into output file?
+
+EXAMPLES
+
+    1. Calling interactively:
+       
+      pcaextspect2 
+        [ interactive prompts follow ]
+        Input Standard2 file name or @file-of-filenames: FS4a_1ee05555-1ee062c0_DT
+        Input background file name or @file-of-filenames: FS4a_1ee05555-1ee062c0_DT_bkg
+        Output dead-time corrected source spectrum: spectrum_srcDT.pha
+        Output dead-time corrected background spectrum: spectrum_bkgDT.pha
+        Input GTI file to be AND'd with INFILE:[-] 
+        Comma-separated list of PCU detectors to accmulate (0-4): ALL
+        Comma-separated list of PCU layers to accmulate (1-3): ALL
+        Name of output response matrix file (or NONE): spectrum.rsp
+        Name of XTE filter file (or NONE): filtfile=x95422010409.xfl.gz
+
+    2. Calling from command line:
+
+      pcaextspect2 src_infile=FS4a_1ee05555-1ee062c0_DT \
+                   bkg_infile=FS4a_1ee05555-1ee062c0_DT_bkg \
+                   src_phafile=spectrum_srcDT.pha bkg_phafile=spectrum_bkgDT.pha \
+                   gtiandfile="-" pculist=ALL layerlist=ALL \
+                   respfile=spectrum.rsp filtfile=x95422010409.xfl.gz
+
+    3. Using "@-files" instead of simple file names:
+
+      # Use wild-card to find source files (EXAMPLE ONLY)
+      ls obsid/pca/FS4a*_DT > source.lis
+
+      # Use wild-card to find background files (EXAMPLE ONLY)
+      ls obsid/pca/FS4a*_DT_bkg > background.lis
+ 
+      pcaextspect2 src_infile=@source.lis bkg_infile=@background.lis \
+                   src_phafile=spectrum_srcDT.pha bkg_phafile=spectrum_bkgDT.pha \
+                   gtiandfile="-" pculist=ALL layerlist=ALL \
+                   respfile=spectrum.rsp filtfile=x95422010409.xfl.gz
+
+CAVEATS
+
+    Although it is possible to run this task against the "original"
+    raw Standard2 files, the PCA team cannot attest to its
+    correctness.  Also, the running of this task assumes that
+    "zero_bad=YES" has been used when running
+    pcaprepfile2/pcaprepobs2/pcadeadcalc2.  If zerobad=NO, then it is
+    possible for the calculated exposures to be incorrect.
+
+BUGS
+    Please report problems to xtehelp@athena.gsfc.nasa.gov.
+
+SEE ALSO
+    saextrct, pcaprepfile2, pcaprepobs2, pcadeadcalc2, pcadeadspect2
+

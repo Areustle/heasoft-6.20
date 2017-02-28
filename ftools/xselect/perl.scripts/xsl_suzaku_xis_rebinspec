@@ -1,0 +1,88 @@
+#! /usr/bin/perl 
+
+# This script rebins a Suzaku XIS spectrum then use grppha to set the bad channels
+$version ="1.00";
+$date  ="2008-03-17";
+$author = "kaa";
+
+# define the binning breaks
+
+$chan1 = 700;
+$chan2 = 2696;
+
+# set the speed (to match xsl_suzaku_xis_makeresp)
+# The three speed options are as follows :
+#      fast : channel binning  2x then 4x from $chan1 and 8x from $chan2
+#    medium : channel binning  1x then 2x from $chan1 and 4x from $chan2
+#      slow : no channel binning
+
+$speed = "medium";
+
+
+if(@ARGV < 1 || @ARGV > 3)
+{
+    print "\n usage : xsl_suzaku_xis_rebinspec infile outfile echo?\n\n";
+    print "Runs rbnpha to bin up infile and return outfile\n";
+    print "them using marfrmf then optionally rebins the response using rbnrmf\n\n";
+    exit(0);
+}
+
+$filename = $ARGV[0];
+$outfile = $ARGV[1];
+$echo = "no";
+if ( @ARGV >= 3 && $ARGV[2] eq "yes" ) { $echo = "yes"; }
+
+$dot = index($filename,".");
+$rootname = substr($filename, 0, $dot);
+$tmpfile = $rootname . ".tmp";
+
+# set up the text file needed to do the rebinning
+
+$chan1_1 = $chan1 - 1;
+$chan2_1 = $chan2 - 1;
+
+if ( $speed eq "fast" ) {
+    open(TMPFILE,">chanfile.txt");
+    print TMPFILE "0 $chan1_1 2\n";
+    print TMPFILE "$chan1 $chan2_1 4\n";
+    print TMPFILE "$chan2 4095 8\n";
+    close(TMPFILE);
+} elsif ( $speed eq "medium" ) {
+    open(TMPFILE,">chanfile.txt");
+    print TMPFILE "0 $chan1_1 1\n";
+    print TMPFILE "$chan1 $chan2_1 2\n";
+    print TMPFILE "$chan2 4095 4\n";
+    close(TMPFILE);
+}
+
+# rebin the input spectrum file if the medium or fast options are given
+
+if ( $speed eq "fast" || $speed eq "medium" ) {
+    $command = "rbnpha infile=$filename binfile=chanfile.txt outfile=$tmpfile properr=yes clobber=yes";
+    if ( $echo eq "yes" ) { print $command,"\n"; }
+    system($command);
+} else {
+    rename($filename, $tmpfile);
+}    
+
+# use grppha to set the default bad channels
+
+if ( $speed eq "fast" ) {
+    $grpstr = "\"bad 0-40,822-1023&exit\"";
+} elsif ( $speed eq "medium" ) {
+    $grpstr = "\"bad 0-81,1645-2047&exit\"";
+} elsif ( $speed eq "slow" ) {
+    $grpstr = "\"bad 0-81,3290-4095&exit\"";
+}
+
+$command = "grppha infile=$tmpfile outfile=$outfile comm=$grpstr chatter=0";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+# tidy up temporary file
+
+if ( $debug eq "no" ) { 
+    unlink("chanfile.txt");
+    unlink("$tmpfile");
+}
+

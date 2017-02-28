@@ -1,0 +1,2609 @@
+#!/usr/bin/perl
+#
+# Task name: hxdpinxblc and hxdpinxbpi and hxdgsoxblc and hxdgsoxbpi
+#
+# Author: Alex Padgett - Charles.A.Padgett@nasa.gov
+#
+######################################################################
+# NOTE: This is four tasks in one file. Depending on the base name of
+#       the executable (script), a different set of operations will
+#       be performed.
+######################################################################
+#
+# HISTORY:
+#
+#       V1.0 - 2009-09-29
+#              Initial version.
+#
+#       V1.1 - 2010-01-29
+#              * Bug fix for CALDB query for NOM_PNT
+#
+#       V1.2 - 2010-05-15
+#              * Bug fix for reading pointing keywords from
+#                background files
+#              * Check GSOGPT_V keyword in background and source
+#                event files to make sure they match
+#              * If groupfile="DEFAULT", use appropriate GSO grouping
+#                file for the input data
+#
+#
+# PIN LIGHTCURVES
+# ---------------
+# Goal:
+# ----
+#
+#     Produce PIN background (NXB + constant CXB) light-curve, dead time
+#     corrected source light curve and (optionally) background subtracted light
+#     curve.
+#
+#
+# Steps:
+# -----
+#
+#     1. AND GTI from NXB file with GTI in pin??_cl.evt (or lc file) file and
+#        optionally input GTI file(s) after ORing them together.
+#
+#     2. Extract pseudo event light curve using GTI from 1.
+#
+#        => "GRADE_HITPAT<=1&&GRADE_QUALTY==0" if pse_cl.evt
+#
+#        => "GRADE_HITPAT<=1&&GRADE_QUALTY==0&&DET_TYPE==2" if wel_uf.evt
+#
+#     3. Optionally extract source light curve using same GTI as step 1.
+#
+#     4. Apply dead time correction to source light curve (pseudo RATE / 4.0).
+#
+#        - add DEADC column to source light curve (per OGIP timing data std)
+#        - calculate dead time corrected RATE and ERROR
+#        - update DEADAPP keyword to 'T'
+#        - remove DEADC keyword if extant
+#
+#     5. Extract background light curve using GTI from step 1.
+#
+#     6. Divide background light curve RATE/ERROR by 10.0 (background files are
+#        scaled up by 10.0 to lower poisson noise - is this right?!?)
+#
+#     7. Optionally add constant CXB component to background light curve
+#
+#        - careful with how the errors are treated here.
+#
+#     8. Optionally subtract background light curve from source light curve.
+#
+#        - careful with how the errors are treated here too.
+#
+#
+#
+# PIN SPECTRA
+# -----------
+# Goal:
+# ----
+#
+#     Produce PIN background (NXB + CXB) spectrum, dead time corrected source
+#     spectrum.
+#
+#
+# Steps:
+# -----
+#
+#     1. AND GTI from NXB file with GTI in pin??_cl.evt (or pi file) file and
+#        optionally input GTI file(s) after ORing them together.
+#
+#     2. optionally extract source spectrum using same GTI as step 1.
+#
+#     3. Apply dead time correction to source pha (or copy of input pha) using hxddtcor.
+#
+#     4. Extract background spectrum using GTI from step 1.
+#
+#     5. Scale background spectrum exposure time (EXPOSURE keyword) by 10.0
+#
+#     6. Optionally calculate CXB fake background spectrum using either cutoff
+#        powerlaw model, or simple powerlaw model.
+#
+#     7. Add NXB spectrum and CXB spectrum (either modelled or input or none)
+#        with mathpha
+#
+#     8. Optionally extract source spectrum using GTI from step 1. If done,
+#        setup keywords for RESPFILE and BACKFILE
+#
+#
+# GSO SPECTRA
+# -----------
+# Goal:
+# ----
+#
+#     Produce GSO background spectrum, dead time corrected source spectrum.
+#
+#
+# Steps:
+# -----
+#
+#     Essentially identical to PIN version, except background spectrum is
+#     corrected for dead time and NOT scaled
+#
+#
+# GSO LIGHTCURVES
+# ---------------
+# Goal:
+# ----
+#
+#     Produce GSO background light-curve, dead time corrected source light
+#     curve and (optionally) background subtracted light curve.
+#
+#
+# Steps:
+# -----
+#
+#     Essentially identical to PIN version, except background light curve is
+#     corrected for dead time and NOT scaled
+#
+
+##########
+# pragmas
+##########
+use strict;
+$| = 1;
+
+########################
+# required core modules
+########################
+use File::Spec::Functions;
+use File::Basename;
+use File::Copy;
+use Cwd;
+
+###########################
+# required HEASoft modules
+###########################
+use HEACORE::HEAUTILS;
+use HEACORE::HEAINIT;
+use HEACORE::PIL;
+use Astro::FITS::CFITSIO qw( :longnames :constants );
+use HEAGen::HEAGen qw( :all );
+
+###################
+# global variables
+###################
+
+########################
+# task name and version
+########################
+my $taskName = basename( $0 );
+my $taskVers = '1.2';
+
+#############
+# GSO or PIN
+#############
+my $isPIN = $taskName =~ /^hxdpinxb/;
+
+########################################
+# are we doing light curves or spectra?
+########################################
+my $isLC = $taskName =~ /^hxd.+?xblc$/;
+
+####################################################
+# list of files to remove at the end if cleanup=yes
+####################################################
+my @cleanup = ( );
+
+###########
+# defaults
+###########
+my %DEFAULTS = (
+    gsogroupfile_old => "$ENV{LHEA_DATA}/aehxdgso_group.dat",
+    gsogroupfile_v1  => "$ENV{LHEA_DATA}/aehxdgso_group64bins.dat"
+);
+
+#############################################################
+# input parameters - note that these depend on the task name
+#############################################################
+my %params = ( );
+if ( $isLC ) {
+    %params = (
+        input_fname     => [],
+        pse_event_fname => [],
+        bkg_event_fname => [],
+        gti_fname       => [],
+        outstem         => '',
+        bkgsub          => 0,
+        nxb_scale       => 0.0,
+        binlc           => 0.0,
+        lcthresh        => 0.0,
+        synch           => 0,
+        cleanup         => 0,
+        clobber         => 0,
+        chatter         => 0,
+        history         => 0
+    );
+
+    # extra parameters for PIN
+    if ( $isPIN ) {
+        $params{cxb_rate}     = 0.0;
+        $params{cxb_err_mode} = 0;
+    }
+
+} else {
+    %params = (
+        input_fname     => [],
+        pse_event_fname => [],
+        bkg_event_fname => [],
+        gti_fname       => [],
+        outstem         => '',
+        nxb_scale       => 0.0,
+        groupspec       => 0,
+        cleanup         => 0,
+        clobber         => 0,
+        chatter         => 0,
+        history         => 0
+    );
+
+    # extra parameters for PIN
+    if ( $isPIN ) {
+        $params{cxb_fname}     = 0;
+        $params{cxb_norm}      = 0.0;
+        $params{cxb_norm_ene}  = 0.0;
+        $params{cxb_phot_indx} = 0.0;
+        $params{cxb_cut_ene}   = 0.0;
+        $params{cxb_exposure}  = 0.0;
+        $params{cxb_randomize} = 0;
+        $params{pinflat_rsp}   = '';
+        $params{pinnom_rsp}    = '';
+        $params{groupmin}      = 0;
+
+    # extra parameters for GSO
+    } else {
+        $params{groupfile}     = '';
+        $params{gsonom_rsp}    = '';
+    }
+
+}
+
+#################################
+# output filename format strings
+#################################
+my %outfiles = ( );
+my $outinst = $isPIN ? 'pin' : 'gso';
+if ( $isLC ) {
+    %outfiles = (
+        srclc => "%shxd_${outinst}_sr.lc",
+        bkglc => "%shxd_${outinst}_bg.lc",
+        netlc => "%shxd_${outinst}_net.lc",
+        pselc => "%shxd_pse.lc"
+    );
+} else {
+    %outfiles = (
+        srcpha => "%shxd_${outinst}_sr.pi",
+        grppha => "%shxd_${outinst}_sr_grp.pi",
+        nxbpha => "%shxd_${outinst}_nxb.pi",
+        cxbpha => "%shxd_${outinst}_cxb.pi",
+        bkgpha => "%shxd_${outinst}_bg.pi"
+    );
+}
+
+###############################################################
+# basic data from input event file(s) (or light curve/spectra)
+###############################################################
+my %evtData = ( );
+
+###########################################
+# basic data from input background file(s)
+###########################################
+my %bkgData = ( );
+
+#####################################
+# basic data from pseudo event files
+#####################################
+my %pseData = ( );
+
+################################################
+# total GTI for extracting light curves/spectra
+################################################
+my $totalGTI;
+
+# END globals
+
+#############################
+# wrap main sub with HEASoft
+#############################
+exit headas_main( \&hxdpinxb );
+
+###############################################################################
+################################## Subroutines ################################
+###############################################################################
+
+#
+#  hxdpinxb
+#  --------
+#
+#    main subroutine. calls:
+#
+#      HEASoft/custom library setup routines
+#      intro( )
+#      setupExtractor( )
+#      readParams( )
+#      checkInputs( )
+#      setupOutputFilenames( )
+#      mergeGTIs( )
+#      extractLightCurves( )
+#      correctLightCurves( )
+#      extractSpectra( )
+#      createCXBSpectrum( )
+#      correctSpectra( )
+#      cleanup( )
+#      outtro( )
+#
+sub hxdpinxb {
+
+    my $stat = 0;
+
+    ##############################################
+    # set task name and version and chatter stuff
+    ##############################################
+    set_toolname( $taskName );
+    set_toolversion( $taskVers );
+    setTask( $taskName, $taskVers );
+    setChat( 2 );
+    setSysChat( 2 );
+
+    #######################
+    # get input parameters
+    #######################
+    ( $stat = readParams( ) ) == 0 || goto CLEANUP;
+
+    ################
+    # intro message
+    ################
+    intro( );
+
+    #########################
+    # setup output filenames
+    #########################
+    ( $stat = setupOutputFilenames( ) ) == 0 || goto CLEANUP;
+
+    #############################################
+    # run extractor setup (before we get to far)
+    #############################################
+    my $instrument = $isPIN ? 'HXD:WELL_PIN' : 'HXD:WELL_GSO';
+    ( $stat = setupExtractor( 'SUZAKU', $instrument ) ) == 0 || goto CLEANUP;
+
+    #######################
+    # check various inputs
+    #######################
+    if ( $isLC ) {
+        ( $stat = checkInputsLC( ) ) == 0 || goto CLEANUP;
+    } else {
+        ( $stat = checkInputsPI( ) ) == 0 || goto CLEANUP;
+    }
+
+    ##################
+    # merge GTI files
+    ##################
+    ( $stat = mergeGTIs( ) ) == 0 || goto CLEANUP;
+
+    if ( $isLC ) {
+
+        ###############################
+        # extract various light curves
+        ###############################
+        ( $stat = extractLightCurves( ) ) == 0 || goto CLEANUP;
+
+        ###############################
+        # correct various light curves
+        ###############################
+        ( $stat = correctLightCurves( ) ) == 0 || goto CLEANUP;
+
+    } else {
+
+        ##########################
+        # extract various spectra
+        ##########################
+        ( $stat = extractSpectra( ) ) == 0 || goto CLEANUP;
+
+        #############################################
+        # calculate CXB simlulated spectrum if asked
+        #############################################
+        if ( exists $params{cxb_fname} && $params{cxb_fname} =~ /^CALC$/i ) {
+            ( $stat = createCXBSpectrum( ) ) == 0 || goto CLEANUP;
+        }
+
+        ##########################
+        # correct various spectra
+        ##########################
+        ( $stat = correctSpectra( ) ) == 0 || goto CLEANUP;
+
+        #####################################
+        # group the source spectrum if asked
+        #####################################
+        if ( $params{groupspec} ) {
+            if ( $isPIN ) {
+                $stat = grppha( $outfiles{srcpha}, $outfiles{grppha},
+                                "group min $params{groupmin}" );
+                goto CLEANUP unless $stat == 0;
+            } else {
+                my $groupfile = basename( getTmpFile( 'dat' ) );
+                $groupfile =~ s/\./_/g;
+                $groupfile = catfile( dirname( $outfiles{grppha} ), $groupfile );
+                if ( !copy( $params{groupfile}, $groupfile ) ) {
+                    error( 1, "failed to copy $params{groupfile} to $groupfile\n" );
+                    $stat = -1;
+                    goto CLEANUP;
+                }
+                $stat = grppha( $outfiles{srcpha}, $outfiles{grppha},
+                                "group $groupfile" );
+                unlink $groupfile;
+                goto CLEANUP unless $stat == 0;
+            }
+        }
+    }
+
+    ################################
+    # add HISTORY keywords if asked
+    ################################
+    if ( $params{history} ) {
+        ( $stat = histStamp( values %outfiles ) ) == 0 || goto CLEANUP;
+    }
+
+    ###################
+    # update checksums
+    ###################
+    ( $stat = updateOutputChecksums( ) ) == 0 || goto CLEANUP;
+
+    ###################################
+    # outgoing success/failure message
+    ###################################
+CLEANUP:
+    if ( $params{cleanup} ) {
+        cleanup( @cleanup );
+    }
+    outtro( $stat );
+    return $stat;
+}
+
+#
+#  readParams
+#  ----------
+#
+#    reads all input parameters.
+#
+#    Inputs: none
+#
+#    Outputs: status variable, and filled in %params hash (global)
+#
+sub readParams {
+
+    my $stat = 0;
+
+    ###################################
+    # start with chatter for debugging
+    ###################################
+    ( $stat = getIntParam( 'chatter', \$params{chatter} ) ) == 0 || return $stat;
+    setChat( $params{chatter} );
+
+    ##############
+    # input files
+    ##############
+    ( $stat = getListParam( 'input_fname', \@{$params{input_fname}} ) ) == 0 || return $stat;
+    ( $stat = getListParam( 'pse_event_fname', \@{$params{pse_event_fname}} ) ) == 0 || return $stat;
+    ( $stat = getListParam( 'bkg_event_fname', \@{$params{bkg_event_fname}} ) ) == 0 || return $stat;
+    ( $stat = getListParam( 'gti_fname', \@{$params{gti_fname}} ) ) == 0 || return $stat;
+
+    #############################
+    # root name for output files
+    #############################
+    ( $stat = getStrParam(  'outstem', \$params{outstem} ) ) == 0 || return $stat;
+
+    ############################
+    # calculation control stuff
+    ############################
+    ( $stat = getFltParam(  'nxb_scale', \$params{nxb_scale} ) ) == 0 || return $stat;
+    if ( $isLC ) {
+
+        # light curve only params
+        ( $stat = getBoolParam( 'bkgsub', \$params{bkgsub} ) ) == 0 || return $stat;
+        ( $stat = getFltParam(  'binlc', \$params{binlc} ) ) == 0 || return $stat;
+        ( $stat = getFltParam(  'lcthresh', \$params{lcthresh} ) ) == 0 || return $stat;
+        ( $stat = getBoolParam( 'synch', \$params{synch} ) ) == 0 || return $stat;
+
+        # PIN only params
+        if ( $isPIN ) {
+            ( $stat = getFltParam(  'cxb_rate', \$params{cxb_rate} ) ) == 0 || return $stat;
+            ( $stat = getStrParam(  'cxb_err_mode', \$params{cxb_err_mode} ) ) == 0 || return $stat;
+        }
+
+    } else {
+
+        # spectrum only params
+        ( $stat = getBoolParam( 'groupspec', \$params{groupspec} ) ) == 0 || return $stat;
+
+        # PIN only params
+        if ( $isPIN ) {
+            ( $stat = getStrParam( 'cxb_fname', \$params{cxb_fname} ) ) == 0 || return $stat;
+            ( $stat = getFltParam( 'cxb_norm', \$params{cxb_norm} ) ) == 0 || return $stat;
+            ( $stat = getFltParam( 'cxb_norm_ene', \$params{cxb_norm_ene} ) ) == 0 || return $stat;
+            ( $stat = getFltParam( 'cxb_phot_indx', \$params{cxb_phot_indx} ) ) == 0 || return $stat;
+            ( $stat = getFltParam( 'cxb_cut_ene', \$params{cxb_cut_ene} ) ) == 0 || return $stat;
+            ( $stat = getFltParam( 'cxb_exposure', \$params{cxb_exposure} ) ) == 0 || return $stat;
+            if ( $params{cxb_exposure} == -1 ) {
+                $params{cxb_exposure} = "BACKGROUND";
+            } elsif ( $params{cxb_exposure} < 0 ) {
+                error( 1, "cxb_exposure parameter must either be positive seconds or -1\n" );
+                return -1;
+            }
+            ( $stat = getBoolParam( 'cxb_randomize', \$params{cxb_randomize} ) ) == 0 || return $stat;
+            ( $stat = getFileParam( 'pinflat_rsp', \$params{pinflat_rsp} ) ) == 0 || return $stat;
+            ( $stat = getFileParam( 'pinnom_rsp', \$params{pinnom_rsp} ) ) == 0 || return $stat;
+            ( $stat = getIntParam( 'groupmin', \$params{groupmin} ) ) == 0 || return $stat;
+        } else {
+            ( $stat = getFileParam( 'groupfile', \$params{groupfile} ) ) == 0 || return $stat;
+            ( $stat = getFileParam( 'gsonom_rsp', \$params{gsonom_rsp} ) ) == 0 || return $stat;
+        }
+    }
+
+    ###############
+    # housekeeping
+    ###############
+    ( $stat = getBoolParam( 'cleanup', \$params{cleanup} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'clobber', \$params{clobber} ) ) == 0 || return $stat;
+    ( $stat = getBoolParam( 'history', \$params{history} ) ) == 0 || return $stat;
+
+    return $stat;
+}
+
+#
+#  checkInputsLC
+#  -------------
+#
+#    Checks input files and does some preparation
+#
+#      check outstem
+#
+#      check file lists
+#
+#      input_fname:
+#
+#        check if l/c (single file) or event file(s)
+#        check that GTI extension exists
+#        check clocking mode (mixing clock modes disallowed?)
+#        check bin size if l/c
+#
+#      bkg_event_fname:
+#
+#        check types (quick or tuned)
+#
+#      pse_event_fname:
+#
+#        check timing
+#
+#      gti_fname:
+#
+#        if input_fname is an l/c
+#          check gti_fname == 'NONE'
+#
+#        if input_fname is an evt
+#          find GTI extension(s)
+#
+#    Inputs: none
+#
+#    Outputs: status variable
+#
+sub checkInputsLC {
+
+    my $stat = 0;
+
+    ####################
+    # check the outstem
+    ####################
+    if ( !$params{outstem} ) {
+        error( 1, "value of outstem parameter cannot be empty!\n" );
+        return -1;
+    }
+
+    #######################
+    # check the file lists
+    #######################
+    foreach my $list (qw( input_fname pse_event_fname bkg_event_fname )) {
+        if ( !@{$params{$list}} ) {
+            error( 1, "file(s) must be specified for $list parameter\n" );
+            return -1;
+        }
+    }
+
+    #################################
+    # check the files in input_fname
+    #################################
+    $stat = checkInputEvtsLC( );
+    return $stat unless $stat == 0;
+
+    #############################
+    # check the background files
+    #############################
+    $stat = checkInputBkgs( );
+    return $stat unless $stat == 0;
+
+    ################################
+    # check the input pseudo events
+    ################################
+    $stat = checkInputPses( );
+    return $stat unless $stat == 0;
+
+    ##########################
+    # check GSO gain versions
+    ##########################
+    if ( !$isPIN ) {
+        $stat = checkGSOGainVersions( );
+        return $stat unless $stat == 0;
+    }
+        
+    ###################
+    # check the timing
+    ###################
+    getLCTiming( );
+
+    return $stat;
+}
+
+#
+#  checkInputEvtsLC
+#  ----------------
+#
+#    calls readEventKeywords( ) for each input event file
+#
+#    checks that if a light curve is input, only one file is input
+#    and no extra GTI files are specified
+#
+#    checks TIMEDEL keywords vs input binlc parameter
+#    binlc cannot be less than minimum TIMEDEL
+#
+#    Inputs: none
+#
+#    Outputs: status variable, fills %evtData hash
+#
+#    Calls:
+#
+#      readEventKeywords( )
+#
+sub checkInputEvtsLC {
+
+    my $stat = 0;
+
+    foreach my $file ( @{$params{input_fname}} ) {
+
+        #######################
+        # check for duplicates
+        #######################
+        if ( exists $evtData{$file} ) {
+            error( 1, "duplicate files in input list\n" );
+            return -1;
+        }
+
+        #####################################
+        # setup data structure for this file
+        #####################################
+        my $rootname = "";
+        fits_parse_rootname( $file, $rootname, $stat );
+        $evtData{$file} = {
+            rootname => $rootname,
+            filetype => "",
+            timedel  => 0.0,
+            orGTIs   => [ ]
+        };
+
+        ##########################
+        # read keywords from file
+        ##########################
+        chat( 2, "reading keywords from $file\n" );
+
+        $stat = readEventKeywords( $file, $evtData{$file} );
+        return $stat unless $stat == 0;
+    }
+
+    ###########################################################
+    # only one file is allowed for input light curves
+    # and if one light curve input, no additional GTIs allowed
+    ###########################################################
+    my @haslc = grep /LIGHTCURVE/, map( $evtData{$_}->{filetype},
+                                        keys %evtData );
+    if ( scalar( keys %evtData ) > 1 && @haslc ) {
+        error( 1, "for light curve input, only one file is allowed\n" );
+        return -1;
+    } elsif ( @haslc &&
+              ( @{$params{gti_fname}} > 1 ||
+                $params{gti_fname}->[ 0 ] !~ /^NONE$/i ) ) {
+        error( 1, "additional GTIs not supported for input light curve\n" );
+        return -1;
+    }
+    return $stat;
+}
+
+#
+#  checkInputsPI
+#  -------------
+#
+#    Checks input files and does some preparation
+#
+#      check outstem
+#
+#      check file lists
+#
+#      input_fname:
+#
+#        check if pha (single file) or event file(s)
+#        check that GTI extension exists
+#        check clocking mode (mixing clock modes disallowed?)
+#        check lower/upper PHA channels if pha
+#
+#      bkg_event_fname:
+#
+#        check types (quick or tuned)
+#
+#      pse_event_fname:
+#
+#        check timing
+#
+#      gti_fname:
+#
+#        if input_fname is a pha
+#          check gti_fname == 'NONE'
+#
+#        if input_fname is an evt
+#          find GTI extension(s)
+#
+#    Inputs: none
+#
+#    Outputs: status variable
+#
+sub checkInputsPI {
+
+    my $stat = 0;
+
+    ####################
+    # check the outstem
+    ####################
+    if ( !$params{outstem} ) {
+        error( 1, "value of outstem parameter cannot be empty!\n" );
+        return -1;
+    }
+
+    #######################
+    # check the file lists
+    #######################
+    foreach my $list (qw( input_fname pse_event_fname bkg_event_fname )) {
+        if ( !@{$params{$list}} ) {
+            error( 1, "file(s) must be specified for $list parameter\n" );
+            return -1;
+        }
+    }
+
+    #################################
+    # check the files in input_fname
+    #################################
+    $stat = checkInputEvtsPI( );
+    return $stat unless $stat == 0;
+
+    #############################
+    # check the background files
+    #############################
+    $stat = checkInputBkgs( );
+    return $stat unless $stat == 0;
+
+    ################################
+    # check the input pseudo events
+    ################################
+    $stat = checkInputPses( );
+    return $stat unless $stat == 0;
+
+    #####################################################
+    # check that all files were processed using the same
+    # version of the GSO gain calibration procedure
+    # and check the GSO PI grouping file
+    #####################################################
+    if ( !$isPIN ) {
+        $stat = checkGSOGainVersions( );
+        return $stat unless $stat == 0;
+        
+        $stat = checkGSOGroupingFile( );
+        return $stat unless $stat == 0;
+    }
+
+    return $stat;
+}
+
+#
+#  checkInputEvtsPI
+#  ----------------
+#
+#    calls readEventKeywords for each input event file
+#
+#    checks that if a spectrum is input, only one file is input
+#    and no extra GTI files are specified
+#
+#    queries the CALDB for arfs and rmfs
+#
+#    Inputs: none
+#
+#    Outputs: status variable, fills %evtData hash
+#
+#    Calls:
+#
+#      readEventKeywords( )
+#
+sub checkInputEvtsPI {
+
+    my $stat = 0;
+
+    foreach my $file ( @{$params{input_fname}} ) {
+
+        #######################
+        # check for duplicates
+        #######################
+        if ( exists $evtData{$file} ) {
+            error( 1, "duplicate files in input list\n" );
+            return -1;
+        }
+
+        #####################################
+        # setup data structure for this file
+        #####################################
+        my $rootname = "";
+        fits_parse_rootname( $file, $rootname, $stat );
+        $evtData{$file} = {
+            rootname => $rootname,
+            filetype => "",
+            timedel  => 0.0,
+            orGTIs   => [ ]
+        };
+
+        ##########################
+        # read keywords from file
+        ##########################
+        chat( 2, "reading keywords from $file\n" );
+
+        $stat = readEventKeywords( $file, $evtData{$file} );
+        return $stat unless $stat == 0;
+
+        ########################################################
+        # query the CALDB for the PIN FLAT response
+        # and Nominal pointing response or GSO nominal response
+        ########################################################
+        if ( $isPIN && !$isLC && $params{pinflat_rsp} =~ /^CALDB$/i ) {
+            ( $stat, $evtData{$file}->{pinflat} )
+                    = hxdGetCaldbFile( 'WELL_PIN', 'SPECRESP MATRIX',
+                                       'POINTING.eq.FLAT',
+                                       $evtData{$file}->{date_obs},
+                                       $evtData{$file}->{date_end},
+                                       dirname( $outfiles{srcpha} ) );
+            return $stat unless $stat == 0;
+        }
+
+        ###########################################################
+        # get the PIN nominal response matrix from CALDB if needed
+        ###########################################################
+        if ( $isPIN && !$isLC && $params{pinnom_rsp} =~ /^CALDB$/i ) {
+
+            ####################################################
+            # use the NOM_PNT keyword if extant, warn otherwise
+            ####################################################
+            my $expr = 'POINTING.eq.HXDNOM';
+            if ( exists $evtData{$file}->{nom_pnt} &&
+                 $evtData{$file}->{nom_pnt} =~ /^(HXD|XIS)$/ ) {
+                $expr = 'POINTING.eq.'
+                      . uc( $evtData{$file}->{nom_pnt} )
+                      . 'NOM';
+            } else {
+                warnhi( 2, "Assuming HXDNOM pointing for $file\n" );
+                if ( exists $evtData{$file}->{nom_pnt} ) {
+                    warnhi( 2, "NOM_PNT keyword is unrecognized!\n" );
+                }
+            }
+            ( $stat, $evtData{$file}->{pinnom} )
+                    = hxdGetCaldbFile( 'WELL_PIN', 'SPECRESP MATRIX',
+                                       $expr, $evtData{$file}->{date_obs},
+                                       $evtData{$file}->{date_end},
+                                       dirname( $outfiles{srcpha} ) );
+            return $stat unless $stat == 0;
+        }
+
+        ###########################################################
+        # get the GSO nominal response matrix from CALDB if needed
+        ###########################################################
+        if ( !$isPIN && !$isLC && $params{gsonom_rsp} =~ /^CALDB$/i ) {
+
+            ####################################################
+            # use the NOM_PNT keyword if extant, warn otherwise
+            ####################################################
+            my $expr = 'POINTING.eq.HXDNOM';
+            if ( exists $evtData{$file}->{nom_pnt} &&
+                 $evtData{$file}->{nom_pnt} =~ /^(HXD|XIS)$/ ) {
+                $expr = 'POINTING.eq.'
+                      . uc( $evtData{$file}->{nom_pnt} )
+                      . 'NOM';
+            } else {
+                warnhi( 2, "Assuming HXDNOM pointing for $file\n" );
+                if ( exists $evtData{$file}->{nom_pnt} ) {
+                    warnhi( 2, "NOM_PNT keyword is unrecognized!\n" );
+                }
+            }
+            ( $stat, $evtData{$file}->{gsonom} )
+                    = hxdGetCaldbFile( 'WELL_GSO', 'SPECRESP MATRIX',
+                                       $expr, $evtData{$file}->{date_obs},
+                                       $evtData{$file}->{date_end},
+                                       dirname( $outfiles{srcpha} ),
+                                       $evtData{$file}->{gsooldpi} );
+            return $stat unless $stat == 0;
+        }
+    }
+
+    ########################################################
+    # only one file is allowed for input spectrum
+    # and if one spectrum input, no additional GTIs allowed
+    ########################################################
+    my @haspi = grep /SPECTRUM/, map( $evtData{$_}->{filetype},
+                                      keys %evtData );
+    if ( scalar( keys %evtData ) > 1 && @haspi ) {
+        error( 1, "for spectrum input, only one file is allowed\n" );
+        return -1;
+    } elsif ( @haspi &&
+              ( @{$params{gti_fname}} > 1 ||
+                $params{gti_fname}->[ 0 ] !~ /^NONE$/i ) ) {
+        error( 1, "additional GTIs not supported for input spectrum\n" );
+        return -1;
+    }
+
+    #####################################################################
+    # check that all of the PIN flat response matrices are the same file
+    # if not we should not continue
+    #####################################################################
+    if ( $isPIN && !$isLC && $params{pinflat_rsp} =~ /^CALDB$/i ) {
+        my $pinflat = undef;
+        foreach my $pinrsp ( map( $evtData{$_}->{pinflat}, keys %evtData ) ) {
+            if ( !defined $pinflat ) {
+                $pinflat = $pinrsp;
+                next;
+            }
+            if ( $pinrsp != $pinflat ) {
+                error( 1, "response matrices from different epochs required:\n"
+                        . "  %s\n  %s\n", $pinrsp, $pinflat );
+                error( 1, "refusing to process data from different epochs!\n" );
+                return -1;
+            }
+        }
+        $params{pinflat_rsp} = $pinflat;
+    }
+
+    #######################################
+    # do the same for the nominal response
+    #######################################
+    if ( $isPIN && !$isLC && $params{pinnom_rsp} =~ /^CALDB$/i ) {
+        my $pinnom = undef;
+        foreach my $pinrsp ( map( $evtData{$_}->{pinnom}, keys %evtData ) ) {
+            if ( !defined $pinnom ) {
+                $pinnom = $pinrsp;
+                next;
+            }
+            if ( $pinrsp != $pinnom ) {
+                error( 1, "response matrices from different epochs required:\n"
+                        . "  %s\n  %s\n", $pinrsp, $pinnom );
+                error( 1, "refusing to process data from different epochs!\n" );
+                return -1;
+            }
+        }
+        $params{pinnom_rsp} = $pinnom;
+    }
+
+    #################################################
+    # setup to use the GSO nominal response
+    # (they should be the same for all input events)
+    #################################################
+    if ( !$isPIN && !$isLC && $params{gsonom_rsp} =~ /^CALDB$/i ) {
+        my $gsonom = undef;
+        foreach my $gsorsp ( map( $evtData{$_}->{gsonom}, keys %evtData ) ) {
+            if ( !defined $gsonom ) {
+                $params{gsonom_rsp} = $gsorsp;
+                last;
+            }
+        }
+    }
+
+    return $stat;
+}
+
+#
+#  checkInputBkgs
+#  --------------
+#
+#    checks input background event files
+#
+#    Inputs: none
+#
+#    Outputs: status variable, fills %bkgData hash
+#
+sub checkInputBkgs {
+
+    my $stat = 0;
+
+    foreach my $file ( @{$params{bkg_event_fname}} ) {
+
+        #######################
+        # check for duplicates
+        #######################
+        if ( exists $bkgData{$file} ) {
+            error( 1, "duplicate files in input background events list\n" );
+            return -1;
+        }
+
+        #####################################
+        # setup data structure for this file
+        #####################################
+        my $rootname = "";
+        fits_parse_rootname( $file, $rootname, $stat );
+        $bkgData{$file} = {
+            rootname => $rootname,
+            filetype => "",
+            timedel  => 0.0,
+            orGTIs   => [ ]
+        };
+
+        ##########################
+        # read keywords from file
+        ##########################
+        chat( 2, "reading keywords from $file\n" );
+
+        $stat = readEventKeywords( $file, $bkgData{$file} );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+#
+#  checkInputPses
+#  --------------
+#
+#    checks input pseudo (or uncleaned) event files
+#
+#    Inputs: none
+#
+#    Outputs: status variable, fills %pseData hash
+#
+sub checkInputPses {
+
+    my $stat = 0;
+
+    foreach my $file ( @{$params{pse_event_fname}} ) {
+
+        #######################
+        # check for duplicates
+        #######################
+        if ( exists $pseData{$file} ) {
+            error( 1, "duplicate files in input pseudo events list\n" );
+            return -1;
+        }
+
+        #####################################
+        # setup data structure for this file
+        #####################################
+        my $rootname = "";
+        fits_parse_rootname( $file, $rootname, $stat );
+        $pseData{$file} = {
+            rootname => $rootname,
+            filetype => "",
+            timedel  => 0.0,
+            orGTIs   => [ ]
+        };
+
+        ##########################
+        # read keywords from file
+        ##########################
+        chat( 2, "reading keywords from $file\n" );
+
+        $stat = readEventKeywords( $file, $pseData{$file} );
+        return $stat unless $stat == 0;
+    }
+    return $stat;
+}
+
+#
+# checkGSOGainVersions
+# --------------------
+#
+#    checks that all input events, pseudo events, and background
+#    event files were processed using the same version of hxdpi
+#    and hxdgrade.
+#
+#    Inputs: none
+#
+#    Outputs: status variable
+#
+sub checkGSOGainVersions {
+    
+    ###########################################################
+    # check that the GSO data were all processed with the same
+    # version of hxdpi, and the same GPT version
+    ###########################################################
+    if ( !$isPIN ) {
+        my $gsooldpi;
+        my $gsogpt_v;
+        foreach my $evt ( values( %evtData ),
+                          values( %pseData ) ) {
+            if ( !defined $gsooldpi ) {
+                $gsooldpi = $evt->{gsooldpi};
+                $gsogpt_v = $evt->{gsogpt_v};
+                next;
+            }
+            if ( $evt->{gsooldpi} != $gsooldpi &&
+                 $evt->{gsogpt_v} != $gsogpt_v ) {
+                error( 1, "input events were processed using incompatible "
+                        . "GSO gain methods\n" );
+                error( 1, "refusing to process these data\n" );
+                return -1;
+            }
+        }
+
+        # if GSOOLDPI then background GSOGPT_V should not exist (==-1)
+        #                  or METHODV should be =~ 2.0
+        # if !GSOOLDPI then background GSOGPT_V should exist
+        #                   and be equal to source GSOGPT_V
+        #                   and METHODV should NOT be =~ 2.0
+        foreach my $evt ( values( %bkgData ) ) {
+            my $mismatch = 0;
+            if ( $gsooldpi ) {
+                if ( $evt->{gsogpt_v} != -1 ||
+                     $evt->{methodv} !~ /2\.0/ ) {
+                    $mismatch = 1;
+                }
+            } else {
+                if ( $evt->{gsogpt_v} != $gsogpt_v &&
+                     $evt->{methodv} =~ /2\.0/ ) {
+                    $mismatch = 1;
+                }
+            }
+            if ( $mismatch ) {
+                error( 1, "source and background events were processed "
+                        . "using incompatible GSO gain methods\n" );
+                error( 1, "refusing to process these data\n" );
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+#
+# checkGSOGroupingFile
+# --------------------
+#
+#    checks the 'groupfile' parameter, ensuring that if 'DEFAULT' is
+#    specified, the correct grouping file gets used.
+#
+#    Inputs: none
+#
+#    Outputs: status variable
+#
+sub checkGSOGroupingFile {
+
+    if ( exists $params{groupfile} && $params{groupfile} eq 'DEFAULT' ) {
+        my $evt = ( values %evtData )[ 0 ];
+        if ( $evt->{gsogpt_v} == -1 ) {
+            $params{groupfile} = $DEFAULTS{gsogroupfile_old};
+        } else {
+            $params{groupfile} = $DEFAULTS{gsogroupfile_v1};
+        }
+    }
+    if ( exists $params{groupfile} && !-f $params{groupfile} ) {
+        error( 1, "file $params{groupfile} not found, check parameters\n" );
+        return -1;
+    }
+    return 0;
+}
+
+#
+#  readEventKeywords
+#  -----------------
+#
+#    reads TIMEDEL, and HDUCLAS1 keywords (if extant) from
+#    each extension in an event file. Also tries to read METHOD
+#    keyword which determines the quick/tuned version of background files
+#
+#    Inputs: filename, hash reference, bool
+#
+#       the last argument is optional, and indicates whether to chat
+#       about what we're doing (if set, then chatter is debug only)
+#
+#    Outputs: returns status variable, adds keys/values to hash ref
+#
+sub readEventKeywords {
+
+    my ( $file, $hashref ) = @_;
+
+    my $dochat = 2;
+    if ( @_ > 2 ) {
+        $dochat = 5;
+    }
+
+    my $stat = 0;
+
+    ########################
+    # open and get num HDUs
+    ########################
+    my ( $fptr, $nhdus, $hduclas1, $clk_rate, $timedel, $method, $deadapp );
+    $fptr = Astro::FITS::CFITSIO::open_file( $file, READONLY, $stat );
+    $fptr->get_num_hdus( $nhdus, $stat );
+
+    ##################################
+    # loop over all possible HDUs > 1
+    ##################################
+    for ( my $i = 2; $i <= $nhdus; $i++ ) {
+        $fptr->movabs_hdu( $i, undef, $stat );
+
+        ######################################
+        # read the HDUCLAS1 keyword if extant
+        # and depending on class read others
+        ######################################
+        $fptr->read_key_str( 'HDUCLAS1', $hduclas1, undef, $stat );
+        if ( $stat == KEY_NO_EXIST ) {
+            $stat = 0;
+
+        ######################
+        # input is a spectrum
+        ######################
+        } elsif ( $hduclas1 =~ /SPECTRUM/ ) {
+
+            chat( $dochat, "found SPECTRUM extension in $file+%d\n", $i - 1 );
+            $hashref->{filetype} = 'SPECTRUM';
+
+            $stat = hxdFitsHeaderRead( $fptr, $hduclas1, $hashref, $stat );
+            return $stat unless $stat == 0;
+
+        #########################
+        # input is a light curve
+        #########################
+        } elsif ( $hduclas1 =~ /LIGHTCURVE/ ) {
+
+            chat( $dochat, "found LIGHTCURVE extension in $file+%d\n", $i - 1 );
+            $hashref->{filetype} = 'LIGHTCURVE';
+
+            $stat = hxdFitsHeaderRead( $fptr, $hduclas1, $hashref, $stat );
+            return $stat unless $stat == 0;
+
+            if ( exists $hashref->{lcthresh} &&
+                 $hashref->{lcthresh} != $params{lcthresh} ) {
+                warnlo( $dochat - 1, "adjusting lcthresh parameter based "
+                                   . "on MINFREXP keyword in $file\n" );
+                warnlo( $dochat - 1, "using lcthresh=%f\n",
+                        $hashref->{lcthresh} );
+                $params{lcthresh} = $hashref->{lcthresh};
+            }
+
+            ###################################################
+            # get the start time of the first bin (early edge)
+            ###################################################
+            my $tcol;
+            my @time = ( 0.0 );
+            $fptr->get_colnum( CASEINSEN, 'TIME', $tcol, $stat );
+            $fptr->read_col_dbl( $tcol, 1, 1, 1, 0.0, \@time, undef, $stat );
+            $hashref->{lcstart} = $time[ 0 ] + $hashref->{timezero} -
+                                  $hashref->{timedel} * $hashref->{timepixr};
+
+        #########################
+        # input is an event file
+        #########################
+        } elsif ( $hduclas1 =~ /EVENTS/ ) {
+
+            chat( $dochat, "found EVENTS extension in $file+%d\n", $i - 1 );
+            $hashref->{filetype} = 'EVENTS';
+
+            $stat = hxdFitsHeaderRead( $fptr, $hduclas1, $hashref, $stat );
+            return $stat unless $stat == 0;
+
+            ######################################################
+            # check the METHOD if this is a background event file
+            ######################################################
+            if ( exists $hashref->{method} ) {
+                if ( $hashref->{method} =~ /bgd_d/ ) {
+                    chat( $dochat, "found \"tuned\" background in $file+%d\n",
+                        $i - 1 );
+                    $hashref->{method} = 'bgd_d';
+                } else {
+                    warnlo( $dochat - 1, "found \"quick\" background "
+                        . "in $file+%d\n", $i - 1 );
+                    warnlo( $dochat - 1, "\"quick\" background files are for "
+                        . "preliminary analysis only!\n" );
+                    $hashref->{method} = 'bgd_a';
+                }
+            }
+
+        #####################################
+        # found a GTI, put it in the OR list
+        #####################################
+        } elsif ( $hduclas1 =~ /GTI/ ) {
+            push @{$hashref->{orGTIs}},
+                 sprintf( "%s[%d]", $hashref->{rootname}, $i - 1 );
+            chat( $dochat, "found GTI extension in $file+%d\n", $i - 1 );
+        }
+    }
+    $fptr->close_file( $stat );
+    return $stat;
+}
+
+#
+#  getLCTiming
+#  -----------
+#
+#   checks timing found from input event files
+#
+#   Inputs: none
+#
+#   Outputs: updates binlc parameter and warns user if necc.
+#
+sub getLCTiming {
+
+    my %clockmodes = ( );
+    if ( $isPIN ) {
+        %clockmodes = (
+            co => 122.0E-6,
+            no => 61.0E-6,
+            fi => 31.0E-6
+        );
+    } else {
+        %clockmodes = (
+            no => 61.0E-6,
+        );
+    }
+
+    #######################################
+    # check the TIMEDELs versus each other
+    #######################################
+    my $timedel = undef;
+    my $warned  = 0;
+    foreach my $evt ( values %evtData ) {
+        if ( !defined $timedel ) {
+            $timedel = $evt->{timedel};
+        } elsif ( $evt->{timedel} > $timedel ) {
+            $timedel = $evt->{timedel};
+            if ( !$warned ) {
+                warnlo( 1, "mismatched TIMEDEL in input events\n" );
+                $warned = 1;
+            }
+        } elsif ( $evt->{timedel} < $timedel ) {
+            if ( !$warned ) {
+                warnlo( 1, "mismatched TIMEDEL in input events\n" );
+                $warned = 1;
+            }
+        }
+        foreach my $clockmode ( keys %clockmodes ) {
+            if ( $evt->{timedel} == $clockmodes{$clockmode} ) {
+                $evt->{clockmode} = $clockmode;
+            }
+        }
+    }
+
+    ###################################################
+    # un-learn any clockmode info if modes don't match
+    ###################################################
+    if ( $warned ) {
+        map( $evtData{$_}->{clockmode} = "", keys %evtData );
+    }
+
+    #####################################################
+    # check the highest TIMEDEL found vs the binlc param
+    #####################################################
+    if ( $timedel > $params{binlc} ) {
+        warnhi( 1, "maximum TIMEDEL is > binlc, using %1.8E s for binlc\n",
+                   $timedel );
+        $params{binlc} = $timedel;
+    } else {
+        chat( 2, "using %1.8E s for binlc\n", $params{binlc} );
+    }
+}
+
+#
+#  setupOutputFilenames
+#  --------------------
+#
+#    Does what it says. Output suffixes are:
+#
+#     hxd_pin_sr.lc - source light curve (if input_fname is event file)
+#
+#     hxd_pin_bg.lc - NXB background light curve (with optional CXB component)
+#
+#     hxd_pse.lc      - pseudo event light curve
+#
+#     hxd_pin_net.lc - background subtracted light curve
+#
+#    fills %outfiles hash
+#
+sub setupOutputFilenames {
+
+    my $stat = 0;
+
+    foreach my $outfile ( keys %outfiles ) {
+
+        ########################################
+        # skip grppha if not going to create it
+        ########################################
+        if ( !$isLC && !$params{groupspec} && $outfile eq 'grppha' ) {
+            next;
+        }
+
+        ########################################
+        # skip _bg.pi if not going to create it
+        ########################################
+        if ( !$isLC && $outfile eq 'bkgpha' &&
+             exists $params{cxb_fname} && $params{cxb_fname} =~ /^NONE$/i ) {
+            next;
+        }
+
+        ###############################################
+        # sprintf the filename using the extant format
+        ###############################################
+        $outfiles{$outfile} = sprintf( $outfiles{$outfile}, $params{outstem} );
+
+        ################################################
+        # clobber any and all output files (try anyway)
+        ################################################
+        if ( -e $outfiles{$outfile} && $params{clobber} ) {
+            warnlo( 2, "will clobber file $outfiles{$outfile}\n" );
+        }
+        if ( -e $outfiles{$outfile} && !$params{clobber} ) {
+            error( 1, "file $outfiles{$outfile} exists and "
+                    . "clobber not set!\n" );
+            $stat = -1;
+        }
+    }
+    return $stat;
+}
+
+#
+#  mergeGTIs
+#  ---------
+#
+#    ORs gti_fname files together if there are more than 1
+#
+#    ORs together all GTIs found in input events
+#
+#    ORs together all GTIs found in input backgrounds
+#
+#    ANDs all resulting GTIs
+#
+#    Inputs: none
+#
+#    Outputs: a single (temporary) GTI file; status variable
+#
+#    Calls:
+#
+#      mgtime( )
+#
+sub mergeGTIs {
+
+    my $stat = 0;
+
+    ##################################################
+    # OR together all GTIs found in input event files
+    ##################################################
+    my $evtORs = [ map( @{$evtData{$_}->{orGTIs}}, keys %evtData ) ];
+    my $evtGTI;
+    if ( @$evtORs > 1 ) {
+        chat( 2, "ORing together the following EVENTS GTIs:\n" );
+        map( chat( 2, " %s\n", $_ ), @$evtORs );
+
+        $evtGTI = getTmpFile( 'gti' );
+        push @cleanup, $evtGTI;
+
+        $stat = mgtime( $evtORs, $evtGTI, 'OR' );
+        return $stat unless $stat == 0;
+
+        chat( 2, "total EVENTS GTI in $evtGTI\n" );
+
+    } else {
+        $evtGTI = $evtORs->[ 0 ];
+    }
+
+    ##############################################
+    # OR together any gtis in the gti_fname param
+    ##############################################
+    my $extGTI;
+    if ( @{$params{gti_fname}} > 1 ) {
+        chat( 2, "ORing together the following additional GTIs:\n" );
+        map( chat( 2, " %s\n", $_ ), @{$params{gti_fname}} );
+
+        $extGTI = getTmpFile( 'gti' );
+        push @cleanup, $extGTI;
+
+        $stat = mgtime( $params{gti_fname}, $extGTI, 'OR' );
+        return $stat unless $stat == 0;
+
+        chat( 2, "total additional GTI in $extGTI\n" );
+
+    } elsif ( $params{gti_fname}->[ 0 ] !~ /^none$/i ) {
+        $extGTI = $params{gti_fname}->[ 0 ];
+    }
+
+    #######################################################
+    # OR together all GTIs found in input background files
+    #######################################################
+    my $bkgORs = [ map( @{$bkgData{$_}->{orGTIs}}, keys %bkgData ) ];
+    my $bkgGTI;
+    if ( @$bkgORs > 1 ) {
+        chat( 2, "ORing together the following background GTIs:\n" );
+        map( chat( 2, " %s\n", $_ ), @$bkgORs );
+
+        $bkgGTI = getTmpFile( 'gti' );
+        push @cleanup, $bkgGTI;
+
+        $stat = mgtime( $bkgORs, $bkgGTI, 'OR' );
+        return $stat unless $stat == 0;
+
+        chat( 2, "total background GTI in $bkgGTI\n" );
+
+    } else {
+        $bkgGTI = $bkgORs->[ 0 ];
+    }
+
+    #################################################
+    # AND all of these together to get the total GTI
+    #################################################
+    my $andGTIs = [ $evtGTI, $bkgGTI ];
+    push @$andGTIs, $extGTI if defined $extGTI;
+
+    if ( @$andGTIs < 2 ) {
+        error( 1, "not enough GTIs to AND in mergeGTIs()\n"
+                . "check input files for GTI extensions\n" );
+        return -1;
+    }
+    chat( 2, "ANDing together the following GTIs:\n" );
+    map( chat( 2, " %s\n", $_ ), @$andGTIs );
+
+    $totalGTI = getTmpFile( 'gti' );
+    push @cleanup, $totalGTI;
+
+    $stat = mgtime( $andGTIs, $totalGTI, 'AND' );
+
+    chat( 2, "total GTI in $totalGTI\n" );
+
+    return $stat;
+}
+
+#
+#  extractLightCurves
+#  ------------------
+#
+#    runs extractor on input_fname (if applicable), bkg_event_fname,
+#    pse_event_fname using GTI output from mergeGTIs
+#
+#    Inputs: none
+#
+#    Outputs: three light curves
+#
+#    Calls:
+#
+#      extractor( )
+#
+sub extractLightCurves {
+
+    my $stat = 0;
+
+    my $sel = "";
+    my $lcstart = -1;
+
+    ##########################################################
+    # extract source light curve if we don't already have one
+    ##########################################################
+    if ( $evtData{$params{input_fname}->[ 0 ]}->{filetype} !~ /LIGHTCURVE/ ) {
+
+        chat( 2, "extracting source light curve\n" );
+        $stat = extractor( {
+                             filename  => $params{input_fname},
+                             fitsbinlc => $outfiles{srclc},
+                             binlc     => $params{binlc},
+                             lcthresh  => $params{lcthresh},
+                             timefile  => $totalGTI
+                           } );
+        return $stat unless $stat == 0;
+
+        ################################################
+        # re-read keywords and get lcstart if synch=yes
+        ################################################
+        $params{input_fname} = [ $outfiles{srclc} ];
+        %evtData = ( );
+        $evtData{$outfiles{srclc}} = {
+            rootname => $outfiles{srclc},
+            filetype => "",
+            timedel  => 0.0,
+            orGTIs   => [ ]
+        };
+        $stat = readEventKeywords( $outfiles{srclc}, $evtData{$outfiles{srclc}}, 1 );
+        return $stat unless $stat == 0;
+
+        if ( $params{synch} ) {
+            $lcstart = $evtData{$outfiles{srclc}}->{lcstart};
+        }
+
+    ##############################################################
+    # if we already have a light curve, just synchronize the rest
+    ##############################################################
+    } elsif ( $params{synch} ) {
+        $lcstart = $evtData{$params{input_fname}->[ 0 ]}->{lcstart};
+    }
+
+    ###################################
+    # extract pseudo event light curve
+    ###################################
+    chat( 2, "extracting pseudo event light curve\n" );
+    $stat = extractor( {
+                         filename  => $params{pse_event_fname},
+                         selection => "GRADE_HITPAT=0:1 GRADE_QUALTY=0:0 DET_TYPE=2:2",
+                         fitsbinlc => $outfiles{pselc},
+                         binlc     => $params{binlc},
+                         lcthresh  => $params{lcthresh},
+                         timefile  => $totalGTI,
+                         lcstart   => $lcstart
+                       } );
+    return $stat unless $stat == 0;
+
+    #################################
+    # extract background light curve
+    #################################
+    chat( 2, "extracting background light curve\n" );
+
+    ################################################################
+    # adjust to include only PI channels used for input light curve
+    ################################################################
+    if ( exists $evtData{$params{input_fname}->[ 0 ]}->{phalcut} &&
+         exists $evtData{$params{input_fname}->[ 0 ]}->{phahcut} ) {
+        $sel = sprintf( " %s=%d:%d", xselmdbval( 'ecol' ),
+                        $evtData{$params{input_fname}->[ 0 ]}->{phalcut},
+                        $evtData{$params{input_fname}->[ 0 ]}->{phahcut} );
+    }
+    $stat = extractor( {
+                         filename  => $params{bkg_event_fname},
+                         selection => $sel,
+                         fitsbinlc => $outfiles{bkglc},
+                         binlc     => $params{binlc},
+                         lcthresh  => $params{lcthresh},
+                         timefile  => $totalGTI,
+                         lcstart   => $lcstart
+                       } );
+    return $stat;
+}
+
+#
+#  correctLightCurves
+#  ------------------
+#
+#    scales background light curve, adds CXB component, dead time corrects
+#    source light curve, calculates net light curve if applicable
+#
+#    if treating cxb_rate like photons, resulting error is:
+#
+#                    /--------------------------------------------
+#       1.0         /                       2
+#    ---------- X  /  (ERROR*SCL*TDEL*FREXP) + CXBRATE*TDEL*FREXP
+#    TDEL*FREXP  \/
+#
+#    where SCL is the nxb_scale parameter, and CXBRATE is the cxb_rate param.
+#
+#    Inputs: none
+#
+#    Outputs: corrected light curves
+#
+#    Calls:
+#
+#      ftcopy( )
+#      lcsub( )
+#      ftpaste( )
+#
+sub correctLightCurves {
+
+    my $stat = 0;
+
+    my $filt = "";
+
+    #############################################################
+    # copy input light curve to output light curve if required
+    # if we are synchronizing light curves, this is unneccessary
+    #############################################################
+    if ( !$params{synch} &&
+         $evtData{$params{input_fname}->[ 0 ]}->{filetype} =~ /LIGHTCURVE/ ) {
+        $stat = ftcopy( $params{input_fname}->[ 0 ], $outfiles{srclc},
+                        1, $params{chatter} );
+        return $stat unless $stat == 0;
+    }
+
+    #################################################
+    # paste the DEADC column onto source light curve
+    # only if DEADAPP is false in light curve
+    #################################################
+    if ( ( $evtData{$params{input_fname}->[ 0 ]}->{filetype} =~ /LIGHTCURVE/ &&
+           !$evtData{$params{input_fname}->[ 0 ]}->{deadapp} ) ||
+         $evtData{$params{input_fname}->[ 0 ]}->{filetype} !~ /LIGHTCURVE/ ) {
+
+        $stat = deadCorrLC( $outfiles{srclc}, $outfiles{pselc} );
+        return $stat unless $stat == 0;
+    }
+
+    ############################################
+    # do the background light curve too, if GSO
+    ############################################
+    if ( !$isPIN ) {
+        $stat = deadCorrLC( $outfiles{bkglc}, $outfiles{pselc} );
+        return $stat unless $stat == 0;
+    }
+
+    ##########################################################
+    # scale the background and add CXB component using ftcopy
+    ##########################################################
+    $filt = "[col ";
+    if ( exists $params{cxb_rate} && $params{cxb_rate} > 0.0 ) {
+
+        # Background RATE = NXB + CXB
+        $filt .= "RATE=RATE/$params{nxb_scale}+$params{cxb_rate};";
+
+        if ( $params{cxb_err_mode} == 'PHOT' ) {
+            $filt .= "ERROR=(1.0/(TIMEDEL*FRACEXP))*sqrt("
+                   . "(ERROR*TIMEDEL*FRACEXP/$params{nxb_scale})**2.0+"
+                   . "$params{cxb_rate}*TIMEDEL*FRACEXP);";
+        } else {
+            $filt .= "ERROR=ERROR/$params{nxb_scale};";
+        }
+    } else {
+        $filt .= "RATE=RATE/$params{nxb_scale};ERROR=ERROR/$params{nxb_scale};";
+    }
+    $filt .= "*]";
+
+    $stat = ftcopy( "$outfiles{bkglc}$filt", $outfiles{bkglc},
+                    1, $params{chatter} );
+    return $stat unless $stat == 0;
+
+    ##########################################################
+    # subtract the background light curve and warn if !$synch
+    ##########################################################
+    if ( $params{bkgsub} ) {
+        chat( 2, "creating net (src - bkg) light curve\n" );
+        if ( !$params{synch} ) {
+            warnlo( 1, "subtracting asynchronous light "
+                     . "curves not recommended!\n" );
+        }
+        $stat = lcsub( $outfiles{srclc}, $outfiles{bkglc}, $outfiles{netlc} );
+    }
+
+    return $stat;
+}
+
+#
+#  deadCorrLC
+#  ----------
+#
+#    Given input light curve and pseudo events light curve,
+#    dead time corrects the input light curve
+#
+#    Overwrites the input light curve
+#
+sub deadCorrLC {
+
+    my ( $lc, $pse ) = @_;
+
+    my $stat = 0;
+
+    my $tmpsrclc = getTmpFile( 'lc' );
+    push @cleanup, $tmpsrclc;
+
+    #################################
+    # calculate the dead time column
+    #################################
+    $stat = ftpaste( $lc, "$pse\[col DEADC(1D)=RATE/4.0\]",
+                     $tmpsrclc, 1, $params{chatter} );
+    return $stat unless $stat == 0;
+
+    ##############################################
+    # apply the dead time correction using ftcopy
+    # null any DEADC rows where the RATE is INDEF
+    ##############################################
+    my $filt = "[col "
+             . "#DEADAPP(Deadtime corrections have been applied.)=T;"
+             . "RATE=RATE/DEADC;"
+             . "ERROR=ERROR/DEADC;"
+             . "*]";
+    $stat = ftcopy( "$tmpsrclc$filt", $lc,
+                    1, $params{chatter} );
+    return $stat;
+}
+
+#
+#  extractSpectra
+#  --------------
+#
+#    runs extractor on input_fname (if applicable), bkg_event_fname,
+#    pse_event_fname using GTI output from mergeGTIs
+#
+#    Inputs: none
+#
+#    Outputs: source and NXB background spectra
+#
+#    Calls:
+#
+#      extractor( )
+#
+sub extractSpectra {
+
+    my $stat = 0;
+
+    ##################################################
+    # extract source pha if we don't already have one
+    ##################################################
+    if ( $evtData{$params{input_fname}->[ 0 ]}->{filetype} !~ /SPECTRUM/ ) {
+
+        chat( 2, "extracting source spectrum\n" );
+        $stat = extractor( {
+                             filename  => $params{input_fname},
+                             phafile   => $outfiles{srcpha},
+                             timefile  => $totalGTI
+                           } );
+        return $stat unless $stat == 0;
+    }
+
+    ##############################
+    # extract background spectrum
+    ##############################
+    chat( 2, "extracting background spectrum\n" );
+    $stat = extractor( {
+                         filename  => $params{bkg_event_fname},
+                         phafile   => $outfiles{nxbpha},
+                         timefile  => $totalGTI
+                       } );
+    return $stat unless $stat == 0;
+
+    ############################
+    # read the exposure keyword
+    ############################
+    my $fptr = Astro::FITS::CFITSIO::open_file( "$outfiles{nxbpha}\[1\]",
+                                                READONLY, $stat );
+    my $exposure = 0.0;
+    $fptr->read_key_dbl( 'EXPOSURE', $exposure, undef, $stat );
+    $fptr->close_file( $stat );
+
+    #########################################
+    # use this to make the fake CXB spectrum
+    # unless the CXB exposure was specified
+    #########################################
+    if ( "$params{cxb_exposure}" eq "BACKGROUND" ) {
+        $params{cxb_exposure} = $exposure * $params{nxb_scale};
+    }
+
+    return $stat;
+}
+
+#
+#  createCXBSpectrum
+#  -----------------
+#
+#  runs Xspec to create simulated CXB spectrum
+#
+sub createCXBSpectrum {
+
+    my $stat = 0;
+
+    my $script = getTmpFile( 'xco' );
+    push @cleanup, $script;
+
+    if ( -e $outfiles{cxbpha} ) {
+        unlink $outfiles{cxbpha};
+    }
+    my $randomize = $params{cxb_randomize} ? 'y' : 'n';
+    open SCR, ">$script" or die "failed to open file $script\n";
+    print SCR <<EOF;
+mdefine cxb (E/a)**(-b)*exp(-E/c)
+model cxb & $params{cxb_norm_ene},-1 & $params{cxb_phot_indx},-1 & $params{cxb_cut_ene},-1 & $params{cxb_norm}
+fakeit none & $params{pinflat_rsp} & none & $randomize & & $outfiles{cxbpha} & $params{cxb_exposure}
+exit
+EOF
+    close SCR;
+
+    $stat = runSystem( "xspec - $script" );
+    $params{cxb_fname} = $outfiles{cxbpha};
+    return $stat unless $stat == 0;
+
+    ###########################################
+    # fix keywords using values from both
+    # the source spectrum and the NXB spectrum
+    ###########################################
+    my $keysfile1 = getTmpFile( 'txt' );
+    my $keysfile2 = getTmpFile( 'txt' );
+    push @cleanup, $keysfile1, $keysfile2;
+
+    # use attitude keys from source spectrum
+    my $keysfrom;
+    if ( $evtData{$params{input_fname}->[ 0 ]}->{filetype} =~ /SPECTRUM/ ) {
+        $keysfrom = $evtData{$params{input_fname}->[ 0 ]};
+    } else {
+        $keysfrom = $outfiles{srcpha};
+    }
+    my $keys = join ',', qw( OBJECT EQUINOX RADECSYS RA_PNT DEC_PNT );
+    $stat = runSystem( 'ftlist',
+                       { infile  => $keysfrom . "[1]",
+                         option  => 'K',
+                         outfile => $keysfile1,
+                         clobber => 'yes',
+                         include => $keys,
+                         #exclude => '' 
+			 } );
+    return $stat unless $stat == 0;
+
+    # use spectrum keys from NXB spectrum
+    $keys = join ',', qw( TELESCOP INSTRUME FILTER   AREASCAL BACKFILE
+                          BACKSCAL CORRFILE CORRSCAL RESPFILE ANCRFILE
+                          DATAMODE DATE-OBS DATE-END TSTART   TSTOP
+                          TELAPSE  MJD-OBS  MJDREFI  MJDREFF  TIMEREF
+                          TIMESYS  TIMEUNIT ORIGIN );
+    $stat = runSystem( 'ftlist',
+                       { infile  => $outfiles{nxbpha} . "[1]",
+                         option  => 'K',
+                         outfile => $keysfile2,
+                         clobber => 'yes',
+                         include => $keys,
+                         #exclude => '' 
+		     } );
+    return $stat unless $stat == 0;
+
+    open FILE1, "<$keysfile1" or die "failed to open file $keysfile1\n";
+    my @lines1 = <FILE1>;
+    close FILE1;
+    open FILE2, ">>$keysfile2" or die "failed to open file $keysfile2\n";
+    print FILE2 @lines1;
+    close FILE2;
+
+    my $fthedit = {
+        infile     => "$outfiles{cxbpha}\[0\]",
+        keyword    => "\@$keysfile2",
+        operation  => 'add',
+        value      => 0,
+        protect    => 'yes',
+        longstring => 'no',
+        chatter    => $params{chatter},
+        history    => 'no'
+    };
+    $stat = runSystem( 'fthedit', $fthedit );
+    return $stat unless $stat == 0;
+
+    $fthedit->{infile} = "$outfiles{cxbpha}\[1\]";
+    $stat = runSystem( 'fthedit', $fthedit );
+    return $stat;
+}
+
+
+#
+#  correctSpectra
+#  --------------
+#
+#    scales NXB background spectrum EXPOSURE, adds CXB + NXB spectra, dead time
+#    corrects source spectrum, updates BACKFILE key in source spectrum
+#
+#    Inputs: none
+#
+#    Outputs: corrected spectra
+#
+#    Calls:
+#
+#      ftcopy( )
+#      lcsub( )
+#      ftpaste( )
+#      ftcalc( )
+#
+sub correctSpectra {
+
+    my $stat = 0;
+
+    #####################################################
+    # copy input spectrum to output spectrum if required
+    #####################################################
+    if ( $evtData{$params{input_fname}->[ 0 ]}->{filetype} =~ /SPECTRUM/ ) {
+        $stat = ftcopy( $params{input_fname}->[ 0 ], $outfiles{srcpha},
+                        1, $params{chatter} );
+        return $stat unless $stat == 0;
+    }
+
+    ############################################
+    # run hxddtcorr on all spectra that need it
+    ############################################
+    my @dtcorfiles = ( );
+    if ( ( $evtData{$params{input_fname}->[ 0 ]}->{filetype} =~ /SPECTRUM/ &&
+           !$evtData{$params{input_fname}->[ 0 ]}->{deadapp} ) ||
+          $evtData{$params{input_fname}->[ 0 ]}->{filetype} !~ /SPECTRUM/ ) {
+        push @dtcorfiles, $outfiles{srcpha};
+    }
+    if ( !$isPIN ) {
+        push @dtcorfiles, $outfiles{nxbpha};
+    }
+    if ( @dtcorfiles ) {
+        chat( 2, "correcting output spectra "
+               . "$outfiles{srcpha} for dead time\n" );
+
+        my $tmp  = dumpListToTxt( @{$params{pse_event_fname}} );
+        my $tmp2 = dumpListToTxt( @dtcorfiles );
+        push @cleanup, $tmp, $tmp2;
+        $stat = runSystem( 'hxddtcor',
+                           { event_fname => "\@$tmp",
+                             pi_fname    => "\@$tmp2",
+                             save_pseudo => 'no',
+                             chatter     => $params{chatter} } );
+        return $stat unless $stat == 0;
+    }
+
+    ########################################
+    # update BACKFILE and RESPFILE keywords
+    ########################################
+    my $fptr = Astro::FITS::CFITSIO::open_file( "$outfiles{srcpha}\[1\]",
+                                                READWRITE, $stat );
+    my $backfile;
+    if ( exists $params{cxb_fname} && $params{cxb_fname} !~ /^NONE$/i ) {
+        $backfile = basename( $outfiles{bkgpha} );
+    } else {
+        $backfile = basename( $outfiles{nxbpha} );
+    }
+    $fptr->update_key( TSTRING, 'BACKFILE', "$backfile",
+                       "associated background filename", $stat );
+    my $respfile;
+    if ( exists $params{pinnom_rsp} ) {
+        $respfile = basename( $params{pinnom_rsp} );
+    } elsif ( exists $params{gsonom_rsp} ) {
+        $respfile = basename( $params{gsonom_rsp} );
+    } else {
+        $respfile = "NONE";
+    }
+    $fptr->update_key( TSTRING, 'RESPFILE', "$respfile",
+                       "associated redistrib matrix filename", $stat );
+    $fptr->close_file( $stat );
+
+    #####################################
+    # scale the background exposure time
+    #####################################
+    my $exposure = 0.0;
+    $fptr = Astro::FITS::CFITSIO::open_file( "$outfiles{nxbpha}\[1\]",
+                                             READWRITE, $stat );
+    $fptr->read_key_dbl( 'EXPOSURE', $exposure, undef, $stat );
+
+    if ( $params{nxb_scale} != 1.0 ) {
+        chat( 2, "fixing exposure time in NXB spectrum: $outfiles{nxbpha}\n" );
+        chat( 2, "Current EXPOSURE: %.14E s\nUpdated EXPOSURE: %.14E s\n",
+                 $exposure, $exposure * $params{nxb_scale} );
+
+        $exposure *= $params{nxb_scale};
+        my $nhdus;
+        $fptr->get_num_hdus( $nhdus, $stat );
+        for ( my $h = 1; $h <= $nhdus; $h++ ) {
+            $fptr->movabs_hdu( $h, undef, $stat );
+            $fptr->update_key( TDOUBLE, 'EXPOSURE', $exposure, undef, $stat );
+        }
+    }
+    $fptr->close_file( $stat );
+    return $stat unless $stat == 0;
+
+    #######################################
+    # add background spectra using addspec
+    #######################################
+    if ( exists $params{cxb_fname} && $params{cxb_fname} !~ /^NONE$/i ) {
+        my $cwd = getcwd( );
+        chdir dirname( $outfiles{nxbpha} );
+        my $infil = dumpListToTxt( map( basename( $_ ),
+                                        ( $outfiles{nxbpha}, $params{cxb_fname} ) ) );
+        if ( -e basename( $outfiles{bkgpha} ) ) {
+            unlink basename( $outfiles{bkgpha} );
+        }
+        $stat = runSystem( 'addspec',
+                           { infil     => $infil,
+                             outfil    => basename( $outfiles{bkgpha} ),
+                             qaddpha   => 'yes',
+                             units     => 'C',
+                             qaddrmf   => 'no',
+                             qsubback  => 'no',
+                             bexpscale => 1,
+                             properr   => 'no',
+                             errmeth   => 'POISS-0',
+                             clobber   => 'yes' } );
+        unlink $infil;
+        chdir $cwd;
+        return $stat unless $stat == 0;
+
+        # addspec puts '.pha' on the end
+        if ( !move( "$outfiles{bkgpha}.pha", $outfiles{bkgpha} ) ) {
+            error( 1, "failed to move $outfiles{cxbpha}.pha "
+                    . "to $outfiles{cxbpha}\n" );
+            $stat = -1;
+        }
+
+        # update the exposure
+        $fptr = Astro::FITS::CFITSIO::open_file( "$outfiles{bkgpha}\[1\]",
+                                                 READWRITE, $stat );
+        $fptr->update_key( TDOUBLE, 'EXPOSURE', $exposure, undef, $stat );
+        my $nhdus;
+        $fptr->get_num_hdus( $nhdus, $stat );
+        for ( my $h = 1; $h <= $nhdus; $h++ ) {
+            $fptr->movabs_hdu( $h, undef, $stat );
+            $fptr->update_key( TDOUBLE, 'EXPOSURE', $exposure, undef, $stat );
+        }
+        $fptr->close_file( $stat );
+    }
+    return $stat;
+}
+
+#
+# updateOutputChecksums -
+#
+#       runs ftchecksum on all existing output files
+#
+sub updateOutputChecksums {
+
+    my $stat = 0;
+
+    foreach my $file ( values %outfiles ) {
+        if ( -f $file ) {
+            $stat = runSystem( 'ftchecksum',
+                               { infile  => $file,
+                                 update  => 'yes',
+                                 datasum => 'yes',
+                                 chatter => 0 } );
+            return $stat unless $stat == 0;
+        }
+    }
+    return $stat;
+}
+
+#
+# hxdFitsHeaderRead -
+#
+#       reads standard keys from HXD fits file
+#       this is the opposite of the function hxdFitsHeader_writeHXDStdKeys()
+#       in the HXD library, with a few additional features
+#
+#       Inputs: FITS pointer, HDUCLAS1, hash reference, status variable
+#
+#       Outputs: returns status variable, fills hash reference with
+#                values of various keywords
+#
+sub hxdFitsHeaderRead {
+
+    my ( $fp, $hduclas1, $stdkeys, $stat ) = @_;
+
+    if ( !UNIVERSAL::isa( $fp, 'fitsfilePtr' ) ) {
+        error( 1, "first argument to hxdFitsHeaderRead( ) is "
+                . "not a fitsfilePtr!\n" );
+        return -1;
+    }
+
+    #################################
+    # generic telescope related keys
+    #################################
+    if ( $fp->read_key_str( "TELESCOP", $stdkeys->{telescope},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: TELESCOP (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_str( "INSTRUME", $stdkeys->{instrument},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: INSTRUME (status=%d)\n", $stat );
+        return $stat;
+    }
+
+    ###############################################
+    # EVENTS or LIGHTCURVE extension specific keys
+    ###############################################
+    if ( $hduclas1 =~ /EVENTS/ || $hduclas1 =~ /LIGHTCURVE/ ) {
+        if ( $fp->read_key_str( "DETNAM", $stdkeys->{detnam},
+                                undef, $stat ) ) {
+            error( 1, "Error in reading keyword: DETNAM (status=%d)\n",
+                      $stat );
+            return $stat;
+        }
+        if ( $fp->read_key_str( "OBS_MODE", $stdkeys->{obs_mode},
+                                undef, $stat ) ) {
+            error( 1, "Error in reading keyword: OBS_MODE (status=%d)\n",
+                      $stat );
+            return $stat;
+        }
+        if ( $fp->read_key_str( "DATAMODE", $stdkeys->{datamode},
+                                undef, $stat ) ) {
+            error( 1, "Error in reading keyword: DATAMODE (status=%d)\n",
+                      $stat );
+            return $stat;
+        }
+        if ( $fp->read_key_dbl( 'TIMEDEL', $stdkeys->{timedel},
+                                undef, $stat ) ) {
+            warnlo( 1, "could not read keyword: TIMEDEL (status=%d)\n",
+                       $stat );
+            delete $stdkeys->{timedel};
+            $stat = 0;
+        }
+        if ( $fp->read_key_log( "CLOCKAPP", $stdkeys->{clockapp},
+                                undef, $stat ) ) {
+            delete $stdkeys->{clockapp};
+            $stat = 0;
+        }
+        if ( $fp->read_key_str( "TASSIGN", $stdkeys->{tassign},
+                                undef, $stat ) ) {
+            delete $stdkeys->{tassign};
+            $stat = 0;
+        }
+
+        ####################################################
+        # observation specific keys (not fatal if no exist)
+        ####################################################
+        if ( $fp->read_key_str( "OBS_ID", $stdkeys->{obs_id},
+                                undef, $stat ) ) {
+            error( 1, "Error in reading keyword: OBS_ID (status=%d)\n",
+                      $stat );
+            return $stat;
+        }
+        if ( $fp->read_key_dbl( "RA_OBJ", $stdkeys->{ra_obj},
+                                undef, $stat ) ) {
+            delete $stdkeys->{ra_obj};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "DEC_OBJ", $stdkeys->{dec_obj},
+                                undef, $stat ) ) {
+            delete $stdkeys->{dec_obj};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "RA_NOM", $stdkeys->{ra_nom},
+                                undef, $stat ) ) {
+            delete $stdkeys->{ra_nom};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "DEC_NOM", $stdkeys->{dec_nom},
+                                undef, $stat ) ) {
+            delete $stdkeys->{dec_nom};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "PA_NOM", $stdkeys->{roll_nom},
+                                undef, $stat ) ) {
+            delete $stdkeys->{roll_nom};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "MEAN_EA1", $stdkeys->{mean_ea1},
+                                undef, $stat ) ) {
+            delete $stdkeys->{mean_ea1};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "MEAN_EA2", $stdkeys->{mean_ea2},
+                                undef, $stat ) ) {
+            delete $stdkeys->{mean_ea2};
+            $stat = 0;
+        }
+        if ( $fp->read_key_dbl( "MEAN_EA3", $stdkeys->{mean_ea3},
+                                undef, $stat ) ) {
+            delete $stdkeys->{mean_ea3};
+            $stat = 0;
+        }
+
+        ######################################################################
+        # try to read the METHOD/METHODV keys - this is for background events
+        ######################################################################
+        if ( $fp->read_key_str( 'METHOD', $stdkeys->{method},
+                                undef, $stat ) ) {
+            delete $stdkeys->{method};
+            $stat = 0;
+        }
+        if ( $fp->read_key_str( 'METHODV', $stdkeys->{methodv},
+                                undef, $stat ) ) {
+            delete $stdkeys->{methodv};
+            $stat = 0;
+        }
+
+        ############################
+        # light curve specific keys
+        ############################
+        if ( $hduclas1 =~ /LIGHTCURVE/ ) {
+            if ( $fp->read_key_log( 'DEADAPP', $stdkeys->{deadapp},
+                                    undef, $stat ) ) {
+                $stdkeys->{deadapp} = 0;
+                $stat = 0;
+            }
+            if ( $fp->read_key_dbl( 'MINFREXP', $stdkeys->{minfrexp},
+                                    undef, $stat ) ) {
+                delete $stdkeys->{minfrexp};
+                $stat = 0;
+            }
+            if ( $fp->read_key_lng( 'PHALCUT', $stdkeys->{phalcut},
+                                    undef, $stat ) ) {
+                delete $stdkeys->{phalcut};
+                $stat = 0;
+            }
+            if ( $fp->read_key_lng( 'PHAHCUT', $stdkeys->{phahcut},
+                                    undef, $stat ) ) {
+                delete $stdkeys->{phahcut};
+                $stat = 0;
+            }
+            if ( $fp->read_key_dbl( 'TIMEZERO', $stdkeys->{timezero},
+                                    undef, $stat ) ) {
+                $stdkeys->{timezero} = 0.0;
+                $stat = 0;
+            }
+            if ( $fp->read_key_dbl( 'TIMEPIXR', $stdkeys->{timepixr},
+                                    undef, $stat ) ) {
+                $stdkeys->{timepixr} = 0.5;
+                $stat = 0;
+            }
+        }
+
+    #########################
+    # spectrum specific keys
+    #########################
+    } elsif ( $hduclas1 =~ /SPECTRUM/ ) {
+        if ( $fp->read_key_log( 'DEADAPP', $stdkeys->{deadapp},
+                                undef, $stat ) ) {
+            $stdkeys->{deadapp} = 0;
+            $stat = 0;
+        }
+        if ( $fp->read_key_lng( 'PHALCUT', $stdkeys->{phalcut},
+                                undef, $stat ) ) {
+            delete $stdkeys->{phalcut};
+            $stat = 0;
+        }
+        if ( $fp->read_key_lng( 'PHAHCUT', $stdkeys->{phahcut},
+                                undef, $stat ) ) {
+            delete $stdkeys->{phahcut};
+            $stat = 0;
+        }
+    }
+
+    ####################################################
+    # observation specific keys (not fatal if no exist)
+    ####################################################
+    if ( $fp->read_key_str( "OBJECT", $stdkeys->{object}, undef, $stat ) ) {
+        delete $stdkeys->{object};
+        $stat = 0;
+    }
+    if ( $fp->read_key_dbl( "RA_PNT", $stdkeys->{ra_pnt}, undef, $stat ) ) {
+        delete $stdkeys->{ra_pnt};
+        $stat = 0;
+    }
+    if ( $fp->read_key_dbl( "DEC_PNT", $stdkeys->{dec_pnt}, undef, $stat ) ) {
+        delete $stdkeys->{dec_pnt};
+        $stat = 0;
+    }
+    if ( $fp->read_key_str( "RADECSYS", $stdkeys->{radecsys}, undef, $stat ) ) {
+        delete $stdkeys->{radecsys};
+        $stat = 0;
+    }
+    if ( $fp->read_key_lng( "EQUINOX",  $stdkeys->{equinox}, undef, $stat ) ) {
+        delete $stdkeys->{equinox};
+        $stat = 0;
+    }
+
+    ####################
+    # get the aim point
+    ####################
+    if ( $fp->read_key_str( "NOM_PNT", $stdkeys->{nom_pnt}, undef, $stat ) ) {
+        delete $stdkeys->{nom_pnt};
+        $stat = 0;
+    } else {
+        $stdkeys->{nom_pnt} =~ s/['\s]+//g;
+    }
+
+    ################################################
+    # get the GSOGPT_V keyword and GSOOLDPI keyword
+    ################################################
+    if ( $fp->read_key_lng( "GSOGPT_V", $stdkeys->{gsogpt_v}, undef, $stat ) ) {
+        $stdkeys->{gsogpt_v} = -1;
+        $stat = 0;
+    }
+    if ( $fp->read_key_log( "GSOOLDPI", $stdkeys->{gsooldpi}, undef, $stat ) ) {
+        $stdkeys->{gsooldpi} = 1;
+        $stat = 0;
+    }
+
+    ################################
+    # timing stuff (except TIMEDEL)
+    ################################
+    if ( $fp->read_key_str( "DATE-OBS", $stdkeys->{date_obs},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: DATE-OBS (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_str( "DATE-END", $stdkeys->{date_end},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: DATE-END (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_dbl( "TSTART", $stdkeys->{tstart},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: TSTART (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_dbl( "TSTOP", $stdkeys->{tstart},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: TSTOP (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_dbl( "TELAPSE", $stdkeys->{telapse},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: ONTIME (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_dbl( "ONTIME", $stdkeys->{tstart},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: ONTIME (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_str( "TIMESYS", $stdkeys->{timesys},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: TIMESYS (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_lng( "MJDREFI", $stdkeys->{mjd_refi},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: MJDREFI (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_dbl( "MJDREFF", $stdkeys->{mjd_reff},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: MJDREFF (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_str( "TIMEREF", $stdkeys->{timeref},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: TIMEREF (status=%d)\n", $stat );
+        return $stat;
+    }
+    if ( $fp->read_key_str( "TIMEUNIT", $stdkeys->{timeunit},
+                            undef, $stat ) ) {
+        error( 1, "Error in reading keyword: TIMEUNIT (status=%d)\n", $stat );
+        return $stat;
+    }
+    return $stat;
+}
+
+#
+#  hxdGetCaldbFile
+#  ---------------
+#
+#    Retrieves an HXD calibration file
+#
+#    Inputs: detector name, caldb code name, filtering expression,
+#            output directory to store file, GSOOLDPI flag (if check req'd)
+#
+#    Outputs: status and single filename
+#
+#    Calls:
+#
+#      HDgtcalf( )
+#
+sub hxdGetCaldbFile {
+
+    my ( $detnam, $codename, $expr, $startd, $stopd, $outdir, $gsooldpi ) = @_;
+
+    my $stat = 0;
+
+    ############################
+    # check the detnam argument
+    ############################
+    if ( $detnam =~ /^(pin|gso)$/i ) {
+        $detnam = 'WELL_' . $detnam;
+    } elsif ( $detnam !~ /^well_(gso|pin)$/i ) {
+        error( 1, "Invalid \$detnam argument passed to hxdGetCaldbFile\n" );
+        return ( -1, undef );
+    }
+    $detnam = uc( $detnam );
+
+    ####################################
+    # setup message for various outputs
+    ####################################
+    my $querymsg = <<EOF;
+    mission    = 'SUZAKU'
+    instrument = 'HXD'
+    detector   = '$detnam'
+    filter     = '-'
+    codename   = '$codename'
+    start date = '$startd'
+    stop date  = '$stopd'
+    expr       = '$expr'
+EOF
+
+    ########################
+    # parse the input dates
+    ########################
+    my ( $startt, $stopt );
+    ( $startd, $startt ) = split /[ T]/, $startd;
+    ( $stopd, $stopt )   = split /[ T]/, $stopd;
+    if ( !$startt ) { $startt = "00:00:00"; }
+    if ( !$stopt )  { $stopt  = "00:00:00"; }
+
+    ######################
+    # run the caldb query
+    ######################
+    my ( $files, $ext, $online, $nret, $nfound );
+    if ( HDgtcalf( 'SUZAKU', 'HXD', $detnam, '-', $codename,
+                   $startd, $startt, $stopd, $stopt, $expr,
+                   50, 1024, $files, $ext, $online,
+                   $nret, $nfound, $stat ) ) {
+        error( 1, "Failed to run HDgtcalf( ) for query:\n" );
+        error( 1, $querymsg );
+        return ( $stat, undef );
+    }
+
+    ################################
+    # check if any files were found
+    ################################
+    if ( $nret < 1 ) {
+        error( 1, "No CALDB files found matching query:\n" );
+        error( 1, $querymsg );
+        return ( -1, undef );
+    }
+
+    ############################################################
+    # check if multiple files were found
+    # two are OK for the combination WELL_GSO + SPECRESP MATRIX
+    ############################################################
+    my $caldbfile;
+    if ( $nret > 1 ) {
+        if ( $detnam eq 'WELL_GSO' &&
+             $codename =~ /^SPECRESP MATRIX$/i ) {
+
+            ################################################
+            # loop over files and check if GSOOLDPI keyword
+            # matches requirement set by $gsooldpi argument
+            ################################################
+            for ( my $i = 0; $i < $nret; $i++ ) {
+                my $gsooldpi_val;
+                my $fptr = Astro::FITS::CFITSIO::open_file( $files->[ $i ],
+                                                            READONLY, $stat );
+                return ( $stat, undef ) unless $stat == 0;
+
+                $fptr->movabs_hdu( 2, ANY_HDU, $stat );
+                $fptr->read_key_log( 'GSOOLDPI', $gsooldpi_val, undef, $stat );
+
+                #######################################################
+                # if the keyword does not exist, and $gsooldpi is set,
+                # this is a match
+                #######################################################
+                if ( $stat == KEY_NO_EXIST && $gsooldpi ) {
+                    $caldbfile = $files->[ $i ];
+                    last;
+
+                #########################################
+                # if there was some other CFITSIO error,
+                # or $gsooldpi is not set, no match
+                #########################################
+                } elsif ( $stat != 0 ) {
+                    $stat = 0;
+                    next;
+
+                #######################################################
+                # if $gsooldpi is set, but does not match the keyword,
+                # this is a no-match
+                #######################################################
+                } elsif ( $gsooldpi && $gsooldpi != $gsooldpi_val ) {
+                    $stat = 0;
+                    next;
+
+                ####################################################
+                # otherwise, this is a match, so take the first one
+                ####################################################
+                } else {
+                    $caldbfile = $files->[ $i ];
+                    last;
+                }
+            }
+            if ( !defined $caldbfile ) {
+                error( 1, "Failed to find appropriate $expr CALDB file\n" );
+                return ( -1, undef );
+            }
+
+        #############################################
+        # if multiple entries for any other queries,
+        # warn and take the first one
+        #############################################
+        } else {
+            warnhi( 1, "Multiple CALDB entries exist for query:\n" );
+            warnhi( 1, $querymsg );
+            warnhi( 1, "Using first result from query\n" );
+            $caldbfile = $files->[ 0 ];
+        }
+    } else {
+        $caldbfile = $files->[ 0 ];
+    }
+    chat( 2, "Using:\n    $caldbfile\nfor $detnam: $codename ($expr)\n" );
+
+    ###################################################
+    # copy the file to the output directory and return
+    ###################################################
+    my $locfile = catfile( $outdir, basename( $caldbfile ) );
+    $stat = ftcopy( $caldbfile, $locfile, 1 );
+    return ( $stat, $locfile );
+}

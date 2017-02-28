@@ -1,0 +1,188 @@
+#!/usr/bin/perl
+#
+# $Source: /headas/headas/attitude/tasks/expomap/ut-expomap,v $
+# $Revision: 1.4 $
+# $Date: 2003/09/04 17:36:07 $
+#
+#	ut-expomap
+#		validate expomap operation
+#
+#
+# $Log: ut-expomap,v $
+# Revision 1.4  2003/09/04 17:36:07  rwiegand
+# Allow creating exposure maps in detector coordinates.
+#
+# Revision 1.3  2003/09/02 21:35:10  rwiegand
+# Had wrong directory for output template.  Also updated attitude increment
+# parameter since now in arcseconds.
+#
+# Revision 1.2  2003/07/18 20:11:21  rwiegand
+# Relocated to headas/attitude package.  Use coord/image.c support for
+# windowing/binning based on WCS keywords.
+#
+# Revision 1.1  2003/05/14 19:44:54  rwiegand
+# Added unit test and help page.
+#
+
+use strict;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use FileHandle;
+
+
+# main
+{
+	my $tool = bless({
+		tool => 'ut-expomap',
+		code => 0,
+		});
+
+	eval {
+		$tool->parseOptions(
+			argv => [ @ARGV ],
+			options => [ qw(
+				input output chatter
+				) ],
+			);
+
+		$tool->execute;
+	};
+
+	if ($@) {
+		$tool->error(BAD_TASK, "exception: $@");
+	}
+
+	my $result = $tool->{code} ? 'failed' : 'passed';
+	$tool->report("test $result");
+	exit($tool->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->validate
+		if $self->isValid;
+
+	$self->runExpomap
+		if $self->isValid;
+}
+
+
+sub validate
+{
+	my ($self) = @_;
+
+	# validate environment
+	foreach my $var (qw(HEADAS)) {
+		if (not defined($ENV{$var})) {
+			$self->fatal(BAD_INPUT,
+				"environment variable $var not set");
+		}
+		elsif (not -d $ENV{$var}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $var directory $ENV{$var}");
+		}
+	}
+
+	# validate input/output directories
+	foreach my $key (qw(input output)) {
+		my $arg = $self->args->{$key};
+		if (not -d $arg) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key directory: $arg");
+		}
+	}
+}
+
+
+sub checkResult
+{
+	my ($self, $result) = @_;
+
+	if ($result->{error}) {
+		$self->error(BAD_EXECUTE, "$result->{command} => $result->{code}");
+	}
+
+	if ($result->{code}) {
+		$self->warning("$result->{command} => $result->{code}");
+	}
+}
+
+
+sub runExpomap
+{
+	my ($self) = @_;
+
+	my $headas = $ENV{HEADAS};
+	my $input = $self->args->{input};
+	my $output = $self->args->{output};
+
+	my @args = (
+		exptype    => 'SKY',
+		instname   => "$input/instmap.fits",
+		gtiname	   => "$input/instmap.fits",
+		attname	   => "$input/ATTITUDE.fits",
+		teldef     => "$input/sw_uvot_2003-06-02_points.teldef",
+
+		outname	   => "$output/expomap.fits",
+
+		ra         => 278.46675,
+		dec        => -8.16587,
+		cx         => 0,
+		cy         => 0,
+		width      => 500,
+		height     => 500,
+
+		attdelta   => 1000,
+		aberration => 'no',
+
+		clobber	   => 'yes',
+		history	   => 'yes',
+		chatter	   => 5,
+	);
+
+	my %task = @args;
+
+	# validate required files
+	foreach my $key (qw(instname gtiname attname teldef)) {
+		if (not -f $task{$key}) {
+			$self->fatal(BAD_INPUT,
+				"invalid $key file: $task{$key}");
+		}
+	}
+
+	# build command line
+	my $command = $self->buildCommand('expomap', @args);
+	my $result = $self->doCommand($command, pipeFrom => 1);
+	$self->checkResult($result);
+	{
+		my $fh = $result->{handle};
+		while (<$fh>) {
+			chomp;
+			$self->report($_);
+		}
+		if (not $fh->close) {
+			$self->error(BAD_EXECUTE,
+				"error closing expomap pipe");
+		}
+	}
+
+	$command = qq(ftverify infile=$task{outname} outfile=STDOUT);
+	$result = $self->runCommand($command);
+
+	# compare to template
+	$command = $self->buildCommand('ftdiff',
+		infile1 => $task{outname},
+		infile2 => "$input/expotemplate.fits",
+		tolerance => 0.1,
+		# exclude => '*',
+		);
+	$result = $self->runCommand($command);
+	$self->report($result->{output});
+
+}
+

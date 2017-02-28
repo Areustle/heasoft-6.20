@@ -1,0 +1,243 @@
+#! /usr/bin/perl
+#
+#This script is designed to translate XTE FITS GTI file or extension to XRONOS
+#format time filter file, i.e., the window file.  The script only writes time 
+#intervals, the rest part of the output file is copied from a dummy file to 
+#make the format correct.
+#
+#Zhiyu Guo 10/28/97
+#FTOOLS GSFC/NASA HUGHES STX
+#
+# M.Tripicco
+# 17Dec98: Major revisions to input mechanism (added -c, -i, -o options)
+#          Added lots of error checking
+#          No need to specify whether it's a GTI file or science file: the 
+#            tool now searches the input file for the first valid GTI extension
+#            and operates on that HDU unless a particular extension was
+#            specified with the filename (ie, filename+2) in which case that
+#            extension is used no questions asked.
+# 
+# toliver
+# 25May99: Invoke fstruct with colinfo parameter set to "no" to suppress
+#             new fstruct output fortmat.
+#
+use Getopt::Std;
+
+#============================================================#
+#
+# See if there are any flags:
+#
+
+getopts('i:o:ch');
+
+if (defined $opt_h) {
+  print <<EOHELP1;
+
+NAME
+	gti2xronwin -- a script that converts a GTI file (or extension) to
+a XRONOS-format time filter file, i.e., *.wi file.
+
+USAGE
+	gti2xronwin  (user will be prompted for input and output filenames)
+
+   or
+
+        gti2xronwin -c -i my_gtifile.fits -o my_xronwin_file
+
+DESCRIPTION
+
+PARAMETERS (SWITCHES/FLAGS)
+
+  -c [clobber]     Use this switch to allow the tool to clobber an existing
+                    output file with the same name.
+
+  -i [input file]  This flag must be followed by the name of the input
+                    FITS file to use. Unless an extension number is specified
+                    the tool will examine the header units in the input file
+                    in turn until it finds a valid GTI extension to operate upon.
+ 
+  -o [output file] This flag is used to specify the name of the output file.
+
+EXAMPLES
+
+BUGS
+
+NOTES
+
+SEE ALSO
+
+EOHELP1
+  exit;
+}
+
+#now, the program ...
+
+require "utils.pl";
+
+if(defined $opt_i) {
+  $infile = $opt_i;
+} else {
+  print "Input FITS file (with optional extension)?: ";
+  $infile = <STDIN>;
+  chop($infile);
+  $infile =~ s/ //;
+}
+
+if(defined $opt_o) {
+  $out = $opt_o;
+} else {
+  print "Name for the output window file?: ";
+  $out = <STDIN>;
+  chop($out);
+}
+if (-f $out && ! defined $opt_c) {
+  print "file \"$out\" already exists: either remove it or use the \"-c\" option\n";
+  die ("Bailing out");
+}
+
+# unless an extension was specified by the user
+# go looking for the first GTI extension
+if ($infile !~ /\[/ && $infile !~ /\+/){
+  $fstruct_cmd = '-'.'fstruct colinfo=no '.$infile;
+  @fstruct_result=&runcom($fstruct_cmd);
+  unless(grep(/ERROR FOR/,@fstruct_result)){
+    @last_line = split(' ',$fstruct_result[-1]);
+    $last_hdu = $last_line[0];
+    $extno=0;
+    foreach $i (0..$last_hdu) {
+      $tmp="$infile"."+"."$i";
+      $hduclas1=&getkey($tmp,"HDUCLAS1");
+      if ($hduclas1 =~ /GTI/) {
+	$extno=$i;
+	last;
+      }
+    }
+    if ($extno == 0) { die("No valid GTI extension found in $infile\n") };
+    $infile1 = $infile."+$extno";
+    print "Operating on GTI extension in HDU #$extno\n";
+  } else {
+    die("Error running FSTRUCT");
+  }
+
+} else {
+# Make sure that the specified extension contains GTIs!
+  $hduclas1=&getkey($infile,"HDUCLAS1");
+  $hduclas1 =~ /GTI/ || die("$infile does not contain a GTI extension!\n$0 failed");
+  $infile1 = $infile;
+}
+
+##Use FDUMP to get GTI extension ##
+$outfile="TEMP_DUMP";
+$fdump_string = "fdump infile='$infile1' outfile='$outfile' ";
+$fdump_string .= "columns='-' rows='-' clobber='yes' prhead='no' ";
+$fdump_string .= "showcol='no' showunit='no' ";
+@fdump_result=&runcom($fdump_string);
+if (grep(/ERROR FOR/,@fdump_result)) {
+  die("Error running FDUMP");
+}
+
+
+#get MJDREF or MJDREFI and MJDREFF
+# (revised 16Dec98 by MJT)
+
+$mjdref=getkey($infile1,"MJDREF");
+$mjdrefi=getkey($infile1,"MJDREFI");
+$mjdreff=getkey($infile1,"MJDREFF");
+if($mjdref == -999 && ($mjdrefi != -999 && $mjdreff != -999)){
+  $mjdref = $mjdrefi + $mjdreff;
+}
+if($mjdref == -999){
+  die("Couldn't find MJDREF or MJDREFI/F!");
+}
+
+$timezero=getkey($infile1,"TIMEZERO");
+$timezeroi=getkey($infile1,"TIMEZERI");
+$timezerof=getkey($infile1,"TIMEZERF");
+if($timezero == -999 && ($timezeroi != -999 && $timezerof != -999)){
+  $timezero = $timezeroi + $timezerof;
+}
+if($timezero == -999){
+  die("Couldn't find TIMEZERO or TIMEZERI/F!");
+}
+
+$factor1=$mjdref + ($timezero / 86400.0) ;
+
+###############################################################
+
+$in="TEMP_DUMP";
+
+open(F1,$in) || die "cannot open $in for reading";
+$i=0;
+while(<F1>){
+  @a[$i]=$_;
+  if(@a[$i] != '/\s+/'){
+    $i=$i+1;
+  }
+}
+close(F1);
+$num_win=$i;	
+$k=0;
+open(F1,$in) || die "cannot open $in for reading";
+open(F2,">$out") || die "cannot create $out";
+print F2 " $num_win Windows in this < Xronos Window File > \n";
+print F2 " $num_win Time Wind.: start       stop  (days) \n";
+while(<F1>){
+  @col=split(/\s+/,$_);
+  if(@col[2] != '/\s+/' && @col[3] != '/\s+/'){	#get rid of blank lines
+    @col[2] = @col[2] / 86400.0 + $factor1 - 40000.0 ; #The referred Julian Date
+    #in XRONOS is 2440000.5, while RXTE mission refers to 2400000.5.
+    @col[3] = @col[3] / 86400.0 + $factor1 - 40000.0 ;
+    printf F2 "%20.8f %20.8f %3d\n", @col[2],@col[3],$k+1;
+    $k=$k+1;
+  }
+}
+#########################################################################
+#Copying the rest of a typical *wi to the output file, so that XRONOS can 
+#take it.
+#
+print F2 " 0 Phase Wind.: epoch  period  (days)/ start stop (0->1) phases    max   10\n";
+print F2 " 0 Ints. Wind. for Orig. Bins in Series 1 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for New Bins   in Series 1 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for Intervals  in Series 1 : min  max (c/s)         max   10\n";
+print F2 " 0 Exps. Wind. for Orig. Bins in Series 1 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for New Bins   in Series 1 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for Intervals  in Series 1 : min  max (0->50)       max    1\n";
+print F2 " 0 Ints. Wind. for Orig. Bins in Series 2 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for New Bins   in Series 2 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for Intervals  in Series 2 : min  max (c/s)         max   10\n";
+print F2 " 0 Exps. Wind. for Orig. Bins in Series 2 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for New Bins   in Series 2 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for Intervals  in Series 2 : min  max (0->50)       max    1\n";
+print F2 " 0 Ints. Wind. for Orig. Bins in Series 3 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for New Bins   in Series 3 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for Intervals  in Series 3 : min  max (c/s)         max   10\n";
+print F2 " 0 Exps. Wind. for Orig. Bins in Series 3 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for New Bins   in Series 3 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for Intervals  in Series 3 : min  max (0->50)       max    1\n";
+print F2 " 0 Ints. Wind. for Orig. Bins in Series 4 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for New Bins   in Series 4 : min  max (c/s)         max   10\n";
+print F2 " 0 Ints. Wind. for Intervals  in Series 4 : min  max (c/s)         max   10\n";
+print F2 " 0 Exps. Wind. for Orig. Bins in Series 4 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for New Bins   in Series 4 : min  max (0->50)       max    1\n";
+print F2 " 0 Exps. Wind. for Intervals  in Series 4 : min  max (0->50)       max    1\n";
+#######################################################################
+close(F1);
+close(F2);
+$rm_string = "rm '-f' 'TEMP_DUMP' "; #remove the temple file
+system($rm_string);		## The end of GTI2XRONWIN ##
+
+##Subroutine##
+
+sub getkey{
+  my($key);
+  $fkeypar_str = "fkeypar fitsfile='$_[0]' keyword='$_[1]' ";
+  system($fkeypar_str);
+  $pfile="fkeypar";
+  $key=`pget '$pfile' value `;
+  $exist=`pget '$pfile' exist `;
+  if($exist =~ "no"){
+    return -999;
+  }else{
+    return $key;
+  }
+}

@@ -1,0 +1,1123 @@
+#! perl
+# $Source: /headas/headas/swift/uvot/tasks/uvotskycorr/uvotskycorr,v $
+# $Revision: 1.24 $
+# $Date: 2013/05/14 18:38:26 $
+#
+#	Determine/apply aspect correction to UVOT SKY images
+#
+#	Input
+#		UVOT SKY image file(s)
+#			[uvotimage output]
+#		attitude file
+#			[defines snapshots t00-t01,t10-t11,...]
+#		correction file
+#
+#	Output
+#		corrections
+#		corrected SKY images
+#
+# $Log: uvotskycorr,v $
+# Revision 1.24  2013/05/14 18:38:26  rwiegand
+# Added parameter detopt to allow passing parameters to uvotdetect sub-task.
+#
+# Revision 1.23  2012/08/16 16:00:54  rwiegand
+# Disable catalog cross-referencing by default since it is not a necessary
+# function of this tool.
+#
+# Revision 1.22  2010/08/11 13:53:11  rwiegand
+# Specifying the starid max.rate option was resulting in an ill-formatted
+# command line (the max rate was not properly quoted).
+#
+# Revision 1.21  2010/07/26 04:41:43  rwiegand
+# Allow specifying quality flag file(s) which are used to assist in source
+# detection.  Made the filtering tolerance for UV filters 1.0 arcsec.
+#
+# Revision 1.20  2010/07/22 14:34:31  rwiegand
+# Support filtering detections with flags.  Made detection thresholds, minimum
+# detections, and whether to filter detections with flags (inner) parameters.
+#
+# Revision 1.19  2009/07/15 18:22:41  rwiegand
+# Moved code for saving aspect corrections file to UVOT::AspcorrTable.
+#
+# Revision 1.18  2008/10/16 18:34:05  rwiegand
+# Disabled source filtering based on rate by default.
+#
+# Revision 1.17  2008/03/28 17:57:06  rwiegand
+# Added options parameter to allow overriding or interpolating corrections.
+#
+# Revision 1.16  2007/10/09 15:42:02  rwiegand
+# Use hard 0.75 arcsec limit when filtering matches.  Only consider sources
+# with raw total rate below 50 counts/s for matches.  Store residual rotation
+# quaternion in output.
+#
+# Revision 1.15  2007/06/28 14:14:20  rwiegand
+# Require corrections to be a plain file.
+#
+# Revision 1.14  2007/05/25 15:21:10  rwiegand
+# No longer necessary to run uvotcoincidence/uvotflux since calibration
+# is handled in uvotdetect.
+#
+# Revision 1.13  2007/05/22 15:48:51  rwiegand
+# Split uvotmag into uvotcoincidence and uvotflux.
+#
+# Revision 1.12  2007/01/24 21:51:03  rwiegand
+# Allow user to specify multiple catspecs.
+#
+# Revision 1.11  2006/10/23 16:02:28  rwiegand
+# Added support for interpolating corrections between known corrections.
+#
+# Revision 1.10  2006/05/09 17:23:34  rwiegand
+# Since the FITS uac.hk file holds all exposures instead of only those with
+# known corrections, need to test for a correction before applying it.
+#
+# Revision 1.9  2006/05/04 20:37:33  rwiegand
+# Updated aspect corrections file from text to FITS.
+#
+# Revision 1.8  2006/01/25 15:55:58  rwiegand
+# Set large default mag.err for non-V filters.
+#
+# Revision 1.7  2005/12/02 23:05:59  rwiegand
+# If no snapshot can be identified for an exposure, invent one that matches
+# the exposure instead of using the last snapshot.
+#
+# Revision 1.6  2005/11/02 14:05:18  rwiegand
+# Use uvotdetect output parameter to determine number of detected sources.
+#
+# Revision 1.5  2005/10/31 14:10:53  rwiegand
+# Renamed catalog partition parameter to catspec.
+#
+# Revision 1.4  2005/08/30 16:15:25  rwiegand
+# Retry source detection with lower threshold if too few sources are found.
+#
+# Revision 1.3  2005/08/29 12:07:56  rwiegand
+# Now responsible for detecting sources and passing to aspcorr since that
+# is mission-dependent.  Determine star identification parameters.
+#
+# Revision 1.2  2005/07/18 12:43:37  rwiegand
+# This task retrieves quaternion from FITS keywords instead of looking
+# at sub-task stdout.
+#
+# Revision 1.1  2005/06/15 20:18:43  rwiegand
+# Tool to aspect correct UVOT files.
+#
+
+use strict;
+
+package UVOT::SkyCorr;
+
+use base qw(Task::HEAdas);
+use Task qw(:codes);
+
+use SimpleFITS;
+use Astro::FITS::CFITSIO qw(:constants);
+use UVOT::Filter;
+use UVOT::Snapshot;
+use UVOT::AspcorrTable;
+
+
+use constant WHAT_FIND_CORRECTIONS  => 'ID';
+use constant WHAT_CORRECT_IMAGES    => 'SKY';
+use constant WHAT_CORRECT_ATTITUDE  => 'ATT';
+
+
+
+my %STARID = (
+	# FILTER => '<starid overrides>',
+	B => 'mag.err=5',
+	U => 'mag.err=5',
+	UVW1 => 'mag.err=8 filter.base=1',
+	UVW2 => 'mag.err=8 filter.base=1',
+	UVM2 => 'mag.err=8 filter.base=1',
+);
+
+map { $STARID{$_} ||= 'NONE' } UVOT::Filter::list;
+
+
+# main
+{
+	my $task = __PACKAGE__->new;
+
+	$task->run;
+
+	exit($task->{code});
+}
+
+
+sub execute
+{
+	my ($self) = @_;
+
+	$self->initialize
+		if $self->isValid;
+
+	my $method = 'what' . uc($self->args->{what});
+	$self->$method
+		if $self->isValid;
+
+	$self->finalize;
+}
+
+
+sub initialize
+{
+	my ($self) = @_;
+
+	$self->pilOptions(options => [ qw(
+				what=string 
+				skyfile=file corrfile=file attfile=file outfile=file
+				starid=string catspec=file flagfile=file options=string
+				detopt=string
+				cleanup=bool history=bool clobber=bool chatter=int
+			) ],
+			get => 1,
+			);
+
+	return if not $self->isValid;
+
+	my $args = $self->args;
+
+	$self->parseFileParameter('skyfile');
+	$self->parseFileParameter('flagfile');
+
+	my $what = uc($args->{what});
+
+	if (not $args->{clobberFlag}) {
+		foreach my $key (qw(outfile)) {
+			my $path = $args->{$key};
+
+			next if $path =~ /^NONE$/i;
+
+			if (-e $path) {
+				$self->error(BAD_INPUT,
+					"$path already exists and clobber not set");
+			}
+		}
+	}
+	elsif ($what ne WHAT_CORRECT_IMAGES and -e $args->{outfile}) {
+		unlink($args->{outfile})
+			or $self->error(BAD_INPUT,
+				"unable to remove $args->{outfile} [$!]");
+	}
+
+	if ($what eq WHAT_CORRECT_ATTITUDE) {
+		foreach my $key (qw(attfile corrfile)) {
+			if (not -e $args->{$key}) {
+				$self->error(BAD_INPUT, "missing $key $args->{$key}");
+			}
+		}
+	}
+	elsif ($what eq WHAT_CORRECT_IMAGES) {
+		foreach my $key (qw(attfile corrfile)) {
+			if (not -e $args->{$key}) {
+				$self->error(BAD_INPUT, "missing $key $args->{$key}");
+			}
+		}
+	}
+
+	foreach my $option (split(',', $args->{options})) {
+		$self->{OPTIONS}{uc($option)} = 1;
+	}
+
+	my @detopt;
+	$self->{DETOPT} = \@detopt;
+	if (uc($args->{detopt}) ne 'NONE') {
+		foreach my $s (split(' ', $args->{detopt})) {
+			my ($par, $value) = split('=', $s, 2);
+			push(@detopt, [ $par, $value ]);
+		}
+	}
+
+	if ($what eq WHAT_FIND_CORRECTIONS) {
+		my @catspec = split(',', $args->{catspec});
+		foreach my $catspec (@catspec) {
+			if (not -e $catspec) {
+				$self->error(BAD_INPUT, "invalid catspec $catspec");
+			}
+		}
+		$self->{CATSPEC} = \@catspec;
+	}
+}
+
+
+sub parseFileParameter
+{
+	my ($self, $key) = @_;
+
+	my $value = $self->args->{$key};
+
+	my @input;
+
+	if (uc($value) eq 'NONE') {
+	}
+	elsif ($value =~ /^@(.+)/) {
+		my $path = $1;
+		my $fh = FileHandle->new($path);
+		if (not $fh) {
+			$self->error(BAD_INPUT, "unable to open $key path $path [$!]");
+		}
+		else {
+			my @tmp = <$fh>;
+			undef($fh);
+			chomp(@tmp);
+			@input = grep { length > 0 } @tmp;
+		}
+	}
+	else {
+		@input = split(/,\s*/, $value);
+	}
+
+	$self->{uc($key)} = \@input;
+
+	if (uc($key) eq 'FLAGFILE' and @input) {
+		$self->{FLAGGING} = 1;
+	}
+
+	if (@input > 1 and $self->chatter(4)) {
+		$self->report(join("\n\t", "input files:", @input));
+	}
+
+	foreach my $path (@input) {
+		if (not -f $path) {
+			$self->warning("$path is not a regular file");
+		}
+	}
+}
+
+
+sub whatID
+{
+	my ($self) = @_;
+
+	$self->inspectSkyFiles
+		if $self->isValid;
+
+	$self->setFlagImages
+		if $self->isValid;
+
+	$self->findCorrections
+		if $self->isValid;
+
+	$self->saveCorrections
+		if $self->isValid;
+}
+
+
+sub whatSKY
+{
+	my ($self) = @_;
+
+	$self->loadCorrections
+		if $self->isValid;
+
+	$self->determineSnapshots
+		if $self->isValid;
+
+	$self->inspectSkyFiles
+		if $self->isValid;
+
+	$self->assignToSnapshots(0)
+		if $self->isValid;
+
+	$self->assignToSnapshots(1)
+		if $self->isValid;
+
+	$self->interpolateCorrections
+		if $self->isValid;
+
+	$self->adjustSkyImages
+		if $self->isValid;
+}
+
+
+sub whatATT
+{
+	my ($self) = @_;
+
+	$self->loadCorrections
+		if $self->isValid;
+
+	$self->adjustAttitude
+		if $self->isValid;
+}
+
+
+sub inspectSkyFiles
+{
+	my ($self) = @_;
+
+	foreach my $path (@{ $self->{SKYFILE} }) {
+		$self->inspectSkyFile({ path => $path });
+	}
+
+	if ($self->{OPTIONS}{FORCE}) {
+		$self->report('ignoring existing ASPCORR values');
+		foreach my $info (@{ $self->{exposures} }) {
+			$info->{ASPCORR} = 'NONE';
+		}
+	}
+}
+
+
+sub inspectSkyFile
+{
+	my ($self, $info) = @_;
+
+	my $header = 0;
+	my $status = 0;
+	my $fits = SimpleFITS->readonly($info->{path})
+			->readheader($header, clean => 1)
+			->status($status);
+	if ($status) {
+		$self->error(BAD_INPUT,
+				"unable to read $info->{path} header [$status]");
+		return;
+	}
+
+	my $filter = $header->{FILTER};
+	if (not UVOT::Filter::isValid($filter)) {
+		$self->error(BAD_INPUT,
+				"unexpected input filter '$filter'");
+		return;
+	}
+
+	$info->{header} = $header;
+	if (not $self->{CARDS}) {
+		$self->storeHeaderKeywords($header,
+				keys => [ qw(OBS_ID RA_PNT DEC_PNT PA_PNT) ],
+				hash => $self,
+				);
+		$self->{CARDS} = [ ];
+		$self->storeHeaderCards($fits->handle,
+				types => [ TYP_COMM_KEY, TYP_CONT_KEY,
+						TYP_USER_KEY, TYP_REFSYS_KEY ],
+				array => $self->{CARDS},
+				exclude => [ qw(FILTER) ],
+				);
+	}
+
+	$self->inspectImages($info, $fits);
+
+	delete($info->{header});
+	undef($fits);
+}
+
+
+sub loadCorrections
+{
+	my ($self) = @_;
+
+	my $path = $self->args->{corrfile};
+	if (not -f $path) {
+		$self->error(BAD_INPUT, "invalid corrfile '$path'");
+		return;
+	}
+
+	my @corrections;
+	my $status = SimpleFITS->readonly($path)
+			->move('ASPCORR')
+			->loadtable(\@corrections)
+			->close
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT, "unable to load corrections [$status]");
+	}
+	else {
+		my $count = @corrections;
+		$self->report("loaded $count corrections from $path");
+	}
+
+	$self->{corrections} = \@corrections;
+
+	my %corrections = map { $_->{EXTNAME} => $_ } @corrections;
+	$self->{corrextname} = \%corrections;
+}
+
+
+sub saveCorrections
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my %args = map { ($_ => $self->{$_}) }
+			qw(CARDS OBS_ID RA_PNT DEC_PNT PA_PNT);
+
+	if (not UVOT::AspcorrTable::saveCorrections($self,
+			$args->{outfile},
+			$self->{exposures},
+			%args,
+			)) {
+		$self->error(BAD_OUTPUT, "unable to save corrections");
+	}
+}
+
+
+sub determineSnapshots
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	my $helper = UVOT::Snapshot->new(
+			task => $self,
+			);
+
+	$helper->analyzeAttitude($args->{attfile});
+	if ($helper->isValid) {
+
+		$self->{snapshots} = $helper->{snapshots};
+
+		my $id = 0;
+		foreach my $snapshot (@{ $self->{snapshots} }) {
+			$snapshot->{ID} = ++$id;
+			$snapshot->{exposures} = [ ];
+			$snapshot->{corrections} = [ ];
+			$self->report(sprintf('snapshot %d [ %d, %d ]',
+					$id, $snapshot->start, $snapshot->stop));
+		}
+	}
+	else {
+		$self->error(BAD_INPUT,
+				"unable to determine snapshots from $args->{attfile}");
+	}
+}
+
+
+sub inspectImages
+{
+	my ($self, $info, $fits) = @_;
+
+	my $nhdu;
+	my $status = $fits->nhdu($nhdu)
+			->status;
+	if ($status) {
+		$self->error(BAD_INPUT,
+			"unable to determine number of HDUs in $info->{path} [$status]");
+		return;
+	}
+
+	my @exposure;
+
+	my $corr = $self->{corrextname} || { };
+
+	for (my $i = 1; $self->isValid and $i < $nhdu; ++$i) {
+		my $header = '';
+		my %exposure = (
+			path => $info->{path},
+			hdu0 => $i,
+			spec => $info->{path} . "[$i]",
+		);
+		$status = $fits->move($i + 1)
+				->readheader($header, clean => 1)
+				->status;
+		# need at least TSTART, TSTOP, FILTER
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to read HDU $i header [$status]");
+		}
+		else {
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(XTENSION FILTER NAXIS) ],
+					hash => \%exposure,
+					);
+
+			next if $exposure{XTENSION} ne 'IMAGE';
+			next if $exposure{NAXIS} != 2;
+
+			$self->storeHeaderKeywords($header,
+					keys => [ qw(EXTNAME EXPOSURE TSTART TSTOP) ],
+					hash => \%exposure,
+					);
+
+			$exposure{ONTIME} = $header->{EXPOSURE};
+			$exposure{ASPCORR} = $header->{ASPCORR} || 'NONE';
+
+			my $extname = $exposure{EXTNAME};
+			if (exists($corr->{$extname})) {
+				my $corrext = $corr->{$extname};
+				if ($corrext->{ASPCORR} > 0) {
+					$exposure{QDELTA} = $corrext->{QDELTA};
+					$exposure{record} = 'DIRECT';
+					$self->verbose("found ASPCORR/QDELTA for $extname");
+				}
+			}
+
+			if (defined($header->{WHEELPOS})) {
+				$exposure{WHEELPOS} = $header->{WHEELPOS};
+			}
+
+			push(@exposure, \%exposure);
+		}
+
+		undef($header);
+	}
+
+	if ($self->isValid) {
+		push(@{ $self->{exposures} }, @exposure);
+		my $count = @exposure;
+		$self->report("found $count exposures in $info->{path}")
+			if $self->chatter(3);
+	}
+}
+
+
+# both corrections (ASPCORR records) and exposures have EXTNAME, TSTART, TSTOP
+
+sub assignToSnapshots
+{
+	my ($self, $doExposures) = @_;
+
+	my $what = $doExposures ? 'exposure' : 'correction';
+	my $whats = $what . 's';
+	$self->report("assigning $whats to snapshots");
+
+	my @sorted = sort { $a->{TSTART} <=> $b->{TSTART} } @{ $self->{$whats} };
+
+	my $s = 0;
+	my $snapshot = $self->{snapshots}[$s];
+
+	foreach my $info (@sorted) {
+
+		my $skytime = $info->{EXTNAME} =~ /I$/
+				? $info->{TSTART}
+				: ($info->{TSTART} + $info->{TSTOP}) / 2;
+		$info->{SKYTIME} = $skytime;
+
+		while (defined($snapshot) and $info->{TSTART} > $snapshot->stop) {
+			$snapshot = $self->{snapshots}[++$s];
+		}
+		if (not defined($snapshot) or $info->{TSTOP} < $snapshot->start) {
+			$self->warning("$what $info->{EXTNAME} outside known snapshots");
+			$snapshot = UVOT::Snapshot::Entry->new(
+					START => $info->{TSTART},
+					STOP => $info->{TSTOP},
+                    ID => $info->{EXTNAME},
+					);
+		}
+
+		$info->{snapshot} = $snapshot;
+		push(@{ $snapshot->{$whats} }, $info);
+
+		my $expstr = sprintf('%s [%d, %d]', @{$info}{qw(EXTNAME TSTART TSTOP)});
+		# my $snapstr = sprintf('%s [%d, %d]', @{$snapshot}{qw(ID START STOP)});
+
+		$self->verbose("$expstr in snapshot $snapshot->{ID}");
+	}
+
+	$self->{$whats} = \@sorted;
+}
+
+
+sub findCorrections
+{
+	my ($self) = @_;
+
+	my @corrections;
+
+	foreach my $info (@{ $self->{exposures} }) {
+
+		my $filter = $info->{FILTER};
+
+		if (UVOT::Filter::isGrism($filter) || $filter =~ /^MAG/i) {
+			$self->report('not trying to match $filter image to sky');
+			next;
+		}
+
+		$self->report("working on $info->{spec} [$filter]");
+
+		$self->findCorrectionHDU($info);
+
+		if ($info->{QDELTA}) {
+			push(@corrections, $info);
+			$self->report("found correction for $info->{spec}");
+		}
+		else {
+			$self->{code} = 0;
+			$self->report("no correction for $info->{spec}");
+		}
+	}
+
+	$self->{corrections} = \@corrections;
+}
+
+
+
+sub findCorrectionHDU
+{
+	my ($self, $info) = @_;
+
+	my $args = $self->args;
+	my $filterInfo = $self->{$info->{FILTER}};
+
+	my @local = qw(
+		max.rate
+		det.thresh
+		det.min
+		det.flagless
+	);
+	my %local = map { ($_ => 1) } @local;
+
+	my @par;
+	my %par;
+	foreach my $arg (
+			split(/\s+/, $args->{starid}),
+			split(/\s+/, $STARID{$info->{FILTER}}),
+			qw(rot.err=60 mag.err=3 group.angle=3
+					filter.base=0.75 filter.count=3 filter.range=0.3
+					max.rate=-1 det.flagless=1 matchtol=-1),
+			) {
+		next if $arg =~ /^NONE$/i;
+		my ($k, $v) = split('=', $arg);
+		if (not exists($par{$k})) {
+			push(@par, $k) if not $local{$k};
+			$par{$k} = $v;
+		}
+	}
+
+	my $starid = join(' ', map { "$_=$par{$_}" } @par);
+	$info->{starid} = $starid;
+	$info->{detected} = $self->temporary('detect');
+
+	my @threshold = split(/,/, $par{'det.thresh'});
+	if (not @threshold) {
+		@threshold = (2.5, 3.5, 6);
+	}
+	my $minsources = $par{'det.min'} || 16;
+	my @args;
+	if ($self->{FLAGGING}) {
+		@args = (expfile => "FLAG:$info->{FLAGEXT}");
+	}
+
+	foreach my $pair (@{ $self->{DETOPT} }) {
+		push(@args, @$pair);
+	}
+
+	while ($self->isValid and @threshold) {
+		my $threshold = pop(@threshold);
+		unlink($info->{detected});
+		my $command = $self->buildCommand('uvotdetect',
+				infile => $info->{spec},
+				outfile => $info->{detected},
+				threshold => $threshold,
+				@args,
+				zerobkg => -1,
+				);
+		$self->shell($command);
+
+		my $filter = '';
+		my $maxrate = $par{'max.rate'};
+		if ($maxrate > 0) {
+			$filter .= "(RAW_TOT_RATE<$maxrate)";
+		}
+
+		my $flagless = $par{'det.flagless'};
+		if ($flagless) {
+			$filter .= '.AND.' if $filter;
+			$filter .= '(FLAGS==0)';
+		}
+
+		if ($filter) {
+			my $detfilt = $self->temporary('detfilt');
+			my $ftcopy = $self->buildCommand('ftcopy',
+					infile => $info->{detected} . "[SOURCES][$filter]",
+					outfile => $detfilt,
+					);
+			$self->shell($ftcopy);
+			$info->{detected} = $detfilt;
+		}
+
+		my @table;
+		my $status = SimpleFITS->readonly($info->{detected})
+				->move('SOURCES')
+				->loadtable(\@table)
+				->close
+				->status;
+		my $count = @table;
+		if ($status) {
+			@threshold = ();
+			$self->error(BAD_OUTPUT, "unable to load uvotdetect output [$status]");
+		}
+		elsif ($count < $minsources) {
+			$self->warning("insufficent acceptable detections [ok=$count < min=$minsources]")
+				if $filter;
+		}
+		else {
+			# detection succeeded
+			@threshold = ();
+		}
+	}
+
+	return if not $self->isValid;
+
+
+	my @catspec = @{ $self->{CATSPEC} };
+	my $solution = undef;
+
+	while (not $info->{CORRECTED} and @catspec) {
+		$info->{catspec} = shift(@catspec);
+		$self->aspectCorrect($info);
+	}
+
+}
+
+
+sub aspectCorrect
+{
+	my ($self, $info) = @_;
+
+	my $args = $self->args;
+
+	my $idfile = $self->temporary('starid');
+
+	my $command = $self->buildCommand('aspcorr',
+			infile => $info->{path},
+			inhdu => $info->{hdu0},
+			outhdu => 'NONE',
+			method => 'STARID',
+			catspec => $info->{catspec},
+			starid => $info->{starid},
+			srcfile => $info->{detected} . '[SOURCES]',
+			idfile => $idfile,
+			cleanup => $args->{cleanup},
+			);
+
+	my %args;
+	if (not $self->chatter(3)) {
+		$args{lines} = 24;
+	}
+
+	my $result = $self->shell($command . ' 2>&1', \%args);
+	if (not $self->isValid) {
+		# even if aspcorr failed, want to get partial results and continue
+		$self->{code} = 0;
+	}
+	# even if aspect correction fails, we still want to remember
+	# number of detected/reference sources
+
+	if (-f $idfile) {
+		# collect aspcorr results
+		my $header;
+		my $status = SimpleFITS->readonly($idfile)
+				->readheader($header, clean => 1)
+				->close
+				->status;
+		if ($status) {
+			$self->error(BAD_INPUT, "unable to load $idfile header [$status]");
+		}
+		else {
+			my $reKey = qr(^ASP);
+			deleteMatchingKeys($info, $reKey);
+			foreach my $key (keys(%$header)) {
+				if ($key =~ $reKey) {
+					$info->{$key} = $header->{$key};
+				}
+			}
+
+			my $aspcorr = ($header->{ASPCORR} eq 'YES') ? 1 : 0;
+			$info->{ASPCORR} = $aspcorr;
+			if ($aspcorr) {
+				my @q = (0) x 4;
+				my @r = (0) x 4;
+				for (my $i = 0; $i < 4; ++$i) {
+					my $qkey = "ASPQ$i";
+					if (not exists($info->{$qkey})) {
+						$self->error(BAD_TASK,
+								"aspect correction missing $qkey");
+					}
+					else {
+						$q[$i] = $info->{$qkey};
+					}
+				}
+				for (my $i = 0; $i < 4; ++$i) {
+					my $qkey = "ASPR$i";
+					if (not exists($info->{$qkey})) {
+						$self->error(BAD_TASK,
+								"aspect correction missing $qkey");
+					}
+					else {
+						$r[$i] = $info->{$qkey};
+					}
+				}
+				if ($self->isValid) {
+					$info->{QDELTA} = \@q;
+					$info->{CORRECTED} = $aspcorr;
+					$info->{QROTATION} = \@r;
+				}
+			}
+		}
+	}
+}
+
+
+sub deleteMatchingKeys
+{
+	my ($href, $re) = @_;
+	my @match;
+	foreach my $key (keys(%$href)) {
+		if ($key =~ $re) {
+			push(@match, $key);
+		}
+	}
+	foreach my $key (@match) {
+		delete($href->{$key});
+	}
+}
+
+
+sub getQuatOfChange
+{
+	my ($q1, $q2) = @_;
+	my $q1Inv = [ -$q1->[0], -$q1->[1], -$q1->[2], $q1->[3] ];
+require Astro::Convert;
+	my $qChange = Astro::Convert::productOfQuats($q1Inv, $q2);
+	return $qChange;
+}
+
+
+# algorithm from libcoord:multiplyQuatByScalar
+sub scaleQuat
+{
+	my ($q, $scale) = @_;
+
+	if ($q->[3] > 1 or $q->[3] < 0) {
+		print "scaleQuat: bad quaternion: @$q\n";
+		return undef;
+	}
+
+require POSIX;
+	my $halfAngle = POSIX::acos($q->[3]);
+	my $ratio = sin($scale * $halfAngle) / sin($halfAngle);
+
+	my $qScale = [
+		$q->[0] * $ratio,
+		$q->[1] * $ratio,
+		$q->[2] * $ratio,
+		cos($scale * $halfAngle)
+	];
+
+	return $qScale;
+}
+
+
+sub interpolateCorrection
+{
+	my ($self, $before, $after, $info) = @_;
+
+	my $dtBase = $after->{SKYTIME} - $before->{SKYTIME};
+	my $dtRelative = $info->{SKYTIME} - $before->{SKYTIME};
+	my $qBase = getQuatOfChange($before->{QDELTA}, $after->{QDELTA});
+	my $qScaled = scaleQuat($qBase, $dtRelative/$dtBase);
+	if ($qScaled) {
+require Astro::Convert;
+		my $qInterpolated = Astro::Convert::productOfQuats(
+				$before->{QDELTA}, $qScaled);
+		$info->{QDELTA} = $qInterpolated;
+	}
+}
+
+
+
+sub interpolateCorrections
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+	if (not $self->{OPTIONS}{INTERPOLATE}) {
+		$self->verbose('not interpolating corrections');
+		return;
+	}
+	else {
+		$self->report('interpolating corrections');
+	}
+
+	foreach my $info (@{ $self->{exposures} }) {
+
+		if ($info->{ASPCORR} !~ /^NONE$/i) {
+			$self->verbose("$info->{EXTNAME} already corrected [$info->{ASPCORR}]");
+			next;
+		}
+
+		my $snapshot = $info->{snapshot};
+		my $snapcorr = $snapshot->{corrections};
+		if ($snapcorr and @$snapcorr > 0) {
+			# determine surrounding corrections to interpolate between them
+			my $before = undef;
+			my $after = undef;
+			foreach my $corr (@$snapcorr) {
+				if ($corr->{SKYTIME} < $info->{SKYTIME} and
+						(not $before or $corr->{SKYTIME} > $before->{SKYTIME})) {
+					$before = $corr;
+				}
+				if ($corr->{SKYTIME} > $info->{SKYTIME} and
+						(not $after or $corr->{SKYTIME} < $after->{SKYTIME})) {
+					$after = $corr;
+				}
+			}
+			if ($before and $after) {
+				
+				$self->interpolateCorrection($before, $after, $info);
+				$info->{record} = "INTERPOLATED $before->{EXTNAME}/$after->{EXTNAME}";
+			}
+			elsif ($before) {
+				$info->{QDELTA} = $before->{QDELTA};
+				$info->{record} = "EXTRAPOLATED forward from $before->{EXTNAME}";
+			}
+			elsif ($after) {
+				$info->{QDELTA} = $after->{QDELTA};
+				$info->{record} = "EXTRAPOLATED back from $after->{EXTNAME}";
+			}
+			else {
+				# impossible?
+				$self->warning("missing snapshot correction $info->{EXTNAME}?!");
+			}
+		}
+		else {
+			$self->verbose("no corrections in $info->{EXTNAME} snapshot");
+		}
+
+		if ($info->{QDELTA}) {
+			$self->report("$info->{EXTNAME} correction $info->{record}");
+		}
+	}
+
+}
+
+
+sub adjustSkyImages
+{
+	my ($self) = @_;
+
+	foreach my $info (@{ $self->{exposures} }) {
+
+		if ($info->{ASPCORR} !~ /^NONE$/i) {
+			$self->report("$info->{EXTNAME} already corrected [$info->{ASPCORR}]");
+			next;
+		}
+
+		if (not $info->{QDELTA}) {
+			$self->report("no correction for $info->{EXTNAME}");
+			next;
+		}
+
+		$self->report("applying correction to $info->{EXTNAME}");
+
+		my $command = $self->buildCommand('aspcorr',
+				infile => $info->{path},
+				inhdu => 0, # unused
+				outhdu => $info->{hdu0},
+				method => 'QUAT',
+				quat => join(' ', @{ $info->{QDELTA} }),
+				history => 'NO',
+				checksum => 'NO',
+				record => $info->{record},
+				);
+		$self->shell($command);
+	}
+
+}
+
+
+# If masking is active, every HDU in sum must have a corresponding mask
+# that will be identified by HDU name in $hdu->{maskext}.
+sub setFlagImages
+{
+	my ($self) = @_;
+
+	if (not $self->{FLAGGING}) {
+		$self->verbose('quality flagging disabled')
+			if $self->chatter(4);
+		return;
+	}
+
+	my @flag;
+
+	foreach my $path (@{ $self->{FLAGFILE} }) {
+		my $fits = SimpleFITS->readonly($path);
+		if (not $fits) {
+			$self->error(BAD_INPUT,
+					"unable to open flag file $path");
+			last;
+		}
+		my $status = $fits->status;;
+		my $nhdu = $fits->nhdu;
+		for (my $hdu0 = 0; $hdu0 < $nhdu; ++$hdu0) {
+			my $header;
+			$status = $fits->move($hdu0 +1)
+					->readheader($header, clean => 1)
+					->status;
+			if ($header->{NAXIS} == 2) {
+				my $name = $header->{EXTNAME} || $header->{HDUNAME} || '';
+				my %hdu = (
+					PATH => $path,
+					HDU0 => $hdu0,
+					NAME => $name,
+					EXT => $name || $hdu0,
+				);
+				push(@flag, \%hdu);
+			}
+		}
+		$status = $fits->close->status;
+		undef($fits);
+		if ($status) {
+			$self->error(BAD_INPUT,
+					"unable to process flag file $path [$status]");
+			last;
+		}
+	}
+
+	# this overrides HDU number masks with the last file- a good reason
+	# to use HDU names especially with multiple files
+	my %flag;
+	foreach my $hdu (@flag) {
+		$flag{$hdu->{NAME}} = $hdu;
+		$flag{$hdu->{HDU0}} = $hdu;
+	}
+
+	foreach my $hdu (@{ $self->{exposures} }) {
+		my $hduname = $hdu->{name};
+		my $hdu0 = $hdu->{hdu0};
+		my $flag = $flag{$hduname} || $flag{$hdu0};
+		if ($flag) {
+			$hdu->{FLAGEXT} = $flag->{PATH} . "[$flag->{EXT}]";
+		}
+		else {
+			$self->error(BAD_INPUT, "no flag image for HDU $hduname/$hdu0+1");
+			last;
+		}
+	}
+}
+
+
+sub finalize
+{
+	my ($self) = @_;
+
+	my $args = $self->args;
+
+	if ($self->isValid) {
+
+		foreach my $filter (@{ $self->{filters} }) {
+
+			my $info = $self->{$filter};
+
+#			$self->putParameterHistory($info->{tmpraw});
+#
+#			$self->putParameterHistory($info->{allsky});
+#
+#			rename($info->{tmpraw}, $info->{outraw})
+#				or $self->error(BAD_OUTPUT,
+#					"unable to rename $info->{tmpraw} to $info->{outraw} [$!]");
+#
+#			rename($info->{allsky}, $info->{outsky})
+#				or $self->error(BAD_OUTPUT,
+#					"unable to rename $info->{allsky} to $info->{outsky} [$!]");
+#
+#			$self->addTemporary($info->{tmpraw});
+#			$self->addTemporary($info->{evtsky});
+#			$self->addTemporary($info->{allsky});
+		}
+
+	}
+
+}
+

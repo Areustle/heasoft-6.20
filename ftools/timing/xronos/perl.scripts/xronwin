@@ -1,0 +1,809 @@
+#!/usr/local/bin/perl5
+
+$task="xronwin1.0";
+$bailout= "bailout";
+
+$maxtwin = 1000;
+$maxpwin = 10;
+$maxfwin = 10;
+
+$series = 1;
+$btype = "O";
+$form = "S";
+$epoch = "Undefined";
+$period = "Undefined";
+
+%type = ("O","Orig. Bins","N","New Bins  ","I","Intervals ");
+use Getopt::Std;
+require 'utils.pl';
+getopt('io');
+$infile=$opt_i;
+$outfile=$opt_o;
+
+#DEBUG!!!
+#$opt_c = 1;
+
+if (!system('echo teststring | more -E 2> /dev/null 1> /dev/null' )){
+#in case somebody has set more == less
+    $more = "more -d -E";	
+} elsif (!system('echo teststring | more -e 2>/dev/null 1>/dev/null' )){
+#for the OSF version of more
+    $more = "more -d -e";
+} else {
+    $more = "more -d";
+}
+
+print "Using '$more' as more\n" if $opt_v;
+
+if($opt_h) {
+	print<<EOHELP;
+This script writes a new or modifies an old XRONOS window file. XRONOS
+window files are ASCII files and contain values for the different
+type of windows and text. There are 4 types of windows in the XRONOS
+window file:  
+
+ * Time   : consist of up to 1000 time intervals
+ * Phase  : consist of an epoch, period and up to 10 phase intervals
+ * Intensity : consist of up to 10 intensity in bin, newbin and interval
+ * Exposure  : consist of up to 1 exposure in bin, newbin and interval 
+
+When the script is invoked the following menu is displayed: 
+
+ [T]  Change TIME Windows
+ [P]  Change PHASE Windows
+ [I]  Change INTENSITY Windows
+ [E]  Change EXPOSURE Windows
+ [R]  READ an Input file
+ [S]  SHOW All Defined Windows
+ [C]  CLEAR All Defined Windows
+ [W]  WRITE Window file
+ [Q]  QUIT Window Program
+ [DS] Define Series Number (Currently 1)
+ [DB] Define Bin Type (Currently Orig. Bins)
+ [DE] Define Epoch for Phase Windows (Currently Undefined)
+ [DP] Define Period for Phase Windows (Currently Undefined)
+ [DW] Copy Defined Windows from Series to Series
+Choose an action:
+
+One of the action in square brackets should be entered. The minimun
+and maximum values of the Time [T], Phase [P], Intensity [I] and
+Exposure [E] windows must always be given in increasing order. The
+different types of window can be specified in any order, the script
+will give the correct order in the output file. An epoch [DS] and a
+period [DP] are required when phase windows are selected. If not
+given, the script displays a warning message. Intensity and Exposure
+windows can be specified independently for (i) Bins , (ii) New Bins ,
+(iii) Intervals (XRONOS basic time entities), using the option
+[DB]. When dealing with more than one time series, Intensity and
+Exposure windows must be specified separately for each series, using
+the option [DS] and/or using [DW] to copy the current exposure and 
+or intensity window from one time series to another. To read an
+existent XRONOS window file use the the option [R]. Input files are
+cumulative therefore many existent XRONOS window files can be read in
+(via the [R] option) and further modified. All the windows read in,
+for each type, are added (up to the maximun value allowed) with
+exception of the Exposure windows for which only the last read or set
+is accepted. Checking for overlapping windows is done only within the
+Change options (e.g. [T], [P], [I], [E]). It is therefore recommended,
+after reading many existing files, that users to check for conflicts
+(and corrections) using the above options. Entering [S] gives an
+overview of the current defined windows and after the selection is
+completed the option [W] writes the XRONOS window file. The values for
+the phase window range from 0 to 1. Exposure windows consist of a
+minimum and a maximum exposure level. Units are such that 1 means 100%
+exposure. The default values for the minimun exposure window in bin, 
+newbin and interval are set to 0.
+
+Three formats for time are available to enter time windows:
+
+1. day - enter one number (e.g. 123.524268391)
+2. day sec - enter two numbers, the 2nd must contain a decimal point.
+       (e.g. 123 45296.789)
+3. day hr min sec msec - enter up to 5 numbers, the 5th may contain a
+       decimal point. (e.g. 123 12 34 56 789)
+
+The same rules apply for entering the Epoch for phase windows. Note
+that time windows and epoch values should be compatible with how
+XRONOS reconstructs the time. The time used within XRONOS tasks is
+Truncated Julian Days (TJD=JD-2440000.5) if either (1) the keyword
+MJDREF is present in the header of the files or (2) if the TIMESYS
+value is one of the following strings MJD or JD or TJD. If neither (1)
+or (2) are true, the times are given in days relative to the value
+found in the TIME column." 
+EOHELP
+
+print <<EOR;
+
+
+COMMAND LINE PARAMETERS (all are optional)
+
+EOR
+
+$~ = "FLAGS";
+$flag_name = "-h";
+$flag_means = 'See this message.';
+write;
+$flag_name = "-i infile";
+$flag_means = "Name of the input window file.  You may specify a window file
+containing some starting values that you wish to modify or add to. If you 
+don't specify one, you will get the default values.";
+write;
+$flag_name = "-o outfile";
+$flag_means = 'Output window file name.';
+write;
+$flag_name = "-v";
+$flag_means = 'Verbose mode.';
+write;
+exit;
+}
+
+foreach $i (1..4) {
+    $expo_win_O[$i] = "UNDEF";
+    $expo_win_N[$i] = "UNDEF";
+    $expo_win_I[$i] = "UNDEF";
+}
+
+#get input windows
+if(-r $infile and length($infile) != 0 ) {
+    &read_win_file($infile);
+} else {
+#last ditch defaults
+    foreach $i (1..4) {
+	$expo_win_O[$i] = "0.00\t\t50.0";
+	$expo_win_N[$i] = "0.00\t\t50.0";
+	$expo_win_I[$i] = "0.0\t\t50.0";
+    }
+}
+
+$missing_e_or_p = 0;
+MAINLOOP: while(1) {
+    system("clear") if $opt_c;
+    print "Error: You must specify an epoch and" if $missing_e_or_p;
+    print " period when you have phase windows.\n" if $missing_e_or_p;
+    $missing_e_or_p = 0;	
+    &print_menu;
+    chop($action_letter = <STDIN>);
+  CASE: {
+    &change_time_windows, last CASE if $action_letter =~ /^[tT]/;
+    &change_phase_windows, last CASE if $action_letter =~ /^[pP]/;
+    &change_flux_windows, last CASE if $action_letter =~ /^[fF]/;
+    &change_expo_windows, last CASE if $action_letter =~ /^[eE]/;
+    &read_win_file, last CASE if $action_letter =~ /^[rR]/;
+    &show_windows, last CASE if $action_letter =~ /^[sS]/;
+    &clear_windows, last CASE if $action_letter =~ /^[cC]/;
+    $missing_e_or_p = &write_win_file, last CASE if $action_letter =~ /^[wW]/;
+    exit(0) if $action_letter =~ /^[qQ]/ ;
+    &def_series, last CASE if $action_letter =~ /^[dD][sS]/;
+    &def_btype, last CASE if $action_letter =~ /^[dD][bB]/;
+    &def_epoch, last CASE if $action_letter =~ /^[dD][eE]/;
+    &def_period, last CASE if $action_letter =~ /^[dD][pP]/;
+    &copy_windows, last CASE if $action_letter =~ /^[dD][wW]/;
+  }
+}
+
+sub copy_windows {
+    print "Enter numbers n and m to copy windows from series n to series m: ";
+    chop($action = <STDIN>);
+    return if length($action) == 0 ;
+    ($n,$m) = split(" ",$action);
+    print "Copy series $n to series $m? (y or n) ";
+    chop($action = <STDIN>);
+    unless ($action =~ /^[nN]/) {
+	if($n >= 1 and $n <= 4 and $m >= 1 and $m <= 4) {
+	    foreach $ibtype ("O","N","I") {
+		$n_array ="flux_win_${ibtype}_$n";
+		$m_array ="flux_win_${ibtype}_$m";
+		@$m_array = @$n_array;
+		$the_array = "expo_win_$ibtype";
+		$$the_array[$m] = $$the_array[$n];
+	    }
+	}
+    }
+}
+sub clear_windows {
+    $series = 1;
+    $btype = "O";
+    $epoch = "Undefined";
+    $period = "Undefined";
+    undef(@time_wins);
+    undef(@phase_wins);
+    foreach $iseries (1..4) {
+	foreach $ibtype ("O","N","I") {
+	    $the_array ="flux_win_${ibtype}_$iseries";
+	    undef(@$the_array);
+	    $the_array = "expo_win_$ibtype";
+	    $$the_array[$iseries] = "Undefined";
+	}
+    }
+}
+
+sub def_period{
+    local(%form=("S","Seconds","D","Days"));
+  DPERIOD: while(1) {
+      system("clear") if $opt_c;
+      if($broken) {
+	  $broken=0;
+	  print "Illegal entry. Ignored.\n" if $opt_v;
+      }
+      print "Current Period is: $period days\n";
+      print "Current Input Format is $form{$form}.\n";
+      print "[D] Change input format to Days.\n";
+      print "[S] Change input format to Seconds.\n";
+      print "[#] Set Period to #.\n";
+      print "<RETURN> to Main menu.\n";
+      print "Action: ";
+      chop($action = <STDIN>);
+      if (length($action) == 0 ) {
+	  last DPERIOD;
+      } elsif($action  =~ /^[Dd]/) {
+	  $form = "D";
+      } elsif ($action =~ /^[Ss]/) {
+	  $form = "S";
+      }	elsif ($action =~ /[^\-+0-9.eE ]/) {
+	  $broken = 1;
+      } else {
+	  $period = $action;
+	  if ($form eq "S") {$period /= 86400;}
+      }
+  }
+}
+
+sub def_epoch {
+  DEPOCH: while(1) {
+      system("clear") if $opt_c;
+      if($broken) {
+	  $broken=0;
+	  print "Illegal Epoch entered. Ignored.\n" if $opt_v;
+      }
+      print "Current Epoch is: $epoch days\n";
+      print "Enter Epoch (<RETURN> to main menu): ";
+      local($sav_epoch = $epoch);
+      chop($epoch = <STDIN>);
+      if (length($epoch) == 0 ) {
+	  $epoch=$sav_epoch;
+	  last DEPOCH;
+      } elsif ($epoch =~ /[^\-+0-9.eE ]/) {
+	  $broken = 1;
+	  $epoch = $sav_epoch;
+      } else {
+	  $epoch = &convert_t($epoch);
+      }
+  }
+}
+
+
+
+sub def_series {
+    local($broken=0);
+  DSER: while(1) {
+      system("clear") if $opt_c;
+      if($broken) {
+	  $broken=0;
+	  print "Illegal series entered. Ignored.\n" if $opt_v;
+      }
+      print "Current series is: $series\n";
+      print "Enter series number 1-4 (<RETURN> to main menu): ";
+      local($sav_ser = $series);
+      chop($series = <STDIN>);
+      if (length($series) == 0 ) {
+	  $series=$sav_ser;
+	  last DSER;
+      } elsif ($series < 1 or $series > 4) {
+	  $broken = 1;
+	  $series = $sav_ser;
+      } 	  
+  }
+}
+
+sub def_btype {
+    local($broken=0);
+  DBTYPE: while(1) {
+      system("clear") if $opt_c;
+      if($broken) {
+	  $broken=0;
+	  print "Illegal bintype entered. Ignored.\n" if $opt_v;
+      }
+      print "Current bin type is: $type{$btype}\n";
+      print "[O] original bin windows\n[N] new bin windows\n";
+      print "[I] interval windows\nBin type (<RETURN> to main menu): ";
+      local($sav_btype = $btype);
+      chop($btype = <STDIN>);
+      $btype = uc($btype);
+      if (length($btype) == 0 ) {
+	  $btype = $sav_btype;
+	  last DBTYPE;
+      } elsif ($btype !~ /^(O|N|I)/){
+	  $broken = 1;
+	  $btype = $sav_btype;
+      }
+  }
+}
+
+sub print_menu {
+    print "[T]  Change TIME Windows\n";
+    print "[P]  Change PHASE Windows\n";
+    print "[F]  Change FLUX Windows\n";
+    print "[E]  Change EXPOSURE Windows\n";
+    print "[R]  READ an Input file\n";
+    print "[S]  SHOW All Defined Windows\n";
+    print "[C]  CLEAR All Defined Windows\n";
+    print "[W]  WRITE Window file\n";
+    print "[Q]  QUIT Window Program\n";
+    print "[DS] Define Series Number (Currently $series)\n";
+    print "[DB] Define Bin Type (Currently $type{$btype})\n";
+    print "[DE] Define Epoch for Phase Windows (Currently $epoch)\n";
+    print "[DP] Define Period for Phase Windows (Currently $period)\n";
+    print "[DW] Copy Defined Windows from Series to Series\n";
+    print "Choose an action: ";
+}
+
+sub show_windows{
+    system("clear") if $opt_c;
+    open(MORE,"|$more");
+    if(@time_wins) {
+	print MORE "Time Windows (days):\n";
+	print MORE "Window\tStart\t\tStop\n";
+	&print_array_mo(@time_wins);
+    }
+    if(@phase_wins) {
+	print MORE "Phase Windows:\n";
+	print MORE "Epoch: $epoch\tPeriod: $period\n";
+	print MORE "Window\tStart\t\tStop\n";
+	&print_array_mo(@phase_wins);
+    }
+    foreach $iseries (1..4) {
+	foreach $ibtype ("O","N","I") {
+	    $the_array ="flux_win_${ibtype}_$iseries";
+	    next unless @$the_array;
+	    print MORE "Intensity Windows for $type{$ibtype} series $iseries: \n";
+	    &print_array_mo(@$the_array);
+	}
+    }
+    foreach $iseries (1..4) {
+	print MORE "Exposure Windows for series $iseries: \n";
+	print MORE "Original bins:     $expo_win_O[$iseries]\n";
+	print MORE "New bins:          $expo_win_N[$iseries]\n";
+	print MORE "Intervals:         $expo_win_I[$iseries]\n";
+    }
+    close(MORE);
+    print "<RETURN> to main menu: ";
+    $grot = <STDIN>;
+}
+
+sub read_win_file{
+#get legal input file
+    $i=0;
+    until (length($infile) != 0 && -r $infile ){
+	system("clear") if $opt_c;
+	if(length($infile) != 0) 
+	{print "I can't read input file: \"$infile\"\n";}
+	&print_likely_files('*.wi');
+	print "Input Filename(or number): "; 
+	chop($infile = <STDIN>); 
+	if(($infile =~ /^\s*(\d+)\s*$/)&&($infile <= @likely_files)){
+	    $infile=$likely_files[$1-1];} 
+	print "Can't seem to find a file. Exiting.\n", return if $i > 5;
+	$i++;
+    }
+    open(IN,"<$infile");
+    $firstline = <IN>;
+    $ntime = <IN>;
+    $ntime =~ /^\s*(\d*)/;
+    $ntime = $1;
+    print "Read $ntime time windows\n" if ($opt_v and $ntime > 0);
+    foreach $i (1..$ntime) {
+	chop($timerec = <IN>);
+	($tmin,$tmax,$nrec) = split(" ",$timerec);
+	push(@time_wins,"$tmin\t\t$tmax");
+    }
+    $nphase = <IN>;
+    $nphase =~ /^\s*(\d*)/;
+    $nphase = $1;
+    print "Read $nphase phase windows\n" if ($opt_v and $nphase > 0);
+    if($nphase >=1) {
+#get epoch and period
+	chop ($erec = <IN>) ;
+	($epoch,$period) = split(" ",$erec);
+    }
+    foreach $i (1..$nphase) {
+	chop($phaserec = <IN>);
+	($pmin,$pmax,$nrec) = split(" ",$phaserec);
+	push(@phase_wins,"$pmin\t\t$pmax");
+    }
+    foreach $iseries (1..4) {
+	foreach $ibtype ("O","N","I") {
+	    $the_array ="flux_win_${ibtype}_$iseries";
+	    $nflux = <IN>;
+	    $nflux =~ /^\s*(\d*)/;
+	    $nflux = $1;
+	    print "Read $nflux Intensity windows for $type{$ibtype} series $iseries.\n" if ($opt_v and $nflux > 0);
+	    foreach $i (1..$nflux) {
+		chop($fluxrec = <IN>);
+		($fmin,$fmax,$nrec) = split(" ",$fluxrec);
+		push(@$the_array,"$fmin\t\t$fmax");
+	    }
+	}
+	foreach $ibtype ("O","N","I") {
+	    $nex = <IN>;
+	    $nex =~ /^\s*(\d*)/;
+	    $nex = $1;
+	    $the_array = "expo_win_$ibtype";
+	    print "Read $nex Exposure window for $type{$ibtype} series $iseries.\n" if ($opt_v and $nex > 0);
+	    if($nex == 0) {
+		$$the_array[$iseries] = "Undefined";
+	    } else {
+		chop($exrec = <IN>);
+		($emin,$emax,$nrec) = split(" ",$exrec);
+		$$the_array[$iseries] = "$emin\t\t$emax";
+	    }
+	}
+    }
+    close(IN);
+    undef($infile);
+}
+
+sub write_win_file {
+    if (@phase_wins and ($epoch =~ /^U/ or $period =~ /^U/)) {
+#we need an epoch or a period	
+	return 1;
+    }
+    until ($outfile) {
+	print "What should I call your output window file: ";
+	chop($outfile = <STDIN>);
+    }
+    $outfile .= ".wi" unless $outfile =~ /\.wi$/;
+#first figure out how many we have of each thing
+    $ntime_wins = 0;
+    $nphase_wins = 0;
+    $nflux_wins = 0;
+    $nexpo_wins = 0;
+    $ntime_wins += @time_wins;
+    $nphase_wins += @phase_wins;
+    foreach $iseries (1..4) {
+	foreach $ibtype ("O","N","I") {
+	    $the_array ="flux_win_${ibtype}_$iseries";
+	    $nflux_wins += @$the_array;
+	}
+    }
+    $nexpo_wins += grep(/^[^U]/,@expo_win_O);
+    $nexpo_wins += grep(/^[^U]/,@expo_win_N);
+    $nexpo_wins += grep(/^[^U]/,@expo_win_I);
+    $totwin = $ntime_wins + $nphase_wins + $nflux_wins + $nexpo_wins;
+
+    open(OUT,">$outfile") or die;
+    print OUT " $totwin Windows in this < Xronos Window File >\n";
+    print OUT " $ntime_wins Time Wind.: start       stop  (days)\n";
+    $i = 0;
+    foreach $time_rec (@time_wins) {
+	$i++;
+	$time_rec .= "\t$i";
+	$time_rec =~ s/\t/     /g;
+	print OUT "      $time_rec\n";
+    }
+    print OUT " $nphase_wins Phase Wind.: epoch  period  (days)/ start stop (0->1) phases    max   10\n";
+    print OUT  "     $epoch     $period\n" if $nphase_wins;
+    $i = 0;
+    foreach $phase_rec (@phase_wins) {
+	$i++;
+	$phase_rec .= "\t$i";
+	$phase_rec =~ s/\t/     /g;
+	print OUT "      $phase_rec\n";
+    }
+    foreach $iseries (1..4) {
+	foreach $ibtype ("O","N","I") {
+	    $the_array ="flux_win_${ibtype}_$iseries";
+	    $nwin = 0;
+	    $nwin += @$the_array;
+	    print OUT " $nwin Ints. Wind. for $type{$ibtype} in Series $iseries : min  max (c/s)         max   10\n";
+	    $i = 0;
+	    foreach $flux_rec (@$the_array) {
+		$i++;
+		$flux_rec .= "\t$i";
+		$flux_rec =~ s/\t/     /g;
+		print OUT "      $flux_rec\n";
+	    }
+	}
+	foreach $ibtype ("O","N","I") {
+	    $nwin = 1;
+	    $the_array = "expo_win_$ibtype";
+	    $nwin = 0 if $$the_array[$iseries] =~ /^U/;
+	    print OUT " $nwin Exps. Wind. for $type{$ibtype} in Series $iseries : min  max (0->50)       max    1\n";
+	    print OUT "     $$the_array[$iseries]     1\n" if $nwin;
+	}
+    }
+    close(OUT);
+    undef($outfile);
+    return(0);
+}
+
+sub change_flux_windows{
+    local (%typen = ("O","Original Bins","N","New Bins","I","Intervals"));
+    local($broken = 0);
+    $action = "go";
+    $the_array ="flux_win_${btype}_$series";
+    $broken = &check_array($the_array) if @$the_array;
+  ACTION: while ($action) {
+      system("clear") if $opt_c;
+      print "ERROR: Windows cannot be ordered, please fix this!\nFirst \"broken\" window appears to be number $broken\n" if $broken;
+      if(@$the_array) {
+	  print "Current Intensity Windows for $typen{$btype} Series $series are: \n";
+	  print "Window\tMinimum\t\tMaximum\n";
+	  &print_array(@$the_array);
+      } else {
+	  print "Currently no Intensity Windows for $typen{$btype} Series $series. \n";
+      }
+      print "[A] add more windows\n[#] delete window number #\n";
+      print "<RETURN> to main menu\n Action: ";
+      chop($action  = <STDIN>);
+      if($action =~ /^[\-+0-9]/) {
+	  next ACTION if $action > @$the_array;
+	  if($action == 1) {
+	      shift(@$the_array);
+	      $action = "deleted";					
+	  } else {
+	      @$the_array = @$the_array[0..$action-2,$action..$#$the_array];
+	      $action = "deleted";					
+	  }
+      } elsif ($action =~ /^[aA]/){
+	FGET_LOOP: while (1) {
+#add new flux windows
+	    print "Maximum number of windows reached.\n", last FGET_LOOP 
+		if @$the_array > $maxfwin;
+	    print "Input minimum intensity: ";
+	    chop($flux_min = <STDIN>) ;
+	    last FGET_LOOP if ($flux_min eq "-" or $flux_min eq "");
+	    print "Input maximum intensity: ";
+	    chop($flux_max = <STDIN>) ;
+	    last FGET_LOOP if ($flux_max eq "-" or $flux_max eq "");
+	    $flux_max = &convert_t($flux_max);
+	    unless ($flux_max <= $flux_min) {
+		push(@$the_array,"$flux_min\t\t$flux_max");
+		$action = "added";
+	    } else {
+		print "Maximum Intensity <= Minimum Intensity, please reenter\n";
+	    }
+	}
+      } elsif (length($action)==0 and not $broken) {
+	  last ACTION;
+      } else {
+	  $action = "donothing";
+      }
+      $broken = &check_array($the_array) if @$the_array;
+  }
+}
+
+
+sub change_expo_windows{
+  EGET: while(1) {
+      system("clear") if $opt_c;
+      print "Current Exposure Window for series $series, $type{$btype} is: \n";
+      $the_array = "expo_win_$btype";
+      print "$$the_array[$series]\n";
+      print "[#] Minimum exposure\n[-] Delete this window\n";
+      print "<RETURN> to main menu.\n";
+      print "Action: ";
+      chop($action = <STDIN>) ;
+      if ($action eq "-"){
+	  $expo_min = "UNDEF";
+	  $expo_max = "UNDEF";
+      } elsif (length($action) == 0) {
+	  last EGET;
+      }	elsif ($action =~ /[^\-+0-9.eE ]/) {
+	  next EGET;
+      } else {
+	  $expo_min = $action;
+	  print "Input maximum exposure: ";		  
+	  chop($expo_max= <STDIN>) ;
+      }
+      if ($expo_max >= $expo_min or $expo_min eq "UNDEF") {
+	  $$the_array[$series] = "$expo_min\t\t$expo_max";
+	  $$the_array[$series] = "Undefined" if $expo_min eq "UNDEF";
+	  $action = "changed";
+      } else {
+	  print "maximum expo. <= minimum expo., please reenter\n";
+      }
+  }
+}
+
+sub check_array{
+#makes sure an array of windows doesn't have overlaps    
+    local($tw = shift);
+    return 0 if @$tw == 1;
+    @$tw = sort {$a <=> $b} @$tw;
+    ($tmin_o,$tmax_o) = split(" ",$$tw[0]);
+    $i=1;
+    foreach $t (@$tw[1..$#$tw]) {
+	$i++;
+	($tmin,$tmax) = split(" ",$t);
+	return $i if $tmin < $tmax_o;
+	$tmin_o=$tmin;
+	$tmax_o=$tmax;
+    }
+    return 0;		
+}
+
+
+sub check_parray{
+#makes sure an array of phase windows doesn't have overlaps    
+    local($tw = shift);
+    return 0 if @$tw == 1;
+    @$tw = sort {$a <=> $b} @$tw;
+    ($tmin_o,$tmax_o) = split(" ",$$tw[0]);
+    $tmin1 = $tmin_o;
+    $i=1;
+    if (@$tw > 2) {
+	foreach $t (@$tw[1..$#$tw-1]) {
+	    $i++;
+	    ($tmin,$tmax) = split(" ",$t);
+	    return $i if $tmin < $tmax_o or $tmin > $tmax;
+	    $tmin_o=$tmin;
+	    $tmax_o=$tmax;
+	} 
+    }
+    $i++;
+    ($tmin,$tmax) = split(" ",$$tw[$#$tw]);
+    return $i if $tmin < $tmax_o or $tmax < $tmin && $tmax > $tmin1;
+    return 0;		
+}
+
+sub convert_t{
+#takes input string in d, d s, or d h m s ms and returns d    
+    local($tstring=shift);
+    @t = split(" ",$tstring);
+    if (@t == 1) {
+#already have days
+	return $t[0];
+    } elsif (@t == 2 and $t[1] =~ /\./) {
+#have d s
+	return $t[0]+$t[1]/86400;
+    } else {
+#have d h m s ms
+        return $t[0]+$t[1]/24+$t[2]/1440+$t[3]/86400+$t[4]/86400.0e3;
+    }
+}
+
+sub print_array{
+    for($i=1;$i-1<=$#_;$i++) {
+	print "$i\t$_[$i-1]\n";
+    }
+}
+
+sub print_array_mo{
+#same function as print_array, but uses a pipehandle MORE 
+#MORE must have already been opened
+    for($i=1;$i-1<=$#_;$i++) {
+	print MORE "$i\t$_[$i-1]\n";
+    }
+}
+
+sub change_time_windows{
+    local($broken = 0);
+    $action = "go";
+    $broken = &check_array(\@time_wins) if @time_wins;
+    ACTION: while ($action) {
+	system("clear") if $opt_c;
+	open(MORE,"|$more");
+	if(@time_wins) {
+	    print MORE "Current Time Windows are: \n";
+	    print MORE "Window\tStart\t\tStop\n";
+	    &print_array_mo(@time_wins);
+	}
+	print MORE "ERROR: Windows cannot be time ordered, please fix this!\nFirst \"broken\" window appears to be number $broken\n" if $broken;
+       print MORE "[A] Add more windows\n[#] delete window number: #\n";
+	print MORE "<RETURN> to main menu\n";
+	close(MORE);
+	print "Action: ";
+	chop($action  = <STDIN>);
+	if($action =~ /^[\-+0-9]/) {
+	    next ACTION if $action > @time_wins;
+	    if($action == 1) {
+		shift(@time_wins);
+		$action = "deleted";					
+	    } else {
+		@time_wins = @time_wins[0..$action-2,$action..$#time_wins];
+		$action = "deleted";					
+	    }
+	} elsif ($action =~ /^[aA]/){
+          print "Enter time format as dd.d , dd ss.s , dd hh mm ss ms\n"; 
+	  TGET_LOOP: while (1) {
+#add new time windows
+	      print "Maximum number of windows reached.\n", last TGET_LOOP 
+		  if @time_wins > $maxtwin;
+	      print "Input minimum time: ";
+	      chop($time_min = <STDIN>) ;
+	      last TGET_LOOP if ($time_min eq "-" or $time_min eq "");
+	      $time_min = &convert_t($time_min);
+	      print "Input maximum time: ";
+	      chop($time_max = <STDIN>) ;
+	      last TGET_LOOP if ($time_max eq "-" or $time_max eq "");
+	      $time_max = &convert_t($time_max);
+	      unless ($time_max <= $time_min) {
+                  push(@time_wins,"$time_min\t\t$time_max");
+                  $action = "added";
+              } else {
+                  print "Tmax <= Tmin, please reenter\n";
+              }
+          }
+	} elsif (length($action)==0 and not $broken) {
+	    return;
+	} else {
+	    $action = "donothing";
+	}
+	$broken = &check_array(\@time_wins) if @time_wins;
+    }
+}
+
+sub change_phase_windows{
+    local($broken = 0);
+    $action = "go";
+    $broken = &check_array(\@phase_wins) if @phase_wins;
+    ACTION: while ($action) {
+	system("clear") if $opt_c;
+	print "ERROR: Windows cannot be phase ordered, please fix this!\nFirst \"broken\" window appears to be number $broken\n" if $broken;
+	if(@phase_wins) {
+	    print "Current Phase Windows are: \n";
+	    print "Window\tStart\t\tStop\n";
+	    &print_array(@phase_wins);
+	}
+	print "[A] Add more windows\n[#] delete window number: #\n";
+	print "<RETURN> to main menu\n";
+	print "Action: ";
+	chop($action  = <STDIN>);
+	if($action =~ /^[0-9]/) {
+	    next ACTION if $action > @phase_wins;
+	    if($action == 1) {
+		shift(@phase_wins);
+		$action = "deleted";					
+	    } else {
+		@phase_wins = @phase_wins[0..$action-2,$action..$#phase_wins];
+		$action = "deleted";					
+	    }
+	} elsif ($action =~ /^[aA]/){
+          print "Phase ranges  0.0-1.0 \n";
+	  PGET_LOOP: while (1) {
+#add new phase windows
+	      print "Maximum number of windows reached.\n", last PGET_LOOP 
+		  if @phase_wins > $maxpwin;
+	      print "Input minimum phase: ";
+	      chop($phase_min = <STDIN>) ;
+	      last PGET_LOOP if ($phase_min eq "-" or $phase_min eq "");
+	      print "Input maximum phase: ";
+	      chop($phase_max = <STDIN>) ;
+	      last PGET_LOOP if ($phase_max eq "-" or $phase_max eq "");
+	      if ($phase_max <= 1 and $phase_min < 1
+		  and $phase_max > 0 and $phase_min >= 0) {
+		  push(@phase_wins,"$phase_min\t\t$phase_max");
+                  $action = "added";
+              } else {
+		  print "Phases must be in range 0 through 1, please reenter\n";
+              }
+	      
+	      $action = "added";
+	  }
+	} elsif (length($action)==0 and not $broken) {
+	    return;
+	} else {
+	    $action = "donothing";
+	}
+	$broken = &check_parray(\@phase_wins) if @phase_wins;
+    }
+}
+
+
+
+
+format FLAGS = 
+
+  @<<<<<<<<<<<<<<< ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~
+    $flag_name,   $flag_means
+                   ^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+                  $flag_means
+.
+
+format TEXT1 =
+@|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+$task
+
+^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<~~
+$paragraph_string
+.

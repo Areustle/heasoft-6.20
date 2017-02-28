@@ -1,0 +1,17 @@
+HD_COMPONENT_NAME	= suzaku
+
+HD_COMPONENT_VERS	=
+
+HD_CTASK		= bnkserver
+
+HD_CTASK_SRC_c		= bnkserver.c
+
+HD_CFLAGS		= ${HD_STD_CFLAGS}
+
+HD_CLIBS		= ${HD_LFLAGS} \
+-lBNK -lANL -lEVS -lCOM -lCLI -lcernlib-dummy \
+${HD_STD_LIBS} ${SYSLIBS} ${F77LIBS4C}
+
+HD_INSTALL_TASKS	= ${HD_CTASK}
+
+include ${HD_STD_MAKEFILE}

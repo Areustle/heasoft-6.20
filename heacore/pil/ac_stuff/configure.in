@@ -1,0 +1,1235 @@
+##########################################################################
+# package:   makefiles                                                   #
+# version:   2.4.7, 03-Jun-2002                                          #
+# file:      configure(.in)                                              #
+# author:    Jerzy.Borkowski@obs.unige.ch                                #
+# copyright: ISDC, chemin d'Ecogia 16, 1290 Versoix, Switzerland         #
+##########################################################################
+
+dnl Process this file with autoconf to produce a configure script.
+
+AC_INIT()
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    ISDC configure script version 2.4.x. This script is trying to])
+AC_MSG_RESULT([    fine tune Makefile(s) and makeisdc1(s) to your hardware and])
+AC_MSG_RESULT([    software environment. This may take a while.])
+AC_MSG_RESULT([])
+
+AC_CONFIG_AUX_DIR(autoconf)
+# ------------------------------------------------------------------------
+# check C compilers and utilities
+# ------------------------------------------------------------------------
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    Checking C, C++ and F90 compilers characteristics])
+AC_MSG_RESULT([])
+
+AC_PROG_CC
+AC_PROG_CPP
+
+
+# check if the user wants common floating point traps enabled on SPARC/Sun cc
+# this is default btw, but we have to check if one wants to disable those traps
+
+AC_ARG_WITH(sunfptraps,
+[  --with-sunfptraps[=ARG]   enable common fp traps (works only for Sun cc/CC) (default=yes)],
+my_fptraps=$withval, 
+my_fptraps=yes)
+
+
+cat > ctest.c <<EOF
+
+int	i;
+
+EOF
+
+if test "x$my_fptraps" = "xyes" ; then
+  if test "${CC}" = "cc" ; then
+    if ${CC} ${CFLAGS} -ftrap=common -c ctest.c 1>&AC_FD_CC 2>&AC_FD_CC 1>&5 2>&1; then
+      CC="${CC} -ftrap=common"
+    fi
+  fi
+fi
+
+rm -rf ctest*
+
+# ------------------------------------------------------------------------
+# check C++ compilers and utilities (we don't use AC_PROG_CXX since it
+# aborts when C++ cannot be found.
+# ------------------------------------------------------------------------
+
+ac_cv_isdc_cxx_works=no
+
+cat > cxxtest.cxx <<EOF
+
+#include <iostream.h>
+
+int	main()
+{
+cout << "Cplusplus works!\n" ;
+return(0);
+}
+
+EOF
+
+if test "${CC}" = "icc"; then
+  CXX_FIRST_TRY="${CC}"
+  F90_FIRST_TRY="ifc -Vaxlib"
+elif test "${CC}" = "icc -Df2cFortran"; then
+  CXX_FIRST_TRY="${CC}"
+  F90_FIRST_TRY="ifc -Vaxlib"
+fi
+
+if test "${CC}" = "gcc"; then
+  CXX_FIRST_TRY="g++"
+elif test "${CC}" = "gcc -Df2cFortran"; then
+  CXX_FIRST_TRY="g++ -Df2cFortran"
+fi
+
+if test -z "${CXX}"; then
+  AC_CHECK_PROGS(CXX, ${CXX_FIRST_TRY} CC c++ g++ icc gcc cxx cc++, "")
+else
+  isdc_cxx_tmp=${CXX}
+  CXX=
+  AC_CHECK_PROG(CXX, ${isdc_cxx_tmp}, ${isdc_cxx_tmp}, "")
+fi
+
+if test "${CXX}" != ""; then
+  AC_MSG_CHECKING([whether ${CXX} ${CXXFLAGS} compiler works])
+  if ${CXX} ${CXXFLAGS} -o cxxtest cxxtest.cxx 1>&AC_FD_CC 2>&AC_FD_CC 1>&5 2>&1; then
+    if (./cxxtest 1>&5 2>&1; exit) 1>&5 2>&1; then
+      ac_cv_isdc_cxx_works=yes
+    fi
+  fi
+  AC_MSG_RESULT([$ac_cv_isdc_cxx_works])
+fi
+
+rm -rf cxxtest*
+
+if test "${ac_cv_isdc_cxx_works}" != "yes"; then
+  AC_MSG_RESULT([])
+  AC_MSG_RESULT([    I cannot find working CXX compiler. This is bad :(, but do not panic.])
+  AC_MSG_RESULT([    If you think you have CXX compiler, set CXX environment variable])
+  AC_MSG_RESULT([    delete config.cache file and rerun ac_stuff/configure script])
+  AC_MSG_RESULT([])
+  CXX=
+  CXXFLAGS=
+else
+
+cat > cxxtest.cxx <<EOF
+
+int i;
+
+EOF
+
+  if test "x$my_fptraps" = "xyes" ; then
+    if test "${CXX}" = "CC" ; then
+      if ${CXX} ${CXXFLAGS} -ftrap=common -c cxxtest.cxx 1>&AC_FD_CC 2>&AC_FD_CC 1>&5 2>&1; then
+        CXX="${CXX} -ftrap=common"
+      fi
+    fi
+  fi
+
+  rm -rf cxxtest*
+
+  if test -z "${CXXFLAGS}"; then
+    CXXFLAGS="-g"
+  fi
+fi
+
+ac_cv_my_cxxflags=${CXXFLAGS}
+AC_SUBST(ac_cv_my_cxxflags)
+
+
+# ------------------------------------------------------------------------
+# check F90 compilers and utilities
+# ------------------------------------------------------------------------
+
+# check if f90 is disabled
+
+AC_ARG_WITH(fortran90,
+[  --with-fortran90[=ARG]    enable compilation of fortran90 part of code (default=yes)],
+my_with_fortran90=$withval, 
+my_with_fortran90=yes)
+
+# initially assume no working f90 compiler
+
+ac_cv_isdc_f90_works=no
+
+# if f90 enabled then try to determine working f90 compiler
+
+if test "x${my_with_fortran90}" = "xyes"; then
+
+cat > ftest.f90 <<EOF
+
+program ftest
+integer :: i
+i = 100
+i = i * i
+write (*,*) i
+end
+
+EOF
+
+if test -z "${F90}"; then
+  AC_CHECK_PROGS(F90, ifc nagf90 nagacef90 f90 hpf90 cf90 cft90 ftn90 abf90 f95 ftn95 f77, "")
+else
+  isdc_f90_tmp=${F90}
+  F90=
+  AC_CHECK_PROG(F90, ${isdc_f90_tmp}, ${isdc_f90_tmp}, "")
+fi
+
+if test "${F90}" != ""; then
+  AC_MSG_CHECKING([whether ${F90} ${F90FLAGS} compiler works])
+  if ${F90} ${F90FLAGS} -o ftest ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC 1>&5 2>&1; then
+    if (./ftest 1>&5 2>&1; exit) 1>&5 2>&1; then
+      ac_cv_isdc_f90_works=yes
+    fi
+  fi
+  AC_MSG_RESULT([$ac_cv_isdc_f90_works])
+fi
+
+rm -rf ftest*
+
+fi
+
+if test "${ac_cv_isdc_f90_works}" != "yes"; then
+  if test "x${my_with_fortran90}" = "xyes"; then
+    AC_MSG_RESULT([])
+    AC_MSG_RESULT([    I cannot find working F90 compiler. This is bad :(, but do not panic.])
+    AC_MSG_RESULT([    I will modify Makefile to built only C/C++ portion of project.])
+    AC_MSG_RESULT([    If you think you have F90 compiler, set F90 environment variable])
+    AC_MSG_RESULT([    delete config.cache file and rerun ac_stuff/configure script])
+    AC_MSG_RESULT([])
+  else
+    AC_MSG_RESULT([])
+    AC_MSG_RESULT([    Disabling Fortran90 support (explicit request in command line).])
+    AC_MSG_RESULT([    I will modify Makefile to built only C/C++ portion of project.])
+    AC_MSG_RESULT([])
+  fi
+  ac_cv_my_local_f90_install=
+  ac_cv_my_local_f90_install_all=
+  ac_cv_my_local_f90_create_install_dirs=
+  ac_cv_my_global_f90_install=
+  ac_cv_my_global_f90_install_all=
+  ac_cv_my_global_f90_create_install_dirs=
+  ac_cv_my_make_f90_tests=
+  ac_cv_my_all_f90_targets=
+  ac_cv_my_clean_f90_targets=
+# the following 2 lines are to disable Fortran bindings in cfitsio
+# Ideally, this should be taken care of in cfitsio's own Makefile.
+  FC=nope
+  export FC
+else
+  ac_cv_my_lib_f90_objects=\$\{_LIB_F90_OBJECTS\}
+  AC_SUBST(ac_cv_my_lib_f90_objects)
+  ac_cv_my_lib_f90_sources=\$\{_LIB_F90_SOURCES\}
+  AC_SUBST(ac_cv_my_lib_f90_sources)
+  ac_cv_my_f90_testcommands=testf90commands
+  AC_SUBST(ac_cv_my_f90_testcommands)
+  ac_cv_my_local_f90_install=\$\{_LOCAL_F90_INSTALL\}
+  ac_cv_my_local_f90_install_all=\$\{_LOCAL_F90_INSTALL_ALL\}
+  ac_cv_my_local_f90_create_install_dirs=\$\{_LOCAL_F90_CREATE_INSTALL_DIRS\}
+  ac_cv_my_global_f90_install=\$\{_GLOBAL_F90_INSTALL\}
+  ac_cv_my_global_f90_install_all=\$\{_GLOBAL_F90_INSTALL_ALL\}
+  ac_cv_my_global_f90_create_install_dirs=\$\{_GLOBAL_F90_CREATE_INSTALL_DIRS\}
+  if test -z "${F90FLAGS}"; then
+    F90FLAGS="-g"
+  fi
+  ac_cv_my_f90flags=${F90FLAGS}
+  ac_cv_my_make_f90_tests="\$(MAKE) _f90_tests"
+  ac_cv_my_all_f90_targets=\$\{ALL_F90_TARGETS\}
+  ac_cv_my_clean_f90_targets=\$\{CLEAN_F90_TARGETS\}
+
+# the following tests whether F90 compiler really supports 8-byte ints. SunSofts
+# F90 ver 1.0.1.0 silently maps int*8 to int*4. They call it int*8 support ....
+# NAG F90 on the other side (ver 2.2) supports 8byte ints on Solaris when
+# working together with Sun cc , but does not support 8byte int when working
+# with gcc (both cc and gcc support 8 byte long long data type). They call
+# it portability ...
+
+cat > ftest.f90 <<EOF
+
+program ftest
+integer*8 :: i
+i = 1000000
+i = i * i
+write (*,*) i
+end
+
+EOF
+
+AC_MSG_CHECKING([whether ${F90} ${F90FLAGS} compiler supports 8-byte integers])
+AC_CACHE_VAL(ac_cv_isdc_f90_int_8,
+[
+ac_cv_isdc_f90_int_8=no
+
+if ${F90} ${F90FLAGS} -o ftest ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC 1>&5 2>&1; then
+  if (./ftest 1>&5 2>&1; exit) 1>&5 2>&1; then
+    if (./ftest 2>&1) | grep 1000000000000 1>&5 2>&1; then
+      ac_cv_isdc_f90_int_8=yes
+    fi 
+  fi
+fi
+])
+AC_MSG_RESULT([$ac_cv_isdc_f90_int_8])
+
+rm -rf ftest*
+
+if test "${ac_cv_isdc_f90_int_8}" != "yes"; then
+  AC_MSG_RESULT([])
+  AC_MSG_RESULT([    Your F90 compiler does not support 8-byte integers. Skipping])
+  AC_MSG_RESULT([    compilation of files specified in _LIB_F90_INT8_SOURCES (if any).])
+  AC_MSG_RESULT([])
+fi
+
+AC_MSG_CHECKING([which extension gives F90 compiler to compiled modules])
+AC_CACHE_VAL(ac_cv_my_f90_obj_ext,
+[
+ac_cv_my_f90_obj_ext=none
+ac_cv_my_to_install_f90mod=\$\{TO_INSTALL_F90MOD_NORMAL\}
+
+cat > ftest_api.f90 <<EOF
+
+MODULE FTEST_API
+INTEGER, PARAMETER :: FTEST_LINESIZE = 200
+END MODULE FTEST_API
+
+EOF
+
+# the same directory must be in Makefile (in distclean)
+my_temporary_dir=ac_tmp_dir
+
+if test ! -d $my_temporary_dir ; then
+  mkdir $my_temporary_dir
+fi
+
+if ${F90} ${F90FLAGS} -c ftest_api.f90 1>&AC_FD_CC 2>&AC_FD_CC; then
+  for isdc_f90_tmp in mod M kmo vo m d; do
+    if test -r ftest_api.${isdc_f90_tmp}; then
+      ac_cv_my_f90_obj_ext=${isdc_f90_tmp}
+      mv ftest_api.${ac_cv_my_f90_obj_ext} $my_temporary_dir
+      break
+    elif test -r FTEST_API.${isdc_f90_tmp}; then
+      ac_cv_my_f90_obj_ext=${isdc_f90_tmp}
+      ac_cv_my_to_install_f90mod=\$\{TO_INSTALL_F90MOD_UPPER\}
+      mv FTEST_API.${ac_cv_my_f90_obj_ext} $my_temporary_dir
+      break
+    fi
+  done
+fi
+if test "$ac_cv_my_f90_obj_ext" = "none" ; then
+  if ${F90} ${F90FLAGS} -Am -c ftest_api.f90 1>&AC_FD_CC 2>&AC_FD_CC; then
+    for isdc_f90_tmp in mod M kmo vo m d; do
+      if test -r ftest_api.${isdc_f90_tmp}; then
+        ac_cv_my_f90_obj_ext=${isdc_f90_tmp}
+        F90="${F90} -Am"
+        mv ftest_api.${ac_cv_my_f90_obj_ext} $my_temporary_dir
+        break
+      elif test -r FTEST_API.${isdc_f90_tmp}; then
+        ac_cv_my_f90_obj_ext=${isdc_f90_tmp}
+        F90="${F90} -Am"
+        ac_cv_my_to_install_f90mod=\$\{TO_INSTALL_F90MOD_UPPER\}
+        mv FTEST_API.${ac_cv_my_f90_obj_ext} $my_temporary_dir
+        break
+      fi
+    done
+  fi
+fi
+if test "$ac_cv_my_f90_obj_ext" = "none" ; then
+  ac_cv_my_f90_obj_ext=mod
+fi
+])
+AC_MSG_RESULT([objfilename.${ac_cv_my_f90_obj_ext}])
+
+AC_MSG_CHECKING([how to include F90 modules directory])
+AC_CACHE_VAL(ac_cv_my_f90_prefix,
+[
+ac_cv_my_f90_prefix=I
+cat > ftest_inc.f90 <<EOF
+
+PROGRAM FTEST_INC
+USE FTEST_API
+WRITE (*,*) 1234
+END
+
+EOF
+for isdc_f90_tmp in I M; do
+  if ${F90} ${F90FLAGS} -c -${isdc_f90_tmp}${my_temporary_dir} ftest_inc.f90 1>&AC_FD_CC 2>&AC_FD_CC; then
+    ac_cv_my_f90_prefix=$isdc_f90_tmp
+    break
+  fi
+done
+])
+AC_MSG_RESULT([-${ac_cv_my_f90_prefix}/dirname])  
+rm -rf ftest_api* FTEST_API* ftest_inc* $my_temporary_dir
+
+
+AC_MSG_CHECKING([whether USE F90_UNIX is necessary])
+AC_CACHE_VAL(ac_cv_my_f90_unix,
+[
+ac_cv_my_f90_unix=yes
+cat > ftest.f90 <<EOF
+
+PROGRAM FTEST
+INTEGER :: I
+I = IARGC()
+END
+
+EOF
+if ${F90} ${F90FLAGS} -o ftest ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  ac_cv_my_f90_unix=no
+elif ${F90} -Vaxlib ${F90FLAGS} -o ftest ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  F90="${F90} -Vaxlib"
+  ac_cv_my_f90_unix=no
+fi
+])
+
+AC_MSG_RESULT([${ac_cv_my_f90_unix}])  
+rm -rf ftest ftest.f90
+
+
+AC_MSG_CHECKING([the basename of the compiled F90 modules])
+AC_CACHE_VAL(ac_cv_my_f90_mod_base,
+[
+ac_cv_my_f90_mod_base=none
+ac_cv_my_to_install_f90mod=\$\{TO_INSTALL_F90MOD_NORMAL\}
+
+cat > ftest_api.f90 <<EOF
+
+MODULE FTEST_API_BASENAME
+INTEGER, PARAMETER :: FTEST_LINESIZE = 200
+END MODULE FTEST_API_BASENAME
+
+EOF
+
+if ${F90} ${F90FLAGS} -c ftest_api.f90 1>&AC_FD_CC 2>&AC_FD_CC; then
+  if test -r ftest_api.${ac_cv_my_f90_obj_ext}; then
+    ac_cv_my_f90_mod_base=source_filename
+  elif test -r ftest_api_basename.${ac_cv_my_f90_obj_ext}; then
+    ac_cv_my_f90_mod_base=module_name
+  fi
+fi
+])
+AC_MSG_RESULT([${ac_cv_my_f90_mod_base}])
+
+rm -rf ftest*
+
+
+AC_MSG_CHECKING([whether KIND value specifies byte size])
+AC_CACHE_VAL(ac_cv_my_f90kind,
+[
+ac_cv_my_f90kind=yes
+cat > ftest.f90 <<EOF
+
+PROGRAM FTEST
+INTEGER (KIND=3) :: I
+END
+
+EOF
+if ${F90} ${F90FLAGS} -c ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  ac_cv_my_f90kind=no
+  cat > ftest.f90 <<EOF
+
+PROGRAM FTEST
+INTEGER (KIND=8) :: I
+END
+
+EOF
+  if ${F90} ${F90FLAGS} -c ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+    ac_cv_my_f90kind=yes
+  fi
+fi
+])
+if test "${ac_cv_my_f90kind}" = "yes"; then
+  AC_MSG_RESULT([${ac_cv_my_f90kind}])  
+else
+  ac_cv_my_f90flags="${ac_cv_my_f90flags} -byte_kinds"
+  AC_MSG_RESULT([${ac_cv_my_f90kind}, assuming -byte_kinds will work])  
+fi  
+rm -rf ftest.f90 ftest.o
+
+
+
+AC_MSG_CHECKING([whether F90FLAGS -mismatch option is required])
+AC_CACHE_VAL(ac_cv_my_f90_mismatch,
+[
+ac_cv_my_f90_mismatch=dontknow
+cat > ftest.f90 <<EOF
+
+PROGRAM FTEST
+IMPLICIT NONE
+INTEGER,  EXTERNAL :: ADDROF
+INTEGER		:: i
+INTEGER 	:: j
+REAL		:: r
+j = ADDROF(r)
+j = ADDROF(i)
+END
+
+EOF
+if ${F90} ${F90FLAGS} -c ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  ac_cv_my_f90_mismatch=no
+else
+  if ${F90} ${F90FLAGS} -mismatch -c ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+    ac_cv_my_f90_mismatch=yes
+  fi
+fi
+])
+if test "${ac_cv_my_f90_mismatch}" = "yes"; then
+  ac_cv_my_f90flags="${ac_cv_my_f90flags} -mismatch"
+  AC_MSG_RESULT([${ac_cv_my_f90_mismatch}])  
+elif test "${ac_cv_my_f90_mismatch}" = "no"; then
+  AC_MSG_RESULT([${ac_cv_my_f90_mismatch}])  
+else
+  AC_MSG_RESULT([${ac_cv_my_f90_mismatch}, your ${F90} compiler had problems ...])  
+fi  
+rm -rf ftest.f90 ftest.o
+
+
+
+AC_MSG_CHECKING([whether F90FLAGS -fno-second-underscore option is required])
+AC_CACHE_VAL(ac_cv_my_f90_fno_2u,
+[
+ac_cv_my_f90_fno_2u=dontknow
+cat > ftest.f90 <<EOF
+
+PROGRAM FTEST
+IMPLICIT NONE
+INTEGER,  EXTERNAL :: MAX_COUNT
+WRITE (*,*) MAX_COUNT()
+END
+
+EOF
+cat > ctst.c <<EOF
+
+int	max_count_ = 12345;
+
+EOF
+if ${CC} ${CFLAGS} -c ctst.c 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  if ${F90} ${F90FLAGS} -o ftest ftest.f90 ctst.o 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+    ac_cv_my_f90_fno_2u=no
+  elif ${F90} ${F90FLAGS} -o ftest ctst.o ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+    ac_cv_my_f90_fno_2u=no
+  else
+    if ${F90} ${F90FLAGS} -fno-second-underscore -o ftest ftest.f90 ctst.o 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+      ac_cv_my_f90_fno_2u=yes
+    elif ${F90} ${F90FLAGS} -fno-second-underscore -o ftest ctst.o ftest.f90 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+      ac_cv_my_f90_fno_2u=yes
+    fi
+  fi
+fi
+])
+if test "${ac_cv_my_f90_fno_2u}" = "yes"; then
+  ac_cv_my_f90flags="${ac_cv_my_f90flags} -fno-second-underscore"
+  AC_MSG_RESULT([${ac_cv_my_f90_fno_2u}])  
+elif test "${ac_cv_my_f90_fno_2u}" = "no"; then
+  AC_MSG_RESULT([${ac_cv_my_f90_fno_2u}])  
+else
+  AC_MSG_RESULT([${ac_cv_my_f90_fno_2u}, your ${F90} or ${CC} compiler had problems ...])  
+fi  
+rm -rf ftest.f90 ftest.o ftest ctst.c ctst.o
+
+
+fi
+
+
+AC_SUBST(ac_cv_my_local_f90_install)
+AC_SUBST(ac_cv_my_local_f90_install_all)
+AC_SUBST(ac_cv_my_local_f90_create_install_dirs)
+AC_SUBST(ac_cv_my_global_f90_install)
+AC_SUBST(ac_cv_my_global_f90_install_all)
+AC_SUBST(ac_cv_my_global_f90_create_install_dirs)
+AC_SUBST(ac_cv_my_f90_prefix)
+AC_SUBST(ac_cv_my_f90_obj_ext)
+AC_SUBST(ac_cv_my_make_f90_tests)
+AC_SUBST(ac_cv_my_all_f90_targets)
+AC_SUBST(ac_cv_my_clean_f90_targets)
+
+if test "${ac_cv_isdc_f90_works}" != "yes"; then
+  ac_cv_my_to_install_f90mod=""
+fi
+AC_SUBST(ac_cv_my_to_install_f90mod)
+
+if test "${ac_cv_isdc_f90_int_8}" = "yes"; then
+  ac_cv_my_lib_f90_int8_sources=\$\{_LIB_F90_INT8_SOURCES\}
+  ac_cv_my_lib_f90_int8_objects=\$\{_LIB_F90_INT8_OBJECTS\}
+  if test "${ac_cv_my_f90_mod_base}" = "module_name"; then
+    ac_cv_my_to_install_f90mod_int8_normal=\$\{_TO_INSTALL_F90MOD_INT8_NORMAL\}
+    ac_cv_my_to_install_f90mod_int8_upper=\$\{_TO_INSTALL_F90MOD_INT8_UPPER\}
+    ac_cv_my_to_install_f90mod_int8_icc=
+  elif test "${ac_cv_my_f90_mod_base}" = "source_filename"; then
+    ac_cv_my_to_install_f90mod_int8_normal=
+    ac_cv_my_to_install_f90mod_int8_upper=
+    ac_cv_my_to_install_f90mod_int8_icc=\$\{_TO_INSTALL_F90MOD_INT8_ICC\}
+  else
+    ac_cv_my_to_install_f90mod_int8_normal=
+    ac_cv_my_to_install_f90mod_int8_upper=
+    ac_cv_my_to_install_f90mod_int8_icc=
+  fi
+else
+  ac_cv_my_lib_f90_int8_sources=
+  ac_cv_my_lib_f90_int8_objects=
+  ac_cv_my_to_install_f90mod_int8_normal=
+  ac_cv_my_to_install_f90mod_int8_upper=
+  ac_cv_my_to_install_f90mod_int8_icc=
+fi
+AC_SUBST(ac_cv_my_lib_f90_int8_sources)
+AC_SUBST(ac_cv_my_lib_f90_int8_objects)
+AC_SUBST(ac_cv_my_to_install_f90mod_int8_normal)
+AC_SUBST(ac_cv_my_to_install_f90mod_int8_upper)
+AC_SUBST(ac_cv_my_to_install_f90mod_int8_icc)
+
+if test "${ac_cv_my_f90_unix}" = "no"; then
+  ac_cv_my_lib_f90_early_sources=\$\{_LIB_F90_EARLY_SOURCES\}
+  ac_cv_my_lib_f90_early_objects=\$\{_LIB_F90_EARLY_OBJECTS\}
+  if test "${ac_cv_my_f90_mod_base}" = "module_name"; then
+    ac_cv_my_to_install_f90mod_early_normal=\$\{_TO_INSTALL_F90MOD_EARLY_NORMAL\}
+    ac_cv_my_to_install_f90mod_early_upper=\$\{_TO_INSTALL_F90MOD_EARLY_UPPER\}
+    ac_cv_my_to_install_f90mod_early_icc=
+  elif  test "${ac_cv_my_f90_mod_base}" = "source_filename"; then
+    ac_cv_my_to_install_f90mod_early_normal=
+    ac_cv_my_to_install_f90mod_early_upper=
+    ac_cv_my_to_install_f90mod_early_icc=\$\{_TO_INSTALL_F90MOD_EARLY_ICC\}
+  else
+    ac_cv_my_to_install_f90mod_early_normal=
+    ac_cv_my_to_install_f90mod_early_upper=
+    ac_cv_my_to_install_f90mod_early_icc=
+  fi
+else
+  ac_cv_my_lib_f90_early_sources=
+  ac_cv_my_lib_f90_early_objects=
+  ac_cv_my_to_install_f90mod_early_normal=
+  ac_cv_my_to_install_f90mod_early_upper=
+    ac_cv_my_to_install_f90mod_early_icc=
+fi
+AC_SUBST(ac_cv_my_lib_f90_early_sources)
+AC_SUBST(ac_cv_my_lib_f90_early_objects)
+AC_SUBST(ac_cv_my_to_install_f90mod_early_normal)
+AC_SUBST(ac_cv_my_to_install_f90mod_early_upper)
+AC_SUBST(ac_cv_my_to_install_f90mod_early_icc)
+
+AC_SUBST(ac_cv_my_f90flags)
+
+AC_PROG_INSTALL
+AC_PROG_RANLIB
+
+# -------------------------------------------------------------------------
+# Get the canonical host/system name. Full name is stored in ac_cv_my_host
+# variable, ac_cv_my_arch contains shortened version to ease conditional
+# compilation of code. Ideally automakefile should not test for given
+# system type.
+# -------------------------------------------------------------------------
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    Checking system characteristics])
+AC_MSG_RESULT([])
+
+AC_CANONICAL_HOST
+ac_cv_my_arch=_UNKNOWN_ARCHITECTURE
+
+case "$host" in
+  sparc-*-solaris*)	ac_cv_my_arch=_SOLARIS
+			;;
+  mips-*-irix*)		ac_cv_my_arch=_IRIX
+			;;
+  i*86-*-linux*)	ac_cv_my_arch=_LINUX
+			;;
+  alpha-*-osf*)		ac_cv_my_arch=_OSF
+			;;
+esac
+AC_SUBST(ac_cv_my_arch)
+ac_cv_my_host=$host
+AC_SUBST(ac_cv_my_host)
+
+dnl Checks for compiler characteristics
+
+# Check for type sizes, this also checks whether we are running in 64-bit
+# mode. If this is the case, update some f90 relates variables....
+
+AC_CHECK_SIZEOF(short)
+AC_CHECK_SIZEOF(int)
+AC_CHECK_SIZEOF(long)
+AC_CHECK_SIZEOF(long long)
+AC_CHECK_SIZEOF(void *)
+
+if test "$ac_cv_sizeof_void_p" = "8" ; then
+  ac_cv_my_lib_f90_ptr64_sources=\$\{_LIB_F90_PTR64_SOURCES\}
+  ac_cv_my_lib_f90_ptr64_objects=\$\{_LIB_F90_PTR64_OBJECTS\}
+  ac_cv_my_lib_f90_ptr32_sources=
+  ac_cv_my_lib_f90_ptr32_objects=
+else
+  ac_cv_my_lib_f90_ptr64_sources=
+  ac_cv_my_lib_f90_ptr64_objects=
+  ac_cv_my_lib_f90_ptr32_sources=\$\{_LIB_F90_PTR32_SOURCES\}
+  ac_cv_my_lib_f90_ptr32_objects=\$\{_LIB_F90_PTR32_OBJECTS\}
+fi
+AC_SUBST(ac_cv_my_lib_f90_ptr64_sources)
+AC_SUBST(ac_cv_my_lib_f90_ptr64_objects)
+AC_SUBST(ac_cv_my_lib_f90_ptr32_sources)
+AC_SUBST(ac_cv_my_lib_f90_ptr32_objects)
+
+
+dnl Checks for libraries.
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    Checking libraries/functions characteristics])
+AC_MSG_RESULT([])
+
+AC_PATH_X
+if test "x$x_includes" = "x" ; then
+  AC_MSG_RESULT([])
+  AC_MSG_RESULT([    I cannot find X-windows include files - not a problem for the time being])
+  AC_MSG_RESULT([])
+else
+  x_includes=-I$x_includes
+fi
+AC_SUBST(x_includes)
+
+if test "x$x_libraries" = "x" ; then
+  if test "x$x_includes" != "x" ; then
+    AC_MSG_RESULT([])
+  fi
+  AC_MSG_RESULT([    I cannot find X-windows libraries - not a problem for the time being])
+  AC_MSG_RESULT([])
+else
+  x_libraries=-L$x_libraries
+fi
+AC_SUBST(x_libraries)
+
+dnl Checks for header files.
+
+AC_HEADER_STDC
+AC_CHECK_HEADERS(malloc.h pthread.h stdlib.h)
+AC_CHECK_FUNCS(strchr memcpy gmtime_r strtoll llabs)
+
+dnl Checks for typedefs, structures, and compiler characteristics.
+
+AC_C_BIGENDIAN
+
+# -------------------------------------------------------------------------
+# some systems define flock_t, for others we have to define it ourselves
+# -------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether flock_t is defined])
+AC_CACHE_VAL(ac_cv_my_flock_t_defined,
+[
+ac_cv_my_flock_t_defined=no
+cat > ctest.c <<EOF
+
+#include <sys/fcntl.h>
+
+flock_t filler;
+
+EOF
+if ${CC} -I/usr/include ${CFLAGS} -c ctest.c 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  ac_cv_my_flock_t_defined=yes
+fi
+])
+if test "${ac_cv_my_flock_t_defined}" = "yes"; then
+  AC_DEFINE(HAVE_FLOCK_T)
+  AC_MSG_RESULT([${ac_cv_my_flock_t_defined}])  
+else
+  AC_MSG_RESULT([${ac_cv_my_flock_t_defined}])
+fi  
+rm -rf ctest.c ctest.o
+
+# -------------------------------------------------------------------------
+# there are some idiosyncrasies with semun defs (used in semxxx). Solaris
+# does not define them at all
+# -------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether union semun is defined])
+AC_CACHE_VAL(ac_cv_my_union_semun,
+[
+ac_cv_my_union_semun=no
+cat > ctest.c <<EOF
+
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+
+union semun filler;
+
+flock_t filler;
+
+EOF
+if ${CC} -I/usr/include ${CFLAGS} -c ctest.c 1>&AC_FD_CC 2>&AC_FD_CC >/dev/null 2>&1; then
+  ac_cv_my_union_semun=yes
+fi
+])
+if test "${ac_cv_my_union_semun}" = "yes"; then
+  AC_DEFINE(HAVE_UNION_SEMUN)
+  AC_MSG_RESULT([${ac_cv_my_union_semun}])  
+else
+  AC_MSG_RESULT([${ac_cv_my_union_semun}])
+fi  
+rm -rf ctest.c ctest.o
+
+
+dnl Checks for library functions.
+
+AC_FUNC_MEMCMP
+
+# -------------------------------------------------------------------------
+# we have to determine whether DAL/CFITSIO requires other libraries
+# -------------------------------------------------------------------------
+
+dnl which libraries to link with
+
+ac_cv_my_last_libs=" "
+
+AC_MSG_CHECKING([whether to link with nsl library])
+AC_TRY_LINK(
+[
+], [
+gethostbyname();
+], [
+AC_MSG_RESULT([no])
+], [
+ac_cv_my_last_libs="-lnsl"
+AC_MSG_RESULT([yes])
+] )
+
+AC_MSG_CHECKING([whether to link with socket library])
+AC_TRY_LINK(
+[
+], [
+connect(), socket(), setsockopt();
+], [
+AC_MSG_RESULT([no])
+], [
+ac_cv_my_last_libs="-lsocket $ac_cv_my_last_libs"
+AC_MSG_RESULT([yes])
+] )
+
+AC_MSG_CHECKING([whether to link with m library])
+AC_TRY_LINK(
+[
+], [
+sqrt(1.0), sin(1.0), asin(0.5), pow(1.0,1.0), tan(1.0), exp(1.0), tanh(0.1), ceil(1.0);
+], [
+AC_MSG_RESULT([no])
+], [
+ac_cv_my_last_libs="-lm $ac_cv_my_last_libs"
+AC_MSG_RESULT([yes])
+] )
+
+
+AC_CACHE_VAL(ac_cv_termcap_lib,
+[
+AC_CHECK_LIB(termcap, tgetent, ac_cv_termcap_lib=termcap,
+    [AC_CHECK_LIB(curses, tgetent, ac_cv_termcap_lib=curses,
+	[AC_CHECK_LIB(ncurses, tgetent, ac_cv_termcap_lib=ncurses,
+	    ac_cv_termcap_lib=none_found)])])
+])
+
+
+# check if readline support is enabled
+
+AC_ARG_WITH(readline,
+[  --with-readline[=ARG]     enable support for readline in PIL library (default=yes)],
+my_readlineflag=$withval, 
+my_readlineflag=yes)
+
+if test "x$my_readlineflag" = "xyes" ; then
+  if test "${ac_cv_termcap_lib}" != "none_found"; then
+    AC_DEFINE(HAVE_READLINE_LIBS)
+    ac_cv_my_last_libs="-lreadline -l$ac_cv_termcap_lib $ac_cv_my_last_libs"
+  fi
+fi
+
+
+AC_SUBST(ac_cv_my_last_libs)
+
+# this determines is nanosleep() is in libc or in libposix4.a (Solaris)
+
+AC_MSG_CHECKING([whether to link with posix4 library])
+AC_TRY_LINK(
+[
+], [
+nanosleep();
+], [
+ac_cv_my_posix4_lib=
+AC_MSG_RESULT([no])
+], [
+ac_cv_my_posix4_lib="-lposix4"
+AC_MSG_RESULT([yes])
+] )
+
+AC_SUBST(ac_cv_my_posix4_lib)
+
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    Checking customizations (based on environment variables)])
+AC_MSG_RESULT([])
+
+# -------------------------------------------------------------------------
+# determine the root directory for the ISDC software
+# -------------------------------------------------------------------------
+
+ac_cv_my_msg=" "
+
+AC_MSG_CHECKING([for ISDC software root directory])
+
+if test "x$ISDC_ENV" = "x" ; then
+  ac_cv_my_isdc_env="/isdc/dev"
+  ac_cv_my_msg="(assumed default value since ISDC_ENV not defined)"
+else
+  ac_cv_my_isdc_env="$ISDC_ENV"
+  ac_cv_my_msg="(from ISDC_ENV)"
+fi
+
+AC_MSG_RESULT("$ac_cv_my_isdc_env $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_isdc_env)
+
+# -------------------------------------------------------------------------
+# check for extra directories
+# -------------------------------------------------------------------------
+
+AC_MSG_CHECKING([for additional 1 includes])
+
+if test "x$EXTERN_1_INC_DIR" = "x" ; then
+  ac_cv_my_extern_1_inc_dir=
+  ac_cv_my_msg="(none since EXTERN_1_INC_DIR not defined)"
+else
+  ac_cv_my_extern_1_inc_dir="-I$EXTERN_1_INC_DIR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_extern_1_inc_dir $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_extern_1_inc_dir)
+
+
+AC_MSG_CHECKING([for additional 1 libraries])
+
+if test "x$EXTERN_1_LIB_DIR" = "x" ; then
+  ac_cv_my_extern_1_lib_dir=
+  ac_cv_my_msg="(none since EXTERN_1_LIB_DIR not defined)"
+else
+  ac_cv_my_extern_1_lib_dir="-L$EXTERN_1_LIB_DIR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_extern_1_lib_dir $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_extern_1_lib_dir)
+
+
+AC_MSG_CHECKING([for additional 1 F90 modules])
+
+if test "x$EXTERN_1_F90MOD_DIR" = "x" ; then
+  ac_cv_my_extern_1_f90mod_dir=
+  ac_cv_my_msg="(none since EXTERN_1_F90MOD_DIR not defined)"
+else
+  ac_cv_my_extern_1_f90mod_dir="-\${F90MOD_PREFIX}$EXTERN_1_F90MOD_DIR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_extern_1_f90mod_dir $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_extern_1_f90mod_dir)
+
+
+AC_MSG_CHECKING([for additional 2 includes])
+
+if test "x$EXTERN_2_INC_DIR" = "x" ; then
+  ac_cv_my_extern_2_inc_dir=
+  ac_cv_my_msg="(none  since EXTERN_2_INC_DIR not defined)"
+else
+  ac_cv_my_extern_2_inc_dir="-I$EXTERN_2_INC_DIR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_extern_2_inc_dir $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_extern_2_inc_dir)
+
+
+AC_MSG_CHECKING([for additional 2 libraries])
+
+if test "x$EXTERN_2_LIB_DIR" = "x" ; then
+  ac_cv_my_extern_2_lib_dir=
+  ac_cv_my_msg="(none since EXTERN_2_LIB_DIR not defined)"
+else
+  ac_cv_my_extern_2_lib_dir="-L$EXTERN_2_LIB_DIR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_extern_2_lib_dir $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_extern_2_lib_dir)
+
+
+AC_MSG_CHECKING([for additional 2 F90 modules])
+
+if test "x$EXTERN_2_F90MOD_DIR" = "x" ; then
+  ac_cv_my_extern_2_f90mod_dir=
+  ac_cv_my_msg="(none since EXTERN_2_F90MOD_DIR not defined)"
+else
+  ac_cv_my_extern_2_f90mod_dir="-\${F90MOD_PREFIX}$EXTERN_2_F90MOD_DIR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_extern_2_f90mod_dir $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_extern_2_f90mod_dir)
+
+
+AC_MSG_CHECKING([for local install directory])
+
+if test "x$LOCAL_INSTALL_ANCHOR" = "x" ; then
+  ac_cv_my_local_install_root="./installed_locally"
+  ac_cv_my_msg="(assumed default value since LOCAL_INSTALL_ANCHOR not defined)"
+else
+  ac_cv_my_local_install_root="$LOCAL_INSTALL_ANCHOR"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_local_install_root $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_local_install_root)
+
+
+AC_MSG_CHECKING([for isdc_install program])
+
+if test "x$ISDC_INSTALL" = "x" ; then
+  ac_cv_my_isdc_install=`pwd`"/ac_stuff/isdc_install"
+  ac_cv_my_msg="(assumed default value since ISDC_INSTALL not defined)"
+else
+  ac_cv_my_isdc_install="$ISDC_INSTALL"
+  ac_cv_my_msg=
+fi
+
+AC_MSG_RESULT("$ac_cv_my_isdc_install $ac_cv_my_msg")
+
+AC_SUBST(ac_cv_my_isdc_install)
+
+
+
+# check if isdcroot is enabled
+
+AC_ARG_WITH(isdcroot,
+[  --with-isdcroot[=ARG]     enable compilation of isdcroot (default=yes)],
+my_isdcrootflag=$withval, 
+my_isdcrootflag=yes)
+
+if test "x$my_isdcrootflag" = "xyes" ; then
+  ac_cv_my_isdcrootdir_to_skip=
+  ac_cv_my_isdcroot_inc_dir="-I$ROOTSYS/include/root"
+  ac_cv_my_isdcroot_lib_dir="-L$ROOTSYS/lib"
+else
+  ac_cv_my_isdcrootdir_to_skip=isdcroot
+  ac_cv_my_isdcroot_inc_dir=
+  ac_cv_my_isdcroot_lib_dir=
+fi
+
+AC_SUBST(ac_cv_my_isdcrootdir_to_skip)
+AC_SUBST(ac_cv_my_isdcroot_inc_dir)
+AC_SUBST(ac_cv_my_isdcroot_lib_dir)
+
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    Writing files and/or directories])
+AC_MSG_RESULT([])
+
+
+# compute directory where makefiles package is in.
+# Result is in $isdc_makefiles_dir
+
+changequote(<<, >>)dnl
+isdc_ac_prog=$0
+isdc_ac_confdir=`echo $isdc_ac_prog|sed 's%/[^/][^/]*$%%'`
+test "x$isdc_ac_confdir" = "x$isdc_ac_prog" && isdc_ac_confdir=.
+isdc_makefiles_dir=`echo "${isdc_ac_confdir}" | sed 's%\([^/]\)/*$%\1%'`
+changequote([, ])dnl
+
+# create (if it does not exist) new subdirectory 'ac_stuff' under current
+# directory. This directory will hold copy of files from
+# makefiles/ac_stuff package.
+
+isdc_ac_stuff=`pwd`/ac_stuff
+
+if test ! -d $isdc_ac_stuff ; then
+AC_MSG_RESULT([creating $isdc_ac_stuff directory])
+  mkdir $isdc_ac_stuff
+fi
+
+if test ! -d $isdc_ac_stuff/autoconf ; then
+AC_MSG_RESULT([creating $isdc_ac_stuff/autoconf directory])
+  mkdir $isdc_ac_stuff/autoconf
+fi
+
+isdc_ac_dir_push=`pwd`
+cd $isdc_makefiles_dir
+isdc_ac_dir_000=`pwd`
+cd $isdc_ac_dir_push
+cd $isdc_ac_stuff
+isdc_ac_dir_001=`pwd`
+cd $isdc_ac_dir_push
+
+if test "$isdc_ac_dir_000" != "$isdc_ac_dir_001" ; then
+AC_MSG_RESULT([copying files from directory  $isdc_makefiles_dir  to  $isdc_ac_stuff])
+  cp -f $isdc_makefiles_dir/Makefile.in $isdc_ac_stuff
+  cp -f $isdc_makefiles_dir/Makefile $isdc_ac_stuff
+  cp -f $isdc_makefiles_dir/configure.in $isdc_ac_stuff
+  cp -f $isdc_makefiles_dir/configure $isdc_ac_stuff
+  cp -f $isdc_makefiles_dir/isdc_install.c $isdc_ac_stuff
+AC_MSG_RESULT([copying files from directory  $isdc_makefiles_dir/autoconf  to  $isdc_ac_stuff/autoconf])
+  cp -f $isdc_makefiles_dir/autoconf/configure $isdc_ac_stuff/autoconf
+  cp -f $isdc_makefiles_dir/autoconf/config.sub $isdc_ac_stuff/autoconf
+  cp -f $isdc_makefiles_dir/autoconf/config.guess $isdc_ac_stuff/autoconf
+  cp -f $isdc_makefiles_dir/autoconf/install-sh $isdc_ac_stuff/autoconf
+fi
+
+
+# the following is necessary since autoconf default setting for srcdir is
+# stupid. In any case don't use --srcdir=dirname command line option !!!!
+
+srcdir=.
+
+# we have to define this function before it is called by AC_OUTPUT
+# this function reads from makeisdc1.in file one line with EXTERNAL_PACKAGES keyword,
+# then list all directories specified in EXTERNAL_PACKAGES keyword.
+# Path relative to the point of start is also reported.
+
+changequote(<<, >>)dnl
+isdc_process_one_external_dir()
+ {
+   if test -f $1/makeisdc1.in ; then
+     for i in `grep '^SUBDIRS' $1/makeisdc1.in | sed -e "s/SUBDIRS//g" -e "s/+=//g" -e "s/=//g" -e "s/	[	]*/ /g" -e "s/ [ ]*/ /g"` .end_of_list ;
+       do
+	 my_inexternal_packages=no
+         for j in `grep '^EXTERNAL_PACKAGES' $1/makeisdc1.in | sed -e "s/EXTERNAL_PACKAGES//g" -e "s/+=//g" -e "s/=//g" -e "s/	[	]*/ /g" -e "s/ [ ]*/ /g"` .end_of_list ;
+	   do
+	     if test "x$i" = "x$j" ; then my_inexternal_packages=yes ; fi
+	   done
+	 if test "xyes" != "x$my_inexternal_packages" ; then
+           if test -d $1/$i ; then
+             isdc_process_one_external_dir $1/$i
+           fi
+	 else
+	   if test -f $1/$i/configure ; then
+	     echo $1/$i
+	   fi
+	 fi
+       done
+   fi
+ }
+changequote([, ])dnl
+
+isdc_external_packages_list=
+
+for i in `isdc_process_one_external_dir .`
+  do
+    isdc_external_packages_list="$isdc_external_packages_list $i"
+  done
+
+for i in $isdc_external_packages_list ; 
+  do
+    if test "x$i" = "x\\" ; then
+      echo ""
+      echo "                     -------- ERROR --------"
+      echo ""
+      echo "  Due to some pecularities of configure script you cannot use backslash"
+      echo "  '\\' to split EXTERNAL_PACKAGES across several lines (in makeisdc1.in file)."
+      echo "  Please use either :"
+      echo ""
+      echo "  EXTERNAL_PACKAGES   = put all your subdirectories here in one line"
+      echo ""
+      echo "  or :"
+      echo ""
+      echo "  EXTERNAL_PACKAGES   = subdirectory1"
+      echo "  EXTERNAL_PACKAGES   += subdirectory2"
+      echo "  EXTERNAL_PACKAGES   += subdirectory3"
+      echo "  EXTERNAL_PACKAGES   += subdirectory4"
+      echo ""
+      echo "  The same is true for SUBDIRS variable. Please check all"
+      echo "  your makeisdc1.in files (in current directory and subdirectories"
+      echo "  specified in makeisdc1.in in current directory), fix definitions"
+      echo "  of SUBDIRS and/or EXTERNAL_PACKAGES, then rerun configure script."
+      echo "  Aborting..."
+      exit 1
+    fi
+  done
+
+AC_CONFIG_SUBDIRS( $isdc_external_packages_list )
+
+
+# we have to define this function before it is called by AC_OUTPUT
+# this function reads from makeisdc1.in file one line with SUBDIRS keyword,
+# then recursively descends into directories specified in SUBDIRS
+# and reports all Makefile.in and makeisdc1.in files found. Path relative
+# to the point of start is also reported.
+
+changequote(<<, >>)dnl
+isdc_process_one_dir()
+ {
+   if test -f $1/makeisdc1.in ; then
+     /bin/cp -f $2/Makefile.in $1/Makefile.in
+     /bin/cp -f $2/Makefile $1/Makefile
+     echo "$1/Makefile"
+     echo "$1/makeisdc1"
+     for i in `grep '^SUBDIRS' $1/makeisdc1.in | sed -e "s/SUBDIRS//g" -e "s/+=//g" -e "s/=//g" -e "s/	[	]*/ /g" -e "s/ [ ]*/ /g"` .end_of_list ;
+       do
+	 my_inexternal_packages=no
+         for j in `grep '^EXTERNAL_PACKAGES' $1/makeisdc1.in | sed -e "s/EXTERNAL_PACKAGES//g" -e "s/+=//g" -e "s/=//g" -e "s/	[	]*/ /g" -e "s/ [ ]*/ /g"` .end_of_list ;
+	   do
+	     if test "x$i" = "x$j" ; then my_inexternal_packages=yes ; fi
+	   done
+	 if test "xyes" != "x$my_inexternal_packages" ; then
+           if test -d $1/$i ; then
+             isdc_process_one_dir $1/$i $2
+           fi
+           if test "x$i" = "x\\" ; then
+	     echo $i
+           fi
+	 fi
+       done
+   fi
+ }
+changequote([, ])dnl
+
+isdc_makefiles_list=
+
+for i in `isdc_process_one_dir . $isdc_ac_stuff`
+  do
+    isdc_makefiles_list="$isdc_makefiles_list $i"
+  done
+
+for i in $isdc_makefiles_list ;
+  do
+    if test "x$i" = "x\\" ; then
+      echo ""
+      echo "                     -------- ERROR --------"
+      echo ""
+      echo "  Due to some pecularities of configure script you cannot use backslash"
+      echo "  '\\' to split SUBDIRS across several lines (in makeisdc1.in file)."
+      echo "  Please use either :"
+      echo ""
+      echo "  SUBDIRS   = put all your subdirectories here in one line"
+      echo ""
+      echo "  or :"
+      echo ""
+      echo "  SUBDIRS   = subdirectory1"
+      echo "  SUBDIRS   += subdirectory2"
+      echo "  SUBDIRS   += subdirectory3"
+      echo "  SUBDIRS   += subdirectory4"
+      echo ""
+      echo "  The same is true for EXTERNAL_PACKAGES variable. Please check all"
+      echo "  your makeisdc1.in files (in current directory and subdirectories"
+      echo "  specified in makeisdc1.in in current directory), fix definitions"
+      echo "  of SUBDIRS and/or EXTERNAL_PACKAGES, then rerun configure script."
+      echo "  Aborting..."
+      exit 1
+    fi
+  done
+
+AC_OUTPUT( $isdc_makefiles_list )
+
+AC_MSG_RESULT([])
+AC_MSG_RESULT([    Congratulations, Makefile/makeisdc1 update was successful.])
+AC_MSG_RESULT([])

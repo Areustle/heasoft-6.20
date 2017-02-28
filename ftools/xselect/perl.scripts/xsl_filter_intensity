@@ -1,0 +1,118 @@
+#! /usr/bin/perl 
+$version ="1.00";
+$date  ="2006-10-30";
+$author = "kaa";
+
+# This script runs maketime to create a gti file based on an intensity filter
+# on the input lightcurve. It makes a temporary file with a bin added on the 
+# beginning and end of the lightcurve to deal with the edge effect in maketime
+
+# Check that we were given the right number of arguments
+
+if(@ARGV < 1 || @ARGV > 5)
+{
+    print "\n usage : xsl_filter_intensity lcfile outfile expr timecol echo?\n";
+    exit(0);
+}
+
+$lcfile = $ARGV[0];
+$outfile = $ARGV[1];
+$expr = $ARGV[2];
+$timecol = $ARGV[3];
+$echo = "no";
+if ( @ARGV == 5 && $ARGV[4] eq "yes" ) { $echo = "yes"; }
+
+# get the time of the first and last bins in the lightcurve and the binsize
+
+$command = "ftkeypar infile=$lcfile\[RATE\] keyword=TIMEDEL";
+system($command);
+($timedel = `pget ftkeypar value`) =~ tr/\n//d;
+
+$command = "ftkeypar infile=$lcfile\[RATE\] keyword=NAXIS2";
+system($command);
+($numbins = `pget ftkeypar value`) =~ tr/\n//d;
+
+($endtime = `ftlist infile=$lcfile\[RATE\] option=T columns=$timecol rows=$numbins rownum=NO colheader=NO`) =~ tr/ \n//d;
+
+# create a fake lightcurve file with bins immediately before and immediately
+# after all the GTIs in the real lightcurve. First get the number of GTIs
+# and the TIMEZERO to convert between SCC and the time in the lightcurve.
+
+$command = "ftkeypar infile=$lcfile\[GTI\] keyword=NAXIS2";
+system($command);
+($numgti = `pget ftkeypar value`) =~ tr/\n//d;
+
+$command = "ftkeypar infile=$lcfile\[RATE\] keyword=TIMEZERO";
+system($command);
+($timezero = `pget ftkeypar value`) =~ tr/\n//d;
+
+$txtfile = $lcfile . "-txt";
+open TXTFILE, ">$txtfile";
+
+# loop round the GTIs
+
+for ($gti=1; $gti<=$numgti; $gti++)
+{
+
+# first do the START time
+
+   ($time = `ftlist infile=$lcfile\[GTI\] option=T columns=START rows=$gti rownum=NO colheader=NO`) =~ tr/ \n//d;
+   $time = $time - $timezero - $timedel;
+
+   print TXTFILE "$time 0.0 0.0 1.0\n";
+
+# then the STOP time
+
+   ($time = `ftlist infile=$lcfile\[GTI\] option=T columns=STOP rows=$gti rownum=NO colheader=NO`) =~ tr/ \n//d;
+   $time = $time - $timezero + $timedel; 
+
+   print TXTFILE "$time 0.0 0.0 1.0\n";
+
+}
+
+close TXTFILE;
+
+$cdfile = $lcfile . "-hd";
+open CDFILE, ">$cdfile";
+
+print CDFILE "$timecol D s\n";
+print CDFILE "RATE E count/s\n";
+print CDFILE "ERROR E count/s\n";
+print CDFILE "FRACEXP E\n";
+
+close CDFILE;
+
+$tmpfile = $lcfile . "-tmp";
+$command = "ftcreate cdfile=$cdfile datafile=$txtfile outfile=$tmpfile extname=RATE clobber=YES";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+# merge the fake and real lightcurves and sort on the time column
+
+$tmp2file = $lcfile . "-tmp2";
+$command = "ftmerge infile='$lcfile\[RATE\],$tmpfile+1' outfile=$tmp2file columns='$timecol,RATE,ERROR,FRACEXP' copyall=YES clobber=YES";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+$command = "ftsort infile=$tmp2file\[RATE\] outfile=$tmpfile columns=$timecol method=insert clobber=YES";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+# run maketime on the merged lightcurve file to generate the output gti
+
+unlink $outfile;
+$command = "maketime infile='$tmpfile' outfile=$outfile expr='$expr' time=$timecol start=START stop=STOP compact=no histkw=yes prefr=0.5 postfr=0.5";
+if ( $echo eq "yes" ) { print $command,"\n"; }
+system($command);
+
+# tidy up the temporary files
+
+unlink $tmpfile;
+unlink $tmp2file;
+unlink $cdfile;
+unlink $txtfile;
+
+
+
+
+
